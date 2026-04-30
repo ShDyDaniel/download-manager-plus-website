@@ -1,22 +1,14 @@
-import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Hero } from './components/Hero'
 import { Features } from './components/Features'
 import { QuickStart } from './components/QuickStart'
 import { FAQ } from './components/FAQ'
 import { Footer } from './components/Footer'
-import { fetchLatestRelease, type ReleaseInfo } from './api/releases'
 
-// Top-level layout. Hero loads release info async so the download
-// buttons can show actual file sizes / version. Subsequent sections
-// don't depend on it.
+// Top-level layout. All download URLs are hardcoded in Hero, so we
+// don't fetch the GitHub Releases API at runtime — the site is fully
+// static and renders identical content for every visitor.
 function App() {
-  const [release, setRelease] = useState<ReleaseInfo | null>(null)
-
-  useEffect(() => {
-    fetchLatestRelease().then(setRelease).catch(() => null)
-  }, [])
-
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -24,7 +16,7 @@ function App() {
       transition={{ duration: 0.4 }}
       className="relative"
     >
-      <Hero release={release} />
+      <Hero />
       <Features />
       <QuickStart />
       <FAQ />

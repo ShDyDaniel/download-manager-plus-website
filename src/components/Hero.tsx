@@ -1,18 +1,27 @@
 import { motion } from 'framer-motion'
 import { Apple, Monitor, ArrowDown, Cloud } from 'lucide-react'
-import { type ReleaseInfo, RELEASES_PAGE_URL } from '../api/releases'
+
+// Hardcoded download URLs for the current release. Update both the
+// GitHub direct-download URLs AND the Drive fallback URLs in lockstep
+// every time a new version ships. The website does NOT auto-resolve
+// the latest release at runtime — that put the GitHub Releases API
+// in the request critical path and broke the download buttons whenever
+// the release was still in draft. Hardcoding keeps the site working
+// the moment a version is published, with no surprises.
+const DOWNLOAD_MAC_GITHUB =
+  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.6.5/Download.Manager.Plus-1.6.5-arm64.dmg'
+const DOWNLOAD_WIN_GITHUB =
+  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.6.5/Download.Manager.Plus.Setup.1.6.5.exe'
 
 // Google Drive fallback links — for users on networks where GitHub
 // Releases is blocked (some corporate / school / region-restricted
-// networks block raw GitHub asset hosts but allow Drive). Updated
-// per-release; visit the Drive file pages and replace the IDs in the
-// URLs below when publishing a new version.
+// networks block raw GitHub asset hosts but allow Drive).
 const DRIVE_DOWNLOAD_MAC =
-  'https://drive.google.com/file/d/19SBUhF6ddU7fKwUsn9zTqX0fFvvFE6Br/view?usp=drive_link'
+  'https://drive.google.com/file/d/1ezciHjhrPULWCT3VGt0dwn7bYO9A4HKP/view?usp=drive_link'
 const DRIVE_DOWNLOAD_WIN =
-  'https://drive.google.com/file/d/1uZsthhgDPGfHi7yr_XLbDb6XcWWFcXY3/view?usp=drive_link'
+  'https://drive.google.com/file/d/1c7itYDtBotF1gKSJrc17qjkEyoXMmZCM/view?usp=drive_link'
 
-export function Hero({ release }: { release: ReleaseInfo | null }) {
+export function Hero() {
   // Smooth-scroll to the features section when the user clicks the
   // "מה התוכנה עושה" pill at the bottom of the hero.
   const scrollToFeatures = () => {
@@ -78,14 +87,8 @@ export function Hero({ release }: { release: ReleaseInfo | null }) {
           transition={{ duration: 0.5, delay: 0.35 }}
           className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row"
         >
-          <DownloadButton
-            kind="mac"
-            href={release?.macArm64?.url || RELEASES_PAGE_URL}
-          />
-          <DownloadButton
-            kind="windows"
-            href={release?.windows?.url || RELEASES_PAGE_URL}
-          />
+          <DownloadButton kind="mac" href={DOWNLOAD_MAC_GITHUB} />
+          <DownloadButton kind="windows" href={DOWNLOAD_WIN_GITHUB} />
         </motion.div>
 
         {/* Google Drive fallback row — for users whose network blocks
