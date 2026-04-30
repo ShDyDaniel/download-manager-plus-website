@@ -200,10 +200,10 @@ export function Features() {
           className="mb-12 text-center"
         >
           <h2 className="text-3xl font-bold gradient-text md:text-4xl">
-            כל מה שצריך לעבודה עם הורדות
+            כל מה שצריך כדי לייעל את העבודה שלך
           </h2>
           <p className="mx-auto mt-3 max-w-2xl text-sm text-white/60 md:text-base">
-            12 כלים מובנים שעובדים יחד — בלי להתקין שום דבר חיצוני.
+            מה יש לנו במערכת בעצם?
           </p>
         </motion.div>
 

@@ -38,16 +38,26 @@ export function Hero({ release }: { release: ReleaseInfo | null }) {
           ניהול הורדות פלוס
         </motion.h1>
 
+        {/* Audience tagline */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.4, delay: 0.22 }}
+          className="mt-3 text-sm font-medium text-violet-300/80 md:text-base"
+        >
+          ליוצרי תוכן ועורכי וידאו
+        </motion.div>
+
         {/* Sub-headline */}
         <motion.p
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.25 }}
-          className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-white/70 md:text-lg"
+          transition={{ duration: 0.5, delay: 0.27 }}
+          className="mx-auto mt-4 max-w-2xl text-base leading-relaxed text-white/70 md:text-lg"
         >
-          סביבת העבודה האחת שמסדרת לך את ההורדות, מורידה ממקורות חיצוניים,
-          ממירה ודוחסת קבצים, בונה הצעות מחיר ומשתלבת עם תוכנות העריכה שלך.
-          כל מה שמסביב לפרויקט — מסונכרן, ממוין ומוכן.
+          סוף לבלגן בתיקיית ההורדות. סוף לשאלה "לאיזה פרויקט הקובץ הזה שייך".
+          כל קובץ שמוריד — וידאו, אודיו, תמונה, מסמך — מנותב אוטומטית לפרויקט
+          הפעיל ברגע שהוא נוחת אצלך. פחות זמן על סידור, יותר זמן על יצירה.
         </motion.p>
 
         {/* Download buttons */}
