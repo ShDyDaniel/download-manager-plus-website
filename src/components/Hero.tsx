@@ -60,12 +60,10 @@ export function Hero({ release }: { release: ReleaseInfo | null }) {
           <DownloadButton
             kind="mac"
             href={release?.macArm64?.url || RELEASES_PAGE_URL}
-            sizeMB={release?.macArm64?.sizeMB}
           />
           <DownloadButton
             kind="windows"
             href={release?.windows?.url || RELEASES_PAGE_URL}
-            sizeMB={release?.windows?.sizeMB}
           />
         </motion.div>
 
@@ -97,11 +95,9 @@ export function Hero({ release }: { release: ReleaseInfo | null }) {
 function DownloadButton({
   kind,
   href,
-  sizeMB,
 }: {
   kind: 'mac' | 'windows'
   href: string
-  sizeMB?: number
 }) {
   const Icon = kind === 'mac' ? Apple : Monitor
   const label = kind === 'mac' ? 'הורד ל-Mac' : 'הורד ל-Windows'
@@ -117,14 +113,7 @@ function DownloadButton({
       className={`group inline-flex min-w-[210px] items-center justify-center gap-3 rounded-xl bg-gradient-to-br ${hue} px-6 py-3.5 text-sm font-semibold text-white shadow-lg transition-all hover:brightness-110 active:scale-[0.98]`}
     >
       <Icon className="h-5 w-5" />
-      <div className="flex flex-col items-start leading-tight">
-        <span>{label}</span>
-        {sizeMB && (
-          <span className="text-[10px] font-normal text-white/70">
-            {sizeMB} MB
-          </span>
-        )}
-      </div>
+      <span>{label}</span>
     </a>
   )
 }
