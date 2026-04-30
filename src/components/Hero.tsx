@@ -1,6 +1,16 @@
 import { motion } from 'framer-motion'
-import { Apple, Monitor, ArrowDown } from 'lucide-react'
+import { Apple, Monitor, ArrowDown, Cloud } from 'lucide-react'
 import { type ReleaseInfo, RELEASES_PAGE_URL } from '../api/releases'
+
+// Google Drive fallback links — for users on networks where GitHub
+// Releases is blocked (some corporate / school / region-restricted
+// networks block raw GitHub asset hosts but allow Drive). Updated
+// per-release; visit the Drive file pages and replace the IDs in the
+// URLs below when publishing a new version.
+const DRIVE_DOWNLOAD_MAC =
+  'https://drive.google.com/file/d/19SBUhF6ddU7fKwUsn9zTqX0fFvvFE6Br/view?usp=drive_link'
+const DRIVE_DOWNLOAD_WIN =
+  'https://drive.google.com/file/d/1uZsthhgDPGfHi7yr_XLbDb6XcWWFcXY3/view?usp=drive_link'
 
 export function Hero({ release }: { release: ReleaseInfo | null }) {
   // Smooth-scroll to the features section when the user clicks the
@@ -61,7 +71,7 @@ export function Hero({ release }: { release: ReleaseInfo | null }) {
           <p>פחות זמן על סידורים, יותר זמן על יצירה.</p>
         </motion.div>
 
-        {/* Download buttons */}
+        {/* Primary download buttons (GitHub Releases) */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -78,11 +88,29 @@ export function Hero({ release }: { release: ReleaseInfo | null }) {
           />
         </motion.div>
 
+        {/* Google Drive fallback row — for users whose network blocks
+            GitHub. Smaller / quieter style so it doesn't compete
+            visually with the primary CTA, but still always visible. */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.42 }}
+          className="mt-6 flex flex-col items-center gap-3"
+        >
+          <div className="text-xs text-white/50">
+            הקישור חסום אצלך? תוכל להוריד גם דרך Google Drive
+          </div>
+          <div className="flex flex-col items-center justify-center gap-2 sm:flex-row sm:gap-3">
+            <DriveButton kind="mac" href={DRIVE_DOWNLOAD_MAC} />
+            <DriveButton kind="windows" href={DRIVE_DOWNLOAD_WIN} />
+          </div>
+        </motion.div>
+
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ duration: 0.5, delay: 0.5 }}
-          className="mt-3 text-xs text-white/40"
+          transition={{ duration: 0.5, delay: 0.55 }}
+          className="mt-6 text-xs text-white/40"
         >
           חינם להורדה · עובד על Apple Silicon ו-Windows x64
         </motion.div>
@@ -125,6 +153,34 @@ function DownloadButton({
     >
       <Icon className="h-5 w-5" />
       <span>{label}</span>
+    </a>
+  )
+}
+
+// Quieter "outline" version of the download button, used for the
+// Google Drive fallback row. Same icons as the primary buttons so
+// the platform association stays obvious; the difference is the
+// neutral border instead of a colored gradient — keeps the user's
+// eye on the primary CTA above.
+function DriveButton({
+  kind,
+  href,
+}: {
+  kind: 'mac' | 'windows'
+  href: string
+}) {
+  const Icon = kind === 'mac' ? Apple : Monitor
+  const label = kind === 'mac' ? 'הורד ל-Mac דרך Drive' : 'הורד ל-Windows דרך Drive'
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group inline-flex items-center justify-center gap-2.5 rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2 text-xs font-medium text-white/80 transition-all hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
+    >
+      <Icon className="h-3.5 w-3.5" />
+      <span>{label}</span>
+      <Cloud className="h-3.5 w-3.5 opacity-60" />
     </a>
   )
 }
