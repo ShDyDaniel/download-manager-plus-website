@@ -5,7 +5,7 @@ import { ChevronDown } from 'lucide-react'
 const QA: { q: string; a: string }[] = [
   {
     q: 'התוכנה עובדת על Mac ו-Windows?',
-    a: 'כן. יש בילד נפרד לכל פלטפורמה — Mac (Apple Silicon) ו-Windows x64. התוכנה זהה בפונקציונליות בשתי הפלטפורמות.',
+    a: 'כן, המערכת תומכת בווינדוס ובמק באופן מלא',
   },
   {
     q: 'התוכנה חינם?',
