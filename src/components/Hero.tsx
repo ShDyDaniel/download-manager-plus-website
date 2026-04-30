@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Apple, Monitor, Sparkles, ArrowDown } from 'lucide-react'
+import { Apple, Monitor, ArrowDown } from 'lucide-react'
 import { type ReleaseInfo, RELEASES_PAGE_URL } from '../api/releases'
 
 export function Hero({ release }: { release: ReleaseInfo | null }) {
@@ -14,19 +14,6 @@ export function Hero({ release }: { release: ReleaseInfo | null }) {
   return (
     <section className="relative px-6 pt-16 pb-24 md:pt-24 md:pb-32">
       <div className="mx-auto max-w-5xl text-center">
-        {/* Version badge */}
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.1 }}
-          className="mb-6 inline-flex items-center gap-2 rounded-full bg-white/5 px-4 py-1.5 text-xs font-medium text-foreground/70 ring-1 ring-white/10"
-        >
-          <Sparkles className="h-3.5 w-3.5 text-amber-400" />
-          {release?.version
-            ? `גרסה ${release.version} זמינה להורדה`
-            : 'התוכנה זמינה להורדה'}
-        </motion.div>
-
         {/* App icon */}
         <motion.div
           initial={{ opacity: 0, scale: 0.92 }}
