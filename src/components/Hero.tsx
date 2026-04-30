@@ -48,17 +48,18 @@ export function Hero({ release }: { release: ReleaseInfo | null }) {
           ליוצרי תוכן ועורכי וידאו
         </motion.div>
 
-        {/* Sub-headline */}
-        <motion.p
+        {/* Sub-headline — line breaks preserved exactly as the copy
+            was authored (three separate lines, each its own beat). */}
+        <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.27 }}
-          className="mx-auto mt-4 max-w-2xl text-base leading-relaxed text-white/70 md:text-lg"
+          className="mx-auto mt-4 max-w-2xl space-y-2 text-base leading-relaxed text-white/70 md:text-lg"
         >
-          סוף לבלגן בתיקיית ההורדות. סוף לשאלה "לאיזה פרויקט הקובץ הזה שייך"?
-          כל קובץ שמורידים — וידאו, סאונד, תמונה, מסמך — מנותב אוטומטית לפרויקט
-          הפעיל ברגע שהוא יורד למחשב שלך. פחות זמן על סידורים, יותר זמן על יצירה.
-        </motion.p>
+          <p>סוף לבלגן בתיקיית ההורדות. סוף לשאלה "לאיזה פרויקט הקובץ הזה שייך"?</p>
+          <p>כל קובץ שמורידים — וידאו, סאונד, תמונה, מסמך — מנותב אוטומטית לפרויקט הפעיל ברגע שהוא יורד למחשב שלך.</p>
+          <p>פחות זמן על סידורים, יותר זמן על יצירה.</p>
+        </motion.div>
 
         {/* Download buttons */}
         <motion.div
