@@ -25,28 +25,57 @@ import type { VercelRequest } from '@vercel/node'
 const url = process.env.UPSTASH_REDIS_REST_URL
 const token = process.env.UPSTASH_REDIS_REST_TOKEN
 
-const redis = url && token ? new Redis({ url, token }) : null
-
-if (!redis) {
+// Module-level init has to be bulletproof. If `new Redis({ url,
+// token })` throws (malformed URL, internal SDK assertion, etc.)
+// the entire `import` at the top of every endpoint fails, and
+// Vercel returns FUNCTION_INVOCATION_FAILED with a plain-text body
+// instead of our usual JSON error shape — so the client falls
+// through to a generic "something went wrong" message and we lose
+// the ability to diagnose.
+//
+// Wrap every step that could throw and fail open. The endpoints
+// keep working without rate limiting; we log loudly so the issue
+// shows up in Vercel function logs.
+let redis: Redis | null = null
+if (url && token) {
+  try {
+    redis = new Redis({ url, token })
+  } catch (err) {
+    console.error(
+      'rate-limit: Redis constructor threw — disabling rate limiting:',
+      err,
+    )
+    redis = null
+  }
+} else {
   console.warn(
     'rate-limit: UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN not set — endpoints will run WITHOUT rate limiting',
   )
 }
 
 /** Build a rate limiter with a given budget. Returns `null` when
- *  Redis isn't configured so callers can short-circuit. */
+ *  Redis isn't configured (or the SDK threw at init time) so
+ *  callers can short-circuit. */
 function buildLimiter(
   budget: number,
   window: '1 h' | '15 m' | '1 m',
   prefix: string,
 ): Ratelimit | null {
   if (!redis) return null
-  return new Ratelimit({
-    redis,
-    limiter: Ratelimit.slidingWindow(budget, window),
-    prefix,
-    analytics: false,
-  })
+  try {
+    return new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(budget, window),
+      prefix,
+      analytics: false,
+    })
+  } catch (err) {
+    console.error(
+      `rate-limit: Ratelimit constructor threw for prefix=${prefix}:`,
+      err,
+    )
+    return null
+  }
 }
 
 // Pre-built limiters per endpoint. Keep the budgets aggressive
