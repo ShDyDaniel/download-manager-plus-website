@@ -270,20 +270,16 @@ async function sendLicenseEmail(
       .email-bg { background-color:#0b0b14 !important; }
       .email-card { background-color:#14141f !important; }
       .key-box { background-color:#0b0b14 !important; }
-      .warn-box { background-color:#221a08 !important; }
       .text-default { color:#e5e7eb !important; }
       .text-amber { color:#fbbf24 !important; }
-      .text-warn { color:#fbe6a8 !important; }
       .text-muted { color:#9ca3af !important; }
       .text-faint { color:#6b7280 !important; }
       .text-list { color:#d1d5db !important; }
       [data-ogsc] .email-bg { background-color:#0b0b14 !important; }
       [data-ogsc] .email-card { background-color:#14141f !important; }
       [data-ogsc] .key-box { background-color:#0b0b14 !important; }
-      [data-ogsc] .warn-box { background-color:#221a08 !important; }
       [data-ogsc] .text-default { color:#e5e7eb !important; }
       [data-ogsc] .text-amber { color:#fbbf24 !important; }
-      [data-ogsc] .text-warn { color:#fbe6a8 !important; }
       [data-ogsc] .text-muted { color:#9ca3af !important; }
       [data-ogsc] .text-faint { color:#6b7280 !important; }
       [data-ogsc] .text-list { color:#d1d5db !important; }
@@ -291,10 +287,8 @@ async function sendLicenseEmail(
         .email-bg { background-color:#0b0b14 !important; }
         .email-card { background-color:#14141f !important; }
         .key-box { background-color:#0b0b14 !important; }
-        .warn-box { background-color:#221a08 !important; }
         .text-default { color:#e5e7eb !important; }
         .text-amber { color:#fbbf24 !important; }
-        .text-warn { color:#fbe6a8 !important; }
         .text-muted { color:#9ca3af !important; }
         .text-faint { color:#6b7280 !important; }
         .text-list { color:#d1d5db !important; }
@@ -327,15 +321,7 @@ async function sendLicenseEmail(
                   <div dir="rtl" class="text-list" style="margin:0 0 4px;text-align:right;direction:rtl;color:#d1d5db;">3. מדביקים את המפתח ולוחצים <strong>אישור</strong>.</div>
                   <div dir="rtl" class="text-list" style="margin:0;text-align:right;direction:rtl;color:#d1d5db;">4. זהו, יש לך Pro! 🚀</div>
                 </div>
-                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:28px 0 0;">
-                  <tr>
-                    <td dir="rtl" bgcolor="#221a08" class="warn-box text-warn" style="background-color:#221a08;border-right:3px solid #fbbf24;border-radius:6px;padding:12px 14px;font-size:12px;color:#fbe6a8;text-align:right;direction:rtl;line-height:1.6;">
-                      💡 <strong>לא רואה את המייל?</strong> תבדוק גם בתיקיית <strong>ספאם</strong>
-                      או <strong>"קידום מכירות"</strong> — מיילים אוטומטיים לפעמים מסתננים לשם.
-                    </td>
-                  </tr>
-                </table>
-                <p dir="rtl" class="text-faint" style="margin:16px 0 0;font-size:11px;color:#6b7280;text-align:right;direction:rtl;">
+                <p dir="rtl" class="text-faint" style="margin:28px 0 0;font-size:11px;color:#6b7280;text-align:right;direction:rtl;">
                   המפתח שמור לחשבון שלך. בכל בעיה — תשובה ישירה למייל הזה.
                 </p>
               </td>
