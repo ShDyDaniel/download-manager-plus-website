@@ -263,10 +263,10 @@ export function BuyPage() {
             Pro
           </div>
           <h1 className="text-3xl font-bold gradient-text md:text-4xl">
-            בחר את התוכנית שלך
+            בחירת התוכנית שמתאימה לך
           </h1>
           <p className="mx-auto mt-3 max-w-2xl text-sm text-white/60 md:text-base">
-            כל הפיצ'רים פתוחים, ללא הגבלות. תוכל לעבור בין התוכניות מתי שתרצה.
+            כל הפיצ'רים פתוחים, ללא הגבלות.
           </p>
         </motion.div>
 
@@ -310,7 +310,7 @@ export function BuyPage() {
           className="glass rounded-3xl border border-white/10 p-6 md:p-8"
         >
           <h2 className="mb-4 text-sm font-semibold text-white/90">
-            הכל פתוח עם Pro:
+            כל מה שתקבלו עם מנוי Pro:
           </h2>
           <ul className="mb-7 space-y-2 text-sm">
             {[
@@ -365,7 +365,7 @@ export function BuyPage() {
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@example.com"
                   dir="ltr"
-                  className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-left text-base placeholder:text-white/30 focus:border-amber-400/50 focus:outline-none"
+                  className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-right text-base placeholder:text-white/30 focus:border-amber-400/50 focus:outline-none"
                 />
               </label>
               <button
