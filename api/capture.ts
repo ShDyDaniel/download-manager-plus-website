@@ -228,29 +228,63 @@ async function sendLicenseEmail(
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
+  // Email HTML — table-based layout because that's the only thing
+  // most mobile/web email clients render reliably. Inline styles
+  // everywhere; <ol> replaced with manual numbering because some
+  // clients (Gmail Web in particular) ignore `dir="rtl"` on lists
+  // and render the marker on the LEFT, which looks broken in Hebrew.
+  // We also put `dir="rtl"` AND `direction: rtl` AND `text-align:
+  // right` on every block — different clients respect different ones.
+  // `color-scheme: dark` + `supported-color-schemes` hints to clients
+  // that prefer to invert colors that we'd rather they didn't.
   const html = `<!doctype html>
 <html lang="he" dir="rtl">
-  <body style="font-family: -apple-system, system-ui, sans-serif; background: #0b0b14; color: #e5e7eb; padding: 32px;">
-    <div style="max-width: 560px; margin: 0 auto; background: #14141f; border: 1px solid #2a2a3a; border-radius: 16px; padding: 32px;">
-      <h1 style="margin: 0 0 16px; font-size: 22px; color: #fbbf24;">תודה על הרכישה 🎉</h1>
-      <p style="margin: 0 0 12px; font-size: 14px; line-height: 1.7;">
-        מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${days} ימים מהיום.
-      </p>
-      <div style="background: #0b0b14; border: 1px solid #fbbf2440; border-radius: 12px; padding: 16px; margin: 20px 0; text-align: center;">
-        <div style="font-size: 11px; color: #9ca3af; margin-bottom: 6px;">מפתח המוצר</div>
-        <div style="font-family: 'SF Mono', Menlo, monospace; font-size: 18px; color: #fbbf24; letter-spacing: 0.05em;">${key}</div>
-      </div>
-      <h2 style="font-size: 15px; margin: 20px 0 8px;">איך מממשים?</h2>
-      <ol style="font-size: 13px; line-height: 1.8; color: #d1d5db; padding-right: 20px;">
-        <li>פותחים את התוכנה ונכנסים לחשבון.</li>
-        <li>לוחצים על השם בצד שמאל למטה → <strong>מימוש מפתח מוצר</strong>.</li>
-        <li>מדביקים את המפתח ולוחצים <strong>אישור</strong>.</li>
-        <li>זהו, יש לך Pro! 🚀</li>
-      </ol>
-      <p style="margin: 28px 0 0; font-size: 11px; color: #6b7280; text-align: center;">
-        המפתח שמור לחשבון שלך. בכל בעיה — תשובה ישירה למייל הזה.
-      </p>
-    </div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="supported-color-schemes" content="dark" />
+    <title>מפתח Pro</title>
+  </head>
+  <body dir="rtl" style="margin:0; padding:0; background-color:#0b0b14; color:#e5e7eb; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; direction:rtl;">
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#0b0b14;">
+      <tr>
+        <td align="center" style="padding:32px 16px;">
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width:560px; width:100%; background-color:#14141f; border-radius:16px; border:1px solid #2a2a3a;">
+            <tr>
+              <td dir="rtl" style="padding:32px; text-align:right; direction:rtl;">
+                <h1 dir="rtl" style="margin:0 0 16px; font-size:22px; color:#fbbf24; text-align:right; direction:rtl;">תודה על הרכישה 🎉</h1>
+                <p dir="rtl" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#e5e7eb; text-align:right; direction:rtl;">
+                  מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${days} ימים מהיום.
+                </p>
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:20px 0;">
+                  <tr>
+                    <td align="center" style="background-color:#0b0b14; border:1px solid rgba(251,191,36,0.25); border-radius:12px; padding:16px;">
+                      <div style="font-size:11px; color:#9ca3af; margin-bottom:6px;">מפתח המוצר</div>
+                      <div dir="ltr" style="font-family:'SF Mono', Menlo, Consolas, monospace; font-size:18px; color:#fbbf24; letter-spacing:0.05em; direction:ltr;">${key}</div>
+                    </td>
+                  </tr>
+                </table>
+                <h2 dir="rtl" style="font-size:15px; margin:20px 0 8px; color:#e5e7eb; text-align:right; direction:rtl;">איך מממשים?</h2>
+                <div dir="rtl" style="font-size:13px; line-height:1.85; color:#d1d5db; text-align:right; direction:rtl;">
+                  <div dir="rtl" style="margin:0 0 4px; text-align:right; direction:rtl;">1. פותחים את התוכנה ונכנסים לחשבון.</div>
+                  <div dir="rtl" style="margin:0 0 4px; text-align:right; direction:rtl;">2. לוחצים על השם בצד שמאל למטה ← <strong>מימוש מפתח מוצר</strong>.</div>
+                  <div dir="rtl" style="margin:0 0 4px; text-align:right; direction:rtl;">3. מדביקים את המפתח ולוחצים <strong>אישור</strong>.</div>
+                  <div dir="rtl" style="margin:0; text-align:right; direction:rtl;">4. זהו, יש לך Pro! 🚀</div>
+                </div>
+                <p dir="rtl" style="margin:28px 0 0; padding:12px 14px; background-color:rgba(251,191,36,0.06); border-right:3px solid #fbbf24; border-radius:6px; font-size:12px; color:#fbe6a8; text-align:right; direction:rtl; line-height:1.6;">
+                  💡 <strong>לא רואה את המייל?</strong> תבדוק גם בתיקיית <strong>ספאם</strong>
+                  או <strong>"קידום מכירות"</strong> — מיילים אוטומטיים לפעמים מסתננים לשם.
+                </p>
+                <p dir="rtl" style="margin:16px 0 0; font-size:11px; color:#6b7280; text-align:right; direction:rtl;">
+                  המפתח שמור לחשבון שלך. בכל בעיה — תשובה ישירה למייל הזה.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
   </body>
 </html>`
   await transporter.sendMail({

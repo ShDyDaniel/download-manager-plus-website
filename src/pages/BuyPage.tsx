@@ -324,6 +324,10 @@ export function BuyPage() {
                 </span>
                 עם מפתח המוצר. פתח את התוכנה, לחץ "מימוש מפתח מוצר" והדבק.
               </p>
+              <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/85">
+                💡 לא רואה את המייל בתיבת הדואר? <strong>תבדוק גם בספאם</strong> או
+                ב"קידום מכירות" — לפעמים המייל מסתנן לשם.
+              </p>
             </div>
           ) : status.kind === 'processing' ? (
             <div className="flex items-center justify-center gap-2 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-5 text-amber-200">
