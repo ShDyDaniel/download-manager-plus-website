@@ -78,7 +78,12 @@ async function paypalAccessToken(): Promise<string> {
   if (!clientId || !secret) {
     throw new Error('PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET not set')
   }
-  const auth = Buffer.from(`${clientId}:${secret}`).toString('base64')
+  // Trim whitespace defensively — copy/paste from a dashboard often
+  // leaves a trailing newline that breaks the Basic auth header
+  // silently (the base64 still encodes, PayPal just returns 401).
+  const auth = Buffer.from(`${clientId.trim()}:${secret.trim()}`).toString(
+    'base64',
+  )
   const r = await fetch(`${PAYPAL_BASE}/v1/oauth2/token`, {
     method: 'POST',
     headers: {
@@ -88,7 +93,22 @@ async function paypalAccessToken(): Promise<string> {
     body: 'grant_type=client_credentials',
   })
   if (!r.ok) {
-    throw new Error(`PayPal auth failed: ${r.status}`)
+    // Surface PayPal's actual error to the function log AND the
+    // client. PayPal usually returns JSON like
+    // `{"error":"invalid_client","error_description":"Client Authentication failed"}`
+    // — without that text we can't tell whether the credentials are
+    // wrong, the env (sandbox vs live) is mismatched, or the account
+    // is disabled. We log the env used (not the secret!) so the log
+    // viewer can spot env/key mismatches at a glance.
+    const text = await r.text().catch(() => '<no body>')
+    const envName = PAYPAL_BASE.includes('sandbox') ? 'sandbox' : 'live'
+    const idHint = clientId.trim().slice(0, 6) + '…'
+    console.error(
+      `PayPal auth ${r.status} env=${envName} clientIdPrefix=${idHint} body=${text}`,
+    )
+    throw new Error(
+      `PayPal auth failed: ${r.status} (env=${envName}) — ${text.slice(0, 200)}`,
+    )
   }
   const json = (await r.json()) as { access_token: string }
   return json.access_token
