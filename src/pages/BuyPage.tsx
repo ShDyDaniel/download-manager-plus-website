@@ -8,6 +8,9 @@ import {
   Loader2,
   RefreshCw,
   CheckCircle2,
+  LogIn,
+  KeyRound,
+  X,
 } from 'lucide-react'
 
 /**
@@ -57,6 +60,18 @@ interface RenewInfo {
   isExpired: boolean
 }
 
+/** One entry in the response from POST /api/renew/signin — the
+ *  server signs a renewToken per redeemed key so we can drop into
+ *  the existing renewal flow without re-authenticating. */
+interface RenewableKey {
+  key: string
+  keyMasked: string
+  tier: string
+  expiresAt: string
+  isExpired: boolean
+  renewToken: string
+}
+
 function formatExpiry(iso: string): string {
   const d = new Date(iso)
   if (!Number.isFinite(d.getTime())) return iso
@@ -66,6 +81,18 @@ function formatExpiry(iso: string): string {
     year: 'numeric',
     timeZone: 'Asia/Jerusalem',
   })
+}
+
+/** Hide all but the first char and the domain — mirrors what the
+ *  /api/renew/info endpoint returns. We mask client-side here because
+ *  the signin flow already knows the plaintext email (the user just
+ *  typed it), and round-tripping it through the API just to mask it
+ *  would be silly. */
+function maskEmail(email: string): string {
+  const [local, domain] = email.split('@')
+  if (!local || !domain) return email
+  if (local.length <= 1) return `${local}@${domain}`
+  return `${local[0]}${'•'.repeat(Math.min(local.length - 1, 5))}@${domain}`
 }
 
 type PayPalActions = {
@@ -109,6 +136,20 @@ export function BuyPage() {
   const [renewInfo, setRenewInfo] = useState<RenewInfo | null>(null)
   const [renewLoading, setRenewLoading] = useState(false)
   const [renewError, setRenewError] = useState<string | null>(null)
+  // Self-service renewal (no email link): the buyer opens the panel,
+  // types their account credentials, we authenticate via
+  // /api/renew/signin, and either auto-select their one key or show
+  // a picker if they have several. On success we shove the chosen
+  // key into renewToken/renewInfo, which then drives the exact same
+  // renewal UI the email-link flow uses.
+  const [signinOpen, setSigninOpen] = useState(false)
+  const [signinEmail, setSigninEmail] = useState('')
+  const [signinPassword, setSigninPassword] = useState('')
+  const [signinSubmitting, setSigninSubmitting] = useState(false)
+  const [signinError, setSigninError] = useState<string | null>(null)
+  const [renewableKeys, setRenewableKeys] = useState<RenewableKey[] | null>(
+    null,
+  )
   const planRef = useRef(plan)
   planRef.current = plan
   const emailRef = useRef(email)
@@ -329,6 +370,82 @@ export function BuyPage() {
     setEmailLocked(true)
   }
 
+  /** Drop the picked key into the existing renewal state so the rest
+   *  of the page (banner, PayPal button, capture payload) handles it
+   *  identically to the email-link flow. The user's typed email
+   *  becomes the masked label in the banner — they just authenticated
+   *  with it, so there's no privacy gain in re-masking server-side. */
+  function pickRenewableKey(item: RenewableKey) {
+    setRenewToken(item.renewToken)
+    setRenewInfo({
+      key: item.key,
+      keyMasked: item.keyMasked,
+      emailMasked: maskEmail(signinEmail),
+      tier: item.tier,
+      expiresAt: item.expiresAt,
+      isExpired: item.isExpired,
+    })
+    setRenewableKeys(null)
+    setSigninOpen(false)
+    setSigninPassword('')
+    setSigninError(null)
+    setEmailLocked(true)
+    setStatus({ kind: 'idle' })
+  }
+
+  async function submitSignin(e: React.FormEvent) {
+    e.preventDefault()
+    const trimmedEmail = signinEmail.trim().toLowerCase()
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setSigninError('הזינו כתובת מייל תקינה')
+      return
+    }
+    if (!signinPassword) {
+      setSigninError('הזינו סיסמה')
+      return
+    }
+    setSigninError(null)
+    setSigninSubmitting(true)
+    try {
+      const r = await fetch('/api/renew/signin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: trimmedEmail, password: signinPassword }),
+      })
+      const json = (await r.json()) as
+        | { ok: true; keys: RenewableKey[] }
+        | { ok: false; error: string }
+      if (!json.ok) {
+        setSigninError(json.error)
+        return
+      }
+      if (json.keys.length === 0) {
+        setSigninError(
+          'לא נמצאו מנויים פעילים לחשבון הזה. אפשר לרכוש מנוי חדש למטה.',
+        )
+        return
+      }
+      // Most buyers have exactly one key — skip the picker for them.
+      if (json.keys.length === 1) {
+        pickRenewableKey(json.keys[0])
+        return
+      }
+      setRenewableKeys(json.keys)
+    } catch (err) {
+      console.error('renew/signin failed', err)
+      setSigninError('שגיאת רשת. בדקו את החיבור ונסו שוב.')
+    } finally {
+      setSigninSubmitting(false)
+    }
+  }
+
+  function closeSigninPanel() {
+    setSigninOpen(false)
+    setSigninPassword('')
+    setSigninError(null)
+    setRenewableKeys(null)
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -372,6 +489,156 @@ export function BuyPage() {
             כל הפיצ'רים פתוחים, ללא הגבלות.
           </p>
         </motion.div>
+
+        {/* Self-service renewal entry point. Only shown when:
+            - we're NOT already in renewal mode from an email link
+              (no point offering it twice), and
+            - the buyer hasn't already paid / renewed in this session.
+            The button is intentionally lighter than the main CTA so
+            it reads as "secondary path" rather than competing with
+            the plan picker. */}
+        {!renewInfo &&
+          !renewLoading &&
+          status.kind !== 'success' &&
+          status.kind !== 'renewed' && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.08 }}
+              className="mb-6"
+            >
+              {!signinOpen ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSigninOpen(true)
+                    setSigninError(null)
+                  }}
+                  className="group flex w-full items-center justify-center gap-2 rounded-2xl border border-cyan-400/25 bg-cyan-500/[0.06] px-4 py-3 text-sm font-medium text-cyan-100 transition-colors hover:border-cyan-400/40 hover:bg-cyan-500/[0.1]"
+                >
+                  <RefreshCw className="h-4 w-4 text-cyan-300 transition-transform group-hover:rotate-180" />
+                  כבר יש לכם מנוי? לחידוש לחצו כאן
+                </button>
+              ) : (
+                <div className="rounded-2xl border border-cyan-400/25 bg-cyan-500/[0.05] p-5">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-cyan-100">
+                      <LogIn className="h-4 w-4" />
+                      חידוש מנוי קיים
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closeSigninPanel}
+                      className="rounded-lg p-1 text-white/50 transition-colors hover:bg-white/10 hover:text-white"
+                      aria-label="סגירה"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  {/* Picker mode: API returned >1 key for this account.
+                      Each row is a button — click to drop into the
+                      renewal flow with that key. */}
+                  {renewableKeys ? (
+                    <div className="space-y-2">
+                      <p className="mb-1 text-xs text-white/65">
+                        בחרו את המפתח לחידוש:
+                      </p>
+                      {renewableKeys.map((k) => (
+                        <button
+                          key={k.key}
+                          type="button"
+                          onClick={() => pickRenewableKey(k)}
+                          className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-right transition-colors hover:border-cyan-400/40 hover:bg-cyan-500/[0.08]"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div
+                              className="font-mono text-sm text-white/90"
+                              dir="ltr"
+                            >
+                              {k.keyMasked}
+                            </div>
+                            <div className="mt-0.5 text-[11px] text-white/55">
+                              תוקף נוכחי: {formatExpiry(k.expiresAt)}
+                              {k.isExpired && (
+                                <span className="ms-2 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300">
+                                  פג
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <KeyRound className="h-4 w-4 shrink-0 text-cyan-300" />
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <form onSubmit={submitSignin} className="space-y-3">
+                      <p className="text-xs text-white/65">
+                        התחברו עם החשבון שאיתו מימשתם את המפתח כדי לחדש את התוקף.
+                      </p>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] text-white/60">
+                          אימייל
+                        </span>
+                        <input
+                          type="email"
+                          required
+                          autoComplete="email"
+                          value={signinEmail}
+                          onChange={(e) => setSigninEmail(e.target.value)}
+                          placeholder="you@example.com"
+                          dir="ltr"
+                          disabled={signinSubmitting}
+                          className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm placeholder:text-white/30 focus:border-cyan-400/50 focus:outline-none disabled:opacity-60"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] text-white/60">
+                          סיסמה
+                        </span>
+                        <input
+                          type="password"
+                          required
+                          autoComplete="current-password"
+                          value={signinPassword}
+                          onChange={(e) => setSigninPassword(e.target.value)}
+                          dir="ltr"
+                          disabled={signinSubmitting}
+                          className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm placeholder:text-white/30 focus:border-cyan-400/50 focus:outline-none disabled:opacity-60"
+                        />
+                      </label>
+                      {signinError && (
+                        <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                          {signinError}
+                        </div>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={signinSubmitting}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-l from-cyan-500 to-sky-500 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition-transform hover:scale-[1.005] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {signinSubmitting ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            מתחבר...
+                          </>
+                        ) : (
+                          <>
+                            <LogIn className="h-4 w-4" />
+                            התחברות וחידוש
+                          </>
+                        )}
+                      </button>
+                      <p className="text-center text-[10px] text-white/45">
+                        שכחתם סיסמה? פתחו את התוכנה ולחצו &quot;שכחתי סיסמה&quot;
+                        בחלון ההתחברות.
+                      </p>
+                    </form>
+                  )}
+                </div>
+              )}
+            </motion.div>
+          )}
 
         {/* Plan toggle — two cards side by side, click to select.
             DOM order matters: in RTL, the first child renders on the
