@@ -65,96 +65,156 @@ export function BuyPage() {
   const [email, setEmail] = useState('')
   const [emailLocked, setEmailLocked] = useState(false)
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
+  const [sdkReady, setSdkReady] = useState<boolean>(
+    typeof window !== 'undefined' && Boolean(window.paypal),
+  )
+  const [sdkError, setSdkError] = useState<string | null>(null)
   const planRef = useRef(plan)
   planRef.current = plan
   const emailRef = useRef(email)
   emailRef.current = email
   const buttonContainer = useRef<HTMLDivElement>(null)
 
+  // Inject the PayPal SDK script tag at runtime instead of from
+  // index.html. Vite's `%VITE_*%` substitution in HTML doesn't run
+  // reliably on Vercel — production builds shipped the literal
+  // `%VITE_PAYPAL_CLIENT_ID%` string and PayPal returned 400. Going
+  // through `import.meta.env` here is the supported path and is
+  // guaranteed to be replaced at build time.
+  //
+  // We dedupe by checking for an existing tag (StrictMode double-
+  // invokes effects in dev, and we don't want two `<script>` elements
+  // racing). Once the SDK is loaded `window.paypal` is defined and
+  // we flip `sdkReady`, which unblocks the button-render effect below.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (window.paypal) {
+      setSdkReady(true)
+      return
+    }
+    const clientId = import.meta.env.VITE_PAYPAL_CLIENT_ID as
+      | string
+      | undefined
+    if (!clientId) {
+      setSdkError(
+        'PayPal Client ID חסר. אם הגעת לדף בטעות במהלך פיתוח, הגדר VITE_PAYPAL_CLIENT_ID ב-Vercel.',
+      )
+      return
+    }
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[data-paypal-sdk="true"]',
+    )
+    if (existing) {
+      if (window.paypal) {
+        setSdkReady(true)
+      } else {
+        existing.addEventListener('load', () => setSdkReady(true), {
+          once: true,
+        })
+        existing.addEventListener(
+          'error',
+          () =>
+            setSdkError(
+              'טעינת PayPal נכשלה. בדוק את החיבור לאינטרנט ונסה שוב.',
+            ),
+          { once: true },
+        )
+      }
+      return
+    }
+    const params = new URLSearchParams({
+      'client-id': clientId,
+      currency: CURRENCY,
+      intent: 'capture',
+      'disable-funding': 'credit',
+    })
+    const s = document.createElement('script')
+    s.src = `https://www.paypal.com/sdk/js?${params.toString()}`
+    s.async = true
+    s.dataset.paypalSdk = 'true'
+    s.addEventListener('load', () => setSdkReady(true), { once: true })
+    s.addEventListener(
+      'error',
+      () =>
+        setSdkError(
+          'טעינת PayPal נכשלה. בדוק את החיבור לאינטרנט ונסה שוב.',
+        ),
+      { once: true },
+    )
+    document.head.appendChild(s)
+  }, [])
+
   // Render the PayPal button once the SDK is on the page AND the
-  // user has committed to a plan + email. The SDK polls because
-  // it loads async from the CDN.
+  // user has committed to a plan + email. The `sdkReady` flag is set
+  // by the loader effect above once the `<script>` tag fires `load`.
   useEffect(() => {
     if (!emailLocked) return
-    let cancelled = false
-    let attempts = 0
-    const tryRender = () => {
-      if (cancelled) return
-      if (!window.paypal) {
-        attempts += 1
-        if (attempts > 50) return
-        setTimeout(tryRender, 100)
-        return
-      }
-      if (!buttonContainer.current) return
-      buttonContainer.current.innerHTML = ''
-      window.paypal
-        .Buttons({
-          style: {
-            layout: 'vertical',
-            color: 'gold',
-            shape: 'rect',
-            label: 'pay',
-            height: 48,
-          },
-          createOrder: (_data, actions) => {
-            const p = PLANS[planRef.current]
-            return actions.order.create({
-              purchase_units: [
-                {
-                  amount: { value: p.price, currency_code: CURRENCY },
-                  description: `ניהול הורדות פלוס — Pro ${p.label} (${p.days} ימים)`,
-                },
-              ],
-              application_context: {
-                brand_name: 'ניהול הורדות פלוס',
-                user_action: 'PAY_NOW',
-                shipping_preference: 'NO_SHIPPING',
+    if (!sdkReady) return
+    if (!window.paypal) return
+    if (!buttonContainer.current) return
+    buttonContainer.current.innerHTML = ''
+    window.paypal
+      .Buttons({
+        style: {
+          layout: 'vertical',
+          color: 'gold',
+          shape: 'rect',
+          label: 'pay',
+          height: 48,
+        },
+        createOrder: (_data, actions) => {
+          const p = PLANS[planRef.current]
+          return actions.order.create({
+            purchase_units: [
+              {
+                amount: { value: p.price, currency_code: CURRENCY },
+                description: `ניהול הורדות פלוס — Pro ${p.label} (${p.days} ימים)`,
               },
+            ],
+            application_context: {
+              brand_name: 'ניהול הורדות פלוס',
+              user_action: 'PAY_NOW',
+              shipping_preference: 'NO_SHIPPING',
+            },
+          })
+        },
+        onApprove: async (data) => {
+          setStatus({ kind: 'processing' })
+          try {
+            const r = await fetch('/api/capture', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                orderID: data.orderID,
+                email: emailRef.current,
+                plan: planRef.current,
+              }),
             })
-          },
-          onApprove: async (data) => {
-            setStatus({ kind: 'processing' })
-            try {
-              const r = await fetch('/api/capture', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  orderID: data.orderID,
-                  email: emailRef.current,
-                  plan: planRef.current,
-                }),
-              })
-              const json = (await r.json()) as { ok: boolean; error?: string }
-              if (!r.ok || !json.ok) {
-                throw new Error(
-                  json.error || 'התשלום אושר אך יצירת המפתח נכשלה',
-                )
-              }
-              setStatus({ kind: 'success', email: emailRef.current })
-            } catch (err) {
-              const message =
-                err instanceof Error ? err.message : 'שגיאה לא ידועה'
-              setStatus({ kind: 'error', message })
+            const json = (await r.json()) as { ok: boolean; error?: string }
+            if (!r.ok || !json.ok) {
+              throw new Error(
+                json.error || 'התשלום אושר אך יצירת המפתח נכשלה',
+              )
             }
-          },
-          onError: (err) => {
-            console.error('PayPal error', err)
-            setStatus({
-              kind: 'error',
-              message: 'התרחשה שגיאה בתהליך התשלום. נסה שוב.',
-            })
-          },
-          onCancel: () => setStatus({ kind: 'idle' }),
-        })
-        .render('#paypal-button-container')
-        .catch((err) => console.error('PayPal render failed', err))
-    }
-    tryRender()
-    return () => {
-      cancelled = true
-    }
-  }, [emailLocked])
+            setStatus({ kind: 'success', email: emailRef.current })
+          } catch (err) {
+            const message =
+              err instanceof Error ? err.message : 'שגיאה לא ידועה'
+            setStatus({ kind: 'error', message })
+          }
+        },
+        onError: (err) => {
+          console.error('PayPal error', err)
+          setStatus({
+            kind: 'error',
+            message: 'התרחשה שגיאה בתהליך התשלום. נסה שוב.',
+          })
+        },
+        onCancel: () => setStatus({ kind: 'idle' }),
+      })
+      .render('#paypal-button-container')
+      .catch((err) => console.error('PayPal render failed', err))
+  }, [emailLocked, sdkReady])
 
   function confirmEmail(e: React.FormEvent) {
     e.preventDefault()
@@ -323,6 +383,16 @@ export function BuyPage() {
                   {status.message}
                 </div>
               )}
+              {sdkError ? (
+                <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">
+                  {sdkError}
+                </div>
+              ) : !sdkReady ? (
+                <div className="flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-4 text-xs text-white/60">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  טוען את PayPal...
+                </div>
+              ) : null}
               <div id="paypal-button-container" ref={buttonContainer} />
               <p className="mt-4 text-center text-[11px] text-white/50">
                 התשלום מאובטח דרך PayPal. אתה לא מועבר לאתר חיצוני — חלון
