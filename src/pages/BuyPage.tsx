@@ -248,6 +248,16 @@ export function BuyPage() {
           transition={{ duration: 0.4, delay: 0.05 }}
           className="mb-10 text-center"
         >
+          {/* App logo — soft amber glow behind so it pops against the
+              dark page background without needing a hard frame. */}
+          <div className="relative mx-auto mb-5 h-20 w-20">
+            <div className="absolute inset-0 rounded-2xl bg-amber-500/20 blur-2xl" />
+            <img
+              src="/icon.png"
+              alt="ניהול הורדות פלוס"
+              className="relative h-20 w-20 rounded-2xl shadow-2xl shadow-amber-900/30"
+            />
+          </div>
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-300">
             <Crown className="h-3 w-3" />
             Pro
@@ -261,18 +271,16 @@ export function BuyPage() {
         </motion.div>
 
         {/* Plan toggle — two cards side by side, click to select.
-            Yearly is preselected because it's the better deal and we
-            want most buyers to land there by default. */}
-        <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
-          <PlanCard
-            plan="monthly"
-            active={plan === 'monthly'}
-            onSelect={() => setPlan('monthly')}
-            title="חודשי"
-            price="9"
-            cycle="לחודש"
-            note="מתחדש ידנית מדי 30 יום"
-          />
+            DOM order matters: in RTL, the first child renders on the
+            right (where the reader's eye lands first), so the yearly
+            card — the better deal we want most buyers on — goes
+            first. It also carries the floating 'מומלץ' flag so the
+            preference reads at a glance.
+            Yearly is preselected for the same reason. */}
+        <div
+          dir="rtl"
+          className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2"
+        >
           <PlanCard
             plan="yearly"
             active={plan === 'yearly'}
@@ -282,6 +290,16 @@ export function BuyPage() {
             cycle="לשנה"
             note="שווה ערך ל-5 ₪/חודש"
             badge="חיסכון 44%"
+            recommended
+          />
+          <PlanCard
+            plan="monthly"
+            active={plan === 'monthly'}
+            onSelect={() => setPlan('monthly')}
+            title="חודשי"
+            price="9"
+            cycle="לחודש"
+            note="מתחדש ידנית מדי 30 יום"
           />
         </div>
 
@@ -418,6 +436,7 @@ function PlanCard({
   cycle,
   note,
   badge,
+  recommended,
 }: {
   plan: Plan
   active: boolean
@@ -427,23 +446,34 @@ function PlanCard({
   cycle: string
   note: string
   badge?: string
+  recommended?: boolean
 }) {
   return (
     <button
       type="button"
       onClick={onSelect}
+      dir="rtl"
       className={`relative rounded-2xl border p-5 text-right transition-all ${
         active
           ? 'border-amber-400/50 bg-amber-500/[0.08] shadow-lg shadow-amber-900/20'
           : 'border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]'
-      }`}
+      } ${recommended ? 'mt-3' : ''}`}
     >
+      {/* 'מומלץ' flag — floats above the card edge like a ribbon.
+          Uses left-1/2 + -translate-x-1/2 (centring math is identical
+          in LTR and RTL, so we don't have to special-case). */}
+      {recommended && (
+        <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-gradient-to-l from-amber-500 to-orange-500 px-3 py-0.5 text-[10px] font-bold uppercase tracking-wider text-zinc-950 shadow-lg shadow-amber-900/40">
+          ✨ מומלץ
+        </span>
+      )}
       {badge && (
         <span className="absolute left-3 top-3 rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
           {badge}
         </span>
       )}
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex items-center justify-end gap-2">
+        <span className="text-base font-semibold">{title}</span>
         <div
           className={`h-4 w-4 shrink-0 rounded-full border-2 transition-colors ${
             active ? 'border-amber-400 bg-amber-400' : 'border-white/30'
@@ -453,9 +483,16 @@ function PlanCard({
             <div className="m-auto mt-[3px] h-1.5 w-1.5 rounded-full bg-zinc-950" />
           )}
         </div>
-        <span className="text-base font-semibold">{title}</span>
       </div>
-      <div className="mb-1 flex items-baseline gap-1.5" dir="ltr">
+      {/* Price row sits flush to the right edge of the card.
+          dir="ltr" on the flex keeps the digits + currency reading
+          "60 ₪ / לשנה" (number first); justify-end pushes the whole
+          block to the right side of the parent so it lines up under
+          the title in RTL reading order. */}
+      <div
+        className="mb-1 flex items-baseline justify-end gap-1.5"
+        dir="ltr"
+      >
         <span className="text-4xl font-bold tabular-nums">{price}</span>
         <span className="text-lg text-white/70">₪</span>
         <span className="text-xs text-white/50">/ {cycle}</span>
