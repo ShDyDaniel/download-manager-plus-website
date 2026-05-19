@@ -5,10 +5,10 @@ import { getFirestore } from 'firebase-admin/firestore'
 import nodemailer from 'nodemailer'
 
 /**
- * Daily Vercel cron — scans `productKeys` for licenses that will
- * expire in the next 2 days and haven't been reminded yet, and
- * sends each buyer a "renew now" email with a signed link to
- * /buy?renew=<token>.
+ * Daily Vercel cron — scans `productKeys` for licenses that fall
+ * inside any of our reminder windows and haven't been reminded for
+ * that specific window yet, and sends each buyer a "renew now"
+ * email with a signed link to /buy?renew=<token>.
  *
  * Schedule lives in vercel.json. Hobby plan allows 1 cron per
  * project, which fits — one daily pass at 09:00 UTC (≈ noon Israel
@@ -20,11 +20,17 @@ import nodemailer from 'nodemailer'
  *   stops random callers from hammering the endpoint and bursting
  *   our Gmail quota.
  *
- * Reminder window logic:
- *   - look for keys expiring within REMINDER_LEAD_DAYS (currently 2)
- *   - skip keys with reminderSentAt within the last cycle
- *   - on send, stamp reminderSentAt = now so the next pass doesn't
- *     spam the same buyer
+ * Reminder schedule — two passes per key:
+ *   - 10 days out: gentle heads-up, plenty of time to renew
+ *   - 2 days out: last-chance nudge
+ *
+ *   Each pass is tracked by its own timestamp field on the key
+ *   doc (reminder10dSentAt / reminder2dSentAt). On renewal the
+ *   capture endpoint clears BOTH so the next cycle's reminders
+ *   fire fresh. The windows are wide enough that a missed cron
+ *   day (Vercel maintenance, network blip, whatever) still catches
+ *   the next day — we'd rather double-stamp a flag than miss a
+ *   reminder entirely.
  *
  * Renewal anchors back to /api/capture via a JWT we sign here. The
  * JWT format and secret mirror the one in api/capture.ts and
@@ -32,9 +38,32 @@ import nodemailer from 'nodemailer'
  * across Vercel functions has bitten us before).
  */
 
-const REMINDER_LEAD_DAYS = 2
-const REMINDER_TOKEN_TTL_DAYS = 7
+const REMINDER_TOKEN_TTL_DAYS = 14
 const WEBSITE_BASE = 'https://dm-plus.vercel.app'
+
+/** Stages of the reminder pipeline. Order matters only for the
+ *  loop below — we check them sequentially and break after the
+ *  first one that fires for a given key, so the cron never sends
+ *  both reminders on the same run even if a key somehow ended up
+ *  in both windows. */
+const REMINDER_STAGES = [
+  {
+    kind: '10d' as const,
+    /** Field name on the key doc for "this stage already sent". */
+    sentField: 'reminder10dSentAt',
+    /** Inclusive window: a key in [daysMin, daysMax] triggers this
+     *  reminder. Wider than 1 day to absorb the case where the cron
+     *  misses a day (we'd rather catch them on day 9 than skip). */
+    daysMin: 7,
+    daysMax: 10,
+  },
+  {
+    kind: '2d' as const,
+    sentField: 'reminder2dSentAt',
+    daysMin: 0,
+    daysMax: 2,
+  },
+] as const
 
 interface KeyDoc {
   key: string
@@ -46,7 +75,15 @@ interface KeyDoc {
   redeemedByEmail?: string
   expiresAt?: string
   tier?: string
+  /** Legacy single-reminder field — ignored by the new logic but
+   *  retained on doc reads so the typecheck doesn't blow up on old
+   *  data. The new fields below replace it. */
   reminderSentAt?: string | null
+  /** Stamped when the 10-day-out reminder is sent. Missing/null =
+   *  not yet sent for the current cycle. */
+  reminder10dSentAt?: string | null
+  /** Stamped when the 2-day-out reminder is sent. */
+  reminder2dSentAt?: string | null
   // Some legacy docs store buyer uid here.
   buyerUid?: string
   redeemedBy?: string | null
@@ -232,21 +269,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const app = getFirebase()
     const db = getFirestore(app)
 
+    // Widest reminder window currently configured — used as the
+    // upper bound on the Firestore query. Everything between now
+    // and that horizon comes back and we filter per-stage in JS.
+    const horizonDays = Math.max(
+      ...REMINDER_STAGES.map((s) => s.daysMax),
+    )
     const now = Date.now()
-    const windowEnd = now + REMINDER_LEAD_DAYS * 24 * 60 * 60 * 1000
+    const horizonEnd = now + horizonDays * 24 * 60 * 60 * 1000
 
-    // Pull every Pro key whose expiry falls inside our reminder
-    // window. We filter post-fetch by reminderSentAt because that
-    // field may not exist on legacy docs (Firestore where() on a
-    // missing field excludes the doc entirely).
     const snap = await db
       .collection('productKeys')
       .where('expiresAt', '>=', new Date(now).toISOString())
-      .where('expiresAt', '<=', new Date(windowEnd).toISOString())
+      .where('expiresAt', '<=', new Date(horizonEnd).toISOString())
       .get()
 
     const results: Array<{
       key: string
+      stage?: '10d' | '2d'
       action: 'sent' | 'skipped' | 'failed'
       reason?: string
     }> = []
@@ -254,16 +294,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     for (const doc of snap.docs) {
       const data = doc.data() as KeyDoc
       const key = doc.id
-      // Prefer buyerEmail (set at purchase time) but fall back to
-      // redeemedByEmail (set at redeem time) so legacy keys that
-      // pre-date the buyerEmail field still get reminders. They go
-      // to the same person 99% of the time anyway — the user who
-      // pays is usually the same user who redeems.
       const buyerEmail = (
         data.buyerEmail || data.redeemedByEmail || ''
       ).trim()
       const expiresAtIso = data.expiresAt
-      const reminderAt = data.reminderSentAt
 
       if (!buyerEmail) {
         results.push({ key, action: 'skipped', reason: 'no buyer email' })
@@ -273,13 +307,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         results.push({ key, action: 'skipped', reason: 'no expiry' })
         continue
       }
-      // Already reminded for THIS cycle? If reminder was sent after
-      // the most recent renewal cutoff, skip. We treat any prior
-      // reminder within the past REMINDER_LEAD_DAYS as "fresh
-      // enough" — extendLicense clears reminderSentAt on renewal so
-      // the next cycle reminds again.
-      if (reminderAt) {
-        results.push({ key, action: 'skipped', reason: 'already reminded' })
+
+      const expiresAt = new Date(expiresAtIso)
+      const daysLeft = Math.ceil(
+        (expiresAt.getTime() - now) / (24 * 60 * 60 * 1000),
+      )
+
+      // Find the first stage this key qualifies for. We break after
+      // sending so a single cron run never fires two reminders on
+      // the same key — even with weirdly overlapping windows the
+      // user gets one email per day at most.
+      let firedStage:
+        | { kind: '10d' | '2d'; sentField: string }
+        | undefined
+      for (const stage of REMINDER_STAGES) {
+        if (daysLeft < stage.daysMin || daysLeft > stage.daysMax) continue
+        // Per-stage idempotency: each stage has its own *SentAt
+        // field; once stamped we don't re-send for the same cycle.
+        // extendLicense in capture.ts clears both stamps on renewal
+        // so the new cycle gets a fresh shot at both reminders.
+        const alreadySent = (data as Record<string, unknown>)[
+          stage.sentField
+        ] as string | null | undefined
+        if (alreadySent) continue
+        firedStage = stage
+        break
+      }
+
+      if (!firedStage) {
+        results.push({
+          key,
+          action: 'skipped',
+          reason: `outside any window or already reminded (daysLeft=${daysLeft})`,
+        })
         continue
       }
 
@@ -290,18 +350,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const uid = data.buyerUid || data.redeemedBy || ''
       const token = signRenewToken(uid, key)
       const renewUrl = `${WEBSITE_BASE}/buy?renew=${encodeURIComponent(token)}`
-      const expiresAt = new Date(expiresAtIso)
 
       try {
         await sendReminderEmail(buyerEmail, renewUrl, expiresAt)
         await doc.ref.update({
-          reminderSentAt: new Date().toISOString(),
+          [firedStage.sentField]: new Date().toISOString(),
         })
-        results.push({ key, action: 'sent' })
+        results.push({ key, stage: firedStage.kind, action: 'sent' })
       } catch (err) {
         const message = err instanceof Error ? err.message : 'unknown'
-        console.error(`cron: failed to send reminder for ${key}:`, err)
-        results.push({ key, action: 'failed', reason: message })
+        console.error(
+          `cron: failed to send ${firedStage.kind} reminder for ${key}:`,
+          err,
+        )
+        results.push({
+          key,
+          stage: firedStage.kind,
+          action: 'failed',
+          reason: message,
+        })
       }
     }
 

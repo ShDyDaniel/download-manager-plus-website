@@ -338,11 +338,14 @@ async function extendLicense(
     expiresAt: newExpiresAt.toISOString(),
     renewalHistory: history,
     lastRenewalAt: new Date().toISOString(),
-    // Reset the reminder marker so the cron will eventually send a
-    // reminder for the NEW expiry (otherwise the next-cycle email
-    // would never go out because reminderSentAt is still set from
-    // the previous cycle).
+    // Reset all reminder stamps so the next cycle's 10d + 2d
+    // reminders fire fresh against the new expiry. reminderSentAt
+    // is the legacy single-stamp field; reminder10dSentAt and
+    // reminder2dSentAt are the stage-specific fields the new cron
+    // checks (see api/cron/expiry-reminders.ts REMINDER_STAGES).
     reminderSentAt: null,
+    reminder10dSentAt: null,
+    reminder2dSentAt: null,
   }
   if (!data.buyerEmail && resolvedBuyerEmail) {
     updates.buyerEmail = resolvedBuyerEmail
