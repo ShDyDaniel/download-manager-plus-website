@@ -98,16 +98,24 @@ async function paypalAccessToken(): Promise<string> {
     // `{"error":"invalid_client","error_description":"Client Authentication failed"}`
     // — without that text we can't tell whether the credentials are
     // wrong, the env (sandbox vs live) is mismatched, or the account
-    // is disabled. We log the env used (not the secret!) so the log
-    // viewer can spot env/key mismatches at a glance.
+    // is disabled.
+    //
+    // We also surface length + 4-char prefixes of both values so we
+    // can spot two common copy/paste mistakes:
+    //   - same value pasted into both fields (same prefix on both)
+    //   - one of the values is much shorter/longer than expected
+    //     (sandbox client IDs and secrets are ~80 chars each).
+    // 4 chars isn't enough to reconstruct anything secret.
     const text = await r.text().catch(() => '<no body>')
     const envName = PAYPAL_BASE.includes('sandbox') ? 'sandbox' : 'live'
-    const idHint = clientId.trim().slice(0, 6) + '…'
+    const cid = clientId.trim()
+    const sec = secret.trim()
+    const hints = `id[${cid.slice(0, 4)}…len=${cid.length}] secret[${sec.slice(0, 4)}…len=${sec.length}]`
     console.error(
-      `PayPal auth ${r.status} env=${envName} clientIdPrefix=${idHint} body=${text}`,
+      `PayPal auth ${r.status} env=${envName} ${hints} body=${text}`,
     )
     throw new Error(
-      `PayPal auth failed: ${r.status} (env=${envName}) — ${text.slice(0, 200)}`,
+      `PayPal auth failed: ${r.status} (env=${envName}) ${hints} — ${text.slice(0, 200)}`,
     )
   }
   const json = (await r.json()) as { access_token: string }
