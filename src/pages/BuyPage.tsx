@@ -472,7 +472,14 @@ function PlanCard({
           {badge}
         </span>
       )}
-      <div className="mb-3 flex items-center justify-end gap-2">
+      {/* Title row sits flush right inside the RTL card. We rely on
+          the default justify-start: in RTL, "start" is the right edge
+          of the row, so the first DOM child (the title span) lands
+          on the right and the radio follows to its left. Adding
+          justify-end here would push the whole group to the LEFT
+          edge (the END of an RTL row) — exactly the bug this used
+          to have. */}
+      <div className="mb-3 flex items-center gap-2">
         <span className="text-base font-semibold">{title}</span>
         <div
           className={`h-4 w-4 shrink-0 rounded-full border-2 transition-colors ${
