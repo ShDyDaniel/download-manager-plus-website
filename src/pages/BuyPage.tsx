@@ -1,4 +1,4 @@
-import { motion } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
@@ -446,6 +446,24 @@ export function BuyPage() {
     setRenewableKeys(null)
   }
 
+  // Close the renewal modal on Escape — standard modal affordance,
+  // and avoids the user feeling trapped if they opened it by accident.
+  // Also locks body scroll while open so the page underneath doesn't
+  // scroll when the user spins their mousewheel inside the modal.
+  useEffect(() => {
+    if (!signinOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !signinSubmitting) closeSigninPanel()
+    }
+    document.addEventListener('keydown', onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [signinOpen, signinSubmitting])
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -494,9 +512,8 @@ export function BuyPage() {
             - we're NOT already in renewal mode from an email link
               (no point offering it twice), and
             - the buyer hasn't already paid / renewed in this session.
-            The button is intentionally lighter than the main CTA so
-            it reads as "secondary path" rather than competing with
-            the plan picker. */}
+            The actual sign-in form lives in the <RenewSigninModal/>
+            at the bottom of the page — this button just opens it. */}
         {!renewInfo &&
           !renewLoading &&
           status.kind !== 'success' &&
@@ -507,136 +524,17 @@ export function BuyPage() {
               transition={{ duration: 0.4, delay: 0.08 }}
               className="mb-6"
             >
-              {!signinOpen ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSigninOpen(true)
-                    setSigninError(null)
-                  }}
-                  className="group flex w-full items-center justify-center gap-2 rounded-2xl border border-cyan-400/25 bg-cyan-500/[0.06] px-4 py-3 text-sm font-medium text-cyan-100 transition-colors hover:border-cyan-400/40 hover:bg-cyan-500/[0.1]"
-                >
-                  <RefreshCw className="h-4 w-4 text-cyan-300 transition-transform group-hover:rotate-180" />
-                  כבר יש לכם מנוי? לחידוש לחצו כאן
-                </button>
-              ) : (
-                <div className="rounded-2xl border border-cyan-400/25 bg-cyan-500/[0.05] p-5">
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-cyan-100">
-                      <LogIn className="h-4 w-4" />
-                      חידוש מנוי קיים
-                    </div>
-                    <button
-                      type="button"
-                      onClick={closeSigninPanel}
-                      className="rounded-lg p-1 text-white/50 transition-colors hover:bg-white/10 hover:text-white"
-                      aria-label="סגירה"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-
-                  {/* Picker mode: API returned >1 key for this account.
-                      Each row is a button — click to drop into the
-                      renewal flow with that key. */}
-                  {renewableKeys ? (
-                    <div className="space-y-2">
-                      <p className="mb-1 text-xs text-white/65">
-                        בחרו את המפתח לחידוש:
-                      </p>
-                      {renewableKeys.map((k) => (
-                        <button
-                          key={k.key}
-                          type="button"
-                          onClick={() => pickRenewableKey(k)}
-                          className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-right transition-colors hover:border-cyan-400/40 hover:bg-cyan-500/[0.08]"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div
-                              className="font-mono text-sm text-white/90"
-                              dir="ltr"
-                            >
-                              {k.keyMasked}
-                            </div>
-                            <div className="mt-0.5 text-[11px] text-white/55">
-                              תוקף נוכחי: {formatExpiry(k.expiresAt)}
-                              {k.isExpired && (
-                                <span className="ms-2 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300">
-                                  פג
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          <KeyRound className="h-4 w-4 shrink-0 text-cyan-300" />
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <form onSubmit={submitSignin} className="space-y-3">
-                      <p className="text-xs text-white/65">
-                        התחברו עם החשבון שאיתו מימשתם את המפתח כדי לחדש את התוקף.
-                      </p>
-                      <label className="block">
-                        <span className="mb-1 block text-[11px] text-white/60">
-                          אימייל
-                        </span>
-                        <input
-                          type="email"
-                          required
-                          autoComplete="email"
-                          value={signinEmail}
-                          onChange={(e) => setSigninEmail(e.target.value)}
-                          placeholder="you@example.com"
-                          dir="ltr"
-                          disabled={signinSubmitting}
-                          className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm placeholder:text-white/30 focus:border-cyan-400/50 focus:outline-none disabled:opacity-60"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-[11px] text-white/60">
-                          סיסמה
-                        </span>
-                        <input
-                          type="password"
-                          required
-                          autoComplete="current-password"
-                          value={signinPassword}
-                          onChange={(e) => setSigninPassword(e.target.value)}
-                          dir="ltr"
-                          disabled={signinSubmitting}
-                          className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm placeholder:text-white/30 focus:border-cyan-400/50 focus:outline-none disabled:opacity-60"
-                        />
-                      </label>
-                      {signinError && (
-                        <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-                          {signinError}
-                        </div>
-                      )}
-                      <button
-                        type="submit"
-                        disabled={signinSubmitting}
-                        className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-l from-cyan-500 to-sky-500 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition-transform hover:scale-[1.005] disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {signinSubmitting ? (
-                          <>
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            מתחבר...
-                          </>
-                        ) : (
-                          <>
-                            <LogIn className="h-4 w-4" />
-                            התחברות וחידוש
-                          </>
-                        )}
-                      </button>
-                      <p className="text-center text-[10px] text-white/45">
-                        שכחתם סיסמה? פתחו את התוכנה ולחצו &quot;שכחתי סיסמה&quot;
-                        בחלון ההתחברות.
-                      </p>
-                    </form>
-                  )}
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setSigninOpen(true)
+                  setSigninError(null)
+                }}
+                className="group flex w-full items-center justify-center gap-2 rounded-2xl border border-cyan-400/25 bg-cyan-500/[0.06] px-4 py-3 text-sm font-medium text-cyan-100 transition-colors hover:border-cyan-400/40 hover:bg-cyan-500/[0.1]"
+              >
+                <RefreshCw className="h-4 w-4 text-cyan-300 transition-transform group-hover:rotate-180" />
+                כבר יש לכם מנוי? לחידוש לחצו כאן
+              </button>
             </motion.div>
           )}
 
@@ -875,6 +773,157 @@ export function BuyPage() {
           )}
         </motion.div>
       </div>
+
+      {/* Renewal sign-in modal — full-screen overlay with backdrop
+          blur, dialog centred via flex. Lives at the root of the
+          page (not inside the max-w-3xl wrapper) so the backdrop
+          covers the whole viewport regardless of where the page
+          has scrolled to. AnimatePresence handles the fade/scale
+          on enter+exit. */}
+      <AnimatePresence>
+        {signinOpen && (
+          <motion.div
+            key="signin-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            onClick={() => {
+              if (!signinSubmitting) closeSigninPanel()
+            }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-8 backdrop-blur-md"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="renew-modal-title"
+          >
+            <motion.div
+              key="signin-card"
+              initial={{ opacity: 0, scale: 0.94, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 4 }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
+              onClick={(e) => e.stopPropagation()}
+              className="relative w-full max-w-md rounded-2xl border border-cyan-400/25 bg-zinc-950/95 p-6 shadow-2xl shadow-cyan-950/40"
+            >
+              <button
+                type="button"
+                onClick={closeSigninPanel}
+                disabled={signinSubmitting}
+                className="absolute left-3 top-3 rounded-lg p-1.5 text-white/50 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
+                aria-label="סגירה"
+              >
+                <X className="h-4 w-4" />
+              </button>
+
+              <div className="mb-4 flex items-center gap-2 pe-8 text-base font-semibold text-cyan-100">
+                <LogIn className="h-4 w-4 text-cyan-300" />
+                <span id="renew-modal-title">חידוש מנוי קיים</span>
+              </div>
+
+              {/* Picker mode: API returned >1 key for this account.
+                  Each row is a button — click to drop into the
+                  renewal flow with that key. */}
+              {renewableKeys ? (
+                <div className="space-y-2">
+                  <p className="mb-1 text-xs text-white/65">
+                    בחרו את המפתח לחידוש:
+                  </p>
+                  {renewableKeys.map((k) => (
+                    <button
+                      key={k.key}
+                      type="button"
+                      onClick={() => pickRenewableKey(k)}
+                      className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-right transition-colors hover:border-cyan-400/40 hover:bg-cyan-500/[0.08]"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div
+                          className="font-mono text-sm text-white/90"
+                          dir="ltr"
+                        >
+                          {k.keyMasked}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-white/55">
+                          תוקף נוכחי: {formatExpiry(k.expiresAt)}
+                          {k.isExpired && (
+                            <span className="ms-2 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300">
+                              פג
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <KeyRound className="h-4 w-4 shrink-0 text-cyan-300" />
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <form onSubmit={submitSignin} className="space-y-3">
+                  <p className="text-xs text-white/65">
+                    התחברו עם החשבון שאיתו מימשתם את המפתח כדי לחדש את התוקף.
+                  </p>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] text-white/60">
+                      אימייל
+                    </span>
+                    <input
+                      type="email"
+                      required
+                      autoComplete="email"
+                      value={signinEmail}
+                      onChange={(e) => setSigninEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      dir="ltr"
+                      disabled={signinSubmitting}
+                      autoFocus
+                      className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm placeholder:text-white/30 focus:border-cyan-400/50 focus:outline-none disabled:opacity-60"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] text-white/60">
+                      סיסמה
+                    </span>
+                    <input
+                      type="password"
+                      required
+                      autoComplete="current-password"
+                      value={signinPassword}
+                      onChange={(e) => setSigninPassword(e.target.value)}
+                      dir="ltr"
+                      disabled={signinSubmitting}
+                      className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm placeholder:text-white/30 focus:border-cyan-400/50 focus:outline-none disabled:opacity-60"
+                    />
+                  </label>
+                  {signinError && (
+                    <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                      {signinError}
+                    </div>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={signinSubmitting}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-l from-cyan-500 to-sky-500 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition-transform hover:scale-[1.005] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {signinSubmitting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        מתחבר...
+                      </>
+                    ) : (
+                      <>
+                        <LogIn className="h-4 w-4" />
+                        התחברות וחידוש
+                      </>
+                    )}
+                  </button>
+                  <p className="text-center text-[10px] text-white/45">
+                    שכחתם סיסמה? פתחו את התוכנה ולחצו &quot;שכחתי סיסמה&quot;
+                    בחלון ההתחברות.
+                  </p>
+                </form>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   )
 }
