@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
-import { Resend } from 'resend'
+import nodemailer from 'nodemailer'
 
 /**
  * PayPal Smart Buttons hand the orderID back to the frontend via
@@ -28,10 +28,16 @@ import { Resend } from 'resend'
  *     value of the json key file you downloaded from Firebase
  *     Console → Project settings → Service accounts → Generate new
  *     private key.
- *   RESEND_API_KEY — from resend.com, paid the free tier.
- *   FROM_EMAIL — sender address verified in Resend (e.g.
- *     "noreply@your-domain.com" or the auto-generated
- *     "onboarding@resend.dev" for testing).
+ *   GMAIL_USER — the Gmail address that sends the license email
+ *     (e.g. "you@gmail.com"). Also used as the From header.
+ *   GMAIL_APP_PASSWORD — a 16-char App Password from
+ *     https://myaccount.google.com/apppasswords (requires 2FA on
+ *     the account). NOT your regular Gmail password.
+ *
+ * We picked Gmail SMTP over Resend/SendGrid because it works without
+ * a verified domain — Gmail lets any account send up to 500 emails/day
+ * to any recipient via SMTP using an App Password, which is plenty
+ * for an MVP and doesn't require buying a domain.
  *
  * Anything missing -> 500. Vercel will surface the message in the
  * function log; we never expose the env var name to the client.
@@ -209,12 +215,19 @@ async function sendLicenseEmail(
   key: string,
   days: number,
 ): Promise<void> {
-  const apiKey = process.env.RESEND_API_KEY
-  if (!apiKey) {
-    throw new Error('RESEND_API_KEY not set')
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) {
+    throw new Error('GMAIL_USER / GMAIL_APP_PASSWORD not set')
   }
-  const from = process.env.FROM_EMAIL || 'onboarding@resend.dev'
-  const resend = new Resend(apiKey)
+  // App Passwords come from Google with spaces between blocks of 4
+  // ("abcd efgh ijkl mnop"). The SMTP server accepts both forms, but
+  // stripping spaces makes it more forgiving against accidental
+  // copy/paste with the visible spacing.
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
   const html = `<!doctype html>
 <html lang="he" dir="rtl">
   <body style="font-family: -apple-system, system-ui, sans-serif; background: #0b0b14; color: #e5e7eb; padding: 32px;">
@@ -240,15 +253,12 @@ async function sendLicenseEmail(
     </div>
   </body>
 </html>`
-  const r = await resend.emails.send({
-    from,
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
     to,
     subject: 'מפתח ניהול הורדות פלוס Pro שלך',
     html,
   })
-  if (r.error) {
-    throw new Error(`Resend failed: ${r.error.message || 'unknown'}`)
-  }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
