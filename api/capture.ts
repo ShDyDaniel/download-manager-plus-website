@@ -261,11 +261,11 @@ async function sendLicenseEmail(
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark only" />
-    <meta name="supported-color-schemes" content="dark" />
+    <meta name="color-scheme" content="only dark" />
+    <meta name="supported-color-schemes" content="only dark" />
     <title>מפתח Pro</title>
     <style>
-      :root { color-scheme: dark only; supported-color-schemes: dark; }
+      :root { color-scheme: only dark; supported-color-schemes: only dark; }
       body, table, td { background-color:#0b0b14 !important; }
       .email-bg { background-color:#0b0b14 !important; }
       .email-card { background-color:#14141f !important; }
