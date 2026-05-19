@@ -309,7 +309,15 @@ export function BuyPage() {
       })
       .render('#paypal-button-container')
       .catch((err) => console.error('PayPal render failed', err))
-  }, [emailLocked, sdkReady])
+    // `renewLoading` is in deps even though we don't read it
+    // inside the effect: it gates whether the PayPal container is
+    // actually mounted in the DOM. When the renewal-info fetch
+    // settles, renewLoading flips false → the container mounts →
+    // we need to re-run this effect so it can find
+    // buttonContainer.current and render the button. Without this
+    // dep the button never appears on /buy?renew=... pages.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emailLocked, sdkReady, renewLoading])
 
   function confirmEmail(e: React.FormEvent) {
     e.preventDefault()
