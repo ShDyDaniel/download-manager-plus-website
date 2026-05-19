@@ -204,12 +204,11 @@ function generateKeyString(): string {
 async function mintLicense(
   buyerEmail: string,
   plan: string,
-  days: number,
+  expiresAt: Date,
 ): Promise<string> {
   const app = getFirebase()
   const db = getFirestore(app)
   const key = generateKeyString()
-  const expiresAt = new Date(Date.now() + days * 86_400_000)
   await db
     .collection('productKeys')
     .doc(key)
@@ -227,11 +226,28 @@ async function mintLicense(
   return key
 }
 
+/** Format an expiry date as "DD.MM.YYYY" with Israel-timezone day
+ *  rollover, so the date the buyer sees in their email matches the
+ *  one the desktop app shows them when they look up the key.
+ *  Without `timeZone: Asia/Jerusalem` the Vercel function (running
+ *  in a US region) would occasionally show the day before for buyers
+ *  who pay near midnight Israel time. */
+function formatExpiryHebrew(date: Date): string {
+  return date.toLocaleDateString('he-IL', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: 'Asia/Jerusalem',
+  })
+}
+
 async function sendLicenseEmail(
   to: string,
   key: string,
   durationLabel: string,
+  expiresAt: Date,
 ): Promise<void> {
+  const expiryDate = formatExpiryHebrew(expiresAt)
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) {
@@ -321,7 +337,7 @@ async function sendLicenseEmail(
               <td dir="rtl" bgcolor="#14141f" class="email-card" style="padding:32px;text-align:right;direction:rtl;background-color:#14141f;">
                 <h1 dir="rtl" class="text-amber" style="margin:0 0 16px;font-size:22px;color:#fbbf24;text-align:right;direction:rtl;font-weight:700;">תודה על הרכישה 🎉</h1>
                 <p dir="rtl" class="text-default" style="margin:0 0 12px;font-size:14px;line-height:1.7;color:#e5e7eb;text-align:right;direction:rtl;">
-                  מצורף מפתח <span class="text-amber" style="color:#fbbf24;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${durationLabel} מהיום.
+                  מצורף מפתח <span class="text-amber" style="color:#fbbf24;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${durationLabel} מהיום <span class="text-muted" style="color:#9ca3af;">(תוקף עד ${expiryDate})</span>.
                 </p>
                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:20px 0;">
                   <tr>
@@ -406,14 +422,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // 2. Mint license — tier doesn't change between plans, just the
-    // expiry window does.
-    const key = await mintLicense(email, planKey, plan.days)
+    // expiry window does. Compute `expiresAt` once here so the email
+    // and the Firestore document agree to the millisecond; if we
+    // computed twice they could drift by a few ms across timezone
+    // boundaries.
+    const expiresAt = new Date(Date.now() + plan.days * 86_400_000)
+    const key = await mintLicense(email, planKey, expiresAt)
 
     // 3. Email it. If sending fails we still return success because
     // the payment AND the key are real — better to ask the user to
     // contact support for resend than to refund a valid sale.
     try {
-      await sendLicenseEmail(email, key, plan.durationLabel)
+      await sendLicenseEmail(email, key, plan.durationLabel, expiresAt)
     } catch (err) {
       console.error('email send failed', err, 'key=', key)
     }
