@@ -10,6 +10,8 @@
     "deploy": "npm run build && gh-pages -d dist"
   },
   "dependencies": {
+    "@upstash/ratelimit": "^2.0.8",
+    "@upstash/redis": "^1.38.0",
     "firebase-admin": "^12.7.0",
     "framer-motion": "^11.11.17",
     "lucide-react": "^0.460.0",
