@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Apple, Monitor, ArrowDown, Cloud } from 'lucide-react'
+import { Apple, Monitor, ArrowDown, Cloud, Crown } from 'lucide-react'
 
 // Hardcoded download URLs for the current release. Update both the
 // GitHub direct-download URLs AND the Drive fallback URLs in lockstep
@@ -27,6 +27,15 @@ export function Hero() {
   const scrollToFeatures = () => {
     document
       .getElementById('features')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+  // Smooth-scroll to the Pricing section. Used by the "קנה Pro"
+  // pill so the buyer doesn't lose their place — they slide down
+  // to the purchase card, see what they're paying for, and the
+  // PayPal button is right there.
+  const scrollToPricing = () => {
+    document
+      .getElementById('pricing')
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
@@ -118,13 +127,30 @@ export function Hero() {
           חינם להורדה · עובד על Apple Silicon ו-Windows x64
         </motion.div>
 
+        {/* Upgrade-to-Pro pill — sits below the download buttons so
+            free users see how to unlock everything once they've
+            decided to install. Scrolls to the in-page Pricing
+            section rather than opening a separate page; cheaper
+            both technically (no router) and visually (the buyer
+            still has the headline + benefits in view). */}
+        <motion.button
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.62 }}
+          onClick={scrollToPricing}
+          className="mt-5 inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-500/10 px-4 py-2 text-xs font-semibold text-amber-200 transition-all hover:border-amber-400/50 hover:bg-amber-500/15"
+        >
+          <Crown className="h-3.5 w-3.5" />
+          קנה Pro · 60 ₪ לשנה
+        </motion.button>
+
         {/* Scroll cue */}
         <motion.button
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.5, delay: 0.7 }}
           onClick={scrollToFeatures}
-          className="mt-16 inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-xs text-white/60 transition-all hover:border-white/20 hover:text-white"
+          className="mt-12 inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-xs text-white/60 transition-all hover:border-white/20 hover:text-white"
         >
           מה התוכנה עושה
           <ArrowDown className="h-3.5 w-3.5 animate-bounce" />

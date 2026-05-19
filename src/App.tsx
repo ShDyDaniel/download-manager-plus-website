@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import { Hero } from './components/Hero'
 import { Features } from './components/Features'
+import { Pricing } from './components/Pricing'
 import { QuickStart } from './components/QuickStart'
 import { FAQ } from './components/FAQ'
 import { Footer } from './components/Footer'
@@ -18,6 +19,11 @@ function App() {
     >
       <Hero />
       <Features />
+      {/* Pricing sits between the feature grid and the quick-start
+          screenshots — by the time the reader scrolls down to it,
+          they've already seen what the app can do, so the purchase
+          ask isn't premature. */}
+      <Pricing />
       <QuickStart />
       <FAQ />
       <Footer />

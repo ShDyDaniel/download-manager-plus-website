@@ -37,6 +37,18 @@
   </head>
   <body class="bg-[#0b0b14] text-white antialiased">
     <div id="root"></div>
+    <!--
+      PayPal Smart Buttons SDK. Vite replaces `%VITE_…%` tokens in
+      index.html at build time, so the client-id baked into the
+      bundle is whatever VITE_PAYPAL_CLIENT_ID is set to in the
+      Vercel project. Currency pinned to ILS; credit-card funding
+      disabled because we want to keep the flow purely inside
+      PayPal's own checkout, not the card form.
+    -->
+    <script
+      src="https://www.paypal.com/sdk/js?client-id=%VITE_PAYPAL_CLIENT_ID%&currency=ILS&intent=capture&disable-funding=credit"
+      data-namespace="paypal"
+    ></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
