@@ -452,7 +452,19 @@ export function BuyPage() {
                     )}
                   </div>
                   <div className="mt-1 text-[11px] text-white/55">
-                    אחרי החידוש יוארך ב-{PLANS[plan].label === 'חודשי' ? '30 ימים' : '365 ימים'} נוספים — המפתח עצמו לא משתנה.
+                    אחרי החידוש המנוי יהיה בתוקף עד{' '}
+                    <strong className="text-white/85">
+                      {formatExpiry(
+                        new Date(
+                          Math.max(
+                            new Date(renewInfo.expiresAt).getTime(),
+                            Date.now(),
+                          ) +
+                            PLANS[plan].days * 86_400_000,
+                        ).toISOString(),
+                      )}
+                    </strong>{' '}
+                    — המפתח עצמו לא משתנה.
                   </div>
                 </div>
               </div>
