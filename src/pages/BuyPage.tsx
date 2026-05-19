@@ -1,34 +1,33 @@
 import { motion } from 'framer-motion'
 import { useEffect, useRef, useState } from 'react'
-import { Check, Crown, Loader2 } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ArrowRight, Check, Crown, Loader2 } from 'lucide-react'
 
 /**
- * Pricing / purchase section. Renders the single "Pro" tier card
- * with PayPal Smart Buttons embedded inline — no redirect to
- * PayPal's site; the popup PayPal opens stays on top of our page
- * and closes back into it after the customer approves.
+ * Dedicated purchase page at `/buy`. The buyer picks a plan
+ * (monthly vs yearly), types their email, and pays via PayPal
+ * Smart Buttons that render inline — the popup PayPal opens stays
+ * on top of our page so the customer never feels they've left.
  *
- * The flow:
- *   1. PayPal SDK loads via the public script tag in `index.html`
- *      (rendered conditionally so non-buyers don't pay the perf
- *      cost on every page load).
- *   2. `createOrder` defines the order client-side — a one-shot
- *      60 ₪ charge tagged as "Pro license — 365 days". We
- *      intentionally don't use Subscriptions because they require a
- *      PayPal Business Account; one-time renewals once a year keep
- *      us inside the free Personal-account envelope while testing
- *      market fit.
- *   3. `onApprove` posts the orderID + buyer email to our Vercel
- *      function `/api/capture` which (a) captures the payment via
- *      PayPal REST, (b) mints a fresh license key in Firestore,
- *      and (c) emails the buyer the key via Resend.
- *   4. UI flips to a "success — check your email" state.
+ * Pricing decision:
+ *   - Yearly: 60 ₪ → 365 days. Equivalent to 5 ₪/month.
+ *   - Monthly: 9 ₪ → 30 days. The 9-vs-5 gap is the discount that
+ *     pushes most buyers toward yearly.
  *
- * No customer-facing key generation here — that's all backend, so
- * a tampered frontend can't mint a free key.
+ * The "monthly" plan is technically a one-shot 30-day pass, not a
+ * recurring PayPal Subscription — auto-renewing subs need a PayPal
+ * Business account, which we're explicitly avoiding for the MVP.
+ * The buyer comes back and re-pays each month if they want to
+ * extend. The UI calls this out under the monthly card so nobody
+ * is surprised.
  */
 
-const PRICE_ILS = '60.00'
+type Plan = 'monthly' | 'yearly'
+
+const PLANS: Record<Plan, { price: string; days: number; label: string }> = {
+  monthly: { price: '9.00', days: 30, label: 'חודשי' },
+  yearly: { price: '60.00', days: 365, label: 'שנתי' },
+}
 const CURRENCY = 'ILS'
 
 type Status =
@@ -37,9 +36,6 @@ type Status =
   | { kind: 'success'; email: string }
   | { kind: 'error'; message: string }
 
-// PayPal SDK globals — the SDK script attaches `paypal` to window.
-// We don't bundle their types because the script is loaded at
-// runtime, not via npm.
 type PayPalActions = {
   order: {
     create: (config: {
@@ -49,9 +45,7 @@ type PayPalActions = {
     capture: () => Promise<{ id: string }>
   }
 }
-type PayPalButton = {
-  render: (selector: string) => Promise<void>
-}
+type PayPalButton = { render: (selector: string) => Promise<void> }
 declare global {
   interface Window {
     paypal?: {
@@ -66,33 +60,33 @@ declare global {
   }
 }
 
-export function Pricing() {
-  const buttonContainer = useRef<HTMLDivElement>(null)
+export function BuyPage() {
+  const [plan, setPlan] = useState<Plan>('yearly')
   const [email, setEmail] = useState('')
   const [emailLocked, setEmailLocked] = useState(false)
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
+  const planRef = useRef(plan)
+  planRef.current = plan
   const emailRef = useRef(email)
   emailRef.current = email
+  const buttonContainer = useRef<HTMLDivElement>(null)
 
-  // Render the PayPal button once the SDK is on the page. The
-  // SDK injects a global `paypal` object; we poll briefly because
-  // the <script> tag in index.html loads async.
+  // Render the PayPal button once the SDK is on the page AND the
+  // user has committed to a plan + email. The SDK polls because
+  // it loads async from the CDN.
   useEffect(() => {
+    if (!emailLocked) return
     let cancelled = false
     let attempts = 0
     const tryRender = () => {
       if (cancelled) return
       if (!window.paypal) {
         attempts += 1
-        // Give up after ~5s. Most browsers/networks load the SDK in
-        // under 1s; anything slower than 5s is a network issue and
-        // the user will see the "loading" state.
         if (attempts > 50) return
         setTimeout(tryRender, 100)
         return
       }
       if (!buttonContainer.current) return
-      // Wipe any prior render — useful on hot reload during dev.
       buttonContainer.current.innerHTML = ''
       window.paypal
         .Buttons({
@@ -104,11 +98,12 @@ export function Pricing() {
             height: 48,
           },
           createOrder: (_data, actions) => {
+            const p = PLANS[planRef.current]
             return actions.order.create({
               purchase_units: [
                 {
-                  amount: { value: PRICE_ILS, currency_code: CURRENCY },
-                  description: 'ניהול הורדות פלוס — Pro (365 ימים)',
+                  amount: { value: p.price, currency_code: CURRENCY },
+                  description: `ניהול הורדות פלוס — Pro ${p.label} (${p.days} ימים)`,
                 },
               ],
               application_context: {
@@ -127,6 +122,7 @@ export function Pricing() {
                 body: JSON.stringify({
                   orderID: data.orderID,
                   email: emailRef.current,
+                  plan: planRef.current,
                 }),
               })
               const json = (await r.json()) as { ok: boolean; error?: string }
@@ -149,10 +145,7 @@ export function Pricing() {
               message: 'התרחשה שגיאה בתהליך התשלום. נסה שוב.',
             })
           },
-          onCancel: () => {
-            setStatus({ kind: 'idle' })
-            setEmailLocked(false)
-          },
+          onCancel: () => setStatus({ kind: 'idle' }),
         })
         .render('#paypal-button-container')
         .catch((err) => console.error('PayPal render failed', err))
@@ -163,9 +156,6 @@ export function Pricing() {
     }
   }, [emailLocked])
 
-  // Lock the email field once the user submits — they can't change
-  // it mid-checkout, otherwise the backend would email the key to
-  // the wrong address.
   function confirmEmail(e: React.FormEvent) {
     e.preventDefault()
     if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -177,50 +167,77 @@ export function Pricing() {
   }
 
   return (
-    <section id="pricing" className="px-6 pb-20 pt-10">
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.35 }}
+      className="min-h-screen px-6 py-12 md:py-20"
+    >
       <div className="mx-auto max-w-3xl">
+        <Link
+          to="/"
+          className="mb-8 inline-flex items-center gap-2 text-sm text-white/60 transition-colors hover:text-white"
+        >
+          <ArrowRight className="h-4 w-4" />
+          חזרה לדף הבית
+        </Link>
+
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true, margin: '-80px' }}
-          transition={{ duration: 0.4 }}
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.05 }}
           className="mb-10 text-center"
         >
-          <h2 className="text-3xl font-bold gradient-text md:text-4xl">
-            קנה Pro
-          </h2>
+          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-300">
+            <Crown className="h-3 w-3" />
+            Pro
+          </div>
+          <h1 className="text-3xl font-bold gradient-text md:text-4xl">
+            בחר את התוכנית שלך
+          </h1>
           <p className="mx-auto mt-3 max-w-2xl text-sm text-white/60 md:text-base">
-            כל הפיצ'רים פתוחים, ללא הגבלות. תשלום שנתי בודד דרך PayPal.
+            כל הפיצ'רים פתוחים, ללא הגבלות. תוכל לעבור בין התוכניות מתי שתרצה.
           </p>
         </motion.div>
 
+        {/* Plan toggle — two cards side by side, click to select.
+            Yearly is preselected because it's the better deal and we
+            want most buyers to land there by default. */}
+        <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <PlanCard
+            plan="monthly"
+            active={plan === 'monthly'}
+            onSelect={() => setPlan('monthly')}
+            title="חודשי"
+            price="9"
+            cycle="לחודש"
+            note="מתחדש ידנית מדי 30 יום"
+          />
+          <PlanCard
+            plan="yearly"
+            active={plan === 'yearly'}
+            onSelect={() => setPlan('yearly')}
+            title="שנתי"
+            price="60"
+            cycle="לשנה"
+            note="שווה ערך ל-5 ₪/חודש"
+            badge="חיסכון 44%"
+          />
+        </div>
+
         <motion.div
-          initial={{ opacity: 0, scale: 0.96 }}
-          whileInView={{ opacity: 1, scale: 1 }}
-          viewport={{ once: true, margin: '-40px' }}
-          transition={{ duration: 0.4 }}
-          className="glass relative overflow-hidden rounded-3xl border border-amber-400/20 p-8 md:p-10"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.1 }}
+          className="glass rounded-3xl border border-white/10 p-6 md:p-8"
         >
-          <div className="mb-6 flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-500 to-orange-500 shadow-lg">
-              <Crown className="h-6 w-6 text-white" />
-            </div>
-            <div>
-              <h3 className="text-2xl font-bold">Pro</h3>
-              <p className="text-xs text-white/60">רישיון ל-365 ימים</p>
-            </div>
-          </div>
-
-          <div className="mb-6 flex items-baseline gap-2" dir="ltr">
-            <span className="text-5xl font-bold tabular-nums">60</span>
-            <span className="text-2xl text-white/70">₪</span>
-            <span className="text-sm text-white/50">/ שנה</span>
-          </div>
-
-          <ul className="mb-8 space-y-2.5 text-sm">
+          <h2 className="mb-4 text-sm font-semibold text-white/90">
+            הכל פתוח עם Pro:
+          </h2>
+          <ul className="mb-7 space-y-2 text-sm">
             {[
               'מיון אוטומטי + חוקי ניתוב מותאמים אישית',
-              'הורדה מסרטוני וידאו באיכויות 4K / 1080p / MP3',
+              'הורדה מסרטוני וידאו ב-4K / 1080p / MP3',
               'המרת קבצים בין כל הפורמטים',
               'דחיסת וידאו לגודל יעד',
               'הצעות מחיר עם יועץ AI ופלט PDF',
@@ -273,27 +290,33 @@ export function Pricing() {
                 type="submit"
                 className="w-full rounded-xl bg-gradient-to-l from-amber-500 to-orange-500 px-6 py-3 text-base font-semibold text-white shadow-lg transition-transform hover:scale-[1.01]"
               >
-                המשך לתשלום
+                המשך לתשלום — {PLANS[plan].price.replace('.00', '')} ₪
               </button>
             </form>
           ) : (
             <>
               <div className="mb-3 rounded-xl border border-white/5 bg-white/[0.03] px-4 py-2.5 text-sm">
-                <span className="text-white/50">המפתח יישלח ל-</span>
-                <span dir="ltr" className="font-mono text-white/90">
-                  {' '}
-                  {email}{' '}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEmailLocked(false)
-                    setStatus({ kind: 'idle' })
-                  }}
-                  className="float-left text-xs text-amber-300/80 hover:text-amber-200"
-                >
-                  שינוי
-                </button>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <span className="text-white/50">מייל: </span>
+                    <span dir="ltr" className="font-mono text-white/90">
+                      {email}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEmailLocked(false)
+                      setStatus({ kind: 'idle' })
+                    }}
+                    className="text-xs text-amber-300/80 hover:text-amber-200"
+                  >
+                    שינוי
+                  </button>
+                </div>
+                <div className="mt-1 text-xs text-white/40">
+                  תוכנית: {PLANS[plan].label} · {PLANS[plan].price.replace('.00', '')} ₪
+                </div>
               </div>
               {status.kind === 'error' && (
                 <div className="mb-3 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2.5 text-xs text-rose-200">
@@ -309,6 +332,61 @@ export function Pricing() {
           )}
         </motion.div>
       </div>
-    </section>
+    </motion.div>
+  )
+}
+
+function PlanCard({
+  active,
+  onSelect,
+  title,
+  price,
+  cycle,
+  note,
+  badge,
+}: {
+  plan: Plan
+  active: boolean
+  onSelect: () => void
+  title: string
+  price: string
+  cycle: string
+  note: string
+  badge?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`relative rounded-2xl border p-5 text-right transition-all ${
+        active
+          ? 'border-amber-400/50 bg-amber-500/[0.08] shadow-lg shadow-amber-900/20'
+          : 'border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]'
+      }`}
+    >
+      {badge && (
+        <span className="absolute left-3 top-3 rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+          {badge}
+        </span>
+      )}
+      <div className="mb-3 flex items-center gap-2">
+        <div
+          className={`h-4 w-4 shrink-0 rounded-full border-2 transition-colors ${
+            active ? 'border-amber-400 bg-amber-400' : 'border-white/30'
+          }`}
+        >
+          {active && (
+            <div className="m-auto mt-[3px] h-1.5 w-1.5 rounded-full bg-zinc-950" />
+          )}
+        </div>
+        <span className="text-base font-semibold">{title}</span>
+      </div>
+      <div className="mb-1 flex items-baseline gap-1.5" dir="ltr">
+        <span className="text-4xl font-bold tabular-nums">{price}</span>
+        <span className="text-lg text-white/70">₪</span>
+        <span className="text-xs text-white/50">/ {cycle}</span>
+      </div>
+      <div className="text-[11px] text-white/50">{note}</div>
+    </button>
   )
 }

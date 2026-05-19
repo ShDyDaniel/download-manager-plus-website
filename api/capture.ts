@@ -42,9 +42,17 @@ const PAYPAL_BASE =
     ? 'https://api-m.sandbox.paypal.com'
     : 'https://api-m.paypal.com'
 
-const EXPECTED_PRICE = '60.00'
 const EXPECTED_CURRENCY = 'ILS'
-const LICENSE_DAYS = 365
+
+/** Two plans on /buy. The frontend posts which plan the user
+ *  selected; we cross-check the captured amount against the price
+ *  below before issuing a key, so a tampered frontend that swaps
+ *  "yearly" for "monthly" on a 9 ₪ payment can't walk away with a
+ *  365-day license. */
+const PLANS: Record<string, { price: string; days: number; label: string }> = {
+  monthly: { price: '9.00', days: 30, label: 'Monthly' },
+  yearly: { price: '60.00', days: 365, label: 'Yearly' },
+}
 
 let firebaseApp: App | null = null
 
@@ -142,11 +150,15 @@ function generateKeyString(): string {
   return `${block()}-${block()}-${block()}-${block()}`
 }
 
-async function mintLicense(buyerEmail: string): Promise<string> {
+async function mintLicense(
+  buyerEmail: string,
+  plan: string,
+  days: number,
+): Promise<string> {
   const app = getFirebase()
   const db = getFirestore(app)
   const key = generateKeyString()
-  const expiresAt = new Date(Date.now() + LICENSE_DAYS * 86_400_000)
+  const expiresAt = new Date(Date.now() + days * 86_400_000)
   await db
     .collection('productKeys')
     .doc(key)
@@ -158,13 +170,17 @@ async function mintLicense(buyerEmail: string): Promise<string> {
       redeemedAt: null,
       expiresAt: expiresAt.toISOString(),
       createdAt: new Date().toISOString(),
-      createdBy: 'paypal-checkout',
+      createdBy: `paypal-checkout-${plan}`,
       buyerEmail,
     })
   return key
 }
 
-async function sendLicenseEmail(to: string, key: string): Promise<void> {
+async function sendLicenseEmail(
+  to: string,
+  key: string,
+  days: number,
+): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY
   if (!apiKey) {
     throw new Error('RESEND_API_KEY not set')
@@ -177,7 +193,7 @@ async function sendLicenseEmail(to: string, key: string): Promise<void> {
     <div style="max-width: 560px; margin: 0 auto; background: #14141f; border: 1px solid #2a2a3a; border-radius: 16px; padding: 32px;">
       <h1 style="margin: 0 0 16px; font-size: 22px; color: #fbbf24;">תודה על הרכישה 🎉</h1>
       <p style="margin: 0 0 12px; font-size: 14px; line-height: 1.7;">
-        מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של 365 ימים מהיום.
+        מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${days} ימים מהיום.
       </p>
       <div style="background: #0b0b14; border: 1px solid #fbbf2440; border-radius: 12px; padding: 16px; margin: 20px 0; text-align: center;">
         <div style="font-size: 11px; color: #9ca3af; margin-bottom: 6px;">מפתח המוצר</div>
@@ -211,14 +227,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
   }
-  const body = req.body as { orderID?: string; email?: string }
+  const body = req.body as {
+    orderID?: string
+    email?: string
+    plan?: string
+  }
   const orderID = (body.orderID || '').trim()
   const email = (body.email || '').trim()
+  const planKey = (body.plan || '').trim()
   if (!orderID) {
     return res.status(400).json({ ok: false, error: 'orderID חסר' })
   }
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
+  }
+  const plan = PLANS[planKey]
+  if (!plan) {
+    return res
+      .status(400)
+      .json({ ok: false, error: `תוכנית לא חוקית: ${planKey || '(ריק)'}` })
   }
 
   try {
@@ -231,27 +258,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       })
     }
     // Sanity-check amount/currency. A tampered frontend could try to
-    // submit a $0.01 order — this is the line that rejects it.
+    // submit a 9 ₪ order tagged as "yearly" — this rejects it.
     const cap = capture.purchase_units?.[0]?.payments?.captures?.[0]
     if (
       !cap ||
-      cap.amount.value !== EXPECTED_PRICE ||
+      cap.amount.value !== plan.price ||
       cap.amount.currency_code !== EXPECTED_CURRENCY
     ) {
       return res.status(400).json({
         ok: false,
-        error: `הסכום ששולם (${cap?.amount.value} ${cap?.amount.currency_code}) לא תואם למחיר המוצר`,
+        error: `הסכום ששולם (${cap?.amount.value} ${cap?.amount.currency_code}) לא תואם למחיר התוכנית הנבחרת (${plan.price} ${EXPECTED_CURRENCY})`,
       })
     }
 
-    // 2. Mint license.
-    const key = await mintLicense(email)
+    // 2. Mint license — tier doesn't change between plans, just the
+    // expiry window does.
+    const key = await mintLicense(email, planKey, plan.days)
 
     // 3. Email it. If sending fails we still return success because
     // the payment AND the key are real — better to ask the user to
     // contact support for resend than to refund a valid sale.
     try {
-      await sendLicenseEmail(email, key)
+      await sendLicenseEmail(email, key, plan.days)
     } catch (err) {
       console.error('email send failed', err, 'key=', key)
     }

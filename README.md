@@ -44,34 +44,39 @@ npm run deploy
 src/
   api/releases.ts      ← שליפת מטא-דאטה של הגרסה האחרונה
   components/
-    Hero.tsx           ← מסך פתיחה + כפתורי הורדה + כפתור קניית Pro
+    Hero.tsx           ← מסך פתיחה + כפתורי הורדה + CTA "קנו עכשיו"
     Features.tsx       ← רשת 12 הפיצ'רים
-    Pricing.tsx        ← מסך קנייה (PayPal Smart Buttons)
     QuickStart.tsx     ← הצעדים הראשונים
     FAQ.tsx            ← שאלות נפוצות
     Footer.tsx         ← פוטר
-  App.tsx              ← layout ראשי
-  main.tsx             ← entry point
+  pages/
+    BuyPage.tsx        ← דף קנייה ייעודי (/buy) עם בחירת חודשי/שנתי
+  App.tsx              ← Router + layout
+  main.tsx             ← entry point + BrowserRouter
   index.css            ← styles גלובלי + Tailwind
 api/
   capture.ts           ← Vercel function — מקבל אישור PayPal, יוצר מפתח, שולח מייל
 public/
   icon.png             ← אייקון האפליקציה
+vercel.json            ← SPA rewrites + /api passthrough
 ```
 
 ## תהליך הקנייה — איך זה עובד
 
-1. הלקוח לוחץ "קנה Pro" ב-Hero → דף גולל לסקציית `Pricing`.
-2. ממלא מייל → לוחץ "המשך לתשלום".
-3. PayPal Smart Buttons מציגות כפתור צהוב; לחיצה פותחת popup של PayPal *באתר עצמו* (לא redirect).
-4. הלקוח מאשר את התשלום של 60 ₪.
-5. הקליינט שולח את ה-`orderID` ל-`/api/capture`.
-6. ה-Vercel function:
+1. הלקוח לוחץ **"קנו עכשיו"** ב-Hero → ניווט לדף `/buy`.
+2. ב-`/buy` בוחר בין:
+   - **חודשי** — 9 ₪ ל-30 ימים (מתחדש ידנית).
+   - **שנתי** — 60 ₪ ל-365 ימים (חיסכון 44%, ברירת מחדל).
+3. ממלא מייל → לוחץ "המשך לתשלום".
+4. PayPal Smart Buttons מציגות כפתור צהוב; לחיצה פותחת popup של PayPal *באתר עצמו* (לא redirect).
+5. הלקוח מאשר את התשלום.
+6. הקליינט שולח את `orderID + plan` ל-`/api/capture`.
+7. ה-Vercel function:
    - מאמת ולוכד את התשלום מול PayPal REST API.
-   - מוודא שהסכום בדיוק 60 ₪.
-   - יוצר רשומת `productKeys/{XXXX-XXXX-XXXX-XXXX}` ב-Firestore עם תוקף 365 ימים.
+   - מוודא שהסכום תואם לתוכנית שנבחרה (9 או 60 ₪).
+   - יוצר רשומת `productKeys/{XXXX-XXXX-XXXX-XXXX}` ב-Firestore עם תוקף 30 או 365 ימים בהתאם.
    - שולח מייל ללקוח עם המפתח דרך Resend.
-7. הקליינט מציג הודעת הצלחה.
+8. הקליינט מציג הודעת הצלחה.
 
 ## משתני סביבה ב-Vercel
 
