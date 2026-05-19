@@ -312,6 +312,7 @@ async function extendLicense(
   const data = snap.data() as {
     expiresAt?: string
     buyerEmail?: string
+    redeemedByEmail?: string
     renewalHistory?: { at: string; plan: string; days: number }[]
   }
   const previousIso = data.expiresAt
@@ -329,7 +330,11 @@ async function extendLicense(
     days: planDays,
   })
 
-  await ref.update({
+  // Backfill buyerEmail from redeemedByEmail if it's missing — keeps
+  // legacy keys self-healing once they touch the renewal flow.
+  const resolvedBuyerEmail =
+    data.buyerEmail || data.redeemedByEmail || ''
+  const updates: Record<string, unknown> = {
     expiresAt: newExpiresAt.toISOString(),
     renewalHistory: history,
     lastRenewalAt: new Date().toISOString(),
@@ -338,12 +343,16 @@ async function extendLicense(
     // would never go out because reminderSentAt is still set from
     // the previous cycle).
     reminderSentAt: null,
-  })
+  }
+  if (!data.buyerEmail && resolvedBuyerEmail) {
+    updates.buyerEmail = resolvedBuyerEmail
+  }
+  await ref.update(updates)
 
   return {
     previousExpiresAt,
     newExpiresAt,
-    buyerEmail: data.buyerEmail || '',
+    buyerEmail: resolvedBuyerEmail,
   }
 }
 

@@ -39,6 +39,11 @@ const WEBSITE_BASE = 'https://dm-plus.vercel.app'
 interface KeyDoc {
   key: string
   buyerEmail?: string
+  /** Set when the key has been redeemed by an account. Used as a
+   *  fallback recipient when buyerEmail is missing (legacy keys
+   *  predating the buyerEmail field still have this from the redeem
+   *  flow, which lets the renewal cron find them anyway). */
+  redeemedByEmail?: string
   expiresAt?: string
   tier?: string
   reminderSentAt?: string | null
@@ -249,7 +254,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     for (const doc of snap.docs) {
       const data = doc.data() as KeyDoc
       const key = doc.id
-      const buyerEmail = (data.buyerEmail || '').trim()
+      // Prefer buyerEmail (set at purchase time) but fall back to
+      // redeemedByEmail (set at redeem time) so legacy keys that
+      // pre-date the buyerEmail field still get reminders. They go
+      // to the same person 99% of the time anyway — the user who
+      // pays is usually the same user who redeems.
+      const buyerEmail = (
+        data.buyerEmail || data.redeemedByEmail || ''
+      ).trim()
       const expiresAtIso = data.expiresAt
       const reminderAt = data.reminderSentAt
 

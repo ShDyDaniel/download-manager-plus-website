@@ -129,6 +129,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     const data = snap.data() as {
       buyerEmail?: string
+      redeemedByEmail?: string
       expiresAt?: string
       tier?: string
     }
@@ -139,11 +140,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         error: 'מפתח ללא תאריך תפוגה — לא ניתן לחדש',
       })
     }
+    // Same fallback as the cron + capture endpoints — legacy keys
+    // that pre-date buyerEmail still surface via redeemedByEmail.
+    const displayEmail = data.buyerEmail || data.redeemedByEmail || ''
     return res.status(200).json({
       ok: true,
       key: claims.key,
       keyMasked: maskKey(claims.key),
-      emailMasked: maskEmail(data.buyerEmail || ''),
+      emailMasked: maskEmail(displayEmail),
       tier: data.tier || 'pro',
       expiresAt: expiresAt.toISOString(),
       isExpired: expiresAt.getTime() < Date.now(),
