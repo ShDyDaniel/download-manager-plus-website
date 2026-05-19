@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
+import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
 import nodemailer from 'nodemailer'
@@ -201,6 +202,64 @@ function generateKeyString(): string {
   return `${block()}-${block()}-${block()}-${block()}`
 }
 
+/**
+ * Renewal JWT helpers — same format as in /api/renew/info, kept
+ * inline here so each Vercel function bundles its own copy and we
+ * avoid the "shared module fails to load in production" trap we
+ * hit with the @upstash rate-limiter.
+ *
+ * Token layout (compact JWT, HS256):
+ *   { uid, key, iat, exp }    — uid + key bind the token to one
+ *                               buyer and one product key; exp keeps
+ *                               links from working forever after
+ *                               leaking. Default ttl is 7 days from
+ *                               the cron's reminder send.
+ */
+interface RenewClaims {
+  uid: string
+  key: string
+  iat: number
+  exp: number
+}
+
+function b64urlDecode(s: string): Buffer {
+  const padded = s
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .padEnd(s.length + ((4 - (s.length % 4)) % 4), '=')
+  return Buffer.from(padded, 'base64')
+}
+
+function renewTokenSecret(): Buffer {
+  const s = process.env.RENEW_TOKEN_SECRET
+  if (!s) throw new Error('RENEW_TOKEN_SECRET env var not set')
+  return Buffer.from(s, 'hex')
+}
+
+function verifyRenewToken(token: string): RenewClaims | null {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    const [headerB64, payloadB64, signatureB64] = parts
+    const expected = crypto
+      .createHmac('sha256', renewTokenSecret())
+      .update(`${headerB64}.${payloadB64}`)
+      .digest()
+    const actual = b64urlDecode(signatureB64)
+    if (expected.length !== actual.length) return null
+    if (!crypto.timingSafeEqual(expected, actual)) return null
+    const claims = JSON.parse(
+      b64urlDecode(payloadB64).toString('utf8'),
+    ) as RenewClaims
+    const now = Math.floor(Date.now() / 1000)
+    if (claims.exp && claims.exp < now) return null
+    if (!claims.uid || !claims.key) return null
+    return claims
+  } catch {
+    return null
+  }
+}
+
 async function mintLicense(
   buyerEmail: string,
   plan: string,
@@ -224,6 +283,68 @@ async function mintLicense(
       buyerEmail,
     })
   return key
+}
+
+/**
+ * Extend an existing license key by `plan.days` days. Used by the
+ * renewal flow.
+ *
+ * Critical detail — we anchor the new expiry to the LATER of:
+ *   - the key's current expiry (so a user who renews 5 days before
+ *     expiry doesn't lose those 5 days)
+ *   - now (so a user who renews 2 weeks AFTER expiry doesn't get
+ *     credit for the dead time)
+ *
+ * Returns the new expiry, plus the previous expiry for the email.
+ */
+async function extendLicense(
+  key: string,
+  plan: string,
+  planDays: number,
+): Promise<{ previousExpiresAt: Date; newExpiresAt: Date; buyerEmail: string }> {
+  const app = getFirebase()
+  const db = getFirestore(app)
+  const ref = db.collection('productKeys').doc(key)
+  const snap = await ref.get()
+  if (!snap.exists) {
+    throw new Error(`לא נמצא מפתח לחידוש (${key})`)
+  }
+  const data = snap.data() as {
+    expiresAt?: string
+    buyerEmail?: string
+    renewalHistory?: { at: string; plan: string; days: number }[]
+  }
+  const previousIso = data.expiresAt
+  if (!previousIso) {
+    throw new Error('המפתח לא כולל תאריך תפוגה — אי אפשר להאריך')
+  }
+  const previousExpiresAt = new Date(previousIso)
+  const baseTime = Math.max(previousExpiresAt.getTime(), Date.now())
+  const newExpiresAt = new Date(baseTime + planDays * 86_400_000)
+
+  const history = Array.isArray(data.renewalHistory) ? data.renewalHistory : []
+  history.push({
+    at: new Date().toISOString(),
+    plan,
+    days: planDays,
+  })
+
+  await ref.update({
+    expiresAt: newExpiresAt.toISOString(),
+    renewalHistory: history,
+    lastRenewalAt: new Date().toISOString(),
+    // Reset the reminder marker so the cron will eventually send a
+    // reminder for the NEW expiry (otherwise the next-cycle email
+    // would never go out because reminderSentAt is still set from
+    // the previous cycle).
+    reminderSentAt: null,
+  })
+
+  return {
+    previousExpiresAt,
+    newExpiresAt,
+    buyerEmail: data.buyerEmail || '',
+  }
 }
 
 /** Format an expiry date as "DD.MM.YYYY" with Israel-timezone day
@@ -373,6 +494,103 @@ async function sendLicenseEmail(
   })
 }
 
+/**
+ * Confirmation email for a successful renewal. Differs from the
+ * initial license email in two ways:
+ *   - no need to re-print the product key — the user already has it
+ *     redeemed in the app; printing it again would just confuse
+ *   - shows both the OLD expiry (struck through) and the NEW one,
+ *     so the user can verify how many days they actually bought
+ */
+async function sendRenewalEmail(
+  to: string,
+  durationLabel: string,
+  previousExpiresAt: Date,
+  newExpiresAt: Date,
+): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) {
+    throw new Error('GMAIL_USER / GMAIL_APP_PASSWORD not set')
+  }
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const previousDate = formatExpiryHebrew(previousExpiresAt)
+  const newDate = formatExpiryHebrew(newExpiresAt)
+  const html = `<!doctype html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="only dark" />
+    <meta name="supported-color-schemes" content="only dark" />
+    <title>חידוש מנוי</title>
+    <style>
+      :root { color-scheme: only dark; supported-color-schemes: only dark; }
+      body, table, td { background-color:#0b0b14 !important; }
+      .email-bg { background-color:#0b0b14 !important; }
+      .email-card { background-color:#14141f !important; }
+      .stat-box { background-color:#0b0b14 !important; }
+      .text-default { color:#e5e7eb !important; }
+      .text-amber { color:#fbbf24 !important; }
+      .text-muted { color:#9ca3af !important; }
+      .text-faint { color:#6b7280 !important; }
+      .text-strike { color:#6b7280 !important; text-decoration:line-through; }
+      .text-success { color:#34d399 !important; }
+      @media (prefers-color-scheme: light) {
+        .email-bg { background-color:#0b0b14 !important; }
+        .email-card { background-color:#14141f !important; }
+        .stat-box { background-color:#0b0b14 !important; }
+        .text-default { color:#e5e7eb !important; }
+        .text-amber { color:#fbbf24 !important; }
+        .text-muted { color:#9ca3af !important; }
+        .text-faint { color:#6b7280 !important; }
+        .text-success { color:#34d399 !important; }
+      }
+    </style>
+  </head>
+  <body class="email-bg" bgcolor="#0b0b14" dir="rtl" style="margin:0;padding:0;background-color:#0b0b14;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;">
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" bgcolor="#0b0b14" class="email-bg" style="background-color:#0b0b14;">
+      <tr>
+        <td align="center" bgcolor="#0b0b14" class="email-bg" style="padding:32px 16px;background-color:#0b0b14;">
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" bgcolor="#14141f" class="email-card" style="max-width:560px;width:100%;background-color:#14141f;border-radius:16px;border:1px solid #2a2a3a;">
+            <tr>
+              <td dir="rtl" bgcolor="#14141f" class="email-card" style="padding:32px;text-align:right;direction:rtl;background-color:#14141f;">
+                <h1 dir="rtl" class="text-amber" style="margin:0 0 16px;font-size:22px;color:#fbbf24;text-align:right;direction:rtl;font-weight:700;">המנוי שלך הוארך ✓</h1>
+                <p dir="rtl" class="text-default" style="margin:0 0 16px;font-size:14px;line-height:1.7;color:#e5e7eb;text-align:right;direction:rtl;">
+                  הוספנו <strong>${durationLabel}</strong> נוסף למפתח Pro שלך לתוכנה <strong>ניהול הורדות פלוס</strong>. המפתח עצמו נשאר זהה — אין מה לעדכן באפליקציה.
+                </p>
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:20px 0;">
+                  <tr>
+                    <td align="center" bgcolor="#0b0b14" class="stat-box" style="background-color:#0b0b14;border:1px solid #2a2a3a;border-radius:12px;padding:16px;">
+                      <div class="text-muted" style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף קודם</div>
+                      <div class="text-strike" style="font-size:14px;color:#6b7280;text-decoration:line-through;margin-bottom:10px;">${previousDate}</div>
+                      <div class="text-muted" style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף חדש</div>
+                      <div class="text-success" style="font-size:18px;color:#34d399;font-weight:700;">${newDate}</div>
+                    </td>
+                  </tr>
+                </table>
+                <p dir="rtl" class="text-faint" style="margin:24px 0 0;font-size:11px;color:#6b7280;text-align:right;direction:rtl;">
+                  תודה שאתם איתנו. בכל בעיה — תשובה ישירה למייל הזה.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to,
+    subject: 'חידוש מנוי ניהול הורדות פלוס — תוקף עד ' + newDate,
+    html,
+  })
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
@@ -381,21 +599,50 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     orderID?: string
     email?: string
     plan?: string
+    /** When present, this is a renewal flow — extend the existing
+     *  key encoded in the token rather than mint a brand-new one.
+     *  The token is signed by /api/cron/expiry-reminders and emailed
+     *  to the user; format is a compact JWT (see verifyRenewToken). */
+    renewToken?: string
   }
   const orderID = (body.orderID || '').trim()
-  const email = (body.email || '').trim()
   const planKey = (body.plan || '').trim()
+  const renewToken = (body.renewToken || '').trim()
   if (!orderID) {
     return res.status(400).json({ ok: false, error: 'orderID חסר' })
-  }
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
   }
   const plan = PLANS[planKey]
   if (!plan) {
     return res
       .status(400)
       .json({ ok: false, error: `תוכנית לא חוקית: ${planKey || '(ריק)'}` })
+  }
+
+  // Renewal mode: validate the token up-front so we can reject
+  // tampered/expired tokens before charging the card.
+  let renewClaims: RenewClaims | null = null
+  if (renewToken) {
+    renewClaims = verifyRenewToken(renewToken)
+    if (!renewClaims) {
+      return res.status(400).json({
+        ok: false,
+        error:
+          'קישור החידוש לא תקף או שתוקפו פג. בקשו תזכורת חדשה במייל.',
+      })
+    }
+  }
+
+  // For a fresh purchase we still need an email from the body — it's
+  // where we send the minted key. For a renewal the key is already
+  // owned by a known buyerEmail in Firestore, so the body email is
+  // ignored (we'd just use the on-file address).
+  let email = (body.email || '').trim()
+  if (!renewClaims) {
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'כתובת מייל לא תקינה' })
+    }
   }
 
   try {
@@ -421,11 +668,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       })
     }
 
-    // 2. Mint license — tier doesn't change between plans, just the
-    // expiry window does. Compute `expiresAt` once here so the email
-    // and the Firestore document agree to the millisecond; if we
-    // computed twice they could drift by a few ms across timezone
-    // boundaries.
+    // 2a. Renewal path — extend the existing key instead of minting.
+    if (renewClaims) {
+      const result = await extendLicense(
+        renewClaims.key,
+        planKey,
+        plan.days,
+      )
+      const sendTo = result.buyerEmail || email
+      try {
+        await sendRenewalEmail(
+          sendTo,
+          plan.durationLabel,
+          result.previousExpiresAt,
+          result.newExpiresAt,
+        )
+      } catch (err) {
+        console.error('renewal email send failed', err, 'key=', renewClaims.key)
+      }
+      return res.status(200).json({
+        ok: true,
+        renewed: true,
+        newExpiresAt: result.newExpiresAt.toISOString(),
+      })
+    }
+
+    // 2b. Fresh license path — tier doesn't change between plans,
+    // just the expiry window does. Compute `expiresAt` once here so
+    // the email and the Firestore document agree to the millisecond.
     const expiresAt = new Date(Date.now() + plan.days * 86_400_000)
     const key = await mintLicense(email, planKey, expiresAt)
 

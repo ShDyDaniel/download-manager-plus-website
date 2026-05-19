@@ -1,7 +1,14 @@
 import { motion } from 'framer-motion'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, Check, Crown, Loader2 } from 'lucide-react'
+import {
+  ArrowRight,
+  Check,
+  Crown,
+  Loader2,
+  RefreshCw,
+  CheckCircle2,
+} from 'lucide-react'
 
 /**
  * Dedicated purchase page at `/buy`. The buyer picks a plan
@@ -34,7 +41,32 @@ type Status =
   | { kind: 'idle' }
   | { kind: 'processing' }
   | { kind: 'success'; email: string }
+  | { kind: 'renewed'; newExpiresAt: string }
   | { kind: 'error'; message: string }
+
+/** Result of POST /api/renew/info — populated when the URL carries
+ *  ?renew=<token>. Drives the renewal-specific UI: hides the email
+ *  form (we already know the buyer), shows a "you're renewing X"
+ *  banner, and switches the capture payload to renewal mode. */
+interface RenewInfo {
+  key: string
+  keyMasked: string
+  emailMasked: string
+  tier: string
+  expiresAt: string
+  isExpired: boolean
+}
+
+function formatExpiry(iso: string): string {
+  const d = new Date(iso)
+  if (!Number.isFinite(d.getTime())) return iso
+  return d.toLocaleDateString('he-IL', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: 'Asia/Jerusalem',
+  })
+}
 
 type PayPalActions = {
   order: {
@@ -69,11 +101,58 @@ export function BuyPage() {
     typeof window !== 'undefined' && Boolean(window.paypal),
   )
   const [sdkError, setSdkError] = useState<string | null>(null)
+  // Renewal mode — populated when the URL carries ?renew=<token>.
+  // While `renewLoading` is true the rest of the UI hides behind a
+  // spinner so the user doesn't see a half-rendered "purchase" page
+  // while we're still waiting on /api/renew/info.
+  const [renewToken, setRenewToken] = useState<string | null>(null)
+  const [renewInfo, setRenewInfo] = useState<RenewInfo | null>(null)
+  const [renewLoading, setRenewLoading] = useState(false)
+  const [renewError, setRenewError] = useState<string | null>(null)
   const planRef = useRef(plan)
   planRef.current = plan
   const emailRef = useRef(email)
   emailRef.current = email
+  const renewTokenRef = useRef<string | null>(renewToken)
+  renewTokenRef.current = renewToken
   const buttonContainer = useRef<HTMLDivElement>(null)
+
+  // Parse ?renew=<token> from the URL on mount and look it up. If
+  // the token resolves, we flip into renewal mode: the email form
+  // disappears (the buyer is already on file) and a banner shows
+  // the current expiry plus what it'll become after renewal.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const token = params.get('renew')
+    if (!token) return
+    setRenewToken(token)
+    setRenewLoading(true)
+    setEmailLocked(true)
+    fetch('/api/renew/info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    })
+      .then(async (r) => {
+        const json = (await r.json()) as
+          | ({ ok: true } & RenewInfo)
+          | { ok: false; error: string }
+        if (!json.ok) {
+          setRenewError(json.error)
+          setRenewToken(null)
+          setEmailLocked(false)
+          return
+        }
+        setRenewInfo(json)
+      })
+      .catch(() => {
+        setRenewError('לא הצלחנו לטעון את פרטי החידוש. רענן ונסה שוב.')
+        setRenewToken(null)
+        setEmailLocked(false)
+      })
+      .finally(() => setRenewLoading(false))
+  }, [])
 
   // Inject the PayPal SDK script tag at runtime instead of from
   // index.html. Vite's `%VITE_*%` substitution in HTML doesn't run
@@ -181,22 +260,38 @@ export function BuyPage() {
         onApprove: async (data) => {
           setStatus({ kind: 'processing' })
           try {
+            const payload: Record<string, string> = {
+              orderID: data.orderID,
+              plan: planRef.current,
+            }
+            // Renewal mode bypasses the email field — /api/capture
+            // pulls the buyer's address off the existing key.
+            if (renewTokenRef.current) {
+              payload.renewToken = renewTokenRef.current
+            } else {
+              payload.email = emailRef.current
+            }
             const r = await fetch('/api/capture', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                orderID: data.orderID,
-                email: emailRef.current,
-                plan: planRef.current,
-              }),
+              body: JSON.stringify(payload),
             })
-            const json = (await r.json()) as { ok: boolean; error?: string }
+            const json = (await r.json()) as {
+              ok: boolean
+              error?: string
+              renewed?: boolean
+              newExpiresAt?: string
+            }
             if (!r.ok || !json.ok) {
               throw new Error(
                 json.error || 'התשלום אושר אך יצירת המפתח נכשלה',
               )
             }
-            setStatus({ kind: 'success', email: emailRef.current })
+            if (json.renewed && json.newExpiresAt) {
+              setStatus({ kind: 'renewed', newExpiresAt: json.newExpiresAt })
+            } else {
+              setStatus({ kind: 'success', email: emailRef.current })
+            }
           } catch (err) {
             const message =
               err instanceof Error ? err.message : 'שגיאה לא ידועה'
@@ -329,7 +424,70 @@ export function BuyPage() {
             ))}
           </ul>
 
-          {status.kind === 'success' ? (
+          {/* Renewal banner — shown whenever we're in renewal mode
+              (URL had ?renew=<token>). Sits above the email/PayPal
+              area so the user sees what they're extending before
+              they hit pay. The actual extension math (adds plan days
+              to whichever is later: current expiry or now) happens
+              server-side in /api/capture's renewal branch. */}
+          {renewInfo && status.kind !== 'success' && status.kind !== 'renewed' && (
+            <div className="mb-4 rounded-2xl border border-cyan-400/25 bg-cyan-500/[0.06] p-4">
+              <div className="flex items-start gap-3">
+                <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
+                <div className="flex-1 text-right text-sm">
+                  <div className="font-semibold text-cyan-100">
+                    חידוש מנוי קיים
+                  </div>
+                  <div className="mt-1 text-xs text-white/70">
+                    מפתח <span className="font-mono text-white/90" dir="ltr">{renewInfo.keyMasked}</span>
+                    {' '}· משויך ל-
+                    <span className="font-mono text-white/90" dir="ltr">{renewInfo.emailMasked}</span>
+                  </div>
+                  <div className="mt-2 text-xs text-white/85">
+                    תוקף נוכחי: <strong>{formatExpiry(renewInfo.expiresAt)}</strong>
+                    {renewInfo.isExpired && (
+                      <span className="ms-2 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300">
+                        פג
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 text-[11px] text-white/55">
+                    אחרי החידוש יוארך ב-{PLANS[plan].label === 'חודשי' ? '30 ימים' : '365 ימים'} נוספים — המפתח עצמו לא משתנה.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {renewError && (
+            <div className="mb-4 rounded-2xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+              {renewError}
+            </div>
+          )}
+
+          {renewLoading ? (
+            <div className="flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-amber-200">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              טוען את פרטי החידוש...
+            </div>
+          ) : status.kind === 'renewed' ? (
+            <div className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 p-5 text-center">
+              <CheckCircle2 className="mx-auto mb-2 h-6 w-6 text-emerald-300" />
+              <div className="mb-2 text-base font-semibold text-emerald-200">
+                המנוי הוארך בהצלחה ✓
+              </div>
+              <p className="text-sm text-white/80">
+                התוקף החדש שלך:{' '}
+                <strong className="text-white">
+                  {formatExpiry(status.newExpiresAt)}
+                </strong>
+              </p>
+              <p className="mt-2 text-xs text-white/60">
+                המפתח שלך נשאר אותו דבר — אין צורך לעדכן באפליקציה. שלחנו לך גם
+                מייל אישור.
+              </p>
+            </div>
+          ) : status.kind === 'success' ? (
             <div className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 p-5 text-center">
               <div className="mb-2 text-base font-semibold text-emerald-200">
                 התשלום הושלם בהצלחה ✓
@@ -377,29 +535,35 @@ export function BuyPage() {
             </form>
           ) : (
             <>
-              <div className="mb-3 rounded-xl border border-white/5 bg-white/[0.03] px-4 py-2.5 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <span className="text-white/50">מייל: </span>
-                    <span dir="ltr" className="font-mono text-white/90">
-                      {email}
-                    </span>
+              {/* In renewal mode the buyer + key are already shown
+                  in the cyan banner above, and they can't change
+                  the email (it's bound to the existing key) — so
+                  skip this summary row entirely. */}
+              {!renewToken && (
+                <div className="mb-3 rounded-xl border border-white/5 bg-white/[0.03] px-4 py-2.5 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <span className="text-white/50">מייל: </span>
+                      <span dir="ltr" className="font-mono text-white/90">
+                        {email}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEmailLocked(false)
+                        setStatus({ kind: 'idle' })
+                      }}
+                      className="text-xs text-amber-300/80 hover:text-amber-200"
+                    >
+                      שינוי
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEmailLocked(false)
-                      setStatus({ kind: 'idle' })
-                    }}
-                    className="text-xs text-amber-300/80 hover:text-amber-200"
-                  >
-                    שינוי
-                  </button>
+                  <div className="mt-1 text-xs text-white/40">
+                    תוכנית: {PLANS[plan].label} · {PLANS[plan].price.replace('.00', '')} ₪
+                  </div>
                 </div>
-                <div className="mt-1 text-xs text-white/40">
-                  תוכנית: {PLANS[plan].label} · {PLANS[plan].price.replace('.00', '')} ₪
-                </div>
-              </div>
+              )}
               {status.kind === 'error' && (
                 <div className="mb-3 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2.5 text-xs text-rose-200">
                   {status.message}
