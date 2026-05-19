@@ -2,7 +2,6 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
 import nodemailer from 'nodemailer'
-import { captureIpLimit, check, clientIp } from './_lib/ratelimit'
 
 /**
  * PayPal Smart Buttons hand the orderID back to the frontend via
@@ -400,20 +399,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Rate limit by IP. A real buyer hits this once; the cap is
-    // high enough that legitimate retries and shared-IP edges don't
-    // suffer, but a script spamming bogus orderIDs gets shut down.
-    // Fails open if Upstash is unreachable — see _lib/ratelimit.
-    const ip = clientIp(req)
-    const ipCheck = await check(captureIpLimit, ip)
-    if (!ipCheck.allowed) {
-      console.warn('capture: ip rate-limit hit', ip)
-      return res.status(429).json({
-        ok: false,
-        error: 'יותר מדי בקשות. נסה שוב בעוד שעה.',
-      })
-    }
-
     // 1. Capture the payment.
     const capture = await capturePayPalOrder(orderID)
     if (capture.status !== 'COMPLETED') {

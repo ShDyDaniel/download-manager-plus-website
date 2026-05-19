@@ -2,12 +2,6 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import nodemailer from 'nodemailer'
-import {
-  check,
-  clientIp,
-  resetPasswordEmailLimit,
-  resetPasswordIpLimit,
-} from './_lib/ratelimit'
 
 /**
  * Custom password-reset email sender for the Electron app.
@@ -170,28 +164,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Rate-limit by IP first (cheaper key, blocks scripts spraying
-    // many emails from one connection) and then by email (caps
-    // bombing of a specific victim across many connections). Both
-    // checks fail open if Upstash is unreachable; see _lib/ratelimit.
-    const ip = clientIp(req)
-    const ipCheck = await check(resetPasswordIpLimit, ip)
-    if (!ipCheck.allowed) {
-      console.warn('reset-password: ip rate-limit hit', ip)
-      return res.status(429).json({
-        ok: false,
-        error: 'יותר מדי בקשות. נסה שוב בעוד שעה.',
-      })
-    }
-    const emailCheck = await check(resetPasswordEmailLimit, email)
-    if (!emailCheck.allowed) {
-      console.warn('reset-password: email rate-limit hit', email)
-      // Return 200 here so an attacker can't tell whether they
-      // tripped the per-email cap vs. the email simply not existing
-      // — keeps both branches indistinguishable from outside.
-      return res.status(200).json({ ok: true })
-    }
-
     const app = getFirebase()
     const auth = getAuth(app)
 
