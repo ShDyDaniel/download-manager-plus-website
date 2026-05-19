@@ -85,18 +85,34 @@ export function clientIp(req: VercelRequest): string {
   return 'unknown'
 }
 
-/** Run a limiter and return whether the request is allowed. When
- *  the limiter is null (Redis not configured) we allow — better to
- *  serve traffic than to fail closed on a missing env var. */
+/** Run a limiter and return whether the request is allowed.
+ *
+ *  Fail-open policy:
+ *    - If the limiter is null (Redis env vars not configured) we
+ *      allow. Better to serve traffic than to fail closed on a
+ *      missing config.
+ *    - If `limiter.limit()` THROWS (Redis network blip, auth
+ *      failure, Upstash outage) we ALSO allow, log the error, and
+ *      let the request through. Rate limiting is a hardening layer
+ *      — losing it for a few seconds is much less bad than turning
+ *      legitimate users away while Upstash is degraded.
+ *
+ *  When the underlying limiter rejects normally (over budget), we
+ *  return allowed: false so the caller can respond with 429. */
 export async function check(
   limiter: Ratelimit | null,
   key: string,
 ): Promise<{ allowed: boolean; remaining: number; reset: number }> {
   if (!limiter) return { allowed: true, remaining: Infinity, reset: 0 }
-  const result = await limiter.limit(key)
-  return {
-    allowed: result.success,
-    remaining: result.remaining,
-    reset: result.reset,
+  try {
+    const result = await limiter.limit(key)
+    return {
+      allowed: result.success,
+      remaining: result.remaining,
+      reset: result.reset,
+    }
+  } catch (err) {
+    console.error('rate-limit check failed (allowing request):', err)
+    return { allowed: true, remaining: Infinity, reset: 0 }
   }
 }

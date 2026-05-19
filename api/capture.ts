@@ -399,20 +399,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .json({ ok: false, error: `תוכנית לא חוקית: ${planKey || '(ריק)'}` })
   }
 
-  // Rate limit by IP. A real buyer hits this once; the cap is high
-  // enough that legitimate retries and shared-IP edges don't suffer,
-  // but a script spamming bogus orderIDs gets shut down.
-  const ip = clientIp(req)
-  const ipCheck = await check(captureIpLimit, ip)
-  if (!ipCheck.allowed) {
-    console.warn('capture: ip rate-limit hit', ip)
-    return res.status(429).json({
-      ok: false,
-      error: 'יותר מדי בקשות. נסה שוב בעוד שעה.',
-    })
-  }
-
   try {
+    // Rate limit by IP. A real buyer hits this once; the cap is
+    // high enough that legitimate retries and shared-IP edges don't
+    // suffer, but a script spamming bogus orderIDs gets shut down.
+    // Fails open if Upstash is unreachable — see _lib/ratelimit.
+    const ip = clientIp(req)
+    const ipCheck = await check(captureIpLimit, ip)
+    if (!ipCheck.allowed) {
+      console.warn('capture: ip rate-limit hit', ip)
+      return res.status(429).json({
+        ok: false,
+        error: 'יותר מדי בקשות. נסה שוב בעוד שעה.',
+      })
+    }
+
     // 1. Capture the payment.
     const capture = await capturePayPalOrder(orderID)
     if (capture.status !== 'COMPLETED') {
