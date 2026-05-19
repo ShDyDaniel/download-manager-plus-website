@@ -228,55 +228,114 @@ async function sendLicenseEmail(
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
-  // Email HTML — table-based layout because that's the only thing
-  // most mobile/web email clients render reliably. Inline styles
-  // everywhere; <ol> replaced with manual numbering because some
-  // clients (Gmail Web in particular) ignore `dir="rtl"` on lists
-  // and render the marker on the LEFT, which looks broken in Hebrew.
-  // We also put `dir="rtl"` AND `direction: rtl` AND `text-align:
-  // right` on every block — different clients respect different ones.
-  // `color-scheme: dark` + `supported-color-schemes` hints to clients
-  // that prefer to invert colors that we'd rather they didn't.
+  // Email HTML — table-based layout for cross-client reliability.
+  //
+  // The hard problem: mobile email clients (Apple Mail iOS, Gmail
+  // iOS/Android) auto-invert dark colors to light when the device
+  // is in light mode, ignoring inline `style` background colors.
+  // The fix uses every trick in the book to lock the dark theme:
+  //
+  //   1. `bgcolor` HTML attribute on every <td> — legacy, but the
+  //      most respected color hint across old & weird clients.
+  //   2. `<style>` block with `!important` overrides keyed by class
+  //      — Apple Mail and Gmail Web do honour <style>.
+  //   3. `color-scheme: dark only` meta + matching CSS root rule —
+  //      tells modern clients we don't want light rendering.
+  //   4. `[data-ogsc]` selectors — Outlook.com / Outlook iOS dark
+  //      mode wraps content in this attribute, and we use it to
+  //      re-apply our colors when the client tries to override.
+  //   5. Inline styles as the fallback for clients that strip both
+  //      `<style>` and class attributes.
+  //
+  // Even with all of this, Gmail Mobile Android sometimes still
+  // forces light mode — it's a known platform limitation. The
+  // design degrades gracefully (light bg + dark text + gold accents
+  // remains readable), so we accept that case.
+  //
+  // Manual numbering replaces <ol> because RTL list direction is
+  // unreliable; <dir="rtl"> + <text-align:right> + <direction:rtl>
+  // are all set on every block so different clients can honour
+  // whichever one they respect.
   const html = `<!doctype html>
 <html lang="he" dir="rtl">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark only" />
     <meta name="supported-color-schemes" content="dark" />
     <title>מפתח Pro</title>
+    <style>
+      :root { color-scheme: dark only; supported-color-schemes: dark; }
+      body, table, td { background-color:#0b0b14 !important; }
+      .email-bg { background-color:#0b0b14 !important; }
+      .email-card { background-color:#14141f !important; }
+      .key-box { background-color:#0b0b14 !important; }
+      .warn-box { background-color:#221a08 !important; }
+      .text-default { color:#e5e7eb !important; }
+      .text-amber { color:#fbbf24 !important; }
+      .text-warn { color:#fbe6a8 !important; }
+      .text-muted { color:#9ca3af !important; }
+      .text-faint { color:#6b7280 !important; }
+      .text-list { color:#d1d5db !important; }
+      [data-ogsc] .email-bg { background-color:#0b0b14 !important; }
+      [data-ogsc] .email-card { background-color:#14141f !important; }
+      [data-ogsc] .key-box { background-color:#0b0b14 !important; }
+      [data-ogsc] .warn-box { background-color:#221a08 !important; }
+      [data-ogsc] .text-default { color:#e5e7eb !important; }
+      [data-ogsc] .text-amber { color:#fbbf24 !important; }
+      [data-ogsc] .text-warn { color:#fbe6a8 !important; }
+      [data-ogsc] .text-muted { color:#9ca3af !important; }
+      [data-ogsc] .text-faint { color:#6b7280 !important; }
+      [data-ogsc] .text-list { color:#d1d5db !important; }
+      @media (prefers-color-scheme: light) {
+        .email-bg { background-color:#0b0b14 !important; }
+        .email-card { background-color:#14141f !important; }
+        .key-box { background-color:#0b0b14 !important; }
+        .warn-box { background-color:#221a08 !important; }
+        .text-default { color:#e5e7eb !important; }
+        .text-amber { color:#fbbf24 !important; }
+        .text-warn { color:#fbe6a8 !important; }
+        .text-muted { color:#9ca3af !important; }
+        .text-faint { color:#6b7280 !important; }
+        .text-list { color:#d1d5db !important; }
+      }
+    </style>
   </head>
-  <body dir="rtl" style="margin:0; padding:0; background-color:#0b0b14; color:#e5e7eb; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; direction:rtl;">
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#0b0b14;">
+  <body class="email-bg" bgcolor="#0b0b14" dir="rtl" style="margin:0;padding:0;background-color:#0b0b14;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;">
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" bgcolor="#0b0b14" class="email-bg" style="background-color:#0b0b14;">
       <tr>
-        <td align="center" style="padding:32px 16px;">
-          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width:560px; width:100%; background-color:#14141f; border-radius:16px; border:1px solid #2a2a3a;">
+        <td align="center" bgcolor="#0b0b14" class="email-bg" style="padding:32px 16px;background-color:#0b0b14;">
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" bgcolor="#14141f" class="email-card" style="max-width:560px;width:100%;background-color:#14141f;border-radius:16px;border:1px solid #2a2a3a;">
             <tr>
-              <td dir="rtl" style="padding:32px; text-align:right; direction:rtl;">
-                <h1 dir="rtl" style="margin:0 0 16px; font-size:22px; color:#fbbf24; text-align:right; direction:rtl;">תודה על הרכישה 🎉</h1>
-                <p dir="rtl" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#e5e7eb; text-align:right; direction:rtl;">
-                  מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${days} ימים מהיום.
+              <td dir="rtl" bgcolor="#14141f" class="email-card" style="padding:32px;text-align:right;direction:rtl;background-color:#14141f;">
+                <h1 dir="rtl" class="text-amber" style="margin:0 0 16px;font-size:22px;color:#fbbf24;text-align:right;direction:rtl;font-weight:700;">תודה על הרכישה 🎉</h1>
+                <p dir="rtl" class="text-default" style="margin:0 0 12px;font-size:14px;line-height:1.7;color:#e5e7eb;text-align:right;direction:rtl;">
+                  מצורף מפתח <span class="text-amber" style="color:#fbbf24;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${days} ימים מהיום.
                 </p>
                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:20px 0;">
                   <tr>
-                    <td align="center" style="background-color:#0b0b14; border:1px solid rgba(251,191,36,0.25); border-radius:12px; padding:16px;">
-                      <div style="font-size:11px; color:#9ca3af; margin-bottom:6px;">מפתח המוצר</div>
-                      <div dir="ltr" style="font-family:'SF Mono', Menlo, Consolas, monospace; font-size:18px; color:#fbbf24; letter-spacing:0.05em; direction:ltr;">${key}</div>
+                    <td align="center" bgcolor="#0b0b14" class="key-box" style="background-color:#0b0b14;border:1px solid #6b4f0c;border-radius:12px;padding:16px;">
+                      <div class="text-muted" style="font-size:11px;color:#9ca3af;margin-bottom:6px;">מפתח המוצר</div>
+                      <div dir="ltr" class="text-amber" style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:18px;color:#fbbf24;letter-spacing:0.05em;direction:ltr;font-weight:600;">${key}</div>
                     </td>
                   </tr>
                 </table>
-                <h2 dir="rtl" style="font-size:15px; margin:20px 0 8px; color:#e5e7eb; text-align:right; direction:rtl;">איך מממשים?</h2>
-                <div dir="rtl" style="font-size:13px; line-height:1.85; color:#d1d5db; text-align:right; direction:rtl;">
-                  <div dir="rtl" style="margin:0 0 4px; text-align:right; direction:rtl;">1. פותחים את התוכנה ונכנסים לחשבון.</div>
-                  <div dir="rtl" style="margin:0 0 4px; text-align:right; direction:rtl;">2. לוחצים על השם בצד שמאל למטה ← <strong>מימוש מפתח מוצר</strong>.</div>
-                  <div dir="rtl" style="margin:0 0 4px; text-align:right; direction:rtl;">3. מדביקים את המפתח ולוחצים <strong>אישור</strong>.</div>
-                  <div dir="rtl" style="margin:0; text-align:right; direction:rtl;">4. זהו, יש לך Pro! 🚀</div>
+                <h2 dir="rtl" class="text-default" style="font-size:15px;margin:20px 0 8px;color:#e5e7eb;text-align:right;direction:rtl;font-weight:600;">איך מממשים?</h2>
+                <div dir="rtl" class="text-list" style="font-size:13px;line-height:1.85;color:#d1d5db;text-align:right;direction:rtl;">
+                  <div dir="rtl" class="text-list" style="margin:0 0 4px;text-align:right;direction:rtl;color:#d1d5db;">1. פותחים את התוכנה ונכנסים לחשבון.</div>
+                  <div dir="rtl" class="text-list" style="margin:0 0 4px;text-align:right;direction:rtl;color:#d1d5db;">2. לוחצים על השם בצד שמאל למטה ← <strong>מימוש מפתח מוצר</strong>.</div>
+                  <div dir="rtl" class="text-list" style="margin:0 0 4px;text-align:right;direction:rtl;color:#d1d5db;">3. מדביקים את המפתח ולוחצים <strong>אישור</strong>.</div>
+                  <div dir="rtl" class="text-list" style="margin:0;text-align:right;direction:rtl;color:#d1d5db;">4. זהו, יש לך Pro! 🚀</div>
                 </div>
-                <p dir="rtl" style="margin:28px 0 0; padding:12px 14px; background-color:rgba(251,191,36,0.06); border-right:3px solid #fbbf24; border-radius:6px; font-size:12px; color:#fbe6a8; text-align:right; direction:rtl; line-height:1.6;">
-                  💡 <strong>לא רואה את המייל?</strong> תבדוק גם בתיקיית <strong>ספאם</strong>
-                  או <strong>"קידום מכירות"</strong> — מיילים אוטומטיים לפעמים מסתננים לשם.
-                </p>
-                <p dir="rtl" style="margin:16px 0 0; font-size:11px; color:#6b7280; text-align:right; direction:rtl;">
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:28px 0 0;">
+                  <tr>
+                    <td dir="rtl" bgcolor="#221a08" class="warn-box text-warn" style="background-color:#221a08;border-right:3px solid #fbbf24;border-radius:6px;padding:12px 14px;font-size:12px;color:#fbe6a8;text-align:right;direction:rtl;line-height:1.6;">
+                      💡 <strong>לא רואה את המייל?</strong> תבדוק גם בתיקיית <strong>ספאם</strong>
+                      או <strong>"קידום מכירות"</strong> — מיילים אוטומטיים לפעמים מסתננים לשם.
+                    </td>
+                  </tr>
+                </table>
+                <p dir="rtl" class="text-faint" style="margin:16px 0 0;font-size:11px;color:#6b7280;text-align:right;direction:rtl;">
                   המפתח שמור לחשבון שלך. בכל בעיה — תשובה ישירה למייל הזה.
                 </p>
               </td>
