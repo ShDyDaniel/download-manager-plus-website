@@ -54,10 +54,27 @@ const EXPECTED_CURRENCY = 'ILS'
  *  selected; we cross-check the captured amount against the price
  *  below before issuing a key, so a tampered frontend that swaps
  *  "yearly" for "monthly" on a 9 ₪ payment can't walk away with a
- *  365-day license. */
-const PLANS: Record<string, { price: string; days: number; label: string }> = {
-  monthly: { price: '9.00', days: 30, label: 'Monthly' },
-  yearly: { price: '60.00', days: 365, label: 'Yearly' },
+ *  365-day license.
+ *
+ *  `durationLabel` is the Hebrew phrase used in the buyer's email —
+ *  "חודש" / "שנה" reads more naturally than "30 ימים" / "365 ימים".
+ *  We still store `days` for the actual Firestore expiry math. */
+const PLANS: Record<
+  string,
+  { price: string; days: number; label: string; durationLabel: string }
+> = {
+  monthly: {
+    price: '9.00',
+    days: 30,
+    label: 'Monthly',
+    durationLabel: 'חודש',
+  },
+  yearly: {
+    price: '60.00',
+    days: 365,
+    label: 'Yearly',
+    durationLabel: 'שנה',
+  },
 }
 
 let firebaseApp: App | null = null
@@ -213,7 +230,7 @@ async function mintLicense(
 async function sendLicenseEmail(
   to: string,
   key: string,
-  days: number,
+  durationLabel: string,
 ): Promise<void> {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
@@ -304,7 +321,7 @@ async function sendLicenseEmail(
               <td dir="rtl" bgcolor="#14141f" class="email-card" style="padding:32px;text-align:right;direction:rtl;background-color:#14141f;">
                 <h1 dir="rtl" class="text-amber" style="margin:0 0 16px;font-size:22px;color:#fbbf24;text-align:right;direction:rtl;font-weight:700;">תודה על הרכישה 🎉</h1>
                 <p dir="rtl" class="text-default" style="margin:0 0 12px;font-size:14px;line-height:1.7;color:#e5e7eb;text-align:right;direction:rtl;">
-                  מצורף מפתח <span class="text-amber" style="color:#fbbf24;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${days} ימים מהיום.
+                  מצורף מפתח <span class="text-amber" style="color:#fbbf24;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${durationLabel} מהיום.
                 </p>
                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:20px 0;">
                   <tr>
@@ -396,7 +413,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // the payment AND the key are real — better to ask the user to
     // contact support for resend than to refund a valid sale.
     try {
-      await sendLicenseEmail(email, key, plan.days)
+      await sendLicenseEmail(email, key, plan.durationLabel)
     } catch (err) {
       console.error('email send failed', err, 'key=', key)
     }
