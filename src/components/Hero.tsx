@@ -101,7 +101,7 @@ export function Hero() {
           className="mt-6 flex flex-col items-center gap-3"
         >
           <div className="text-xs text-white/50">
-            הקישור חסום אצלך? תוכל להוריד גם דרך Google Drive
+            הקישור לא עובד? תוכל להוריד גם דרך Google Drive
           </div>
           <div className="flex flex-col items-center justify-center gap-2 sm:flex-row sm:gap-3">
             <DriveButton kind="mac" href={DRIVE_DOWNLOAD_MAC} />
