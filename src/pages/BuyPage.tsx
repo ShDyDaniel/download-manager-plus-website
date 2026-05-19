@@ -325,8 +325,8 @@ export function BuyPage() {
                 עם מפתח המוצר. פתח את התוכנה, לחץ "מימוש מפתח מוצר" והדבק.
               </p>
               <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/85">
-                💡 לא רואה את המייל בתיבת הדואר? <strong>תבדוק גם בספאם</strong> או
-                ב"קידום מכירות" — לפעמים המייל מסתנן לשם.
+                💡 <strong>לא רואה את המייל?</strong> יכול להיות שהוא בספאם או
+                בקידום מכירות.
               </p>
             </div>
           ) : status.kind === 'processing' ? (
