@@ -1,5 +1,14 @@
-import { motion } from 'framer-motion'
-import { Apple, Monitor, ArrowDown, Cloud, Crown } from 'lucide-react'
+import { AnimatePresence, motion } from 'framer-motion'
+import {
+  Apple,
+  Monitor,
+  ArrowDown,
+  Cloud,
+  Crown,
+  Download,
+  ChevronDown,
+} from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 /**
@@ -26,15 +35,16 @@ const DOWNLOAD_WIN_GITHUB =
 
 // Google Drive fallback links — for users on networks where GitHub
 // Releases is blocked (some corporate / school / region-restricted
-// networks block raw GitHub asset hosts but allow Drive).
-// Mac fallback link is exposed in the hero sub-meta row. The
-// Windows Drive fallback link still exists in the releases repo
-// but isn't surfaced in the new editorial layout — Windows
-// already has the GitHub direct-download button alongside the
-// Mac one, and adding a second fallback row crowded the meta
-// line. Kept the const here as documentation of where to find it.
+// networks block raw GitHub asset hosts but allow Drive). Both
+// platforms now get a Drive link surfaced via the dropdown CTA so
+// blocked Windows users aren't stranded.
+//
+// PLACEHOLDER: the Windows Drive link below needs to be replaced
+// with the real share URL from Daniel's Drive folder. Search for
+// "REPLACE_ME_WIN_DRIVE_URL" and swap in the actual URL.
 const DRIVE_DOWNLOAD_MAC =
   'https://drive.google.com/file/d/1ezciHjhrPULWCT3VGt0dwn7bYO9A4HKP/view?usp=drive_link'
+const DRIVE_DOWNLOAD_WIN = 'REPLACE_ME_WIN_DRIVE_URL'
 
 export function Hero() {
   const scrollToFeatures = () => {
@@ -137,79 +147,80 @@ export function Hero() {
             קובץ שיורד — וידאו, סאונד, תמונה — נכנס מיד לפרויקט הנכון.
           </motion.p>
 
-          {/* CTA row — primary download as the lead, platform switch
-              as a quiet secondary. No competing gradients, no
-              shadow-soup. Single decisive copper button. */}
+          {/* CTA block — three actions, in priority order from top:
+              1. Free download (primary copper button, opens an OS
+                 picker — Mac or Windows). Most visitors want this.
+              2. Drive mirror (secondary outline, same OS picker).
+                 For corporate/school networks that block GitHub.
+              3. Pro purchase (clearly distinct, accent-tinted with
+                 Crown icon + price). Now gets the full visual real
+                 estate it deserves instead of being squeezed into a
+                 meta line. The visual separator above it (border-t)
+                 tells the eye "this is a different kind of action". */}
           <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.25 }}
             className="mt-8 flex flex-col items-stretch gap-4 md:mt-10 md:items-start"
           >
-            {/* CTA row — full-width buttons on mobile (they
-                stack naturally and stay tappable), inline-flex
-                on desktop. The Mac/Windows split is meaningful
-                enough that both deserve equal visual weight on
-                phones; cramming them side-by-side at 375px makes
-                each one too small for the 44pt touch target rule. */}
+            {/* Download row — two equal-weight buttons that each
+                open an OS picker on click. Side-by-side on desktop,
+                stacked on mobile so each one keeps a 44pt touch
+                target. The picker shows up directly under the
+                button (anchored, not modal) so the user doesn't
+                lose context. */}
             <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-              <a
-                href={DOWNLOAD_MAC_GITHUB}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn-primary justify-center"
-              >
-                <Apple className="h-[18px] w-[18px]" />
-                הורד ל-Mac
-                <span className="text-xs opacity-60">·</span>
-                <span className="text-xs opacity-70">חינם</span>
-              </a>
-              <a
-                href={DOWNLOAD_WIN_GITHUB}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn-secondary justify-center"
-              >
-                <Monitor className="h-[18px] w-[18px]" />
-                הורד ל-Windows
-              </a>
+              <DownloadPicker
+                label="הורדה חינם"
+                icon={<Download className="h-[18px] w-[18px]" />}
+                badge="חינם"
+                macUrl={DOWNLOAD_MAC_GITHUB}
+                winUrl={DOWNLOAD_WIN_GITHUB}
+                variant="primary"
+              />
+              <DownloadPicker
+                label="דרך Google Drive"
+                icon={<Cloud className="h-[18px] w-[18px]" />}
+                macUrl={DRIVE_DOWNLOAD_MAC}
+                winUrl={DRIVE_DOWNLOAD_WIN}
+                variant="secondary"
+              />
             </div>
 
-            {/* Pro purchase CTA — proper button, not the tiny text
-                link we had before. Visitors who already know they
-                want Pro need a one-click path; burying it in a meta
-                line was costing us conversions. Sits below the free
-                downloads (free is still the primary entry point)
-                but at full button weight so it reads as an actual
-                action, not a footnote. Copper-outlined to tie it
-                to the brand palette without competing with the
-                solid-copper Mac download above. */}
+            {/* Visual separator + Pro CTA. The thin border + small
+                "או" (or) tag makes it visually clear that the buy
+                button is an alternative path, not just another item
+                in the list. The Pro button itself is full-width on
+                mobile and sized for proper prominence on desktop —
+                accent-on-accent background + Crown + price line
+                + arrow so it reads as an obvious purchase button at
+                a glance. */}
+            <div className="mt-2 flex items-center gap-3 sm:max-w-md">
+              <div className="h-px flex-1 bg-border" />
+              <span className="text-[10px] uppercase tracking-[0.16em] text-fg-faint">
+                או
+              </span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
+
             <Link
               to="/buy"
-              className="group inline-flex items-center justify-center gap-2.5 rounded-2xl border border-primary/50 bg-primary/[0.08] px-5 py-3 text-sm font-semibold text-primary transition-all hover:border-primary hover:bg-primary/[0.14] hover:text-fg sm:self-start"
+              className="group relative flex items-center justify-center gap-3 overflow-hidden rounded-2xl border border-primary/60 bg-gradient-to-l from-primary/15 to-primary/5 px-6 py-4 text-base font-semibold text-fg shadow-lg shadow-primary/10 transition-all hover:border-primary hover:from-primary/25 hover:to-primary/10 hover:shadow-xl hover:shadow-primary/20 sm:self-stretch sm:max-w-md"
             >
-              <Crown className="h-4 w-4" />
-              <span>רכישת מנוי Pro</span>
-              <span className="text-xs font-medium opacity-70">·</span>
-              <span className="text-xs font-medium opacity-80">מ-5 ₪/חודש</span>
+              <Crown className="h-5 w-5 text-primary" />
+              <span className="flex items-baseline gap-2">
+                <span className="text-base md:text-lg">רכישת מנוי Pro</span>
+                <span className="text-xs font-medium text-fg-muted">
+                  · מ-5 ₪/חודש
+                </span>
+              </span>
+              <ChevronDown className="h-4 w-4 -rotate-90 text-primary transition-transform group-hover:-translate-x-1" />
             </Link>
 
-            {/* Sub-meta row — Drive fallback + platform note. Quieter,
-                purely informational. Em-dash separators tie everything
-                to the editorial voice instead of using pipe characters
-                or bullets. */}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-fg-muted">
+            {/* Sub-meta — platform support note. Drive lives in the
+                button now, no need to re-mention it here. */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-muted">
               <span>תומך macOS ו-Windows</span>
-              <span aria-hidden>—</span>
-              <a
-                href={DRIVE_DOWNLOAD_MAC}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-fg-secondary underline decoration-fg-faint underline-offset-4 transition-colors hover:text-fg hover:decoration-fg-muted"
-              >
-                <Cloud className="h-3 w-3" />
-                לינק Google Drive
-              </a>
             </div>
           </motion.div>
 
@@ -342,6 +353,139 @@ function HeroProductVisual() {
           <span className="tabular text-fg-faint">v1.7.3</span>
         </div>
       </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  DownloadPicker — a CTA button that, on click, reveals a small
+ *  popover anchored beneath it with two OS choices (Mac, Windows).
+ *  Used twice in the hero: once for the GitHub direct downloads
+ *  (primary copper) and once for the Drive mirror fallback
+ *  (secondary outline). Pulling them into one component keeps the
+ *  open/close + click-outside + ARIA wiring DRY between the two.
+ *
+ *  Why a popover and not two separate buttons:
+ *  - The previous layout had four separate links (Mac GH, Win GH,
+ *    Mac Drive, Win Drive) — that's a lot of CTA noise above the
+ *    fold and made the actual purchase button impossible to find.
+ *  - Now the user picks "free download" or "Drive download" first
+ *    (the meaningful decision), and only THEN picks an OS (a quick
+ *    follow-up choice). That frees up vertical space for the Pro
+ *    button to actually breathe.
+ * ───────────────────────────────────────────────────────────── */
+function DownloadPicker({
+  label,
+  icon,
+  badge,
+  macUrl,
+  winUrl,
+  variant,
+}: {
+  label: string
+  icon: React.ReactNode
+  badge?: string
+  macUrl: string
+  winUrl: string
+  variant: 'primary' | 'secondary'
+}) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Click-outside-to-close. Listening on `mousedown` (not `click`)
+  // means we react before the next click target's own handlers
+  // fire — important when one DownloadPicker is open and the user
+  // clicks the OTHER picker's button, we want this one to close
+  // FIRST so the other one can open cleanly.
+  useEffect(() => {
+    if (!open) return
+    const onPointer = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onPointer)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const triggerClass =
+    variant === 'primary' ? 'btn-primary justify-center' : 'btn-secondary justify-center'
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={`${triggerClass} w-full sm:w-auto`}
+      >
+        {icon}
+        <span>{label}</span>
+        {badge && (
+          <>
+            <span className="text-xs opacity-60">·</span>
+            <span className="text-xs opacity-70">{badge}</span>
+          </>
+        )}
+        <ChevronDown
+          className={`h-3.5 w-3.5 transition-transform ${
+            open ? 'rotate-180' : ''
+          } ${variant === 'primary' ? 'opacity-70' : 'opacity-50'}`}
+        />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.97 }}
+            transition={{ duration: 0.14, ease: 'easeOut' }}
+            role="menu"
+            className="absolute right-0 z-30 mt-2 w-full min-w-[220px] overflow-hidden rounded-xl border border-border bg-bg-card p-1 shadow-2xl shadow-black/40 sm:right-auto sm:left-0"
+          >
+            <a
+              href={macUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => setOpen(false)}
+              role="menuitem"
+              className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-fg transition-colors hover:bg-bg-elevated"
+            >
+              <Apple className="h-4 w-4 text-fg-secondary" />
+              <span className="flex-1 text-right">macOS</span>
+              <span className="text-[10px] uppercase tracking-wider text-fg-faint">
+                .dmg
+              </span>
+            </a>
+            <a
+              href={winUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => setOpen(false)}
+              role="menuitem"
+              className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-fg transition-colors hover:bg-bg-elevated"
+            >
+              <Monitor className="h-4 w-4 text-fg-secondary" />
+              <span className="flex-1 text-right">Windows</span>
+              <span className="text-[10px] uppercase tracking-wider text-fg-faint">
+                .exe
+              </span>
+            </a>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
