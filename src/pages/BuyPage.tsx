@@ -34,11 +34,49 @@ import {
 
 type Plan = 'monthly' | 'yearly'
 
-const PLANS: Record<Plan, { price: string; days: number; label: string }> = {
-  monthly: { price: '9.00', days: 30, label: 'חודשי' },
-  yearly: { price: '60.00', days: 365, label: 'שנתי' },
+/** Duration metadata that never changes per sale — days for the
+ *  Firestore expiry math, label for Hebrew display. Pricing
+ *  itself comes from the server (see `LivePricing` below). */
+const PLAN_META: Record<Plan, { days: number; label: string }> = {
+  monthly: { days: 30, label: 'חודשי' },
+  yearly: { days: 365, label: 'שנתי' },
 }
-const CURRENCY = 'ILS'
+
+interface LivePricing {
+  monthly: { regular: number; sale: number | null }
+  yearly: { regular: number; sale: number | null }
+  currency: string
+  saleLabel?: string
+}
+
+const DEFAULT_PRICING: LivePricing = {
+  monthly: { regular: 9, sale: null },
+  yearly: { regular: 60, sale: null },
+  currency: 'ILS',
+}
+
+/** Currency symbol for display. Falls back to the ISO code for
+ *  unknown currencies. */
+function currencySymbol(code: string): string {
+  if (code === 'ILS') return '₪'
+  if (code === 'USD') return '$'
+  if (code === 'EUR') return '€'
+  return code
+}
+
+/** Format a number for display next to a currency symbol. We
+ *  strip trailing zeros so `9.00` reads as `9` (the typical
+ *  whole-shekel price) but `8.50` stays as `8.50`. */
+function formatPrice(n: number): string {
+  if (Number.isInteger(n)) return String(n)
+  return n.toFixed(2).replace(/\.?0+$/, '')
+}
+
+/** The effective price a buyer actually pays — sale if active,
+ *  regular otherwise. The PayPal order amount is set from this. */
+function effectivePrice(plan: LivePricing['monthly']): number {
+  return plan.sale != null ? plan.sale : plan.regular
+}
 
 type Status =
   | { kind: 'idle' }
@@ -150,6 +188,16 @@ export function BuyPage() {
   const [renewableKeys, setRenewableKeys] = useState<RenewableKey[] | null>(
     null,
   )
+  // Live pricing — fetched from /api/pricing on mount and refreshed
+  // on focus. `null` while loading; once loaded, falls back to
+  // DEFAULT_PRICING if the request fails so the page never breaks.
+  // Refs of the pricing alongside the state value so the PayPal
+  // createOrder callback (which runs much later than the render
+  // that registered it) sees the latest prices, not a snapshot.
+  const [pricing, setPricing] = useState<LivePricing | null>(null)
+  const pricingRef = useRef<LivePricing>(DEFAULT_PRICING)
+  pricingRef.current = pricing ?? DEFAULT_PRICING
+
   const planRef = useRef(plan)
   planRef.current = plan
   const emailRef = useRef(email)
@@ -157,6 +205,40 @@ export function BuyPage() {
   const renewTokenRef = useRef<string | null>(renewToken)
   renewTokenRef.current = renewToken
   const buttonContainer = useRef<HTMLDivElement>(null)
+
+  // Fetch pricing once on mount. We don't block render on this —
+  // the page renders with `pricing=null` initially, the plan cards
+  // show a loading skeleton, and once the fetch resolves the real
+  // prices appear. Same swap-in pattern Vercel-hosted SaaS sites
+  // use to avoid CLS while waiting on dynamic data.
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const r = await fetch('/api/pricing', { cache: 'no-store' })
+        const json = (await r.json()) as
+          | ({ ok: true } & LivePricing)
+          | { ok: false; error?: string }
+        if (!alive) return
+        if (json.ok) {
+          setPricing({
+            monthly: json.monthly,
+            yearly: json.yearly,
+            currency: json.currency,
+            saleLabel: json.saleLabel,
+          })
+        } else {
+          setPricing(DEFAULT_PRICING)
+        }
+      } catch {
+        // Network down? Cached fallback so the page still works.
+        if (alive) setPricing(DEFAULT_PRICING)
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [])
 
   // Parse ?renew=<token> from the URL on mount and look it up. If
   // the token resolves, we flip into renewal mode: the email form
@@ -244,7 +326,7 @@ export function BuyPage() {
     }
     const params = new URLSearchParams({
       'client-id': clientId,
-      currency: CURRENCY,
+      currency: pricingRef.current.currency,
       intent: 'capture',
       'disable-funding': 'credit',
     })
@@ -283,12 +365,20 @@ export function BuyPage() {
           height: 48,
         },
         createOrder: (_data, actions) => {
-          const p = PLANS[planRef.current]
+          const planKey = planRef.current
+          const meta = PLAN_META[planKey]
+          const live = pricingRef.current
+          const planPricing = live[planKey]
+          const price = effectivePrice(planPricing)
           return actions.order.create({
             purchase_units: [
               {
-                amount: { value: p.price, currency_code: CURRENCY },
-                description: `ניהול הורדות פלוס — Pro ${p.label} (${p.days} ימים)`,
+                amount: {
+                  // PayPal wants strings with 2 decimal places.
+                  value: price.toFixed(2),
+                  currency_code: live.currency,
+                },
+                description: `ניהול הורדות פלוס — Pro ${meta.label} (${meta.days} ימים)`,
               },
             ],
             application_context: {
@@ -562,20 +652,28 @@ export function BuyPage() {
             active={plan === 'yearly'}
             onSelect={() => setPlan('yearly')}
             title="שנתי"
-            price="60"
+            regularPrice={pricingRef.current.yearly.regular}
+            salePrice={pricingRef.current.yearly.sale}
+            currency={pricingRef.current.currency}
+            saleLabel={pricingRef.current.saleLabel}
             cycle="לשנה"
-            note="שווה ערך ל-5 ₪/חודש"
-            badge="חיסכון 44%"
+            monthlyEquivalent
+            comparisonMonthly={pricingRef.current.monthly}
             recommended
+            loading={pricing === null}
           />
           <PlanCard
             plan="monthly"
             active={plan === 'monthly'}
             onSelect={() => setPlan('monthly')}
             title="חודשי"
-            price="9"
+            regularPrice={pricingRef.current.monthly.regular}
+            salePrice={pricingRef.current.monthly.sale}
+            currency={pricingRef.current.currency}
+            saleLabel={pricingRef.current.saleLabel}
             cycle="לחודש"
             note="מתחדש ידנית מדי 30 יום"
+            loading={pricing === null}
           />
         </div>
 
@@ -641,7 +739,7 @@ export function BuyPage() {
                             new Date(renewInfo.expiresAt).getTime(),
                             Date.now(),
                           ) +
-                            PLANS[plan].days * 86_400_000,
+                            PLAN_META[plan].days * 86_400_000,
                         ).toISOString(),
                       )}
                     </strong>{' '}
@@ -738,7 +836,11 @@ export function BuyPage() {
                     רכישת מנוי Pro
                   </span>
                   <span className="text-[11px] font-medium opacity-80">
-                    {PLANS[plan].label} · {PLANS[plan].price.replace('.00', '')} ₪
+                    {PLAN_META[plan].label} ·{' '}
+                    {formatPrice(
+                      effectivePrice(pricingRef.current[plan]),
+                    )}{' '}
+                    {currencySymbol(pricingRef.current.currency)}
                     {plan === 'yearly' && ' לשנה'}
                     {plan === 'monthly' && ' לחודש'}
                   </span>
@@ -776,7 +878,9 @@ export function BuyPage() {
                     </button>
                   </div>
                   <div className="mt-1 text-xs text-fg-faint">
-                    תוכנית: {PLANS[plan].label} · {PLANS[plan].price.replace('.00', '')} ₪
+                    תוכנית: {PLAN_META[plan].label} ·{' '}
+                    {formatPrice(effectivePrice(pricingRef.current[plan]))}{' '}
+                    {currencySymbol(pricingRef.current.currency)}
                   </div>
                 </div>
               )}
@@ -963,22 +1067,79 @@ function PlanCard({
   active,
   onSelect,
   title,
-  price,
+  regularPrice,
+  salePrice,
+  currency,
+  saleLabel,
   cycle,
   note,
-  badge,
+  monthlyEquivalent,
+  comparisonMonthly,
   recommended,
+  loading,
 }: {
   plan: Plan
   active: boolean
   onSelect: () => void
   title: string
-  price: string
+  /** The sticker price before any discount, in the currency
+   *  given. Always shown — struck-through when there's a sale. */
+  regularPrice: number
+  /** When set, this is what the buyer pays; the regular price
+   *  gets a strike-through and a "save X%" badge appears. */
+  salePrice: number | null
+  currency: string
+  /** Admin-controlled badge text for the sale (e.g. "מבצע חורף").
+   *  When set AND a sale price is active, replaces the auto-
+   *  generated "X% הנחה" label so the admin's marketing copy wins. */
+  saleLabel?: string
   cycle: string
-  note: string
-  badge?: string
+  /** Static note line at the bottom of the card. Mutually
+   *  exclusive with `monthlyEquivalent` — pass one or the other. */
+  note?: string
+  /** When true, the bottom note is auto-generated as "שווה ערך ל-X ₪/חודש"
+   *  using the effective price ÷ 12. Designed for the yearly plan to
+   *  show the per-month equivalent — gives buyers an apples-to-apples
+   *  comparison against the monthly card without manual math. */
+  monthlyEquivalent?: boolean
+  /** Used together with `monthlyEquivalent` to compute the
+   *  yearly-vs-monthly savings percent for the "חיסכון X%" badge.
+   *  The badge appears only when (a) there's no active sale (so the
+   *  "save X%" badge isn't crowding things), and (b) the effective
+   *  monthly equivalent is actually lower than buying monthly. */
+  comparisonMonthly?: { regular: number; sale: number | null }
   recommended?: boolean
+  loading?: boolean
 }) {
+  // Effective values used everywhere — these abstract away
+  // "is there a sale or not" so each render block doesn't have to
+  // repeat the conditional.
+  const onSale = salePrice != null
+  const effective = onSale ? salePrice : regularPrice
+  const sym = currencySymbol(currency)
+
+  // Save-percent computed from regular vs sale prices. We round to
+  // an integer because "29% הנחה" reads cleaner than "29.41%".
+  const savePct = onSale
+    ? Math.round(((regularPrice - salePrice) / regularPrice) * 100)
+    : 0
+
+  // Yearly-vs-monthly badge — only relevant when `comparisonMonthly`
+  // is passed (the yearly card). Compares the per-month equivalent
+  // of THIS plan's effective price against the monthly plan's
+  // effective price. Hidden if a sale badge is already showing.
+  let yearlyVsMonthly: number | null = null
+  if (monthlyEquivalent && comparisonMonthly && !onSale) {
+    const monthlyEff =
+      comparisonMonthly.sale ?? comparisonMonthly.regular
+    const thisPerMonth = effective / 12
+    if (thisPerMonth < monthlyEff) {
+      yearlyVsMonthly = Math.round(
+        ((monthlyEff - thisPerMonth) / monthlyEff) * 100,
+      )
+    }
+  }
+
   return (
     <button
       type="button"
@@ -988,28 +1149,30 @@ function PlanCard({
         active
           ? 'border-primary bg-primary/[0.06] shadow-lg'
           : 'border-border bg-bg-elevated/50 hover:border-border-strong hover:bg-bg-elevated'
-      }`}
+      } ${loading ? 'opacity-70' : ''}`}
     >
-      {/* 'מומלץ' flag — floats above the card edge like a ribbon.
-          Uses left-1/2 + -translate-x-1/2 (centring math is identical
-          in LTR and RTL, so we don't have to special-case). */}
+      {/* 'מומלץ' flag — floats above the card edge like a ribbon. */}
       {recommended && (
         <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-primary px-3 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-bg">
           ✨ מומלץ
         </span>
       )}
-      {badge && (
-        <span className="absolute left-3 top-3 rounded-full border border-success/40 bg-success/15 px-2 py-0.5 text-[10px] font-medium text-success">
-          {badge}
+
+      {/* Top-left badge — priority: sale label > sale percent >
+          yearly-vs-monthly savings. Only one shows at a time so the
+          card doesn't look like a flash-sale circular. */}
+      {onSale && (saleLabel || savePct > 0) && (
+        <span className="absolute left-3 top-3 rounded-full border border-success/50 bg-success/20 px-2 py-0.5 text-[10px] font-bold text-success">
+          {saleLabel || `${savePct}% הנחה`}
         </span>
       )}
-      {/* Title row sits flush right inside the RTL card. We rely on
-          the default justify-start: in RTL, "start" is the right edge
-          of the row, so the first DOM child (the title span) lands
-          on the right and the radio follows to its left. Adding
-          justify-end here would push the whole group to the LEFT
-          edge (the END of an RTL row) — exactly the bug this used
-          to have. */}
+      {!onSale && yearlyVsMonthly != null && yearlyVsMonthly > 0 && (
+        <span className="absolute left-3 top-3 rounded-full border border-success/40 bg-success/15 px-2 py-0.5 text-[10px] font-medium text-success">
+          חיסכון {yearlyVsMonthly}%
+        </span>
+      )}
+
+      {/* Title row. */}
       <div className="mb-3 flex items-center gap-2">
         <span className="text-base font-semibold">{title}</span>
         <div
@@ -1022,20 +1185,54 @@ function PlanCard({
           )}
         </div>
       </div>
-      {/* Price row sits flush to the right edge of the card.
-          dir="ltr" on the flex keeps the digits + currency reading
-          "60 ₪ / לשנה" (number first); justify-end pushes the whole
-          block to the right side of the parent so it lines up under
-          the title in RTL reading order. */}
-      <div
-        className="mb-1 flex items-baseline justify-end gap-1.5"
-        dir="ltr"
-      >
-        <span className="text-4xl font-bold tabular-nums">{price}</span>
-        <span className="text-lg text-fg-secondary">₪</span>
-        <span className="text-xs text-fg-muted">/ {cycle}</span>
+
+      {/* Price row — the centerpiece. When there's a sale we show
+          the regular price small and struck-through above, with the
+          effective (sale) price big below it. Sale price gets a
+          green-ish tint to reinforce "this is cheaper". When no
+          sale, the regular price renders standalone in the original
+          big copper-tinged style. */}
+      {onSale ? (
+        <div className="mb-1" dir="ltr">
+          <div className="flex items-baseline justify-end gap-1.5 text-fg-muted">
+            <span className="text-base font-medium tabular-nums line-through decoration-fg-muted/60">
+              {formatPrice(regularPrice)}
+            </span>
+            <span className="text-sm">{sym}</span>
+          </div>
+          <div className="flex items-baseline justify-end gap-1.5">
+            <span className="text-4xl font-bold tabular-nums text-success">
+              {formatPrice(salePrice)}
+            </span>
+            <span className="text-lg text-success/80">{sym}</span>
+            <span className="text-xs text-fg-muted">/ {cycle}</span>
+          </div>
+        </div>
+      ) : (
+        <div
+          className="mb-1 flex items-baseline justify-end gap-1.5"
+          dir="ltr"
+        >
+          <span className="text-4xl font-bold tabular-nums">
+            {formatPrice(regularPrice)}
+          </span>
+          <span className="text-lg text-fg-secondary">{sym}</span>
+          <span className="text-xs text-fg-muted">/ {cycle}</span>
+        </div>
+      )}
+
+      {/* Bottom note — either the static `note` prop or the auto-
+          generated monthly-equivalent calculation for the yearly
+          plan. We compute the equivalent against the EFFECTIVE
+          price (sale if active) so a yearly sale doesn't show a
+          stale "5 ₪/חודש" when it's actually less. */}
+      <div className="mt-auto text-[11px] text-fg-muted">
+        {monthlyEquivalent
+          ? `שווה ערך ל-${formatPrice(
+              Math.round((effective / 12) * 100) / 100,
+            )} ${sym}/חודש`
+          : note}
       </div>
-      <div className="mt-auto text-[11px] text-fg-muted">{note}</div>
     </button>
   )
 }

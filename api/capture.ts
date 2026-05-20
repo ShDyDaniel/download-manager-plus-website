@@ -3,6 +3,7 @@ import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
 import nodemailer from 'nodemailer'
+import { loadCurrentPricing } from './pricing'
 
 /**
  * PayPal Smart Buttons hand the orderID back to the frontend via
@@ -49,33 +50,63 @@ const PAYPAL_BASE =
     ? 'https://api-m.sandbox.paypal.com'
     : 'https://api-m.paypal.com'
 
-const EXPECTED_CURRENCY = 'ILS'
-
-/** Two plans on /buy. The frontend posts which plan the user
- *  selected; we cross-check the captured amount against the price
- *  below before issuing a key, so a tampered frontend that swaps
- *  "yearly" for "monthly" on a 9 ₪ payment can't walk away with a
- *  365-day license.
- *
- *  `durationLabel` is the Hebrew phrase used in the buyer's email —
- *  "חודש" / "שנה" reads more naturally than "30 ימים" / "365 ימים".
- *  We still store `days` for the actual Firestore expiry math. */
-const PLANS: Record<
+/** Plan metadata that never changes per sale — duration in days
+ *  and the Hebrew label for emails. The actual price comes from
+ *  Firestore at validation time via `loadCurrentPricing()` (see
+ *  `validateCaptureAmount` below), so an admin who lowers the
+ *  price in the admin panel is honoured immediately on the next
+ *  purchase. Hardcoding price here used to mean a tampered client
+ *  could lock in the OLD price after an admin lowered it — now
+ *  the server fetches fresh on every capture. */
+const PLAN_META: Record<
   string,
-  { price: string; days: number; label: string; durationLabel: string }
+  { days: number; label: string; durationLabel: string }
 > = {
-  monthly: {
-    price: '9.00',
-    days: 30,
-    label: 'Monthly',
-    durationLabel: 'חודש',
-  },
-  yearly: {
-    price: '60.00',
-    days: 365,
-    label: 'Yearly',
-    durationLabel: 'שנה',
-  },
+  monthly: { days: 30, label: 'Monthly', durationLabel: 'חודש' },
+  yearly: { days: 365, label: 'Yearly', durationLabel: 'שנה' },
+}
+
+/** Decide whether a PayPal-captured amount is acceptable for the
+ *  given plan. The amount is valid if it equals EITHER the
+ *  current regular price OR the current sale price (when one is
+ *  active). We compare with a small epsilon because PayPal sends
+ *  back amounts as decimal strings and floating-point comparison
+ *  would reject equivalent values like "9.00" vs "9".
+ *
+ *  Returns the acceptable price set so the caller can include it
+ *  in error messages, and a boolean indicating whether the
+ *  captured amount matched. */
+async function validateCaptureAmount(
+  planKey: 'monthly' | 'yearly',
+  capturedValue: string,
+  capturedCurrency: string,
+): Promise<{
+  ok: boolean
+  expectedCurrency: string
+  acceptable: number[]
+  capturedNumber: number
+}> {
+  const pricing = await loadCurrentPricing()
+  const expectedCurrency = pricing.currency
+  if (capturedCurrency !== expectedCurrency) {
+    return {
+      ok: false,
+      expectedCurrency,
+      acceptable: [],
+      capturedNumber: parseFloat(capturedValue) || 0,
+    }
+  }
+  const plan = pricing[planKey]
+  const acceptable = [plan.regular]
+  if (plan.sale != null) acceptable.push(plan.sale)
+  const capturedNumber = parseFloat(capturedValue)
+  if (!Number.isFinite(capturedNumber)) {
+    return { ok: false, expectedCurrency, acceptable, capturedNumber: 0 }
+  }
+  // Allow 1¢ slack for any decimal-rounding artifact PayPal might
+  // introduce; real price differences are at least 1 unit apart.
+  const ok = acceptable.some((p) => Math.abs(capturedNumber - p) < 0.01)
+  return { ok, expectedCurrency, acceptable, capturedNumber }
 }
 
 let firebaseApp: App | null = null
@@ -623,12 +654,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!orderID) {
     return res.status(400).json({ ok: false, error: 'orderID חסר' })
   }
-  const plan = PLANS[planKey]
-  if (!plan) {
+  if (planKey !== 'monthly' && planKey !== 'yearly') {
     return res
       .status(400)
       .json({ ok: false, error: `תוכנית לא חוקית: ${planKey || '(ריק)'}` })
   }
+  const planMeta = PLAN_META[planKey]
 
   // Renewal mode: validate the token up-front so we can reject
   // tampered/expired tokens before charging the card.
@@ -666,17 +697,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         error: `סטטוס PayPal: ${capture.status} (לא COMPLETED)`,
       })
     }
-    // Sanity-check amount/currency. A tampered frontend could try to
-    // submit a 9 ₪ order tagged as "yearly" — this rejects it.
+    // Sanity-check amount/currency against the CURRENT pricing
+    // (regular or sale) from Firestore. A tampered frontend could
+    // try to submit a 9 ₪ order tagged as "yearly", or a 1 ₪
+    // order at all — this rejects both. Pricing is fetched fresh
+    // per capture so an admin who lowered the price in the admin
+    // panel is honoured immediately on the next purchase.
     const cap = capture.purchase_units?.[0]?.payments?.captures?.[0]
-    if (
-      !cap ||
-      cap.amount.value !== plan.price ||
-      cap.amount.currency_code !== EXPECTED_CURRENCY
-    ) {
+    if (!cap) {
       return res.status(400).json({
         ok: false,
-        error: `הסכום ששולם (${cap?.amount.value} ${cap?.amount.currency_code}) לא תואם למחיר התוכנית הנבחרת (${plan.price} ${EXPECTED_CURRENCY})`,
+        error: 'תגובת PayPal חסרת capture',
+      })
+    }
+    const validation = await validateCaptureAmount(
+      planKey,
+      cap.amount.value,
+      cap.amount.currency_code,
+    )
+    if (!validation.ok) {
+      return res.status(400).json({
+        ok: false,
+        error: `הסכום ששולם (${cap.amount.value} ${cap.amount.currency_code}) לא תואם למחיר התוכנית הנבחרת (${validation.acceptable.join(' או ')} ${validation.expectedCurrency})`,
       })
     }
 
@@ -685,13 +727,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const result = await extendLicense(
         renewClaims.key,
         planKey,
-        plan.days,
+        planMeta.days,
       )
       const sendTo = result.buyerEmail || email
       try {
         await sendRenewalEmail(
           sendTo,
-          plan.durationLabel,
+          planMeta.durationLabel,
           result.previousExpiresAt,
           result.newExpiresAt,
         )
@@ -708,14 +750,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 2b. Fresh license path — tier doesn't change between plans,
     // just the expiry window does. Compute `expiresAt` once here so
     // the email and the Firestore document agree to the millisecond.
-    const expiresAt = new Date(Date.now() + plan.days * 86_400_000)
+    const expiresAt = new Date(Date.now() + planMeta.days * 86_400_000)
     const key = await mintLicense(email, planKey, expiresAt)
 
     // 3. Email it. If sending fails we still return success because
     // the payment AND the key are real — better to ask the user to
     // contact support for resend than to refund a valid sale.
     try {
-      await sendLicenseEmail(email, key, plan.durationLabel, expiresAt)
+      await sendLicenseEmail(email, key, planMeta.durationLabel, expiresAt)
     } catch (err) {
       console.error('email send failed', err, 'key=', key)
     }
