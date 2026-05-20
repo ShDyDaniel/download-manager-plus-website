@@ -51,14 +51,14 @@ export function FAQ() {
   const [openIdx, setOpenIdx] = useState<number | null>(0)
 
   return (
-    <section className="relative border-t border-border px-6 py-24 md:py-32">
+    <section className="relative border-t border-border px-5 py-16 md:px-6 md:py-32">
       <div className="mx-auto max-w-3xl">
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, margin: '-80px' }}
           transition={{ duration: 0.45 }}
-          className="mb-12"
+          className="mb-8 md:mb-12"
         >
           <div className="label mb-5">— שאלות נפוצות</div>
           <h2

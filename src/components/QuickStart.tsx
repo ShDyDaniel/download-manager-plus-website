@@ -34,7 +34,7 @@ const STEPS = [
 
 export function QuickStart() {
   return (
-    <section className="relative border-t border-border px-6 py-24 md:py-32">
+    <section className="relative border-t border-border px-5 py-16 md:px-6 md:py-32">
       <div className="mx-auto max-w-4xl">
         {/* Section header — same editorial pattern as Features. */}
         <motion.div
@@ -42,7 +42,7 @@ export function QuickStart() {
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, margin: '-80px' }}
           transition={{ duration: 0.45 }}
-          className="mb-16"
+          className="mb-10 md:mb-16"
         >
           <div className="label mb-5">— איך מתחילים</div>
           <h2
@@ -99,30 +99,31 @@ function Step({
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: '-40px' }}
       transition={{ duration: 0.4, delay: Math.min((num - 1) * 0.06, 0.24) }}
-      className={`flex items-baseline gap-6 py-8 md:gap-10 md:py-10 ${
+      className={`flex items-baseline gap-4 py-6 md:gap-10 md:py-10 ${
         isLast ? '' : 'border-b border-border'
       }`}
     >
-      {/* Number — serif, large, muted color so it anchors the row
-          without competing with the step title. Tabular figures
-          keep "01" and "10" the same visual width. */}
+      {/* Number — large, copper, anchors the row. Tabular figures
+          keep "01" and "10" the same visual width. clamp() scales
+          it smoothly from phone (32px) to wide desktop (72px). */}
       <span
         className="font-display tabular shrink-0"
         style={{
-          fontSize: 'clamp(40px, 5vw, 72px)',
+          fontSize: 'clamp(32px, 5vw, 72px)',
           lineHeight: 1,
           color: 'var(--primary)',
           fontFeatureSettings: '"tnum"',
+          fontWeight: 600,
         }}
       >
         {String(num).padStart(2, '0')}
       </span>
 
-      {/* Content column — title in serif, body in Inter. The serif
-          step title at 2xl size matches the rhythm of the Features
-          rows so the page reads as one document. */}
+      {/* Content column — title at display weight, body in regular.
+          The step title size matches the Features row rhythm so the
+          page reads as one document. */}
       <div className="flex-1">
-        <h3 className="font-display text-2xl text-fg md:text-3xl">{title}</h3>
+        <h3 className="font-display text-xl text-fg md:text-3xl">{title}</h3>
         <p
           className="mt-2 text-[15px] text-fg-secondary md:text-base"
           style={{ lineHeight: 1.65 }}

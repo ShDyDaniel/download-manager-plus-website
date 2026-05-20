@@ -71,7 +71,7 @@ const CATEGORIES: Category[] = [
 
 export function Features() {
   return (
-    <section id="features" className="relative px-6 py-24 md:py-32">
+    <section id="features" className="relative px-5 py-16 md:px-6 md:py-32">
       <div className="mx-auto max-w-6xl">
         {/* Section header — same editorial pattern: label + display
             heading with one accent-color word (weight + warm color
@@ -81,7 +81,7 @@ export function Features() {
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, margin: '-80px' }}
           transition={{ duration: 0.45 }}
-          className="mb-16 md:mb-20"
+          className="mb-10 md:mb-20"
         >
           <div className="label mb-5">— מה התוכנה עושה</div>
           <h2
@@ -105,8 +105,9 @@ export function Features() {
             category is its own block with a numeric prefix and a
             hair-line under the title. Items below are bullet-free
             (the hyphen prefix is enough to denote a list — bullet
-            dots are an AI-default tell). */}
-        <div className="grid grid-cols-1 gap-x-16 gap-y-14 md:grid-cols-2">
+            dots are an AI-default tell). Smaller gap-y on mobile
+            keeps the four categories scannable without scrolling. */}
+        <div className="grid grid-cols-1 gap-x-16 gap-y-10 md:grid-cols-2 md:gap-y-14">
           {CATEGORIES.map((cat, idx) => (
             <CategoryBlock key={cat.num} category={cat} index={idx} />
           ))}

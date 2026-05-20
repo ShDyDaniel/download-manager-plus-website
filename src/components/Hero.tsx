@@ -44,7 +44,7 @@ export function Hero() {
   }
 
   return (
-    <section className="relative overflow-hidden px-6 pt-12 pb-20 md:pt-20 md:pb-28">
+    <section className="relative overflow-hidden px-5 pt-10 pb-14 md:px-6 md:pt-20 md:pb-28">
       {/* Single warm ambient glow, top-left in RTL = top-right in
           the visual. Intentionally minimal — one glow, not two
           competing blobs. */}
@@ -57,16 +57,42 @@ export function Hero() {
         }}
       />
 
-      <div className="relative mx-auto grid max-w-6xl items-center gap-12 md:grid-cols-[1.1fr,0.9fr] md:gap-16">
+      <div className="relative mx-auto grid max-w-6xl items-center gap-10 md:grid-cols-[1.1fr,0.9fr] md:gap-16">
         {/* TEXT COLUMN — sits on the right in RTL (DOM first). */}
         <div>
-          {/* Editorial label — uppercase mono-ish, with em-dash. The
-              dash is a deliberate magazine convention; it signals
-              "this site was art-directed, not auto-generated". */}
+          {/* Brand row — the product icon + wordmark, sitting at
+              the top of the hero. This is the "face" of the
+              software showing up before anything else; without it
+              the page reads as "some app" instead of "this app".
+              Kept compact (40px icon) so it anchors identity but
+              doesn't compete with the headline below. */}
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="mb-8 inline-flex items-center gap-3"
+          >
+            <img
+              src="./icon.png"
+              alt="לוגו ניהול הורדות פלוס"
+              className="h-10 w-10 rounded-[10px]"
+              style={{
+                boxShadow:
+                  '0 1px 0 rgba(255,255,255,0.06) inset, 0 12px 28px rgba(13,8,4,0.5)',
+              }}
+            />
+            <span className="text-[15px] font-medium text-fg">
+              ניהול הורדות פלוס
+            </span>
+          </motion.div>
+
+          {/* Editorial label — uppercase, with em-dash. The dash is
+              a deliberate magazine convention; it signals "this
+              site was art-directed, not auto-generated". */}
           <motion.div
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4 }}
+            transition={{ duration: 0.4, delay: 0.05 }}
             className="label mb-6"
           >
             ליוצרי תוכן ועורכי וידאו —
@@ -105,8 +131,8 @@ export function Hero() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.15 }}
-            className="mt-8 max-w-lg text-lg text-fg-secondary md:text-xl"
-            style={{ lineHeight: 1.5 }}
+            className="mt-6 max-w-lg text-base text-fg-secondary md:mt-8 md:text-xl"
+            style={{ lineHeight: 1.55 }}
           >
             קובץ שיורד — וידאו, סאונד, תמונה — נכנס מיד לפרויקט הנכון.
           </motion.p>
@@ -118,14 +144,20 @@ export function Hero() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.25 }}
-            className="mt-10 flex flex-col items-start gap-4"
+            className="mt-8 flex flex-col items-stretch gap-4 md:mt-10 md:items-start"
           >
-            <div className="flex flex-wrap items-center gap-3">
+            {/* CTA row — full-width buttons on mobile (they
+                stack naturally and stay tappable), inline-flex
+                on desktop. The Mac/Windows split is meaningful
+                enough that both deserve equal visual weight on
+                phones; cramming them side-by-side at 375px makes
+                each one too small for the 44pt touch target rule. */}
+            <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               <a
                 href={DOWNLOAD_MAC_GITHUB}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="btn-primary"
+                className="btn-primary justify-center"
               >
                 <Apple className="h-[18px] w-[18px]" />
                 הורד ל-Mac
@@ -136,7 +168,7 @@ export function Hero() {
                 href={DOWNLOAD_WIN_GITHUB}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="btn-secondary"
+                className="btn-secondary justify-center"
               >
                 <Monitor className="h-[18px] w-[18px]" />
                 הורד ל-Windows
@@ -176,7 +208,7 @@ export function Hero() {
             animate={{ opacity: 1 }}
             transition={{ duration: 0.5, delay: 0.4 }}
             onClick={scrollToFeatures}
-            className="mt-12 inline-flex items-center gap-2 text-xs text-fg-muted transition-colors hover:text-fg-secondary"
+            className="mt-10 inline-flex items-center gap-2 text-xs text-fg-muted transition-colors hover:text-fg-secondary md:mt-12"
           >
             <ArrowDown className="h-3 w-3" />
             איך זה עובד
@@ -186,12 +218,16 @@ export function Hero() {
         {/* VISUAL COLUMN — stylized product window. Pure CSS, no
             screenshot. The list-like rows convey "this is a tool
             that routes files" without needing real product imagery.
-            On mobile (single column) this falls below the text. */}
+            HIDDEN ON MOBILE — the mockup detail (file names, sizes,
+            routing chips) doesn't read at phone width, and the
+            vertical real estate it would consume pushes the
+            download CTA below the fold. Mobile visitors get the
+            wordmark + headline + CTA above the fold instead. */}
         <motion.div
           initial={{ opacity: 0, scale: 0.96 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.6, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
-          className="relative"
+          className="relative hidden md:block"
         >
           <HeroProductVisual />
         </motion.div>
