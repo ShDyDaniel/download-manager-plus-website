@@ -170,7 +170,6 @@ export function Hero() {
               <DownloadPicker
                 label="הורדה חינם"
                 icon={<Download className="h-[18px] w-[18px]" />}
-                badge="חינם"
                 macUrl={DOWNLOAD_MAC_GITHUB}
                 winUrl={DOWNLOAD_WIN_GITHUB}
                 variant="primary"
@@ -184,25 +183,17 @@ export function Hero() {
               />
             </div>
 
-            {/* Visual separator + Pro CTA. The thin border + small
-                "או" (or) tag makes it visually clear that the buy
-                button is an alternative path, not just another item
-                in the list. The Pro button itself is full-width on
-                mobile and sized for proper prominence on desktop —
-                accent-on-accent background + Crown + price line
-                + arrow so it reads as an obvious purchase button at
-                a glance. */}
-            <div className="mt-2 flex items-center gap-3 sm:max-w-md">
-              <div className="h-px flex-1 bg-border" />
-              <span className="text-[10px] uppercase tracking-[0.16em] text-fg-faint">
-                או
-              </span>
-              <div className="h-px flex-1 bg-border" />
-            </div>
-
+            {/* Pro CTA. Full-width on mobile, sized for proper
+                prominence on desktop — accent-on-accent background
+                + Crown + price line + arrow so it reads as an
+                obvious purchase button at a glance. Spacing alone
+                (mt-2) is enough to separate it from the download
+                row above; the "או" divider that used to live here
+                was clutter — the Crown icon + gradient already
+                signal "different kind of action". */}
             <Link
               to="/buy"
-              className="group relative flex items-center justify-center gap-3 overflow-hidden rounded-2xl border border-primary/60 bg-gradient-to-l from-primary/15 to-primary/5 px-6 py-4 text-base font-semibold text-fg shadow-lg shadow-primary/10 transition-all hover:border-primary hover:from-primary/25 hover:to-primary/10 hover:shadow-xl hover:shadow-primary/20 sm:self-stretch sm:max-w-md"
+              className="group relative mt-2 flex items-center justify-center gap-3 overflow-hidden rounded-2xl border border-primary/60 bg-gradient-to-l from-primary/15 to-primary/5 px-6 py-4 text-base font-semibold text-fg shadow-lg shadow-primary/10 transition-all hover:border-primary hover:from-primary/25 hover:to-primary/10 hover:shadow-xl hover:shadow-primary/20 sm:self-stretch sm:max-w-md"
             >
               <Crown className="h-5 w-5 text-primary" />
               <span className="flex items-baseline gap-2">
