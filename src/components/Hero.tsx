@@ -116,7 +116,7 @@ export function Hero() {
           transition={{ duration: 0.5, delay: 0.55 }}
           className="mt-6 text-xs text-white/40"
         >
-          חינם להורדה · עובד על Apple Silicon ו-Windows x64
+          הורדה חינם * תומך mac ובwindows
         </motion.div>
 
         {/* Prominent "קנו עכשיו" CTA. Visually heavier than the
