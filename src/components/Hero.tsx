@@ -158,15 +158,17 @@ export function Hero() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.25 }}
-            className="mt-8 flex flex-col items-stretch gap-4 md:mt-10 md:items-start"
+            className="mt-8 flex w-full max-w-md flex-col items-stretch gap-4 md:mt-10"
           >
             {/* Download row — two equal-weight buttons that each
-                open an OS picker on click. Side-by-side on desktop,
-                stacked on mobile so each one keeps a 44pt touch
-                target. The picker shows up directly under the
-                button (anchored, not modal) so the user doesn't
-                lose context. */}
-            <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                open an OS picker on click. `grid-cols-2` (not flex)
+                guarantees both buttons end up the same width
+                regardless of label length — previously "הורדה חינם"
+                and "דרך Google Drive" rendered at different widths
+                because flex was auto-sizing each one to its
+                content, which looked broken next to the Pro button
+                below. Stacked on mobile for 44pt touch targets. */}
+            <div className="flex flex-col items-stretch gap-3 sm:grid sm:grid-cols-2">
               <DownloadPicker
                 label="הורדה חינם"
                 icon={<Download className="h-[18px] w-[18px]" />}
@@ -183,17 +185,14 @@ export function Hero() {
               />
             </div>
 
-            {/* Pro CTA. Full-width on mobile, sized for proper
-                prominence on desktop — accent-on-accent background
-                + Crown + price line + arrow so it reads as an
-                obvious purchase button at a glance. Spacing alone
-                (mt-2) is enough to separate it from the download
-                row above; the "או" divider that used to live here
-                was clutter — the Crown icon + gradient already
-                signal "different kind of action". */}
+            {/* Pro CTA. Stretches to the same max-width as the
+                download row above (max-w-md on the parent) so the
+                three CTAs form a tidy vertical column instead of
+                three different widths fighting each other. Crown
+                + gradient still differentiate the action. */}
             <Link
               to="/buy"
-              className="group relative mt-2 flex items-center justify-center gap-3 overflow-hidden rounded-2xl border border-primary/60 bg-gradient-to-l from-primary/15 to-primary/5 px-6 py-4 text-base font-semibold text-fg shadow-lg shadow-primary/10 transition-all hover:border-primary hover:from-primary/25 hover:to-primary/10 hover:shadow-xl hover:shadow-primary/20 sm:self-stretch sm:max-w-md"
+              className="group relative mt-2 flex items-center justify-center gap-3 overflow-hidden rounded-2xl border border-primary/60 bg-gradient-to-l from-primary/15 to-primary/5 px-6 py-4 text-base font-semibold text-fg shadow-lg shadow-primary/10 transition-all hover:border-primary hover:from-primary/25 hover:to-primary/10 hover:shadow-xl hover:shadow-primary/20"
             >
               <Crown className="h-5 w-5 text-primary" />
               <span className="flex items-baseline gap-2">
@@ -410,13 +409,13 @@ function DownloadPicker({
     variant === 'primary' ? 'btn-primary justify-center' : 'btn-secondary justify-center'
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative w-full">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className={`${triggerClass} w-full sm:w-auto`}
+        className={`${triggerClass} w-full`}
       >
         {icon}
         <span>{label}</span>
