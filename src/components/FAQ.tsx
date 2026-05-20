@@ -70,7 +70,7 @@ export function FAQ() {
             }}
           >
             עוד משהו{' '}
-            <span className="italic-serif" style={{ color: 'var(--accent)' }}>
+            <span className="accent-word">
               שתרצה לדעת
             </span>
             ?

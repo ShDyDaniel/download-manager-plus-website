@@ -8,23 +8,26 @@
  *  change later (e.g. light mode, or seasonal variants).
  * ============================================================ */
 
-/* Web font imports.
- *   - Instrument Serif  → display headings (Latin). Distinctive
- *     italic gives the editorial mood that Inter alone can't.
- *   - Frank Ruhl Libre  → Hebrew display + Hebrew body when used
- *     at large sizes. Pairs visually with Instrument Serif's
- *     classical-but-modern silhouette.
- *   - Inter             → body text + UI labels. Industry standard
- *     for legibility on screens. We keep it focused to body so the
- *     site doesn't read as "another Inter landing".
- *   - Heebo             → fallback for Hebrew body text. Wider
- *     glyph coverage than Frank Ruhl, better for small sizes.
+/* Web font imports — Rubik is the single typeface for the whole
+ * site. It carries both Hebrew and Latin glyphs from the same
+ * designer in a coordinated style, so the Hebrew side never feels
+ * like a fallback to the Latin side (the previous Frank Ruhl
+ * Libre + Inter pairing read as "two fonts pretending to be
+ * friends"). Rubik also has the weight range we need for editorial
+ * emphasis (300 light → 900 black), which lets size + weight do
+ * the work that italic used to do — italics on Hebrew slant the
+ * glyphs in a way that looks broken to a Hebrew reader, so we
+ * never use them.
+ *
+ * Inter is kept ONLY for the small "tabular" / monospace-ish
+ * editorial labels — Inter's tabular-num support is best in class
+ * and matters for prices and version numbers.
  *
  * `display=swap` lets text render in the system fallback first so
  * Largest Contentful Paint isn't blocked on font load — the cost
  * is one re-layout when the web fonts arrive, which is preferable
  * to invisible text. */
-@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Frank+Ruhl+Libre:wght@300;400;500;700&family=Inter:wght@300;400;500;600;700&family=Heebo:wght@300;400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;600;700;800;900&family=Inter:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -102,12 +105,11 @@ body,
   height: 100%;
   background-color: var(--bg);
   color: var(--fg);
-  /* Body default — Inter for Latin, Heebo for Hebrew. The browser
-   * picks Heebo when it encounters Hebrew glyphs that Inter can't
-   * render (Inter has partial Hebrew but Heebo's spacing is
-   * tuned for it). */
-  font-family: 'Inter', 'Heebo', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  font-feature-settings: 'cv11', 'ss01', 'ss03';
+  /* Body default — Rubik for everything, with system stack as
+   * fallback. Single typeface across Hebrew and Latin keeps the
+   * page visually coherent; no font swap mid-paragraph. */
+  font-family: 'Rubik', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -145,24 +147,27 @@ html {
   color: var(--bg);
 }
 
-/* Headings — Instrument Serif for Latin, Frank Ruhl Libre for
- * Hebrew. Browser picks based on glyph availability (Instrument
- * doesn't have Hebrew → Frank Ruhl renders Hebrew). The 1.05
- * line-height is intentionally tight for the display sizes; serif
- * letterforms have built-in vertical air. */
-h1, h2, h3, .display, .editorial {
-  font-family: 'Instrument Serif', 'Frank Ruhl Libre', Georgia, serif;
-  font-weight: 400;
+/* Headings — Rubik in a medium-light weight (500) for the base.
+ * The display sizes ride on Rubik's tight letterforms; we tighten
+ * letter-spacing further to compensate for optical "loosening" at
+ * very large sizes. Line-height stays at 1.05 for headlines so
+ * lines stack without unnecessary air. */
+h1, h2, h3, .display {
+  font-family: 'Rubik', system-ui, -apple-system, sans-serif;
+  font-weight: 500;
   line-height: 1.05;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.025em;
 }
 
-/* Editorial italic — used on a single word or short phrase inside
- * a heading to add the magazine "voice". Restraint matters: one
- * italic per heading max. */
-.italic-serif {
-  font-family: 'Instrument Serif', 'Frank Ruhl Libre', Georgia, serif;
-  font-style: italic;
+/* Editorial accent — used on one word or short phrase inside a
+ * heading to add emphasis. Replaces the old `italic-serif` class.
+ * Hebrew glyphs don't have a true italic — synthetic italic just
+ * slants the shapes and looks broken to a Hebrew reader — so we
+ * convey emphasis with weight + warm color instead. Same rule as
+ * before: at most one accent per heading. */
+.accent-word {
+  color: var(--accent);
+  font-weight: 700;
 }
 
 /* Tabular numbers — for prices, version numbers, anything where
@@ -173,11 +178,12 @@ h1, h2, h3, .display, .editorial {
   font-feature-settings: 'tnum';
 }
 
-/* Editorial label — small uppercase mono-style text used above
- * headings ("ESTABLISHED 2024 —", "FOR EDITORS —"). The em-dash
- * is a deliberate magazine convention. */
+/* Editorial label — small uppercase Inter text used above
+ * headings ("ESTABLISHED 2024 —", "FOR EDITORS —"). Inter holds
+ * tighter at small uppercase sizes than Rubik. The em-dash is a
+ * deliberate magazine convention. */
 .label {
-  font-family: 'Inter', sans-serif;
+  font-family: 'Inter', 'Rubik', sans-serif;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.16em;

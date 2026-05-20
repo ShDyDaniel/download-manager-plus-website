@@ -55,7 +55,7 @@ export function QuickStart() {
             }}
           >
             פחות מ
-            <span className="italic-serif" style={{ color: 'var(--accent)' }}>
+            <span className="accent-word">
               ־30 שניות
             </span>{' '}
             מהרגע שהתקנת.

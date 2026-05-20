@@ -6,10 +6,10 @@ import { Link } from 'react-router-dom'
  * Editorial-style hero. Asymmetric two-column layout (text right,
  * suggestive product visual left in RTL terms) instead of the
  * centered-everything pattern that screams "AI-generated landing
- * page". The display headline uses Instrument Serif / Frank Ruhl
- * Libre (Hebrew fallback) at clamp() sizes with a single italic
- * accent word — the magazine convention of one italic per heading
- * lets the headline carry rhythm without resorting to gradient text.
+ * page". The display headline uses Rubik at clamp() sizes with a
+ * single accent-color word (no italic — Hebrew has no true italic
+ * and synthetic slant looks broken to a Hebrew reader) so emphasis
+ * comes from weight + color, not from leaning glyphs.
  */
 
 // Hardcoded download URLs for the current release. Update both the
@@ -72,12 +72,11 @@ export function Hero() {
             ליוצרי תוכן ועורכי וידאו —
           </motion.div>
 
-          {/* Display headline — serif, massive, with one italic word.
-              clamp() keeps it readable from 375px to 2560px without
-              breakpoint babysitting. line-height is intentionally
-              tight (1.0) because serif glyphs already have built-in
-              vertical air; the standard 1.5 looks airy and amateur
-              at this size. */}
+          {/* Display headline — Rubik, massive, with one accent
+              word in heavier weight + warm color. clamp() keeps it
+              readable from 375px to 2560px without breakpoint
+              babysitting. Line-height is tight (1.05) — at this
+              size the standard 1.5 reads as airy and amateur. */}
           <motion.h1
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -91,7 +90,7 @@ export function Hero() {
           >
             ניהול הורדות,
             <br />
-            <span className="italic-serif" style={{ color: 'var(--accent)' }}>
+            <span className="accent-word">
               סוף־סוף
             </span>{' '}
             מסודר.

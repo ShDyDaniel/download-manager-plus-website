@@ -3,15 +3,16 @@ export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
-      /* Font families wired to the design tokens. `font-display`
-       * = serif heading face (Instrument Serif → Frank Ruhl
-       * fallback for Hebrew glyphs). `font-sans` = body.
-       * Components default to font-sans via the body rule in
-       * index.css; opt in to font-display on headings. */
+      /* Font families — Rubik is the single typeface for both
+       * Hebrew and Latin. `font-display` and `font-sans` both
+       * resolve to Rubik; the distinction lives in weight (500
+       * for display, 400 for body) rather than face. Inter stays
+       * available for the small uppercase editorial labels where
+       * its tabular figures and narrow proportions help. */
       fontFamily: {
-        sans: ['Inter', 'Heebo', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
-        display: ['Instrument Serif', 'Frank Ruhl Libre', 'Georgia', 'serif'],
-        hebrew: ['Frank Ruhl Libre', 'Heebo', 'serif'],
+        sans: ['Rubik', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+        display: ['Rubik', 'system-ui', '-apple-system', 'sans-serif'],
+        label: ['Inter', 'Rubik', 'sans-serif'],
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
       },
       /* Color tokens mapped to the CSS variables in index.css.

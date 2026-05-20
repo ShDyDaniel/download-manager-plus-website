@@ -73,8 +73,9 @@ export function Features() {
   return (
     <section id="features" className="relative px-6 py-24 md:py-32">
       <div className="mx-auto max-w-6xl">
-        {/* Section header — same editorial pattern: label + serif
-            heading with one italic accent word. */}
+        {/* Section header — same editorial pattern: label + display
+            heading with one accent-color word (weight + warm color
+            instead of italic, which doesn't work on Hebrew). */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -93,7 +94,7 @@ export function Features() {
             }}
           >
             כלים שעובדים{' '}
-            <span className="italic-serif" style={{ color: 'var(--accent)' }}>
+            <span className="accent-word">
               ברקע
             </span>
             , עבורך.
