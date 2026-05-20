@@ -1,11 +1,19 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ChevronDown } from 'lucide-react'
+import { Plus } from 'lucide-react'
+
+/**
+ * FAQ — magazine-style accordion. Hair-line dividers between items
+ * (no card backgrounds), plus icon that rotates 45° to a × on open
+ * instead of the chevron-flip that every AI landing uses. Question
+ * text in serif at a larger size than usual so it reads like a
+ * publication's Q&A column.
+ */
 
 const QA: { q: string; a: string }[] = [
   {
     q: 'התוכנה עובדת על Mac ו-Windows?',
-    a: 'כן, המערכת תומכת בווינדוס ובמק באופן מלא',
+    a: 'כן, המערכת תומכת בווינדוס ובמק באופן מלא.',
   },
   {
     q: 'התוכנה חינם?',
@@ -16,12 +24,12 @@ const QA: { q: string; a: string }[] = [
     a: 'יש מערכת חוקי ניתוב מובנית: כל סיומת קובץ מנותבת לתיקייה לפי הקטגוריה שלה (וידאו, מוזיקה, תמונה וכו\'). אפשר להוסיף או לשנות את החוקים בהגדרות.',
   },
   {
-    q: 'מה קורה אם אני אצור תיקייה ריקה בתיקיית ההורדות?',
-    a: 'התוכנה מזהה שהיא ריקה ולא נוגעת בה. רק תיקיות עם תוכן מנוטבות לפרויקט.',
+    q: 'מה קורה אם אצור תיקייה ריקה בתיקיית ההורדות?',
+    a: 'התוכנה מזהה שהיא ריקה ולא נוגעת בה. רק תיקיות עם תוכן מנותבות לפרויקט.',
   },
   {
     q: 'האם הנתונים שלי נשמרים בענן?',
-    a: 'הגדרות הניתוב, רשימת הפרויקטים שלך והקבצים שמועברים אצלך בלבד. רק פרטי החשבון (מייל, שם, סטטוס מנוי) מאוחסנים בענן לצורך אימות.',
+    a: 'הגדרות הניתוב, רשימת הפרויקטים שלך והקבצים שמועברים — אצלך בלבד. רק פרטי החשבון (מייל, שם, סטטוס מנוי) מאוחסנים בענן לצורך אימות.',
   },
   {
     q: 'אפשר להשתמש באותו חשבון בכמה מחשבים?',
@@ -33,28 +41,43 @@ const QA: { q: string; a: string }[] = [
   },
   {
     q: 'מה בדיוק עושה האינטגרציה עם תוכנת עריכה?',
-    a: 'אם אתה מגדיר את התוכנה לעבוד עם Premiere/DaVinci/Final Cut, ברגע שתפתח את העורך — התוכנה שלנו עולה ברקע אוטומטית. כך שכל קובץ שתוריד תוך כדי עבודה יישלח ישירות לפרויקט.',
+    a: 'אם מגדירים את התוכנה לעבוד עם Premiere/DaVinci/Final Cut, ברגע שפותחים את העורך — התוכנה שלנו עולה ברקע אוטומטית. כך שכל קובץ שתוריד תוך כדי עבודה יישלח ישירות לפרויקט.',
   },
 ]
 
 export function FAQ() {
+  // First question open by default — gives the section visual
+  // density on first render so it doesn't read as "nothing here".
   const [openIdx, setOpenIdx] = useState<number | null>(0)
+
   return (
-    <section className="px-6 pb-20">
+    <section className="relative border-t border-border px-6 py-24 md:py-32">
       <div className="mx-auto max-w-3xl">
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
+          initial={{ opacity: 0, y: 12 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, margin: '-80px' }}
-          transition={{ duration: 0.4 }}
-          className="mb-10 text-center"
+          transition={{ duration: 0.45 }}
+          className="mb-12"
         >
-          <h2 className="text-3xl font-bold gradient-text md:text-4xl">
-            שאלות נפוצות
+          <div className="label mb-5">— שאלות נפוצות</div>
+          <h2
+            className="font-display text-fg"
+            style={{
+              fontSize: 'clamp(34px, 5vw, 60px)',
+              lineHeight: 1.05,
+              letterSpacing: '-0.015em',
+            }}
+          >
+            עוד משהו{' '}
+            <span className="italic-serif" style={{ color: 'var(--accent)' }}>
+              שתרצה לדעת
+            </span>
+            ?
           </h2>
         </motion.div>
 
-        <div className="space-y-2">
+        <div className="border-t border-border">
           {QA.map((item, idx) => {
             const open = openIdx === idx
             return (
@@ -63,18 +86,32 @@ export function FAQ() {
                 initial={{ opacity: 0 }}
                 whileInView={{ opacity: 1 }}
                 viewport={{ once: true, margin: '-40px' }}
-                transition={{ duration: 0.3, delay: idx * 0.04 }}
-                className="glass overflow-hidden rounded-xl"
+                transition={{ duration: 0.3, delay: Math.min(idx * 0.03, 0.2) }}
+                className="border-b border-border"
               >
                 <button
                   onClick={() => setOpenIdx(open ? null : idx)}
-                  className="flex w-full items-center justify-between gap-3 px-5 py-4 text-right transition-colors hover:bg-white/[0.02]"
+                  className="flex w-full items-center justify-between gap-4 py-6 text-right transition-colors hover:opacity-80"
+                  aria-expanded={open}
                 >
-                  <span className="font-medium">{item.q}</span>
-                  <ChevronDown
-                    className={`h-4 w-4 shrink-0 text-white/50 transition-transform ${
-                      open ? 'rotate-180' : ''
+                  <span
+                    className="font-display text-fg"
+                    style={{
+                      fontSize: '20px',
+                      lineHeight: 1.3,
+                    }}
+                  >
+                    {item.q}
+                  </span>
+                  {/* Plus that rotates to × on open. The rotation is
+                      a subtle alternative to the chevron-flip that
+                      every framework component uses. */}
+                  <Plus
+                    className={`h-5 w-5 shrink-0 transition-transform duration-300 ${
+                      open ? 'rotate-45' : ''
                     }`}
+                    strokeWidth={1.5}
+                    style={{ color: 'var(--primary)' }}
                   />
                 </button>
                 <AnimatePresence initial={false}>
@@ -83,12 +120,15 @@ export function FAQ() {
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.25 }}
+                      transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
                       className="overflow-hidden"
                     >
-                      <div className="px-5 pb-4 text-sm leading-relaxed text-white/75">
+                      <p
+                        className="pb-6 text-[15px] text-fg-secondary md:text-base"
+                        style={{ lineHeight: 1.7, maxWidth: '60ch' }}
+                      >
                         {item.a}
-                      </div>
+                      </p>
                     </motion.div>
                   )}
                 </AnimatePresence>

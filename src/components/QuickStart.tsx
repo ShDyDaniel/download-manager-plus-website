@@ -1,64 +1,135 @@
 import { motion } from 'framer-motion'
 
+/**
+ * QuickStart — editorial timeline. Replaces the 2x2 card grid with
+ * a vertical numbered list. Each step is a horizontal row with the
+ * step number large and serifed on the left (visually anchoring
+ * the eye to the sequence), and the explanation on the right.
+ *
+ * Why vertical instead of grid: a 4-step onboarding IS a sequence,
+ * and a grid hides the sequence by suggesting "pick any". A
+ * numbered vertical list is the honest representation. It also
+ * gives each step room to breathe and reads more like a magazine
+ * "How to" sidebar than a SaaS landing page.
+ */
+
 const STEPS = [
   {
     title: 'יצירת פרויקט',
-    body: 'בלחיצה על "הוסף פרויקט" בחר תיקייה ראשית בדיסק שלך (למשל "פרויקט-קיץ-2026").',
+    body: 'בלחיצה על "הוסף פרויקט" בחר תיקייה ראשית בדיסק שלך (למשל "פרויקט-קיץ-2026"). זה ייקח לכם פחות מדקה.',
   },
   {
-    title: 'בחרו את הפרוייקט',
-    body: 'כל הקבצים שיגיעו לתיקיית ההורדות מעכשיו ינותבו לתיקיית הפרוייקט אוטומטית.',
+    title: 'בחירת פרויקט פעיל',
+    body: 'כל הקבצים שיגיעו לתיקיית ההורדות מעכשיו ינותבו לתיקיית הפרויקט אוטומטית — עד שתחליפו פרויקט.',
   },
   {
-    title: 'בדקו את החוקים',
-    body: 'בכרטיסיית ההגדרות אפשר לראות איזה קובץ הולך לאיזו תיקייה. אפשר לשנות לפי הצורך.',
+    title: 'בדיקת החוקים',
+    body: 'בלשונית ההגדרות אפשר לראות איזה קובץ הולך לאיזו תיקייה. אפשר לשנות, להוסיף או להסיר חוקים לפי הצורך.',
   },
   {
-    title: 'תורידו משהו',
-    body: 'תורידו קובץ כרגיל (דפדפן, יוטיוב, כל מקור) — תראו אותו עובר לתיקייה המתאימה אוטומטית בתוך שניות.',
+    title: 'הורדה ראשונה',
+    body: 'תורידו קובץ כרגיל — דפדפן, יוטיוב, כל מקור. תראו אותו עובר לתיקייה המתאימה אוטומטית בתוך שניות.',
   },
 ]
 
 export function QuickStart() {
   return (
-    <section className="px-6 pb-20">
+    <section className="relative border-t border-border px-6 py-24 md:py-32">
       <div className="mx-auto max-w-4xl">
+        {/* Section header — same editorial pattern as Features. */}
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
+          initial={{ opacity: 0, y: 12 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, margin: '-80px' }}
-          transition={{ duration: 0.4 }}
-          className="mb-10 text-center"
+          transition={{ duration: 0.45 }}
+          className="mb-16"
         >
-          <h2 className="text-3xl font-bold gradient-text md:text-4xl">
-            איך מתחילים תוך 30 שניות
+          <div className="label mb-5">— איך מתחילים</div>
+          <h2
+            className="font-display text-fg"
+            style={{
+              fontSize: 'clamp(34px, 5vw, 60px)',
+              lineHeight: 1.05,
+              letterSpacing: '-0.015em',
+              maxWidth: '640px',
+            }}
+          >
+            פחות מ
+            <span className="italic-serif" style={{ color: 'var(--accent)' }}>
+              ־30 שניות
+            </span>{' '}
+            מהרגע שהתקנת.
           </h2>
-          <p className="mt-3 text-sm text-white/60">
-            לא צריך הגדרות מורכבות, לא צריך הרשמה ארוכה.
-          </p>
         </motion.div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {/* Timeline — vertical list, numeric anchor on the right
+            (RTL means visual-right = first child in DOM). The
+            border between steps is a hair-line, not a card edge,
+            keeping the editorial feel. */}
+        <div className="space-y-0">
           {STEPS.map((s, i) => (
-            <motion.div
+            <Step
               key={s.title}
-              initial={{ opacity: 0, y: 12 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: '-40px' }}
-              transition={{ duration: 0.35, delay: i * 0.07 }}
-              className="glass relative rounded-2xl p-5"
-            >
-              <div className="mb-2 flex items-center gap-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 text-sm font-bold text-white">
-                  {i + 1}
-                </div>
-                <h3 className="text-base font-semibold">{s.title}</h3>
-              </div>
-              <p className="text-sm leading-relaxed text-white/80">{s.body}</p>
-            </motion.div>
+              num={i + 1}
+              title={s.title}
+              body={s.body}
+              isLast={i === STEPS.length - 1}
+            />
           ))}
         </div>
       </div>
     </section>
+  )
+}
+
+function Step({
+  num,
+  title,
+  body,
+  isLast,
+}: {
+  num: number
+  title: string
+  body: string
+  isLast: boolean
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: '-40px' }}
+      transition={{ duration: 0.4, delay: Math.min((num - 1) * 0.06, 0.24) }}
+      className={`flex items-baseline gap-6 py-8 md:gap-10 md:py-10 ${
+        isLast ? '' : 'border-b border-border'
+      }`}
+    >
+      {/* Number — serif, large, muted color so it anchors the row
+          without competing with the step title. Tabular figures
+          keep "01" and "10" the same visual width. */}
+      <span
+        className="font-display tabular shrink-0"
+        style={{
+          fontSize: 'clamp(40px, 5vw, 72px)',
+          lineHeight: 1,
+          color: 'var(--primary)',
+          fontFeatureSettings: '"tnum"',
+        }}
+      >
+        {String(num).padStart(2, '0')}
+      </span>
+
+      {/* Content column — title in serif, body in Inter. The serif
+          step title at 2xl size matches the rhythm of the Features
+          rows so the page reads as one document. */}
+      <div className="flex-1">
+        <h3 className="font-display text-2xl text-fg md:text-3xl">{title}</h3>
+        <p
+          className="mt-2 text-[15px] text-fg-secondary md:text-base"
+          style={{ lineHeight: 1.65 }}
+        >
+          {body}
+        </p>
+      </div>
+    </motion.div>
   )
 }

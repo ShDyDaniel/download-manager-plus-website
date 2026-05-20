@@ -474,7 +474,7 @@ export function BuyPage() {
       <div className="mx-auto max-w-3xl">
         <Link
           to="/"
-          className="mb-8 inline-flex items-center gap-2 text-sm text-white/60 transition-colors hover:text-white"
+          className="mb-8 inline-flex items-center gap-2 text-sm text-fg-muted transition-colors hover:text-fg"
         >
           <ArrowRight className="h-4 w-4" />
           חזרה לדף הבית
@@ -489,21 +489,21 @@ export function BuyPage() {
           {/* App logo — soft amber glow behind so it pops against the
               dark page background without needing a hard frame. */}
           <div className="relative mx-auto mb-5 h-20 w-20">
-            <div className="absolute inset-0 rounded-2xl bg-amber-500/20 blur-2xl" />
+            <div className="absolute inset-0 rounded-2xl blur-2xl" />
             <img
               src="/icon.png"
               alt="ניהול הורדות פלוס"
-              className="relative h-20 w-20 rounded-2xl shadow-2xl shadow-amber-900/30"
+              className="relative h-20 w-20 rounded-2xl shadow-2xl shadow-lg"
             />
           </div>
-          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-300">
+          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-primary">
             <Crown className="h-3 w-3" />
             Pro
           </div>
-          <h1 className="text-3xl font-bold gradient-text md:text-4xl">
+          <h1 className="text-3xl font-bold font-display text-fg md:text-4xl">
             בחירת התוכנית שמתאימה לך
           </h1>
-          <p className="mx-auto mt-3 max-w-2xl text-sm text-white/60 md:text-base">
+          <p className="mx-auto mt-3 max-w-2xl text-sm text-fg-muted md:text-base">
             כל הפיצ'רים פתוחים, ללא הגבלות.
           </p>
         </motion.div>
@@ -530,9 +530,9 @@ export function BuyPage() {
                   setSigninOpen(true)
                   setSigninError(null)
                 }}
-                className="group flex w-full items-center justify-center gap-2 rounded-2xl border border-cyan-400/25 bg-cyan-500/[0.06] px-4 py-3 text-sm font-medium text-cyan-100 transition-colors hover:border-cyan-400/40 hover:bg-cyan-500/[0.1]"
+                className="group flex w-full items-center justify-center gap-2 rounded-2xl border border-accent/30 bg-accent/[0.06] px-4 py-3 text-sm font-medium text-accent transition-colors hover:border-accent/50 hover:bg-accent/[0.1]"
               >
-                <RefreshCw className="h-4 w-4 text-cyan-300 transition-transform group-hover:rotate-180" />
+                <RefreshCw className="h-4 w-4 text-accent transition-transform group-hover:rotate-180" />
                 כבר יש לכם מנוי? לחידוש לחצו כאן
               </button>
             </motion.div>
@@ -575,9 +575,9 @@ export function BuyPage() {
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.1 }}
-          className="glass rounded-3xl border border-white/10 p-6 md:p-8"
+          className="card-elevated rounded-lg border-border p-6 md:p-8"
         >
-          <h2 className="mb-4 text-sm font-semibold text-white/90">
+          <h2 className="mb-4 text-sm font-medium text-fg">
             כל מה שתקבלו עם מנוי Pro:
           </h2>
           <ul className="mb-7 space-y-2 text-sm">
@@ -590,8 +590,8 @@ export function BuyPage() {
               'ניהול תשלומים והכנסות',
               'עדכונים אוטומטיים ותמיכה מועדפת',
             ].map((t) => (
-              <li key={t} className="flex items-start gap-2 text-white/85">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+              <li key={t} className="flex items-start gap-2 text-fg-secondary">
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" />
                 <span>{t}</span>
               </li>
             ))}
@@ -604,29 +604,29 @@ export function BuyPage() {
               to whichever is later: current expiry or now) happens
               server-side in /api/capture's renewal branch. */}
           {renewInfo && status.kind !== 'success' && status.kind !== 'renewed' && (
-            <div className="mb-4 rounded-2xl border border-cyan-400/25 bg-cyan-500/[0.06] p-4">
+            <div className="mb-4 rounded-2xl border border-accent/30 bg-accent/[0.05] p-4">
               <div className="flex items-start gap-3">
-                <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
+                <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
                 <div className="flex-1 text-right text-sm">
-                  <div className="font-semibold text-cyan-100">
+                  <div className="font-semibold text-accent">
                     חידוש מנוי קיים
                   </div>
-                  <div className="mt-1 text-xs text-white/70">
-                    מפתח <span className="font-mono text-white/90" dir="ltr">{renewInfo.keyMasked}</span>
+                  <div className="mt-1 text-xs text-fg-secondary">
+                    מפתח <span className="font-mono text-fg" dir="ltr">{renewInfo.keyMasked}</span>
                     {' '}· משויך ל-
-                    <span className="font-mono text-white/90" dir="ltr">{renewInfo.emailMasked}</span>
+                    <span className="font-mono text-fg" dir="ltr">{renewInfo.emailMasked}</span>
                   </div>
-                  <div className="mt-2 text-xs text-white/85">
+                  <div className="mt-2 text-xs text-fg-secondary">
                     תוקף נוכחי: <strong>{formatExpiry(renewInfo.expiresAt)}</strong>
                     {renewInfo.isExpired && (
-                      <span className="ms-2 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300">
+                      <span className="ms-2 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive">
                         פג
                       </span>
                     )}
                   </div>
-                  <div className="mt-1 text-[11px] text-white/55">
+                  <div className="mt-1 text-[11px] text-fg-muted">
                     אחרי החידוש המנוי יהיה בתוקף עד{' '}
-                    <strong className="text-white/85">
+                    <strong className="text-fg-secondary">
                       {formatExpiry(
                         new Date(
                           Math.max(
@@ -645,60 +645,60 @@ export function BuyPage() {
           )}
 
           {renewError && (
-            <div className="mb-4 rounded-2xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+            <div className="mb-4 rounded-2xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
               {renewError}
             </div>
           )}
 
           {renewLoading ? (
-            <div className="flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-amber-200">
+            <div className="flex items-center justify-center gap-2 rounded-2xl border border-border bg-bg-elevated p-5 text-primary">
               <Loader2 className="h-4 w-4 animate-spin" />
               טוען את פרטי החידוש...
             </div>
           ) : status.kind === 'renewed' ? (
-            <div className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 p-5 text-center">
-              <CheckCircle2 className="mx-auto mb-2 h-6 w-6 text-emerald-300" />
-              <div className="mb-2 text-base font-semibold text-emerald-200">
+            <div className="rounded-2xl border border-success/40 bg-success/10 p-5 text-center">
+              <CheckCircle2 className="mx-auto mb-2 h-6 w-6 text-success" />
+              <div className="mb-2 text-base font-semibold text-success">
                 המנוי הוארך בהצלחה ✓
               </div>
-              <p className="text-sm text-white/80">
+              <p className="text-sm text-fg-secondary">
                 התוקף החדש שלך:{' '}
-                <strong className="text-white">
+                <strong className="text-fg">
                   {formatExpiry(status.newExpiresAt)}
                 </strong>
               </p>
-              <p className="mt-2 text-xs text-white/60">
+              <p className="mt-2 text-xs text-fg-muted">
                 המפתח שלך נשאר אותו דבר — אין צורך לעדכן באפליקציה. שלחנו לך גם
                 מייל אישור.
               </p>
             </div>
           ) : status.kind === 'success' ? (
-            <div className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 p-5 text-center">
-              <div className="mb-2 text-base font-semibold text-emerald-200">
+            <div className="rounded-2xl border border-success/40 bg-success/10 p-5 text-center">
+              <div className="mb-2 text-base font-semibold text-success">
                 התשלום הושלם בהצלחה ✓
               </div>
-              <p className="text-sm text-white/75">
+              <p className="text-sm text-fg-secondary">
                 שלחנו לך מייל ל-
-                <span dir="ltr" className="font-mono text-white/90">
+                <span dir="ltr" className="font-mono text-fg">
                   {' '}
                   {status.email}{' '}
                 </span>
                 עם מפתח המוצר. פתח את התוכנה, לחץ "מימוש מפתח מוצר" והדבק.
               </p>
-              <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/85">
+              <p className="mt-3 rounded-lg border border-primary/30 bg-primary/[0.06] px-3 py-2 text-xs text-primary">
                 💡 <strong>לא רואה את המייל?</strong> יכול להיות שהוא בספאם או
                 בקידום מכירות.
               </p>
             </div>
           ) : status.kind === 'processing' ? (
-            <div className="flex items-center justify-center gap-2 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-5 text-amber-200">
+            <div className="flex items-center justify-center gap-2 rounded-2xl border border-primary/30 bg-primary/10 p-5 text-primary">
               <Loader2 className="h-4 w-4 animate-spin" />
               מייצר עבורך מפתח ושולח במייל...
             </div>
           ) : !emailLocked ? (
             <form onSubmit={confirmEmail} className="space-y-3">
               <label className="block">
-                <span className="mb-1.5 block text-xs text-white/70">
+                <span className="mb-1.5 block text-xs text-fg-secondary">
                   כתובת מייל לקבלת המפתח
                 </span>
                 <input
@@ -708,12 +708,12 @@ export function BuyPage() {
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@example.com"
                   dir="ltr"
-                  className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-right text-base placeholder:text-white/30 focus:border-amber-400/50 focus:outline-none"
+                  className="w-full rounded-xl border border-border bg-bg-elevated px-4 py-3 text-right text-base text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none"
                 />
               </label>
               <button
                 type="submit"
-                className="w-full rounded-xl bg-gradient-to-l from-amber-500 to-orange-500 px-6 py-3 text-base font-semibold text-white shadow-lg transition-transform hover:scale-[1.01]"
+                className="w-full rounded-xl bg-primary px-6 py-3 text-base font-semibold text-bg transition-colors hover:bg-primary-hover"
               >
                 המשך לתשלום — {PLANS[plan].price.replace('.00', '')} ₪
               </button>
@@ -725,11 +725,11 @@ export function BuyPage() {
                   the email (it's bound to the existing key) — so
                   skip this summary row entirely. */}
               {!renewToken && (
-                <div className="mb-3 rounded-xl border border-white/5 bg-white/[0.03] px-4 py-2.5 text-sm">
+                <div className="mb-3 rounded-xl border border-border bg-bg-elevated px-4 py-2.5 text-sm">
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <span className="text-white/50">מייל: </span>
-                      <span dir="ltr" className="font-mono text-white/90">
+                      <span className="text-fg-muted">מייל: </span>
+                      <span dir="ltr" className="font-mono text-fg">
                         {email}
                       </span>
                     </div>
@@ -739,33 +739,33 @@ export function BuyPage() {
                         setEmailLocked(false)
                         setStatus({ kind: 'idle' })
                       }}
-                      className="text-xs text-amber-300/80 hover:text-amber-200"
+                      className="text-xs text-primary hover:text-accent"
                     >
                       שינוי
                     </button>
                   </div>
-                  <div className="mt-1 text-xs text-white/40">
+                  <div className="mt-1 text-xs text-fg-faint">
                     תוכנית: {PLANS[plan].label} · {PLANS[plan].price.replace('.00', '')} ₪
                   </div>
                 </div>
               )}
               {status.kind === 'error' && (
-                <div className="mb-3 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2.5 text-xs text-rose-200">
+                <div className="mb-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-xs text-destructive">
                   {status.message}
                 </div>
               )}
               {sdkError ? (
-                <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">
+                <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive">
                   {sdkError}
                 </div>
               ) : !sdkReady ? (
-                <div className="flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-4 text-xs text-white/60">
+                <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-elevated px-4 py-4 text-xs text-fg-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   טוען את PayPal...
                 </div>
               ) : null}
               <div id="paypal-button-container" ref={buttonContainer} />
-              <p className="mt-4 text-center text-[11px] text-white/50">
+              <p className="mt-4 text-center text-[11px] text-fg-muted">
                 התשלום מאובטח דרך PayPal. אתה לא מועבר לאתר חיצוני — חלון
                 התשלום נפתח כאן באתר.
               </p>
@@ -803,20 +803,20 @@ export function BuyPage() {
               exit={{ opacity: 0, scale: 0.96, y: 4 }}
               transition={{ duration: 0.22, ease: 'easeOut' }}
               onClick={(e) => e.stopPropagation()}
-              className="relative w-full max-w-md rounded-2xl border border-cyan-400/25 bg-zinc-950/95 p-6 shadow-2xl shadow-cyan-950/40"
+              className="relative w-full max-w-md rounded-lg border border-border bg-bg-card p-6 shadow-lg"
             >
               <button
                 type="button"
                 onClick={closeSigninPanel}
                 disabled={signinSubmitting}
-                className="absolute left-3 top-3 rounded-lg p-1.5 text-white/50 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
+                className="absolute left-3 top-3 rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-bg-elevated hover:text-fg disabled:opacity-40"
                 aria-label="סגירה"
               >
                 <X className="h-4 w-4" />
               </button>
 
-              <div className="mb-4 flex items-center gap-2 pe-8 text-base font-semibold text-cyan-100">
-                <LogIn className="h-4 w-4 text-cyan-300" />
+              <div className="mb-4 flex items-center gap-2 pe-8 text-base font-semibold text-accent">
+                <LogIn className="h-4 w-4 text-accent" />
                 <span id="renew-modal-title">חידוש מנוי קיים</span>
               </div>
 
@@ -825,7 +825,7 @@ export function BuyPage() {
                   renewal flow with that key. */}
               {renewableKeys ? (
                 <div className="space-y-2">
-                  <p className="mb-1 text-xs text-white/65">
+                  <p className="mb-1 text-xs text-fg-muted">
                     בחרו את המפתח לחידוש:
                   </p>
                   {renewableKeys.map((k) => (
@@ -833,35 +833,35 @@ export function BuyPage() {
                       key={k.key}
                       type="button"
                       onClick={() => pickRenewableKey(k)}
-                      className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-right transition-colors hover:border-cyan-400/40 hover:bg-cyan-500/[0.08]"
+                      className="flex w-full items-center justify-between gap-3 rounded-md border border-border bg-bg-elevated px-4 py-3 text-right transition-colors hover:border-accent/40 hover:bg-accent/[0.05]"
                     >
                       <div className="min-w-0 flex-1">
                         <div
-                          className="font-mono text-sm text-white/90"
+                          className="font-mono text-sm text-fg"
                           dir="ltr"
                         >
                           {k.keyMasked}
                         </div>
-                        <div className="mt-0.5 text-[11px] text-white/55">
+                        <div className="mt-0.5 text-[11px] text-fg-muted">
                           תוקף נוכחי: {formatExpiry(k.expiresAt)}
                           {k.isExpired && (
-                            <span className="ms-2 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300">
+                            <span className="ms-2 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive">
                               פג
                             </span>
                           )}
                         </div>
                       </div>
-                      <KeyRound className="h-4 w-4 shrink-0 text-cyan-300" />
+                      <KeyRound className="h-4 w-4 shrink-0 text-accent" />
                     </button>
                   ))}
                 </div>
               ) : (
                 <form onSubmit={submitSignin} className="space-y-3">
-                  <p className="text-xs text-white/65">
+                  <p className="text-xs text-fg-muted">
                     התחברו עם החשבון שאיתו מימשתם את המפתח כדי לחדש את התוקף.
                   </p>
                   <label className="block">
-                    <span className="mb-1 block text-[11px] text-white/60">
+                    <span className="mb-1 block text-[11px] text-fg-muted">
                       אימייל
                     </span>
                     <input
@@ -874,11 +874,11 @@ export function BuyPage() {
                       dir="ltr"
                       disabled={signinSubmitting}
                       autoFocus
-                      className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm placeholder:text-white/30 focus:border-cyan-400/50 focus:outline-none disabled:opacity-60"
+                      className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
                     />
                   </label>
                   <label className="block">
-                    <span className="mb-1 block text-[11px] text-white/60">
+                    <span className="mb-1 block text-[11px] text-fg-muted">
                       סיסמה
                     </span>
                     <input
@@ -889,18 +889,18 @@ export function BuyPage() {
                       onChange={(e) => setSigninPassword(e.target.value)}
                       dir="ltr"
                       disabled={signinSubmitting}
-                      className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm placeholder:text-white/30 focus:border-cyan-400/50 focus:outline-none disabled:opacity-60"
+                      className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
                     />
                   </label>
                   {signinError && (
-                    <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                    <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                       {signinError}
                     </div>
                   )}
                   <button
                     type="submit"
                     disabled={signinSubmitting}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-l from-cyan-500 to-sky-500 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition-transform hover:scale-[1.005] disabled:cursor-not-allowed disabled:opacity-60"
+                    className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {signinSubmitting ? (
                       <>
@@ -914,7 +914,7 @@ export function BuyPage() {
                       </>
                     )}
                   </button>
-                  <p className="text-center text-[10px] text-white/45">
+                  <p className="text-center text-[10px] text-fg-faint">
                     שכחתם סיסמה? פתחו את התוכנה ולחצו &quot;שכחתי סיסמה&quot;
                     בחלון ההתחברות.
                   </p>
@@ -955,20 +955,20 @@ function PlanCard({
       dir="rtl"
       className={`relative rounded-2xl border p-5 text-right transition-all ${
         active
-          ? 'border-amber-400/50 bg-amber-500/[0.08] shadow-lg shadow-amber-900/20'
-          : 'border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]'
+          ? 'border-primary bg-primary/[0.06] shadow-lg'
+          : 'border-border bg-bg-elevated/50 hover:border-border-strong hover:bg-bg-elevated'
       } ${recommended ? 'mt-3' : ''}`}
     >
       {/* 'מומלץ' flag — floats above the card edge like a ribbon.
           Uses left-1/2 + -translate-x-1/2 (centring math is identical
           in LTR and RTL, so we don't have to special-case). */}
       {recommended && (
-        <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-gradient-to-l from-amber-500 to-orange-500 px-3 py-0.5 text-[10px] font-bold uppercase tracking-wider text-zinc-950 shadow-lg shadow-amber-900/40">
+        <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-primary px-3 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-bg">
           ✨ מומלץ
         </span>
       )}
       {badge && (
-        <span className="absolute left-3 top-3 rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+        <span className="absolute left-3 top-3 rounded-full border border-success/40 bg-success/15 px-2 py-0.5 text-[10px] font-medium text-success">
           {badge}
         </span>
       )}
@@ -983,11 +983,11 @@ function PlanCard({
         <span className="text-base font-semibold">{title}</span>
         <div
           className={`h-4 w-4 shrink-0 rounded-full border-2 transition-colors ${
-            active ? 'border-amber-400 bg-amber-400' : 'border-white/30'
+            active ? 'border-primary bg-primary' : 'border-fg-faint'
           }`}
         >
           {active && (
-            <div className="m-auto mt-[3px] h-1.5 w-1.5 rounded-full bg-zinc-950" />
+            <div className="m-auto mt-[3px] h-1.5 w-1.5 rounded-full bg-bg" />
           )}
         </div>
       </div>
@@ -1001,10 +1001,10 @@ function PlanCard({
         dir="ltr"
       >
         <span className="text-4xl font-bold tabular-nums">{price}</span>
-        <span className="text-lg text-white/70">₪</span>
-        <span className="text-xs text-white/50">/ {cycle}</span>
+        <span className="text-lg text-fg-secondary">₪</span>
+        <span className="text-xs text-fg-muted">/ {cycle}</span>
       </div>
-      <div className="text-[11px] text-white/50">{note}</div>
+      <div className="text-[11px] text-fg-muted">{note}</div>
     </button>
   )
 }

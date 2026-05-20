@@ -1,6 +1,16 @@
 import { motion } from 'framer-motion'
-import { Apple, Monitor, ArrowDown, Cloud, Crown, Sparkles } from 'lucide-react'
+import { Apple, Monitor, ArrowDown, Cloud } from 'lucide-react'
 import { Link } from 'react-router-dom'
+
+/**
+ * Editorial-style hero. Asymmetric two-column layout (text right,
+ * suggestive product visual left in RTL terms) instead of the
+ * centered-everything pattern that screams "AI-generated landing
+ * page". The display headline uses Instrument Serif / Frank Ruhl
+ * Libre (Hebrew fallback) at clamp() sizes with a single italic
+ * accent word — the magazine convention of one italic per heading
+ * lets the headline carry rhythm without resorting to gradient text.
+ */
 
 // Hardcoded download URLs for the current release. Update both the
 // GitHub direct-download URLs AND the Drive fallback URLs in lockstep
@@ -17,14 +27,16 @@ const DOWNLOAD_WIN_GITHUB =
 // Google Drive fallback links — for users on networks where GitHub
 // Releases is blocked (some corporate / school / region-restricted
 // networks block raw GitHub asset hosts but allow Drive).
+// Mac fallback link is exposed in the hero sub-meta row. The
+// Windows Drive fallback link still exists in the releases repo
+// but isn't surfaced in the new editorial layout — Windows
+// already has the GitHub direct-download button alongside the
+// Mac one, and adding a second fallback row crowded the meta
+// line. Kept the const here as documentation of where to find it.
 const DRIVE_DOWNLOAD_MAC =
   'https://drive.google.com/file/d/1ezciHjhrPULWCT3VGt0dwn7bYO9A4HKP/view?usp=drive_link'
-const DRIVE_DOWNLOAD_WIN =
-  'https://drive.google.com/file/d/1c7itYDtBotF1gKSJrc17qjkEyoXMmZCM/view?usp=drive_link'
 
 export function Hero() {
-  // Smooth-scroll to the features section when the user clicks the
-  // "מה התוכנה עושה" pill at the bottom of the hero.
   const scrollToFeatures = () => {
     document
       .getElementById('features')
@@ -32,188 +44,309 @@ export function Hero() {
   }
 
   return (
-    <section className="relative px-6 pt-16 pb-24 md:pt-24 md:pb-32">
-      <div className="mx-auto max-w-5xl text-center">
-        {/* App icon */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.92 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.45, delay: 0.15 }}
-          className="mb-6 flex justify-center"
-        >
-          <img
-            src="./icon.png"
-            alt="ניהול הורדות פלוס"
-            className="h-20 w-20 rounded-2xl shadow-2xl shadow-violet-900/40 ring-1 ring-white/10 md:h-24 md:w-24"
-          />
-        </motion.div>
+    <section className="relative overflow-hidden px-6 pt-12 pb-20 md:pt-20 md:pb-28">
+      {/* Single warm ambient glow, top-left in RTL = top-right in
+          the visual. Intentionally minimal — one glow, not two
+          competing blobs. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-32 left-1/2 h-[480px] w-[680px] -translate-x-1/2 rounded-full"
+        style={{
+          background:
+            'radial-gradient(ellipse at center, rgba(184,121,79,0.18) 0%, transparent 65%)',
+        }}
+      />
 
-        {/* Headline */}
-        <motion.h1
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.2 }}
-          className="gradient-text text-4xl font-bold leading-tight md:text-6xl"
-        >
-          ניהול הורדות פלוס
-        </motion.h1>
-
-        {/* Audience tagline */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.4, delay: 0.22 }}
-          className="mt-3 text-sm font-medium text-violet-300/80 md:text-base"
-        >
-          ליוצרי תוכן ועורכי וידאו
-        </motion.div>
-
-        {/* Sub-headline — line breaks preserved exactly as the copy
-            was authored (three separate lines, each its own beat). */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.27 }}
-          className="mx-auto mt-4 max-w-2xl space-y-2 text-base leading-relaxed text-white/70 md:text-lg"
-        >
-          <p>סוף לבלגן בתיקיית ההורדות. סוף לשאלה "לאיזה פרויקט הקובץ הזה שייך"?</p>
-          <p>כל קובץ שמורידים — וידאו, סאונד, תמונה, מסמך — מנותב אוטומטית לפרויקט הפעיל ברגע שהוא יורד למחשב שלך.</p>
-          <p>פחות זמן על סידורים, יותר זמן על יצירה.</p>
-        </motion.div>
-
-        {/* Primary download buttons (GitHub Releases) */}
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.35 }}
-          className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row"
-        >
-          <DownloadButton kind="mac" href={DOWNLOAD_MAC_GITHUB} />
-          <DownloadButton kind="windows" href={DOWNLOAD_WIN_GITHUB} />
-        </motion.div>
-
-        {/* Google Drive fallback row — for users whose network blocks
-            GitHub. Smaller / quieter style so it doesn't compete
-            visually with the primary CTA, but still always visible. */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.42 }}
-          className="mt-6 flex flex-col items-center gap-3"
-        >
-          <div className="text-xs text-white/50">
-            הקישור לא עובד? אפשר להוריד גם דרך Google Drive
-          </div>
-          <div className="flex flex-col items-center justify-center gap-2 sm:flex-row sm:gap-3">
-            <DriveButton kind="mac" href={DRIVE_DOWNLOAD_MAC} />
-            <DriveButton kind="windows" href={DRIVE_DOWNLOAD_WIN} />
-          </div>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.5, delay: 0.55 }}
-          className="mt-6 text-xs text-white/40"
-        >
-          הורדה חינם * תומך mac ובwindows
-        </motion.div>
-
-        {/* Prominent "קנו עכשיו" CTA. Visually heavier than the
-            "מה התוכנה עושה" pill below it so the eye lands here
-            first when scanning the bottom of the hero. Links to
-            a dedicated `/buy` page where the user picks monthly vs
-            yearly — keeping the landing page focused on "what is
-            this app", and the purchase flow focused on conversion. */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.62 }}
-          className="mt-12"
-        >
-          <Link
-            to="/buy"
-            className="group relative inline-flex items-center gap-2.5 overflow-hidden rounded-2xl bg-gradient-to-l from-amber-500 via-orange-500 to-pink-500 px-7 py-3.5 text-base font-semibold text-white shadow-lg shadow-amber-900/30 ring-1 ring-amber-300/20 transition-all hover:scale-[1.02] hover:shadow-amber-700/40"
+      <div className="relative mx-auto grid max-w-6xl items-center gap-12 md:grid-cols-[1.1fr,0.9fr] md:gap-16">
+        {/* TEXT COLUMN — sits on the right in RTL (DOM first). */}
+        <div>
+          {/* Editorial label — uppercase mono-ish, with em-dash. The
+              dash is a deliberate magazine convention; it signals
+              "this site was art-directed, not auto-generated". */}
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="label mb-6"
           >
-            <Crown className="h-5 w-5" />
-            קנו עכשיו
-            <Sparkles className="h-4 w-4 opacity-70 transition-transform group-hover:rotate-12" />
-            {/* Sweeping shine — purely cosmetic, plays once on hover.
-                The translate moves the highlight band across the
-                button width in 700ms. */}
-            <span
-              className="pointer-events-none absolute inset-y-0 -left-1/3 w-1/3 -skew-x-12 bg-white/15 transition-transform duration-700 group-hover:translate-x-[300%]"
-              aria-hidden
-            />
-          </Link>
-        </motion.div>
+            ליוצרי תוכן ועורכי וידאו —
+          </motion.div>
 
-        {/* Scroll cue */}
-        <motion.button
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.5, delay: 0.7 }}
-          onClick={scrollToFeatures}
-          className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-xs text-white/60 transition-all hover:border-white/20 hover:text-white"
+          {/* Display headline — serif, massive, with one italic word.
+              clamp() keeps it readable from 375px to 2560px without
+              breakpoint babysitting. line-height is intentionally
+              tight (1.0) because serif glyphs already have built-in
+              vertical air; the standard 1.5 looks airy and amateur
+              at this size. */}
+          <motion.h1
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.55, delay: 0.05 }}
+            className="font-display text-fg"
+            style={{
+              fontSize: 'clamp(44px, 7.5vw, 96px)',
+              lineHeight: 1.0,
+              letterSpacing: '-0.02em',
+            }}
+          >
+            ניהול הורדות,
+            <br />
+            <span className="italic-serif" style={{ color: 'var(--accent)' }}>
+              סוף־סוף
+            </span>{' '}
+            מסודר.
+          </motion.h1>
+
+          {/* Subhead — body face, larger than usual body (18px), with
+              the muted secondary color. Em-dashes inside (used as
+              parenthetical separators) match the editorial label
+              treatment above. */}
+          <motion.p
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.15 }}
+            className="mt-8 max-w-xl text-lg text-fg-secondary md:text-xl"
+            style={{ lineHeight: 1.55 }}
+          >
+            כל קובץ שמורידים — וידאו, סאונד, תמונה — מנותב אוטומטית
+            לפרויקט הפעיל ברגע שהוא יורד. פחות סידור, יותר יצירה.
+          </motion.p>
+
+          {/* CTA row — primary download as the lead, platform switch
+              as a quiet secondary. No competing gradients, no
+              shadow-soup. Single decisive copper button. */}
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.25 }}
+            className="mt-10 flex flex-col items-start gap-4"
+          >
+            <div className="flex flex-wrap items-center gap-3">
+              <a
+                href={DOWNLOAD_MAC_GITHUB}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-primary"
+              >
+                <Apple className="h-[18px] w-[18px]" />
+                הורד ל-Mac
+                <span className="text-xs opacity-60">·</span>
+                <span className="text-xs opacity-70">חינם</span>
+              </a>
+              <a
+                href={DOWNLOAD_WIN_GITHUB}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-secondary"
+              >
+                <Monitor className="h-[18px] w-[18px]" />
+                הורד ל-Windows
+              </a>
+            </div>
+
+            {/* Sub-meta row — Drive fallback + Pro mention. Quieter.
+                Em-dash separators tie everything to the editorial
+                voice instead of using pipe characters or bullets. */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-fg-muted">
+              <span>תומך macOS ו-Windows</span>
+              <span aria-hidden>—</span>
+              <a
+                href={DRIVE_DOWNLOAD_MAC}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-fg-secondary underline decoration-fg-faint underline-offset-4 transition-colors hover:text-fg hover:decoration-fg-muted"
+              >
+                <Cloud className="h-3 w-3" />
+                לינק Google Drive
+              </a>
+              <span aria-hidden>—</span>
+              <Link
+                to="/buy"
+                className="text-fg-secondary transition-colors hover:text-accent"
+              >
+                Pro לעורך מקצועי
+              </Link>
+            </div>
+          </motion.div>
+
+          {/* Scroll cue — barely there. A bouncing arrow is the AI
+              landing page calling card; we keep the affordance but
+              make it static and small. */}
+          <motion.button
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.5, delay: 0.4 }}
+            onClick={scrollToFeatures}
+            className="mt-12 inline-flex items-center gap-2 text-xs text-fg-muted transition-colors hover:text-fg-secondary"
+          >
+            <ArrowDown className="h-3 w-3" />
+            איך זה עובד
+          </motion.button>
+        </div>
+
+        {/* VISUAL COLUMN — stylized product window. Pure CSS, no
+            screenshot. The list-like rows convey "this is a tool
+            that routes files" without needing real product imagery.
+            On mobile (single column) this falls below the text. */}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.6, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
+          className="relative"
         >
-          מה התוכנה עושה
-          <ArrowDown className="h-3.5 w-3.5 animate-bounce" />
-        </motion.button>
+          <HeroProductVisual />
+        </motion.div>
       </div>
     </section>
   )
 }
 
-function DownloadButton({
-  kind,
-  href,
-}: {
-  kind: 'mac' | 'windows'
-  href: string
-}) {
-  const Icon = kind === 'mac' ? Apple : Monitor
-  const label = kind === 'mac' ? 'הורד ל-Mac' : 'הורד ל-Windows'
-  const hue =
-    kind === 'mac'
-      ? 'from-violet-500 to-indigo-600 shadow-violet-900/40 hover:shadow-violet-700/50'
-      : 'from-blue-500 to-cyan-600 shadow-blue-900/40 hover:shadow-blue-700/50'
+/* ─────────────────────────────────────────────────────────────
+ *  Product visual — stylized window with file-routing rows.
+ *  Goal: convey the app's purpose at a glance ("downloads get
+ *  routed to projects") without needing a real screenshot. The
+ *  fake macOS-style traffic-light buttons + window chrome make
+ *  this read as "desktop application" instantly.
+ * ───────────────────────────────────────────────────────────── */
+function HeroProductVisual() {
   return (
-    <a
-      href={href}
-      target={href.startsWith('http') ? '_blank' : undefined}
-      rel={href.startsWith('http') ? 'noopener noreferrer' : undefined}
-      className={`group inline-flex min-w-[210px] items-center justify-center gap-3 rounded-xl bg-gradient-to-br ${hue} px-6 py-3.5 text-sm font-semibold text-white shadow-lg transition-all hover:brightness-110 active:scale-[0.98]`}
+    <div
+      className="card-elevated overflow-hidden"
+      style={{
+        boxShadow:
+          '0 32px 80px rgba(13,8,4,0.6), 0 8px 24px rgba(13,8,4,0.4), 0 0 0 1px rgba(245,239,230,0.06)',
+      }}
     >
-      <Icon className="h-5 w-5" />
-      <span>{label}</span>
-    </a>
+      {/* Window chrome — macOS-style traffic lights. Functional
+          appearance only; not interactive. */}
+      <div
+        className="flex items-center gap-2 border-b border-border px-4 py-3"
+        style={{ backgroundColor: 'var(--bg-card)' }}
+      >
+        <span className="h-3 w-3 rounded-full bg-destructive opacity-70" />
+        <span
+          className="h-3 w-3 rounded-full opacity-70"
+          style={{ backgroundColor: 'var(--accent)' }}
+        />
+        <span className="h-3 w-3 rounded-full bg-success opacity-70" />
+        <div className="flex-1 text-center text-xs text-fg-muted" dir="rtl">
+          ניהול הורדות פלוס — Studio.proj
+        </div>
+        <span className="w-12" aria-hidden />
+      </div>
+
+      {/* Body — column header + routed file rows. The arrow icons
+          convey routing direction. The "Music / Video / Photos"
+          tags hint at the app's project-folder model. */}
+      <div className="p-5">
+        <div
+          className="mb-4 flex items-center justify-between text-xs uppercase tracking-wider text-fg-muted"
+          dir="rtl"
+        >
+          <span>קבצים אחרונים</span>
+          <span>נותב ל־</span>
+        </div>
+
+        <div className="space-y-2.5" dir="rtl">
+          <FileRow
+            name="Interview_Cut_03.mp4"
+            size="248 MB"
+            target="Video"
+            time="now"
+            highlight
+          />
+          <FileRow
+            name="bgm_loop_dark.wav"
+            size="84 MB"
+            target="Music"
+            time="now"
+          />
+          <FileRow
+            name="thumbnail_v4.png"
+            size="2.1 MB"
+            target="Photos"
+            time="1m"
+          />
+          <FileRow
+            name="transcript_raw.txt"
+            size="36 KB"
+            target="Notes"
+            time="3m"
+          />
+          <FileRow
+            name="sfx_swoosh_long.wav"
+            size="1.4 MB"
+            target="SFX"
+            time="5m"
+          />
+        </div>
+
+        {/* Status footer — gives the window a "live app" feeling
+            with a soft pulsing dot. */}
+        <div
+          className="mt-5 flex items-center justify-between border-t border-border pt-4 text-xs text-fg-muted"
+          dir="rtl"
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{
+                backgroundColor: 'var(--success)',
+                boxShadow: '0 0 8px var(--success)',
+              }}
+            />
+            <span>במעקב — 5 פרויקטים פעילים</span>
+          </div>
+          <span className="tabular text-fg-faint">v1.7.3</span>
+        </div>
+      </div>
+    </div>
   )
 }
 
-// Quieter "outline" version of the download button, used for the
-// Google Drive fallback row. Same icons as the primary buttons so
-// the platform association stays obvious; the difference is the
-// neutral border instead of a colored gradient — keeps the user's
-// eye on the primary CTA above.
-function DriveButton({
-  kind,
-  href,
+function FileRow({
+  name,
+  size,
+  target,
+  time,
+  highlight,
 }: {
-  kind: 'mac' | 'windows'
-  href: string
+  name: string
+  size: string
+  target: string
+  time: string
+  highlight?: boolean
 }) {
-  const Icon = kind === 'mac' ? Apple : Monitor
-  const label = kind === 'mac' ? 'הורד ל-Mac דרך Drive' : 'הורד ל-Windows דרך Drive'
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group inline-flex items-center justify-center gap-2.5 rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2 text-xs font-medium text-white/80 transition-all hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
+    <div
+      className={`flex items-center justify-between gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
+        highlight ? 'bg-bg-card' : 'hover:bg-bg-card/60'
+      }`}
     >
-      <Icon className="h-3.5 w-3.5" />
-      <span>{label}</span>
-      <Cloud className="h-3.5 w-3.5 opacity-60" />
-    </a>
+      <div className="flex min-w-0 items-center gap-3">
+        <span
+          className="font-mono text-fg-secondary"
+          style={{ direction: 'ltr', unicodeBidi: 'embed' }}
+        >
+          {name}
+        </span>
+        <span className="text-xs text-fg-faint tabular">{size}</span>
+      </div>
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-fg-faint tabular">{time}</span>
+        <span
+          className="rounded-pill px-2 py-0.5 text-xs font-medium"
+          style={{
+            backgroundColor: highlight
+              ? 'var(--accent-glow)'
+              : 'rgba(245,239,230,0.04)',
+            color: highlight ? 'var(--accent)' : 'var(--fg-secondary)',
+            borderRadius: 'var(--radius-pill)',
+          }}
+        >
+          {target}
+        </span>
+      </div>
+    </div>
   )
 }

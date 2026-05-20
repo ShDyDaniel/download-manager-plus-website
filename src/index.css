@@ -1,49 +1,279 @@
+/* ============================================================
+ *  Espresso Editorial — design tokens
+ *  ────────────────────────────────────────────────────────────
+ *  Monochromatic warm palette (coffee/copper) — single color
+ *  family, no competing accents. This is what separates an
+ *  intentional design from a "let AI pick colors" landing page.
+ *  All tokens are CSS variables so retheming is a single-file
+ *  change later (e.g. light mode, or seasonal variants).
+ * ============================================================ */
+
+/* Web font imports.
+ *   - Instrument Serif  → display headings (Latin). Distinctive
+ *     italic gives the editorial mood that Inter alone can't.
+ *   - Frank Ruhl Libre  → Hebrew display + Hebrew body when used
+ *     at large sizes. Pairs visually with Instrument Serif's
+ *     classical-but-modern silhouette.
+ *   - Inter             → body text + UI labels. Industry standard
+ *     for legibility on screens. We keep it focused to body so the
+ *     site doesn't read as "another Inter landing".
+ *   - Heebo             → fallback for Hebrew body text. Wider
+ *     glyph coverage than Frank Ruhl, better for small sizes.
+ *
+ * `display=swap` lets text render in the system fallback first so
+ * Largest Contentful Paint isn't blocked on font load — the cost
+ * is one re-layout when the web fonts arrive, which is preferable
+ * to invisible text. */
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Frank+Ruhl+Libre:wght@300;400;500;700&family=Inter:wght@300;400;500;600;700&family=Heebo:wght@300;400;500;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  /* Surfaces — warm dark scale, NEVER pure black.
+   * Pure #000 causes OLED smear on dark scrolls and reads as flat
+   * cheap-OLED-TV. The 16-21-2A scale keeps brown warmth visible
+   * even on the deepest surfaces. */
+  --bg: #16110D;
+  --bg-elevated: #1F1814;
+  --bg-card: #2A211A;
+
+  /* Foreground — cream + mocha. Body text at ~95% white-on-bg
+   * gives the warm cream tone without being washed-out. */
+  --fg: #F5EFE6;
+  --fg-secondary: #C9BFA8;
+  --fg-muted: #8B8170;
+  --fg-faint: #5C5444;
+
+  /* Brand — coffee/copper progression. The 3-stop scale lets us
+   * use the same color family for default / hover / active without
+   * reaching for a different hue (which would dilute the brand). */
+  --primary: #B8794F;
+  --primary-hover: #9D6240;
+  --primary-soft: #6F4429;
+  --accent: #D4A574;
+  --accent-glow: rgba(212, 165, 116, 0.18);
+
+  /* Borders + dividers — warm-tinted alpha, NOT cool-gray. Pure
+   * white-alpha borders against this brown bg look "blue" by
+   * simultaneous-contrast. The cream-base alpha keeps the line
+   * temperature consistent with the rest of the palette. */
+  --border: rgba(245, 239, 230, 0.08);
+  --border-strong: rgba(245, 239, 230, 0.16);
+
+  /* Functional — sparingly used. */
+  --success: #7DAA6B;
+  --destructive: #C16B5F;
+
+  /* Spacing rhythm — 4pt scale. Don't invent in-between values
+   * in components; pick a step on the scale. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-24: 96px;
+  --space-32: 128px;
+
+  /* Radius — restrained. Pill (full) is reserved for chips/badges
+   * ONLY. The big-rounded-everything look is an AI-default tell.
+   * Real editorial design uses small consistent radii. */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --radius-pill: 9999px;
+
+  /* Shadow — warm-tinted so it matches the brown palette. A cool
+   * gray shadow on warm UI reads as "stuck on" rather than
+   * "emerging from" the surface. */
+  --shadow-sm: 0 1px 2px rgba(13, 8, 4, 0.4);
+  --shadow: 0 8px 24px rgba(13, 8, 4, 0.45), 0 2px 4px rgba(13, 8, 4, 0.3);
+  --shadow-lg: 0 24px 48px rgba(13, 8, 4, 0.55), 0 8px 16px rgba(13, 8, 4, 0.4);
+  --shadow-glow: 0 0 60px rgba(184, 121, 79, 0.25);
+}
 
 html,
 body,
 #root {
   height: 100%;
-  font-family: 'Heebo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background-color: var(--bg);
+  color: var(--fg);
+  /* Body default — Inter for Latin, Heebo for Hebrew. The browser
+   * picks Heebo when it encounters Hebrew glyphs that Inter can't
+   * render (Inter has partial Hebrew but Heebo's spacing is
+   * tuned for it). */
+  font-family: 'Inter', 'Heebo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 body {
-  background:
-    radial-gradient(circle at 0% 0%, rgba(99, 75, 255, 0.18), transparent 40%),
-    radial-gradient(circle at 100% 100%, rgba(255, 100, 50, 0.12), transparent 40%),
-    #0b0b14;
+  background-color: var(--bg);
+  /* Ambient atmosphere — a SINGLE warm radial gradient instead of
+   * the usual two competing blobs. Subtle, off-center, and barely
+   * visible on top of the deep espresso. Adds depth without
+   * shouting "look I have a gradient". */
+  background-image:
+    radial-gradient(
+      ellipse 80% 60% at 70% 20%,
+      rgba(184, 121, 79, 0.08) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 60% 40% at 20% 80%,
+      rgba(212, 165, 116, 0.05) 0%,
+      transparent 60%
+    );
   background-attachment: fixed;
   min-height: 100vh;
 }
 
-/* Smooth scroll for anchor links in the page */
 html {
   scroll-behavior: smooth;
 }
 
-/* Glass card style — semi-transparent panel.
-   We DON'T use backdrop-filter: blur(): it's a major scroll-jank source
-   on dense grids (every card forces the browser to re-rasterize the
-   background behind it on every scroll frame). The plain rgba+border
-   look is visually nearly identical against this dark gradient
-   background while keeping the page at a smooth 60fps.
-
-   The `will-change: auto` hint signals the browser NOT to promote these
-   to their own composite layers (default animations and transitions
-   handle their own promotion when needed) — over-promoting wastes GPU
-   memory and can paradoxically make scrolling slower. */
-.glass {
-  background-color: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+/* Selection — warm copper highlight instead of the default blue,
+ * keeping the palette pure even during text selection. */
+::selection {
+  background-color: var(--primary);
+  color: var(--bg);
 }
 
-/* Gradient text — for the hero headline. */
-.gradient-text {
-  background: linear-gradient(135deg, #ffffff 0%, rgba(255, 255, 255, 0.6) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+/* Headings — Instrument Serif for Latin, Frank Ruhl Libre for
+ * Hebrew. Browser picks based on glyph availability (Instrument
+ * doesn't have Hebrew → Frank Ruhl renders Hebrew). The 1.05
+ * line-height is intentionally tight for the display sizes; serif
+ * letterforms have built-in vertical air. */
+h1, h2, h3, .display, .editorial {
+  font-family: 'Instrument Serif', 'Frank Ruhl Libre', Georgia, serif;
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+}
+
+/* Editorial italic — used on a single word or short phrase inside
+ * a heading to add the magazine "voice". Restraint matters: one
+ * italic per heading max. */
+.italic-serif {
+  font-family: 'Instrument Serif', 'Frank Ruhl Libre', Georgia, serif;
+  font-style: italic;
+}
+
+/* Tabular numbers — for prices, version numbers, anything where
+ * digit-width matters. Inter has tabular figures built in via
+ * font-feature-settings. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* Editorial label — small uppercase mono-style text used above
+ * headings ("ESTABLISHED 2024 —", "FOR EDITORS —"). The em-dash
+ * is a deliberate magazine convention. */
+.label {
+  font-family: 'Inter', sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* Card primitive — used across components. Flat, with a single
+ * border. Glassmorphism (backdrop-filter: blur) is deliberately
+ * absent — it's overused in AI-default landings and tanks scroll
+ * perf on long pages. The warm-tint border + ambient bg gradient
+ * does the elevation work without the cost. */
+.card {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.card-elevated {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+/* Primary CTA — copper background, dark text. The combination
+ * meets WCAG AA contrast (#16110D on #B8794F ≈ 5.4:1). Hover
+ * deepens to bourbon — staying inside the brown family. */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background-color: var(--primary);
+  color: var(--bg);
+  border-radius: var(--radius);
+  padding: 14px 24px;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: -0.005em;
+  transition: background-color 180ms cubic-bezier(0.4, 0, 0.2, 1),
+              transform 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+}
+.btn-primary:hover {
+  background-color: var(--primary-hover);
+  transform: translateY(-1px);
+}
+.btn-primary:active {
+  transform: translateY(0);
+}
+
+/* Secondary CTA — outlined, cream text. */
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background-color: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 13px 23px;
+  font-weight: 500;
+  font-size: 15px;
+  transition: background-color 180ms cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+}
+.btn-secondary:hover {
+  background-color: var(--bg-elevated);
+  border-color: var(--fg-muted);
+}
+
+/* Focus rings — visible, warm-tinted, never removed. The
+ * default 2px copper outline keeps keyboard nav obvious. */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+button:focus-visible,
+a:focus-visible {
+  outline-offset: 4px;
+}
+
+/* Respect reduced motion — kills our soft animations for users
+ * who've opted out. The skill's pre-delivery checklist requires
+ * this. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

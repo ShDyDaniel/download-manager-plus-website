@@ -12,12 +12,37 @@ import {
   RefreshCw,
   Shield,
   Wallet,
+  type LucideIcon,
 } from 'lucide-react'
 
+/**
+ * Features section — editorial layout. Two intentional moves to
+ * escape the AI-default vibe:
+ *
+ *   1. No multi-color gradient icon backgrounds. Every icon uses
+ *      the same single accent stroke color. AI landings default to
+ *      a different gradient per icon to "look colorful" — which
+ *      reads as random and amateur. One color = one product.
+ *
+ *   2. Numbered items (01, 02, …) in tabular figures as a visual
+ *      anchor. Number prefixes are a magazine/editorial convention
+ *      that immediately separates this from the "card grid of
+ *      generic icons" pattern.
+ *
+ * The 13-feature count is preserved — the product does that much
+ * work and trimming it would misrepresent the app. We compensate
+ * with a 2-column layout and plenty of vertical rhythm so it
+ * scans rather than overwhelms.
+ */
+
 type FeatureDef = {
-  icon: React.ComponentType<{ className?: string }>
+  // LucideIcon = the upstream type for any `lucide-react` icon
+  // component. Using it directly lets us pass `strokeWidth`,
+  // `style`, etc. without TS rejecting the prop shape (the icons
+  // are forwardRef components and accept `string | number` for
+  // stroke width — our own ad-hoc typing was too narrow).
+  icon: LucideIcon
   title: string
-  hue: string
   body: React.ReactNode
 }
 
@@ -25,7 +50,6 @@ const FEATURES: FeatureDef[] = [
   {
     icon: FolderTree,
     title: 'מיון אוטומטי של הורדות',
-    hue: 'from-violet-500 to-indigo-500',
     body: (
       <>
         <p>
@@ -33,7 +57,7 @@ const FEATURES: FeatureDef[] = [
           (וידאו, מוזיקה, תמונה, אפקט קולי, מסמך וכו') ומעבירה אותו אוטומטית
           לתיקייה המתאימה בפרויקט הפעיל. בלי לחשוב, בלי לגרור.
         </p>
-        <p className="text-white/60">
+        <p className="text-fg-muted">
           תיקייה ריקה שיוצרים ידנית בתיקיית ההורדות — נשארת במקום.
         </p>
       </>
@@ -42,56 +66,52 @@ const FEATURES: FeatureDef[] = [
   {
     icon: Wand2,
     title: 'חוקי ניתוב מותאמים אישית',
-    hue: 'from-amber-500 to-orange-500',
     body: (
       <p>
         בהגדרות אפשר להוסיף, לערוך או למחוק חוקי ניתוב — להגדיר בדיוק איזו
         סיומת קובץ נכנסת לאיזו תיקייה. אם רוצים תיקייה ייעודית למסמכים,
         פונטים, או לכל דבר אחר — מוסיפים בלחיצה. המערכת מזהה קובץ? הקובץ עובר.
-        ירד קובץ שלא מוגדר? הקובץ עובר ל"other" (אפשר לכבות גם את זה ולהשאיר קבצים
-        לא מסווגים במקום).
+        ירד קובץ שלא מוגדר? הקובץ עובר ל-other (אפשר לכבות גם את זה ולהשאיר
+        קבצים לא מסווגים במקום).
       </p>
     ),
   },
   {
     icon: Sparkles,
     title: 'זיהוי חכם של מוזיקה לעומת אפקטים',
-    hue: 'from-fuchsia-500 to-rose-500',
     body: (
       <p>
-        מערכת חכמה שמבחינה אוטומטית בין קובץ אודיו של מוזיקה לקובץ של
-        אפקט קולי (SFX), גם אם הסיומת זהה. ככה ששירים נכנסים ל-Music ואפקטים
-        ל-Sfx — בלי שצריך להגדיר שום דבר מיוחד.
+        מערכת חכמה שמבחינה אוטומטית בין קובץ אודיו של מוזיקה לקובץ של אפקט
+        קולי (SFX), גם אם הסיומת זהה. ככה ששירים נכנסים ל-Music ואפקטים ל-Sfx
+        — בלי שצריך להגדיר שום דבר מיוחד.
       </p>
     ),
   },
   {
     icon: Youtube,
     title: 'הורדה מסרטוני וידאו',
-    hue: 'from-rose-500 to-red-600',
     body: (
       <p>
-        מדביקים קישור מיוטיוב ובוחרים: וידאו ב-MP4 (כולל בחירת איכות
-        — 4K, 1080p, 720p ועוד) או אודיו ב-MP3 בלבד. ההורדה רצה ברקע עם בר
-        התקדמות חי, ואחר כך הקובץ מנותב אוטומטית לפרויקט הפעיל.
+        מדביקים קישור מיוטיוב ובוחרים: וידאו ב-MP4 (כולל בחירת איכות — 4K,
+        1080p, 720p ועוד) או אודיו ב-MP3 בלבד. ההורדה רצה ברקע עם בר התקדמות
+        חי, ואחר כך הקובץ מנותב אוטומטית לפרויקט הפעיל.
       </p>
     ),
   },
   {
     icon: ArrowRightLeft,
     title: 'המרת קבצים בין פורמטים',
-    hue: 'from-cyan-500 to-blue-600',
     body: (
       <>
         <p>
-          ארבעה סוגי המרה מובנים: <strong>אודיו</strong> (MP3 ↔ WAV ↔ FLAC ↔ M4A),
-          <strong> תמונות</strong> (JPG ↔ PNG ↔ WebP ↔ HEIC ועוד),
-          <strong> PDF לתמונות</strong> (כל עמוד הופך לתמונה), ו-
-          <strong>וידאו</strong> (MP4 ↔ MOV ↔ MKV ↔ WebM וכל שילוב).
+          ארבעה סוגי המרה מובנים: <strong>אודיו</strong>{' '}
+          (MP3 ↔ WAV ↔ FLAC ↔ M4A), <strong>תמונות</strong>{' '}
+          (JPG ↔ PNG ↔ WebP ↔ HEIC), <strong>PDF לתמונות</strong> (כל עמוד
+          הופך לתמונה), ו-<strong>וידאו</strong> (MP4 ↔ MOV ↔ MKV ↔ WebM).
         </p>
-        <p className="text-white/60">
-          גוררים קבצים, בוחרים פורמט יעד, לוחצים המרה. אפשר להמיר עשרות
-          קבצים בבת אחת.
+        <p className="text-fg-muted">
+          גוררים קבצים, בוחרים פורמט יעד, לוחצים המרה. אפשר להמיר עשרות קבצים
+          בבת אחת.
         </p>
       </>
     ),
@@ -99,29 +119,27 @@ const FEATURES: FeatureDef[] = [
   {
     icon: Minimize2,
     title: 'דחיסת וידאו לגודל יעד',
-    hue: 'from-emerald-500 to-teal-600',
     body: (
       <p>
-        צריך להעלות סרטון לרשת חברתית עם הגבלת גודל? אין בעיה! כותבים למערכת את הגודל המבוקש והיא עושה את זה אוטומטית — עם איכות אופטימלית
+        צריך להעלות סרטון לרשת חברתית עם הגבלת גודל? כותבים למערכת את הגודל
+        המבוקש והיא עושה את זה אוטומטית — עם איכות אופטימלית למשקל היעד.
       </p>
     ),
   },
   {
     icon: FileText,
     title: 'בניית הצעות מחיר מקצועיות',
-    hue: 'from-indigo-500 to-purple-600',
     body: (
       <p>
-        מנהלים פרופיל מחירונים אישי , יוצרים הצעת
-        מחיר חדשה תוך כמה לחיצות, ושומרים אותה כ-PDF מעוצב מוכן לשליחה
-        ללקוח. תומך בהמרת מטבע חיה (USD, EUR, ILS וכו') ועיגול לסכומים שלמים.
+        מנהלים פרופיל מחירונים אישי, יוצרים הצעת מחיר חדשה תוך כמה לחיצות,
+        ושומרים אותה כ-PDF מעוצב מוכן לשליחה ללקוח. תומך בהמרת מטבע חיה
+        (USD, EUR, ILS) ועיגול לסכומים שלמים.
       </p>
     ),
   },
   {
     icon: Wallet,
     title: 'ניהול תשלומים והכנסות',
-    hue: 'from-green-500 to-emerald-600',
     body: (
       <>
         <p>
@@ -129,10 +147,9 @@ const FEATURES: FeatureDef[] = [
           שכבר התקבלו, ותוספות שנוספו תוך כדי הפרויקט. רואים בכל רגע כמה
           התקבל, כמה ממתין וכמה באיחור, מסומן בצבעים לפי סטטוס.
         </p>
-        <p className="text-white/60">
-          תומך במספר מטבעות (₪ / $ / €), מעקב מע"מ ומעשר אוטומטי, התראות
-          ללקוחות בוואטסאפ ישירות מהאפליקציה. כל המידע נשמר רק אצלך, מוצפן
-          ונעול בסיסמה או טביעת אצבע.
+        <p className="text-fg-muted">
+          מספר מטבעות (₪ / $ / €), מעקב מע"מ ומעשר, התראות ללקוחות בוואטסאפ.
+          כל המידע נשמר רק אצלך, מוצפן ונעול בסיסמה או טביעת אצבע.
         </p>
       </>
     ),
@@ -140,17 +157,15 @@ const FEATURES: FeatureDef[] = [
   {
     icon: Film,
     title: 'אינטגרציה עם תוכנת עריכה',
-    hue: 'from-pink-500 to-fuchsia-600',
     body: (
       <>
         <p>
-          אפשר לחבר את תוכנת העריכה שלך לאפליקציית (Premiere Pro, DaVinci
-          Resolve, Final Cut וכו'). ברגע שמפעילים את תוכנת העריכה, התוכנה
-          שלנו עולה ברקע אוטומטית עם הניתוב פעיל — כך שכל קובץ שמוריד תוך כדי
-          עבודה ממוין מיד לפרויקט.
+          אפשר לחבר את התוכנה לעורך שלך (Premiere Pro, DaVinci Resolve, Final
+          Cut). ברגע שמפעילים את העריכה, התוכנה עולה ברקע אוטומטית עם הניתוב
+          פעיל — כך שכל קובץ שיורד תוך כדי עבודה ממוין מיד לפרויקט.
         </p>
-        <p className="text-white/60">
-          הפעלת את תוכנת העריכה והגדרת את התוכנה על מצב ׳׳כבוי׳׳? אל תדאג המערכת תתריאה לך על זה
+        <p className="text-fg-muted">
+          הפעלת את העריכה והניתוב כבוי? תקבל התראה.
         </p>
       </>
     ),
@@ -158,45 +173,42 @@ const FEATURES: FeatureDef[] = [
   {
     icon: FolderTree,
     title: 'ניהול פרויקטים מרובים',
-    hue: 'from-amber-500 to-rose-500',
     body: (
       <p>
-        יוצרים פרויקט חדש, בוחרים את תיקיית הפרוייקט, וכל הקבצים המנותבים
-        ייכנסו לתת-תיקיות תחתיו. אפשר להחליף בין פרויקטים בלחיצה — הניתוב
-        תמיד הולך לפרויקט הפעיל בלבד.
+        יוצרים פרויקט חדש, בוחרים תיקיית בסיס, וכל הקבצים המנותבים נכנסים
+        לתת-תיקיות תחתיו. מחליפים בין פרויקטים בלחיצה — הניתוב תמיד הולך
+        לפעיל בלבד.
       </p>
     ),
   },
   {
     icon: Power,
-    title: 'הפעלה אוטומטית בהדלקת המחשב',
-    hue: 'from-sky-500 to-cyan-600',
+    title: 'הפעלה אוטומטית בהדלקה',
     body: (
       <p>
-        אפשר להגדיר שהתוכנה תיפתח בכל פעם שמדליקים את המחשב, ככה שהיא תהיה מוכנה להורדות כדי
-        לנתב אותן בלי לפתוח את החלון בעצמך.
+        אפשר להגדיר שהתוכנה תעלה עם המחשב, כך שהיא מוכנה לנתב ברגע
+        ההתחברות — בלי לפתוח חלון בעצמך.
       </p>
     ),
   },
   {
     icon: RefreshCw,
     title: 'עדכונים אוטומטיים',
-    hue: 'from-violet-500 to-purple-600',
     body: (
       <p>
-        המערכת בודקת באופן אוטומטי אם יצא עדכון חדש ומראה לך כפתור "עדכן
-        עכשיו" — בלחיצה אחת ההורדה מתחילה, תהליך ההתקנה יפתח מיד אחרי,
-        בסיום ההתקנה תוכלו להיכנס לתוכנה המעודכנת.
+        המערכת בודקת באופן אוטומטי אם יצא עדכון חדש ומציגה כפתור "עדכן עכשיו".
+        בלחיצה אחת ההורדה מתחילה, ההתקנה מתקדמת מיד אחריה, ואז התוכנה
+        המעודכנת נפתחת.
       </p>
     ),
   },
   {
     icon: Shield,
     title: 'אבטחה ופרטיות',
-    hue: 'from-teal-500 to-emerald-600',
     body: (
       <p>
-        כל הנתונים שאתם מכניסים (למעט מייל ושם) מאוחסנים אצלכם בלבד, אין לנו גישה אליהם
+        כל הנתונים שלך (למעט מייל ושם) מאוחסנים אצלך בלבד. אין לנו גישה.
+        הנתונים הרגישים מוצפנים מקומית ונעולים מאחורי סיסמה או טביעת אצבע.
       </p>
     ),
   },
@@ -204,51 +216,97 @@ const FEATURES: FeatureDef[] = [
 
 export function Features() {
   return (
-    <section id="features" className="px-6 pb-20">
+    <section id="features" className="relative px-6 py-24 md:py-32">
       <div className="mx-auto max-w-6xl">
+        {/* Section header — editorial layout: label + serif heading
+            with italic accent on a single keyword. The right-aligned
+            heading + left-floated meta line mimics a magazine
+            article opening spread. */}
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
+          initial={{ opacity: 0, y: 12 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, margin: '-80px' }}
-          transition={{ duration: 0.4 }}
-          className="mb-12 text-center"
+          transition={{ duration: 0.45 }}
+          className="mb-16 md:mb-20"
         >
-          <h2 className="text-3xl font-bold gradient-text md:text-4xl">
-            כל מה שצריך כדי לייעל את העבודה שלך
+          <div className="label mb-5">— הפיצ'רים</div>
+          <h2
+            className="font-display text-fg"
+            style={{
+              fontSize: 'clamp(34px, 5vw, 60px)',
+              lineHeight: 1.05,
+              letterSpacing: '-0.015em',
+              maxWidth: '720px',
+            }}
+          >
+            כל מה שצריך כדי לעבוד{' '}
+            <span className="italic-serif" style={{ color: 'var(--accent)' }}>
+              מהר
+            </span>
+            , ולא לבזבז זמן על סידור.
           </h2>
-          <p className="mx-auto mt-3 max-w-2xl text-sm text-white/60 md:text-base">
-            מה יש לנו במערכת בעצם?
-          </p>
         </motion.div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {FEATURES.map((f, idx) => {
-            const Icon = f.icon
-            return (
-              <motion.div
-                key={f.title}
-                initial={{ opacity: 0, y: 16 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true, margin: '-40px' }}
-                transition={{ duration: 0.35, delay: idx * 0.03 }}
-                className="glass relative overflow-hidden rounded-2xl p-5 transition-all hover:bg-white/[0.04]"
-              >
-                <div className="mb-3 flex items-center gap-3">
-                  <div
-                    className={`flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br ${f.hue} shadow-lg`}
-                  >
-                    <Icon className="h-5 w-5 text-white" />
-                  </div>
-                  <h3 className="text-base font-semibold">{f.title}</h3>
-                </div>
-                <div className="space-y-2 text-sm leading-relaxed text-white/85">
-                  {f.body}
-                </div>
-              </motion.div>
-            )
-          })}
+        {/* Feature grid — 2 columns on desktop (more breathing room
+            than the usual 3), single column on mobile. Items
+            separated by a hair-line border for a print/editorial
+            feel. */}
+        <div className="grid grid-cols-1 gap-x-12 gap-y-10 md:grid-cols-2 md:gap-y-12">
+          {FEATURES.map((f, idx) => (
+            <FeatureItem key={f.title} feature={f} index={idx} />
+          ))}
         </div>
       </div>
     </section>
+  )
+}
+
+function FeatureItem({
+  feature,
+  index,
+}: {
+  feature: FeatureDef
+  index: number
+}) {
+  const Icon = feature.icon
+  // Numeric prefix with leading zero — tabular figures for vertical
+  // alignment across rows. The "01.." prefix is the strongest
+  // signal that something was intentionally designed rather than
+  // dropped into a feature-grid template.
+  const num = String(index + 1).padStart(2, '0')
+
+  return (
+    <motion.article
+      initial={{ opacity: 0, y: 12 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: '-40px' }}
+      transition={{ duration: 0.35, delay: Math.min(index * 0.03, 0.3) }}
+      className="group"
+    >
+      <div className="mb-4 flex items-baseline justify-between gap-4">
+        <div className="flex items-baseline gap-3">
+          <span
+            className="tabular text-xs font-medium"
+            style={{ color: 'var(--fg-faint)' }}
+          >
+            {num}
+          </span>
+          <h3 className="font-display text-2xl text-fg">{feature.title}</h3>
+        </div>
+        {/* Icon — single accent color, thin stroke. Sits next to
+            the title at baseline rather than being a focal element. */}
+        <Icon
+          className="h-4 w-4 shrink-0 transition-colors"
+          strokeWidth={1.5}
+          style={{ color: 'var(--fg-faint)' }}
+        />
+      </div>
+      <div
+        className="space-y-2.5 border-t border-border pt-4 text-[15px] leading-relaxed text-fg-secondary"
+        style={{ lineHeight: 1.65 }}
+      >
+        {feature.body}
+      </div>
+    </motion.article>
   )
 }
