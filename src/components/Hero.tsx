@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Apple, Monitor, ArrowDown, Cloud } from 'lucide-react'
+import { Apple, Monitor, ArrowDown, Cloud, Crown } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 /**
@@ -175,9 +175,29 @@ export function Hero() {
               </a>
             </div>
 
-            {/* Sub-meta row — Drive fallback + Pro mention. Quieter.
-                Em-dash separators tie everything to the editorial
-                voice instead of using pipe characters or bullets. */}
+            {/* Pro purchase CTA — proper button, not the tiny text
+                link we had before. Visitors who already know they
+                want Pro need a one-click path; burying it in a meta
+                line was costing us conversions. Sits below the free
+                downloads (free is still the primary entry point)
+                but at full button weight so it reads as an actual
+                action, not a footnote. Copper-outlined to tie it
+                to the brand palette without competing with the
+                solid-copper Mac download above. */}
+            <Link
+              to="/buy"
+              className="group inline-flex items-center justify-center gap-2.5 rounded-2xl border border-primary/50 bg-primary/[0.08] px-5 py-3 text-sm font-semibold text-primary transition-all hover:border-primary hover:bg-primary/[0.14] hover:text-fg sm:self-start"
+            >
+              <Crown className="h-4 w-4" />
+              <span>רכישת מנוי Pro</span>
+              <span className="text-xs font-medium opacity-70">·</span>
+              <span className="text-xs font-medium opacity-80">מ-5 ₪/חודש</span>
+            </Link>
+
+            {/* Sub-meta row — Drive fallback + platform note. Quieter,
+                purely informational. Em-dash separators tie everything
+                to the editorial voice instead of using pipe characters
+                or bullets. */}
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-fg-muted">
               <span>תומך macOS ו-Windows</span>
               <span aria-hidden>—</span>
@@ -190,13 +210,6 @@ export function Hero() {
                 <Cloud className="h-3 w-3" />
                 לינק Google Drive
               </a>
-              <span aria-hidden>—</span>
-              <Link
-                to="/buy"
-                className="text-fg-secondary transition-colors hover:text-accent"
-              >
-                Pro לעורך מקצועי
-              </Link>
             </div>
           </motion.div>
 
