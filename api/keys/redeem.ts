@@ -137,10 +137,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       }
 
+      // Expiry check first — applies regardless of who (if anyone)
+      // redeemed it. Without this, a user who already redeemed a
+      // key that then expired would re-enter it and see a fresh
+      // "you're Pro" success message, which is wrong.
+      if (
+        data.expiresAt &&
+        new Date(data.expiresAt).getTime() < Date.now()
+      ) {
+        return { ok: false, status: 400, error: 'המפתח פג תוקף' }
+      }
+
       // Already redeemed by THIS user — idempotent success. This
       // path matters because the client used to surface "already
       // yours" as a success too (e.g. user re-runs the modal after
-      // a reload).
+      // a reload). Only reached when the key is still in force,
+      // thanks to the expiry check above.
       if (data.redeemedBy === uid) {
         return {
           ok: true,
@@ -156,13 +168,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           status: 400,
           error: 'המפתח כבר מומש על ידי משתמש אחר',
         }
-      }
-
-      if (
-        data.expiresAt &&
-        new Date(data.expiresAt).getTime() < Date.now()
-      ) {
-        return { ok: false, status: 400, error: 'המפתח פג תוקף' }
       }
 
       txn.update(ref, {
