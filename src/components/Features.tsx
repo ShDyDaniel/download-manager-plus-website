@@ -1,216 +1,71 @@
 import { motion } from 'framer-motion'
-import {
-  FolderTree,
-  Wand2,
-  Sparkles,
-  Youtube,
-  ArrowRightLeft,
-  Minimize2,
-  FileText,
-  Film,
-  Power,
-  RefreshCw,
-  Shield,
-  Wallet,
-  type LucideIcon,
-} from 'lucide-react'
 
 /**
- * Features section — editorial layout. Two intentional moves to
- * escape the AI-default vibe:
+ * Features — grouped spec sheet. Replaces the 13-card grid of
+ * multi-paragraph descriptions with four categorized columns,
+ * each item a single short line.
  *
- *   1. No multi-color gradient icon backgrounds. Every icon uses
- *      the same single accent stroke color. AI landings default to
- *      a different gradient per icon to "look colorful" — which
- *      reads as random and amateur. One color = one product.
+ * The previous version paid for every feature with three or four
+ * sentences of body copy — useful detail, but on the landing page
+ * it created a wall of text that the eye bounces off. An editorial
+ * spec sheet does the same job in roughly a tenth of the words:
+ * the reader scans the categories, sees the breadth at a glance,
+ * and downloads when convinced. Anyone who needs the explanation
+ * either expands a help doc or opens the app.
  *
- *   2. Numbered items (01, 02, …) in tabular figures as a visual
- *      anchor. Number prefixes are a magazine/editorial convention
- *      that immediately separates this from the "card grid of
- *      generic icons" pattern.
- *
- * The 13-feature count is preserved — the product does that much
- * work and trimming it would misrepresent the app. We compensate
- * with a 2-column layout and plenty of vertical rhythm so it
- * scans rather than overwhelms.
+ * Categories are intentional buckets, not just visual grouping:
+ *   01. Organization — the core workflow promise
+ *   02. Downloads & conversion — the heavy media tools
+ *   03. Business tools — the professional-grade extras
+ *   04. System — the always-on background machinery
  */
 
-type FeatureDef = {
-  // LucideIcon = the upstream type for any `lucide-react` icon
-  // component. Using it directly lets us pass `strokeWidth`,
-  // `style`, etc. without TS rejecting the prop shape (the icons
-  // are forwardRef components and accept `string | number` for
-  // stroke width — our own ad-hoc typing was too narrow).
-  icon: LucideIcon
+type Category = {
+  num: string
   title: string
-  body: React.ReactNode
+  items: string[]
 }
 
-const FEATURES: FeatureDef[] = [
+const CATEGORIES: Category[] = [
   {
-    icon: FolderTree,
-    title: 'מיון אוטומטי של הורדות',
-    body: (
-      <>
-        <p>
-          ברגע שמורידים קובץ למחשב, המערכת מזהה אותו, מבינה לאיזה סוג הוא שייך
-          (וידאו, מוזיקה, תמונה, אפקט קולי, מסמך וכו') ומעבירה אותו אוטומטית
-          לתיקייה המתאימה בפרויקט הפעיל. בלי לחשוב, בלי לגרור.
-        </p>
-        <p className="text-fg-muted">
-          תיקייה ריקה שיוצרים ידנית בתיקיית ההורדות — נשארת במקום.
-        </p>
-      </>
-    ),
+    num: '01',
+    title: 'סידור אוטומטי',
+    items: [
+      'מיון הורדות לפי קטגוריה (וידאו, אודיו, תמונה, מסמך)',
+      'חוקי ניתוב מותאמים אישית',
+      'זיהוי חכם בין מוזיקה לאפקטים קוליים',
+      'ניהול פרויקטים מרובים — החלפה בלחיצה',
+      'אינטגרציה עם Premiere / DaVinci / Final Cut',
+    ],
   },
   {
-    icon: Wand2,
-    title: 'חוקי ניתוב מותאמים אישית',
-    body: (
-      <p>
-        בהגדרות אפשר להוסיף, לערוך או למחוק חוקי ניתוב — להגדיר בדיוק איזו
-        סיומת קובץ נכנסת לאיזו תיקייה. אם רוצים תיקייה ייעודית למסמכים,
-        פונטים, או לכל דבר אחר — מוסיפים בלחיצה. המערכת מזהה קובץ? הקובץ עובר.
-        ירד קובץ שלא מוגדר? הקובץ עובר ל-other (אפשר לכבות גם את זה ולהשאיר
-        קבצים לא מסווגים במקום).
-      </p>
-    ),
+    num: '02',
+    title: 'הורדה והמרה',
+    items: [
+      'הורדה מסרטוני YouTube — וידאו או אודיו',
+      'בחירת איכות וידאו (4K · 1080p · 720p)',
+      'המרה בין פורמטי אודיו, תמונה, וידאו ו־PDF',
+      'דחיסת וידאו לגודל יעד מדויק',
+    ],
   },
   {
-    icon: Sparkles,
-    title: 'זיהוי חכם של מוזיקה לעומת אפקטים',
-    body: (
-      <p>
-        מערכת חכמה שמבחינה אוטומטית בין קובץ אודיו של מוזיקה לקובץ של אפקט
-        קולי (SFX), גם אם הסיומת זהה. ככה ששירים נכנסים ל-Music ואפקטים ל-Sfx
-        — בלי שצריך להגדיר שום דבר מיוחד.
-      </p>
-    ),
+    num: '03',
+    title: 'ניהול עסקי',
+    items: [
+      'בניית הצעות מחיר מקצועיות בייצוא PDF',
+      'מחירון אישי עם המרת מטבע חיה (₪ · $ · €)',
+      'ניהול תשלומים, תשלומים חלקיים והכנסות',
+      'התראות ללקוחות בוואטסאפ',
+    ],
   },
   {
-    icon: Youtube,
-    title: 'הורדה מסרטוני וידאו',
-    body: (
-      <p>
-        מדביקים קישור מיוטיוב ובוחרים: וידאו ב-MP4 (כולל בחירת איכות — 4K,
-        1080p, 720p ועוד) או אודיו ב-MP3 בלבד. ההורדה רצה ברקע עם בר התקדמות
-        חי, ואחר כך הקובץ מנותב אוטומטית לפרויקט הפעיל.
-      </p>
-    ),
-  },
-  {
-    icon: ArrowRightLeft,
-    title: 'המרת קבצים בין פורמטים',
-    body: (
-      <>
-        <p>
-          ארבעה סוגי המרה מובנים: <strong>אודיו</strong>{' '}
-          (MP3 ↔ WAV ↔ FLAC ↔ M4A), <strong>תמונות</strong>{' '}
-          (JPG ↔ PNG ↔ WebP ↔ HEIC), <strong>PDF לתמונות</strong> (כל עמוד
-          הופך לתמונה), ו-<strong>וידאו</strong> (MP4 ↔ MOV ↔ MKV ↔ WebM).
-        </p>
-        <p className="text-fg-muted">
-          גוררים קבצים, בוחרים פורמט יעד, לוחצים המרה. אפשר להמיר עשרות קבצים
-          בבת אחת.
-        </p>
-      </>
-    ),
-  },
-  {
-    icon: Minimize2,
-    title: 'דחיסת וידאו לגודל יעד',
-    body: (
-      <p>
-        צריך להעלות סרטון לרשת חברתית עם הגבלת גודל? כותבים למערכת את הגודל
-        המבוקש והיא עושה את זה אוטומטית — עם איכות אופטימלית למשקל היעד.
-      </p>
-    ),
-  },
-  {
-    icon: FileText,
-    title: 'בניית הצעות מחיר מקצועיות',
-    body: (
-      <p>
-        מנהלים פרופיל מחירונים אישי, יוצרים הצעת מחיר חדשה תוך כמה לחיצות,
-        ושומרים אותה כ-PDF מעוצב מוכן לשליחה ללקוח. תומך בהמרת מטבע חיה
-        (USD, EUR, ILS) ועיגול לסכומים שלמים.
-      </p>
-    ),
-  },
-  {
-    icon: Wallet,
-    title: 'ניהול תשלומים והכנסות',
-    body: (
-      <>
-        <p>
-          כל ההכנסות במקום אחד — תשלום בודד, תשלומים בתשלומים, סכומים חלקיים
-          שכבר התקבלו, ותוספות שנוספו תוך כדי הפרויקט. רואים בכל רגע כמה
-          התקבל, כמה ממתין וכמה באיחור, מסומן בצבעים לפי סטטוס.
-        </p>
-        <p className="text-fg-muted">
-          מספר מטבעות (₪ / $ / €), מעקב מע"מ ומעשר, התראות ללקוחות בוואטסאפ.
-          כל המידע נשמר רק אצלך, מוצפן ונעול בסיסמה או טביעת אצבע.
-        </p>
-      </>
-    ),
-  },
-  {
-    icon: Film,
-    title: 'אינטגרציה עם תוכנת עריכה',
-    body: (
-      <>
-        <p>
-          אפשר לחבר את התוכנה לעורך שלך (Premiere Pro, DaVinci Resolve, Final
-          Cut). ברגע שמפעילים את העריכה, התוכנה עולה ברקע אוטומטית עם הניתוב
-          פעיל — כך שכל קובץ שיורד תוך כדי עבודה ממוין מיד לפרויקט.
-        </p>
-        <p className="text-fg-muted">
-          הפעלת את העריכה והניתוב כבוי? תקבל התראה.
-        </p>
-      </>
-    ),
-  },
-  {
-    icon: FolderTree,
-    title: 'ניהול פרויקטים מרובים',
-    body: (
-      <p>
-        יוצרים פרויקט חדש, בוחרים תיקיית בסיס, וכל הקבצים המנותבים נכנסים
-        לתת-תיקיות תחתיו. מחליפים בין פרויקטים בלחיצה — הניתוב תמיד הולך
-        לפעיל בלבד.
-      </p>
-    ),
-  },
-  {
-    icon: Power,
-    title: 'הפעלה אוטומטית בהדלקה',
-    body: (
-      <p>
-        אפשר להגדיר שהתוכנה תעלה עם המחשב, כך שהיא מוכנה לנתב ברגע
-        ההתחברות — בלי לפתוח חלון בעצמך.
-      </p>
-    ),
-  },
-  {
-    icon: RefreshCw,
-    title: 'עדכונים אוטומטיים',
-    body: (
-      <p>
-        המערכת בודקת באופן אוטומטי אם יצא עדכון חדש ומציגה כפתור "עדכן עכשיו".
-        בלחיצה אחת ההורדה מתחילה, ההתקנה מתקדמת מיד אחריה, ואז התוכנה
-        המעודכנת נפתחת.
-      </p>
-    ),
-  },
-  {
-    icon: Shield,
-    title: 'אבטחה ופרטיות',
-    body: (
-      <p>
-        כל הנתונים שלך (למעט מייל ושם) מאוחסנים אצלך בלבד. אין לנו גישה.
-        הנתונים הרגישים מוצפנים מקומית ונעולים מאחורי סיסמה או טביעת אצבע.
-      </p>
-    ),
+    num: '04',
+    title: 'מערכת',
+    items: [
+      'הפעלה אוטומטית עם המחשב',
+      'עדכונים אוטומטיים בלחיצה',
+      'אבטחה — כל הנתונים מוצפנים אצלך מקומית',
+    ],
   },
 ]
 
@@ -218,10 +73,8 @@ export function Features() {
   return (
     <section id="features" className="relative px-6 py-24 md:py-32">
       <div className="mx-auto max-w-6xl">
-        {/* Section header — editorial layout: label + serif heading
-            with italic accent on a single keyword. The right-aligned
-            heading + left-floated meta line mimics a magazine
-            article opening spread. */}
+        {/* Section header — same editorial pattern: label + serif
+            heading with one italic accent word. */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -229,7 +82,7 @@ export function Features() {
           transition={{ duration: 0.45 }}
           className="mb-16 md:mb-20"
         >
-          <div className="label mb-5">— הפיצ'רים</div>
+          <div className="label mb-5">— מה התוכנה עושה</div>
           <h2
             className="font-display text-fg"
             style={{
@@ -239,21 +92,22 @@ export function Features() {
               maxWidth: '720px',
             }}
           >
-            כל מה שצריך כדי לעבוד{' '}
+            כלים שעובדים{' '}
             <span className="italic-serif" style={{ color: 'var(--accent)' }}>
-              מהר
+              ברקע
             </span>
-            , ולא לבזבז זמן על סידור.
+            , עבורך.
           </h2>
         </motion.div>
 
-        {/* Feature grid — 2 columns on desktop (more breathing room
-            than the usual 3), single column on mobile. Items
-            separated by a hair-line border for a print/editorial
-            feel. */}
-        <div className="grid grid-cols-1 gap-x-12 gap-y-10 md:grid-cols-2 md:gap-y-12">
-          {FEATURES.map((f, idx) => (
-            <FeatureItem key={f.title} feature={f} index={idx} />
+        {/* Spec sheet — 2 columns on desktop, single on mobile. Each
+            category is its own block with a numeric prefix and a
+            hair-line under the title. Items below are bullet-free
+            (the hyphen prefix is enough to denote a list — bullet
+            dots are an AI-default tell). */}
+        <div className="grid grid-cols-1 gap-x-16 gap-y-14 md:grid-cols-2">
+          {CATEGORIES.map((cat, idx) => (
+            <CategoryBlock key={cat.num} category={cat} index={idx} />
           ))}
         </div>
       </div>
@@ -261,52 +115,52 @@ export function Features() {
   )
 }
 
-function FeatureItem({
-  feature,
+function CategoryBlock({
+  category,
   index,
 }: {
-  feature: FeatureDef
+  category: Category
   index: number
 }) {
-  const Icon = feature.icon
-  // Numeric prefix with leading zero — tabular figures for vertical
-  // alignment across rows. The "01.." prefix is the strongest
-  // signal that something was intentionally designed rather than
-  // dropped into a feature-grid template.
-  const num = String(index + 1).padStart(2, '0')
-
   return (
-    <motion.article
+    <motion.div
       initial={{ opacity: 0, y: 12 }}
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: '-40px' }}
-      transition={{ duration: 0.35, delay: Math.min(index * 0.03, 0.3) }}
-      className="group"
+      transition={{ duration: 0.4, delay: Math.min(index * 0.06, 0.24) }}
     >
-      <div className="mb-4 flex items-baseline justify-between gap-4">
-        <div className="flex items-baseline gap-3">
-          <span
-            className="tabular text-xs font-medium"
-            style={{ color: 'var(--fg-faint)' }}
-          >
-            {num}
-          </span>
-          <h3 className="font-display text-2xl text-fg">{feature.title}</h3>
-        </div>
-        {/* Icon — single accent color, thin stroke. Sits next to
-            the title at baseline rather than being a focal element. */}
-        <Icon
-          className="h-4 w-4 shrink-0 transition-colors"
-          strokeWidth={1.5}
+      <div className="flex items-baseline gap-3">
+        <span
+          className="tabular text-xs font-medium"
           style={{ color: 'var(--fg-faint)' }}
-        />
+        >
+          {category.num}
+        </span>
+        <h3 className="font-display text-2xl text-fg">{category.title}</h3>
       </div>
-      <div
-        className="space-y-2.5 border-t border-border pt-4 text-[15px] leading-relaxed text-fg-secondary"
-        style={{ lineHeight: 1.65 }}
-      >
-        {feature.body}
+      <div className="mt-5 border-t border-border pt-5">
+        <ul className="space-y-3">
+          {category.items.map((item) => (
+            <li
+              key={item}
+              className="flex items-baseline gap-3 text-[15px] text-fg-secondary"
+              style={{ lineHeight: 1.55 }}
+            >
+              {/* The em-dash is the bullet. Tinted to the accent so
+                  it threads the warm color across the whole sheet
+                  without needing a colored dot per row. */}
+              <span
+                aria-hidden
+                className="shrink-0 select-none"
+                style={{ color: 'var(--accent)' }}
+              >
+                —
+              </span>
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
       </div>
-    </motion.article>
+    </motion.div>
   )
 }

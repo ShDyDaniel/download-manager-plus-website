@@ -97,19 +97,19 @@ export function Hero() {
             מסודר.
           </motion.h1>
 
-          {/* Subhead — body face, larger than usual body (18px), with
-              the muted secondary color. Em-dashes inside (used as
-              parenthetical separators) match the editorial label
-              treatment above. */}
+          {/* Subhead — one sentence. The previous three-paragraph
+              version asked the reader to commit too early; this
+              single line is the headline's logical follow-through
+              and stops there. Whatever else needs saying lives in
+              the Features section below. */}
           <motion.p
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.15 }}
-            className="mt-8 max-w-xl text-lg text-fg-secondary md:text-xl"
-            style={{ lineHeight: 1.55 }}
+            className="mt-8 max-w-lg text-lg text-fg-secondary md:text-xl"
+            style={{ lineHeight: 1.5 }}
           >
-            כל קובץ שמורידים — וידאו, סאונד, תמונה — מנותב אוטומטית
-            לפרויקט הפעיל ברגע שהוא יורד. פחות סידור, יותר יצירה.
+            קובץ שיורד — וידאו, סאונד, תמונה — נכנס מיד לפרויקט הנכון.
           </motion.p>
 
           {/* CTA row — primary download as the lead, platform switch
