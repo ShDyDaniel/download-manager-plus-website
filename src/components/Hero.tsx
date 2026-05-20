@@ -29,22 +29,19 @@ import { Link } from 'react-router-dom'
 // the release was still in draft. Hardcoding keeps the site working
 // the moment a version is published, with no surprises.
 const DOWNLOAD_MAC_GITHUB =
-  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.6.5/Download.Manager.Plus-1.6.5-arm64.dmg'
+  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.6/Download.Manager.Plus-1.7.6-arm64.dmg'
 const DOWNLOAD_WIN_GITHUB =
-  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.6.5/Download.Manager.Plus.Setup.1.6.5.exe'
+  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.6/Download.Manager.Plus-1.7.6-x64.exe'
 
 // Google Drive fallback links — for users on networks where GitHub
 // Releases is blocked (some corporate / school / region-restricted
 // networks block raw GitHub asset hosts but allow Drive). Both
 // platforms now get a Drive link surfaced via the dropdown CTA so
 // blocked Windows users aren't stranded.
-//
-// PLACEHOLDER: the Windows Drive link below needs to be replaced
-// with the real share URL from Daniel's Drive folder. Search for
-// "REPLACE_ME_WIN_DRIVE_URL" and swap in the actual URL.
 const DRIVE_DOWNLOAD_MAC =
-  'https://drive.google.com/file/d/1ezciHjhrPULWCT3VGt0dwn7bYO9A4HKP/view?usp=drive_link'
-const DRIVE_DOWNLOAD_WIN = 'REPLACE_ME_WIN_DRIVE_URL'
+  'https://drive.google.com/file/d/1RhTDO7sQbmuGsFeMQkgoBUsKU0MT9ScQ/view?usp=drive_link'
+const DRIVE_DOWNLOAD_WIN =
+  'https://drive.google.com/file/d/1s0BON0ohxi5dP5NMLkQVpDmgEDVhLzvS/view?usp=drive_link'
 
 export function Hero() {
   const scrollToFeatures = () => {
