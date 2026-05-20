@@ -303,12 +303,6 @@ function HeroProductVisual() {
             time="1m"
           />
           <FileRow
-            name="transcript_raw.txt"
-            size="36 KB"
-            target="Notes"
-            time="3m"
-          />
-          <FileRow
             name="sfx_swoosh_long.wav"
             size="1.4 MB"
             target="SFX"

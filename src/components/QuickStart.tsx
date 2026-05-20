@@ -99,21 +99,27 @@ function Step({
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: '-40px' }}
       transition={{ duration: 0.4, delay: Math.min((num - 1) * 0.06, 0.24) }}
-      className={`flex items-baseline gap-4 py-6 md:gap-10 md:py-10 ${
+      className={`flex items-start gap-4 py-6 md:gap-10 md:py-10 ${
         isLast ? '' : 'border-b border-border'
       }`}
     >
-      {/* Number — large, copper, anchors the row. Tabular figures
-          keep "01" and "10" the same visual width. clamp() scales
-          it smoothly from phone (32px) to wide desktop (72px). */}
+      {/* Number — copper, sized to MATCH the step title (not tower
+          over it) so the row reads as one balanced unit. Previously
+          the number was clamp(32-72px) against a 20-30px title; the
+          two never aligned visually because their line-heights and
+          sizes were on different scales. Now they share line-height
+          (1.1) and the number is just one size step larger than the
+          title — enough to anchor the row, not enough to dominate.
+          `items-start` on the parent puts both glyphs at the same
+          top edge regardless of small line-height differences. */}
       <span
-        className="font-display tabular shrink-0"
+        className="font-display tabular shrink-0 text-fg-faint"
         style={{
-          fontSize: 'clamp(32px, 5vw, 72px)',
-          lineHeight: 1,
+          fontSize: 'clamp(22px, 3vw, 36px)',
+          lineHeight: 1.1,
           color: 'var(--primary)',
           fontFeatureSettings: '"tnum"',
-          fontWeight: 600,
+          fontWeight: 700,
         }}
       >
         {String(num).padStart(2, '0')}
@@ -121,9 +127,15 @@ function Step({
 
       {/* Content column — title at display weight, body in regular.
           The step title size matches the Features row rhythm so the
-          page reads as one document. */}
+          page reads as one document. Line-height matches the number
+          so they sit on the same visual top edge. */}
       <div className="flex-1">
-        <h3 className="font-display text-xl text-fg md:text-3xl">{title}</h3>
+        <h3
+          className="font-display text-xl text-fg md:text-3xl"
+          style={{ lineHeight: 1.1 }}
+        >
+          {title}
+        </h3>
         <p
           className="mt-2 text-[15px] text-fg-secondary md:text-base"
           style={{ lineHeight: 1.65 }}

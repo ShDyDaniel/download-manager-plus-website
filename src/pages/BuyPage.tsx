@@ -544,10 +544,18 @@ export function BuyPage() {
             card — the better deal we want most buyers on — goes
             first. It also carries the floating 'מומלץ' flag so the
             preference reads at a glance.
-            Yearly is preselected for the same reason. */}
+            Yearly is preselected for the same reason.
+            `items-stretch` + `h-full` on the cards guarantees both
+            cards render at the same height regardless of how much
+            content each one carries — the recommended card has the
+            extra floating flag overhead and the discount badge, but
+            the monthly card now stretches to match it instead of
+            sitting visibly shorter beside it. The shared `mt-3` on
+            the grid reserves space for the floating 'מומלץ' ribbon
+            so it doesn't visually overlap with anything above. */}
         <div
           dir="rtl"
-          className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2"
+          className="mb-6 mt-3 grid grid-cols-1 items-stretch gap-4 md:grid-cols-2"
         >
           <PlanCard
             plan="yearly"
@@ -696,7 +704,7 @@ export function BuyPage() {
               מייצר עבורך מפתח ושולח במייל...
             </div>
           ) : !emailLocked ? (
-            <form onSubmit={confirmEmail} className="space-y-3">
+            <form onSubmit={confirmEmail} className="space-y-4">
               <label className="block">
                 <span className="mb-1.5 block text-xs text-fg-secondary">
                   כתובת מייל לקבלת המפתח
@@ -711,12 +719,35 @@ export function BuyPage() {
                   className="w-full rounded-xl border border-border bg-bg-elevated px-4 py-3 text-right text-base text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none"
                 />
               </label>
+              {/* Primary purchase CTA. Bigger, bolder, with a Crown
+                  glyph anchoring it as the unmistakable "buy Pro"
+                  action on the page. Copper glow + scale-on-hover
+                  give it the visual weight the previous flat button
+                  was missing — buyers were getting lost between the
+                  features list and the PayPal block, unsure where to
+                  click. The plan + price are spelled out on a second
+                  line so the commitment is fully transparent before
+                  PayPal even renders. */}
               <button
                 type="submit"
-                className="w-full rounded-xl bg-primary px-6 py-3 text-base font-semibold text-bg transition-colors hover:bg-primary-hover"
+                className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl bg-primary px-6 py-4 text-base font-bold text-bg shadow-lg shadow-primary/30 transition-all hover:bg-primary-hover hover:shadow-xl hover:shadow-primary/40 active:scale-[0.98]"
               >
-                המשך לתשלום — {PLANS[plan].price.replace('.00', '')} ₪
+                <Crown className="h-5 w-5" />
+                <span className="flex flex-col items-center leading-tight">
+                  <span className="text-base md:text-lg">
+                    רכישת מנוי Pro
+                  </span>
+                  <span className="text-[11px] font-medium opacity-80">
+                    {PLANS[plan].label} · {PLANS[plan].price.replace('.00', '')} ₪
+                    {plan === 'yearly' && ' לשנה'}
+                    {plan === 'monthly' && ' לחודש'}
+                  </span>
+                </span>
+                <ArrowRight className="h-4 w-4 rotate-180 transition-transform group-hover:-translate-x-1" />
               </button>
+              <p className="text-center text-[11px] text-fg-muted">
+                תשלום מאובטח דרך PayPal · אין אחסון של פרטי כרטיס אצלנו
+              </p>
             </form>
           ) : (
             <>
@@ -953,11 +984,11 @@ function PlanCard({
       type="button"
       onClick={onSelect}
       dir="rtl"
-      className={`relative rounded-2xl border p-5 text-right transition-all ${
+      className={`relative flex h-full flex-col rounded-2xl border p-5 text-right transition-all ${
         active
           ? 'border-primary bg-primary/[0.06] shadow-lg'
           : 'border-border bg-bg-elevated/50 hover:border-border-strong hover:bg-bg-elevated'
-      } ${recommended ? 'mt-3' : ''}`}
+      }`}
     >
       {/* 'מומלץ' flag — floats above the card edge like a ribbon.
           Uses left-1/2 + -translate-x-1/2 (centring math is identical
@@ -1004,7 +1035,7 @@ function PlanCard({
         <span className="text-lg text-fg-secondary">₪</span>
         <span className="text-xs text-fg-muted">/ {cycle}</span>
       </div>
-      <div className="text-[11px] text-fg-muted">{note}</div>
+      <div className="mt-auto text-[11px] text-fg-muted">{note}</div>
     </button>
   )
 }
