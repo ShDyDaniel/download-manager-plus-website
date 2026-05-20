@@ -10,6 +10,12 @@ import {
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import {
+  currencySymbol,
+  formatPrice,
+  minPricePerMonth,
+  useLivePricing,
+} from '../lib/pricing'
 
 /**
  * Editorial-style hero. Asymmetric two-column layout (text right,
@@ -44,6 +50,13 @@ const DRIVE_DOWNLOAD_WIN =
   'https://drive.google.com/file/d/1s0BON0ohxi5dP5NMLkQVpDmgEDVhLzvS/view?usp=drive_link'
 
 export function Hero() {
+  // Live pricing for the Pro CTA's "starting from X ₪/month" line.
+  // The hook handles fetch + fallback; we just compute the smallest
+  // per-month figure and format it.
+  const pricing = useLivePricing()
+  const minPerMonth = minPricePerMonth(pricing)
+  const sym = currencySymbol(pricing.currency)
+
   const scrollToFeatures = () => {
     document
       .getElementById('features')
@@ -198,7 +211,7 @@ export function Hero() {
               <span className="flex items-baseline gap-2">
                 <span className="text-base md:text-lg">רכישת מנוי Pro</span>
                 <span className="text-xs font-medium text-fg-muted">
-                  · מ-5 ₪/חודש
+                  · מ-{formatPrice(minPerMonth)} {sym}/חודש
                 </span>
               </span>
               <ChevronDown className="h-4 w-4 -rotate-90 text-primary transition-transform group-hover:-translate-x-1" />

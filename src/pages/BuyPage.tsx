@@ -12,6 +12,13 @@ import {
   KeyRound,
   X,
 } from 'lucide-react'
+import {
+  currencySymbol,
+  DEFAULT_PRICING,
+  effectivePrice,
+  formatPrice,
+  type LivePricing,
+} from '../lib/pricing'
 
 /**
  * Dedicated purchase page at `/buy`. The buyer picks a plan
@@ -36,46 +43,12 @@ type Plan = 'monthly' | 'yearly'
 
 /** Duration metadata that never changes per sale — days for the
  *  Firestore expiry math, label for Hebrew display. Pricing
- *  itself comes from the server (see `LivePricing` below). */
+ *  itself comes from /api/pricing (see `useLivePricing` in
+ *  `lib/pricing.ts`) so an admin price change propagates to all
+ *  pages without a code edit. */
 const PLAN_META: Record<Plan, { days: number; label: string }> = {
   monthly: { days: 30, label: 'חודשי' },
   yearly: { days: 365, label: 'שנתי' },
-}
-
-interface LivePricing {
-  monthly: { regular: number; sale: number | null }
-  yearly: { regular: number; sale: number | null }
-  currency: string
-  saleLabel?: string
-}
-
-const DEFAULT_PRICING: LivePricing = {
-  monthly: { regular: 9, sale: null },
-  yearly: { regular: 60, sale: null },
-  currency: 'ILS',
-}
-
-/** Currency symbol for display. Falls back to the ISO code for
- *  unknown currencies. */
-function currencySymbol(code: string): string {
-  if (code === 'ILS') return '₪'
-  if (code === 'USD') return '$'
-  if (code === 'EUR') return '€'
-  return code
-}
-
-/** Format a number for display next to a currency symbol. We
- *  strip trailing zeros so `9.00` reads as `9` (the typical
- *  whole-shekel price) but `8.50` stays as `8.50`. */
-function formatPrice(n: number): string {
-  if (Number.isInteger(n)) return String(n)
-  return n.toFixed(2).replace(/\.?0+$/, '')
-}
-
-/** The effective price a buyer actually pays — sale if active,
- *  regular otherwise. The PayPal order amount is set from this. */
-function effectivePrice(plan: LivePricing['monthly']): number {
-  return plan.sale != null ? plan.sale : plan.regular
 }
 
 type Status =
