@@ -323,7 +323,9 @@ export async function syncPlansForPricing(pricing: {
   const db = getDb()
   const ref = db.collection('appConfig').doc('pricing')
   const snap = await ref.get()
-  const existing = snap.exists ? (snap.data() as Record<string, unknown>) : {}
+  const existing = snap.exists
+    ? (snap.data() as unknown as Record<string, unknown>)
+    : {}
   const existingPlans = (existing.paypalPlans ?? {}) as {
     monthlyRegular?: { planId: string; amount: number }
     monthlySale?: { planId: string; amount: number } | null
