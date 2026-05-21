@@ -99,10 +99,16 @@ interface KeyDoc {
     currency?: string
     at?: string
   }>
-  // Annual-report stamp fields like `annualReport2026SentAt` are
-  // accessed dynamically (the year is computed at runtime), so we
-  // don't declare them in this interface. The reader casts the
-  // doc through Record<string, unknown> for the typed lookup.
+  // String index signature — makes KeyDoc structurally a Record,
+  // which lets us cast freely to Record<string, unknown> for
+  // dynamic-key lookups (reminder stamps + annual-report stamps).
+  // Without this, TS 5.9's stricter cast rules reject the
+  // `as Record<string, unknown>` cast as "non-overlapping types".
+  // The unknown value type doesn't downgrade typed properties —
+  // TS still resolves `data.expiresAt` as `string | undefined`
+  // because explicit properties take precedence over the index
+  // signature.
+  [field: string]: unknown
 }
 
 // ----- JWT (sign) ----------------------------------------------------
