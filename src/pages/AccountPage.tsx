@@ -171,6 +171,13 @@ export default function AccountPage() {
   const [resetSending, setResetSending] = useState(false)
   const [resetSent, setResetSent] = useState(false)
   const [resetError, setResetError] = useState<string | null>(null)
+  // Whether the login card is currently in "forgot password" mode
+  // (showing just the email field + a "send reset link" button)
+  // instead of the standard email+password login. Toggled by the
+  // "שכחתי סיסמה" link under the login button. The email state is
+  // shared with the login form so an address typed in one mode
+  // pre-fills the other on toggle.
+  const [forgotPasswordMode, setForgotPasswordMode] = useState(false)
 
   // Marketing opt-in toggle state. `marketingSaving` is true while
   // the PATCH is in flight so the toggle UI can show a spinner +
@@ -527,6 +534,119 @@ export default function AccountPage() {
               שניה אחת, מקבלים את הפרטים שלך משרת PayPal.
             </div>
           </div>
+        ) : !token && forgotPasswordMode ? (
+          /* ── Forgot-password mode ── *
+           *
+           * Replaces the login form entirely while the user resets
+           * their password. Keeping the same card chrome and email
+           * state so the toggle feels in-place rather than a
+           * separate page; sharing the email state means an
+           * address typed in one mode pre-fills the other on
+           * toggle.
+           */
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              const cleanEmail = email.trim().toLowerCase()
+              if (!cleanEmail) {
+                setResetError('הזן את כתובת המייל שלך')
+                return
+              }
+              setResetError(null)
+              void handleSendResetEmail(cleanEmail)
+            }}
+            className="card-elevated mx-auto max-w-md space-y-4 rounded-2xl border-border p-6 md:p-8"
+          >
+            <div className="flex items-center gap-2 text-sm font-semibold text-fg">
+              <Lock className="h-4 w-4 text-accent" />
+              איפוס סיסמה
+            </div>
+            {resetSent ? (
+              // ── Sent-success view ──
+              // Hedged copy ("if the account exists") matches the
+              // backend's deliberate non-enumeration response: the
+              // API returns 200 for unknown emails too, so we
+              // can't promise an email was actually sent.
+              <>
+                <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2.5 text-xs text-success">
+                  ✓ אם החשבון קיים, נשלח אליו מייל איפוס סיסמה
+                  {email && (
+                    <>
+                      {' '}לכתובת <strong>{email.trim()}</strong>
+                    </>
+                  )}
+                  . בדוק את תיבת הדואר (כולל ספאם).
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForgotPasswordMode(false)
+                    setResetSent(false)
+                    setResetError(null)
+                  }}
+                  className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-bg-faint"
+                >
+                  <ArrowRight className="h-4 w-4" />
+                  חזרה להתחברות
+                </button>
+              </>
+            ) : (
+              // ── Email-entry view ──
+              <>
+                <p className="text-xs text-fg-muted">
+                  הזן את האימייל שאיתו נרשמת — נשלח אליו קישור לאיפוס
+                  הסיסמה.
+                </p>
+                <label className="block">
+                  <span className="mb-1 block text-[11px] text-fg-muted">
+                    אימייל
+                  </span>
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    autoComplete="email"
+                    disabled={resetSending}
+                    // Inherit dir="rtl" from <html> — same RTL
+                    // alignment treatment as the login form's
+                    // email input.
+                    className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
+                    autoFocus
+                  />
+                </label>
+                {resetError && (
+                  <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {resetError}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={resetSending}
+                  className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {resetSending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Lock className="h-4 w-4" />
+                  )}
+                  שלח לי קישור איפוס
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForgotPasswordMode(false)
+                    setResetError(null)
+                  }}
+                  className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-transparent px-4 py-2 text-xs text-fg-muted transition-colors hover:bg-bg-elevated hover:text-fg"
+                >
+                  <ArrowRight className="h-3.5 w-3.5" />
+                  חזרה להתחברות
+                </button>
+              </>
+            )}
+          </form>
         ) : !token ? (
           /* ── Login form (SSO failed or never present) ── */
           <form
@@ -595,59 +715,29 @@ export default function AccountPage() {
               )}
               התחברות
             </button>
-            {/* "שכחתי סיסמה" affordance — wires up to the same
-                /api/reset-password endpoint the desktop app uses.
-                Uses the form's email state (the user types their
-                address into the same field that the login flow
-                uses), so there's no extra input to fill.
-                Backend deliberately returns 200 even for unknown
-                emails to prevent account enumeration, so the
-                success copy is intentionally hedged: "if the
-                account exists, an email was sent". */}
+            {/* Toggle to forgot-password mode. Just flips the
+                forgotPasswordMode flag — the email-entry +
+                send-reset flow lives in its own form block above
+                (rendered when forgotPasswordMode === true) so the
+                user gets a dedicated screen for the reset action
+                rather than being asked to fill the login form's
+                email field first. The login authError gets cleared
+                on toggle because it's no longer relevant once the
+                user has decided they don't remember the password. */}
             <div className="pt-2 text-center">
-              {resetSent ? (
-                <div className="space-y-1">
-                  <p className="text-[11px] text-success">
-                    ✓ אם החשבון קיים, נשלח אליו מייל איפוס סיסמה.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setResetSent(false)
-                      setResetError(null)
-                    }}
-                    className="text-[11px] text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
-                  >
-                    חזרה להתחברות
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const cleanEmail = email.trim().toLowerCase()
-                      if (!cleanEmail) {
-                        setResetError('הזן את כתובת המייל שלך קודם')
-                        return
-                      }
-                      setResetError(null)
-                      void handleSendResetEmail(cleanEmail)
-                    }}
-                    disabled={resetSending || authing}
-                    className="text-[11px] text-fg-muted underline-offset-4 transition-colors hover:text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {resetSending
-                      ? 'שולח קישור איפוס…'
-                      : 'שכחתי סיסמה — שלח לי קישור איפוס למייל'}
-                  </button>
-                  {resetError && (
-                    <p className="mt-1 text-[11px] text-destructive">
-                      {resetError}
-                    </p>
-                  )}
-                </>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthError(null)
+                  setResetError(null)
+                  setResetSent(false)
+                  setForgotPasswordMode(true)
+                }}
+                disabled={authing}
+                className="text-[11px] text-fg-muted underline-offset-4 transition-colors hover:text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                שכחתי סיסמה
+              </button>
             </div>
           </form>
         ) : (
