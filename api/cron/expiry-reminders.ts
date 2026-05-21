@@ -99,12 +99,10 @@ interface KeyDoc {
     currency?: string
     at?: string
   }>
-  /** Stamped on March 1st when we send the annual billing report
-   *  to satisfy sec. 13ב(ב1) of the Israeli consumer-protection
-   *  law. The year suffix prevents re-sending if the cron runs
-   *  multiple times on March 1st (Vercel won't, but defence-in-
-   *  depth). Format: "annualReport2026SentAt". */
-  [annualReportField: `annualReport${number}SentAt`]: string | null | undefined
+  // Annual-report stamp fields like `annualReport2026SentAt` are
+  // accessed dynamically (the year is computed at runtime), so we
+  // don't declare them in this interface. The reader casts the
+  // doc through Record<string, unknown> for the typed lookup.
 }
 
 // ----- JWT (sign) ----------------------------------------------------
@@ -488,8 +486,10 @@ async function maybeSendAnnualReports(
       skipped += 1
       continue
     }
-    // Already sent this year's report? Skip.
-    if (data[stampField]) {
+    // Already sent this year's report? Skip. Cast through unknown
+    // because the stamp field name (annualReport{year}SentAt) is
+    // computed at runtime — KeyDoc doesn't declare it statically.
+    if ((data as unknown as Record<string, unknown>)[stampField]) {
       skipped += 1
       continue
     }
