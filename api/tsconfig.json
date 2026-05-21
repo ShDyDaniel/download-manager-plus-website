@@ -13,5 +13,5 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts", "../api-lib/**/*.ts"]
 }

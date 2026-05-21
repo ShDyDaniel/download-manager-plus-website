@@ -8,7 +8,7 @@ import {
   paypalCall,
   syncPlansForPricing,
   verifyWebhookSignature,
-} from './_paypal'
+} from '../api-lib/paypal'
 
 /**
  * Unified PayPal endpoint. ONE serverless function handles every

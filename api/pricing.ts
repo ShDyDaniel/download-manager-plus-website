@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { loadCurrentPricing } from './_paypal'
+import { loadCurrentPricing } from '../api-lib/paypal'
 
 /**
  * GET /api/pricing
