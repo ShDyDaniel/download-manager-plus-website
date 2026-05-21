@@ -101,6 +101,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .json({ ok: false, error: 'לא נמצא מייל בחשבון' })
     }
 
+    // ── Account-key lock: enforce one active key per account ──
+    //
+    // User asked: "if a user redeemed one key, their account is
+    // locked to that key. If the key expires and they BUY A NEW
+    // ONE (instead of renewing), the system should delete the old
+    // key from their account and set the new one."
+    //
+    // We query for any keys currently linked to this uid BEFORE
+    // the transaction. Inside the transaction we then unset those
+    // links (set redeemedBy=null + record `replacedByKey`) so the
+    // account is single-key going forward. The old key documents
+    // stick around for audit / support — only the redemption
+    // pointer is cleared.
+    //
+    // Race window: between this query and the txn, a parallel
+    // redemption from the same uid could slip in. In practice this
+    // means two simultaneous clicks of "redeem" — extremely rare,
+    // and the worst-case outcome is one stray un-cleared old key
+    // that the /account page just won't show as primary (it picks
+    // the longest-lived one). Tolerable.
+    const priorKeysSnap = await db
+      .collection('productKeys')
+      .where('redeemedBy', '==', uid)
+      .get()
+    const priorKeyIds = priorKeysSnap.docs
+      .map((d) => d.id)
+      .filter((id) => id !== rawKey)
+
     // Atomic read+write inside a transaction. If two clients race
     // to redeem the same key, Firestore retries one and the second
     // attempt sees the already-redeemed state and bounces.
@@ -110,6 +138,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           tier: 'pro'
           expiresAt: string | null
           keyId: string
+          replacedKeys: string[]
         }
       | { ok: false; status: number; error: string }
     >(async (txn) => {
@@ -159,6 +188,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           tier: 'pro',
           expiresAt: data.expiresAt ?? null,
           keyId: rawKey,
+          replacedKeys: [],
         }
       }
 
@@ -170,6 +200,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       }
 
+      // Account-key lock: unset any keys this uid had previously
+      // redeemed. Done as blind writes inside the txn (no read
+      // first — these docs aren't part of the consistency check
+      // for the new redemption). The old key documents are kept
+      // for audit / support; only the user-link pointer is cleared
+      // and an audit trail is recorded.
+      const replacedAt = new Date().toISOString()
+      for (const priorId of priorKeyIds) {
+        const priorRef = db.collection('productKeys').doc(priorId)
+        txn.update(priorRef, {
+          redeemedBy: null,
+          redeemedByEmail: null,
+          replacedAt,
+          replacedByKey: rawKey,
+        })
+      }
+
       txn.update(ref, {
         redeemedBy: uid,
         redeemedByEmail: email,
@@ -178,6 +225,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // unbound keys keep `null`. We never invent an expiry here;
         // that's the purchase flow's job in /api/capture.
         expiresAt: data.expiresAt ?? null,
+        // If the user is replacing previous keys, record which
+        // ones got displaced. The /account page can render a
+        // "החלפת מפתח קודם" hint based on this.
+        replacedPriorKeys: priorKeyIds,
       })
 
       return {
@@ -185,6 +236,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         tier: 'pro',
         expiresAt: data.expiresAt ?? null,
         keyId: rawKey,
+        replacedKeys: priorKeyIds,
       }
     })
 
@@ -194,6 +246,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         tier: result.tier,
         expiresAt: result.expiresAt,
         keyId: result.keyId,
+        replacedKeys: result.replacedKeys,
       })
     }
     return res

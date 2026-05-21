@@ -114,15 +114,37 @@ type PayPalActions = {
     }) => Promise<string>
     capture: () => Promise<{ id: string }>
   }
+  subscription?: {
+    create: (config: { plan_id: string }) => Promise<string>
+  }
 }
-type PayPalButton = { render: (selector: string) => Promise<void> }
+type PayPalButton = {
+  render: (target: string | HTMLElement) => Promise<void>
+}
 declare global {
   interface Window {
     paypal?: {
       Buttons: (opts: {
-        style?: { layout?: string; color?: string; shape?: string; label?: string; height?: number }
-        createOrder: (data: unknown, actions: PayPalActions) => Promise<string>
-        onApprove: (data: { orderID: string }, actions: PayPalActions) => Promise<void>
+        style?: {
+          layout?: string
+          color?: string
+          shape?: string
+          label?: string
+          height?: number
+        }
+        // Either createOrder (one-shot, capture intent) or
+        // createSubscription (subscription intent) — depends on the
+        // SDK load mode. We type both as optional so a single type
+        // can describe both renderer paths in this file.
+        createOrder?: (data: unknown, actions: PayPalActions) => Promise<string>
+        createSubscription?: (
+          data: unknown,
+          actions: PayPalActions,
+        ) => Promise<string>
+        onApprove: (
+          data: { orderID?: string; subscriptionID?: string },
+          actions: PayPalActions,
+        ) => Promise<void> | void
         onError: (err: unknown) => void
         onCancel: () => void
       }) => PayPalButton
@@ -178,10 +200,10 @@ export function BuyPage() {
   // distinct from the general terms agreement. We DO NOT pre-tick
   // it — the user has to act.
   const [autoRenewAccepted, setAutoRenewAccepted] = useState(false)
-  // While true, the create-link request is in flight. Disables the
-  // submit button so the user can't double-submit and accidentally
-  // create two subscriptions.
-  const [subSubmitting, setSubSubmitting] = useState(false)
+  // (subSubmitting was used by the old redirect-to-PayPal flow to
+  // disable the submit button mid-request. The embedded Buttons
+  // path doesn't need it — PayPal's own UI shows its spinner while
+  // createSubscription resolves.)
   // Returned URL param after PayPal redirects the user back here
   // post-approval (`?subscribed=1`) or post-cancel-on-PayPal-side
   // (`?cancelled=1`). Drives the post-redirect success/cancel UI.
@@ -208,52 +230,13 @@ export function BuyPage() {
     else if (params.get('cancelled') === '1') setPostReturn('cancelled')
   }, [])
 
-  /** Create the subscription server-side and redirect the user to
-   *  PayPal's approval page. The server picks the locked-in plan_id
-   *  based on the LIVE pricing in Firestore — the client has no
-   *  say in the price, only in the cycle ("monthly" | "yearly")
-   *  and the email to attach to the subscription. See the SECURITY
-   *  comment in /api/subscription/create-link.ts for the full
-   *  threat model. */
-  async function submitSubscription(e: React.FormEvent) {
-    e.preventDefault()
-    if (subSubmitting) return
-    setSubError(null)
-    const cleanEmail = email.trim().toLowerCase()
-    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setSubError('הזן כתובת מייל תקינה')
-      return
-    }
-    if (!autoRenewAccepted) {
-      setSubError('יש לאשר את החיוב המתחדש')
-      return
-    }
-    setSubSubmitting(true)
-    try {
-      const r = await fetch('/api/paypal?action=create-subscription', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan, email: cleanEmail }),
-      })
-      const json = (await r.json()) as {
-        ok: boolean
-        approvalUrl?: string
-        error?: string
-      }
-      if (!r.ok || !json.ok || !json.approvalUrl) {
-        throw new Error(json.error || 'יצירת המנוי נכשלה')
-      }
-      // Whole-page redirect to PayPal. After the user approves (or
-      // cancels), PayPal sends them back to /buy?subscribed=1 or
-      // /buy?cancelled=1 per the application_context.return_url /
-      // cancel_url we set when creating the subscription.
-      window.location.href = json.approvalUrl
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
-      setSubError(message)
-      setSubSubmitting(false)
-    }
-  }
+  // (Previously: submitSubscription redirect-to-PayPal handler.
+  // Removed — the new embedded PayPal Smart Buttons inside
+  // SubscriptionFlow call /api/paypal?action=create-subscription
+  // themselves from inside their createSubscription callback, and
+  // get the subscriptionId back inline so PayPal opens its own
+  // popup/inline-card UI rather than navigating away.)
+
 
   // Fetch pricing once on mount. We don't block render on this —
   // the page renders with `pricing=null` initially, the plan cards
@@ -373,10 +356,24 @@ export function BuyPage() {
       }
       return
     }
+    // SDK loaded in SUBSCRIPTION mode so the embedded PayPal
+    // Buttons on the new-purchase flow can call createSubscription
+    // and PayPal handles the vault/billing-agreement setup. The
+    // older one-shot "createOrder" renewal flow is now dead (no
+    // historical one-shot customers exist after the migration to
+    // subscriptions), so the change in SDK intent doesn't break
+    // anything users will actually hit.
+    //
+    // disable-funding=credit removes the US-only "PayPal Credit"
+    // line of credit option but KEEPS the embedded debit/credit
+    // card section — which is exactly what the user asked for:
+    // "enter card details right inside the website" without
+    // leaving for paypal.com.
     const params = new URLSearchParams({
       'client-id': clientId,
       currency: pricingRef.current.currency,
-      intent: 'capture',
+      vault: 'true',
+      intent: 'subscription',
       'disable-funding': 'credit',
     })
     const s = document.createElement('script')
@@ -395,14 +392,26 @@ export function BuyPage() {
     document.head.appendChild(s)
   }, [])
 
-  // Render the PayPal button once the SDK is on the page AND the
-  // user has committed to a plan + email. The `sdkReady` flag is set
-  // by the loader effect above once the `<script>` tag fires `load`.
+  // Renewal-mode PayPal Buttons (createOrder, one-shot capture):
+  // historically this is where we rendered a "Pay" button for users
+  // arriving via the /buy?renew=<token> link. After the migration
+  // to recurring subscriptions the SDK is loaded with vault=true&
+  // intent=subscription, which doesn't expose `actions.order` — so
+  // this createOrder path can no longer work, AND no historical
+  // one-shot customers exist who could trigger it. The renewal
+  // flow now sees: banner → no button (PayPal SDK won't render the
+  // wrong-intent buttons), and the user can just buy a fresh
+  // subscription via the new flow below.
+  //
+  // We render a subscription Button instead so renewal mode still
+  // has SOMETHING actionable — same `createSubscription` path the
+  // SubscriptionFlow uses, just bound to the renewal container.
   useEffect(() => {
     if (!emailLocked) return
     if (!sdkReady) return
     if (!window.paypal) return
     if (!buttonContainer.current) return
+    if (!window.paypal.Buttons) return
     buttonContainer.current.innerHTML = ''
     window.paypal
       .Buttons({
@@ -410,76 +419,33 @@ export function BuyPage() {
           layout: 'vertical',
           color: 'gold',
           shape: 'rect',
-          label: 'pay',
+          label: 'subscribe',
           height: 48,
         },
-        createOrder: (_data, actions) => {
-          const planKey = planRef.current
-          const meta = PLAN_META[planKey]
-          const live = pricingRef.current
-          const planPricing = live[planKey]
-          const price = effectivePrice(planPricing)
-          return actions.order.create({
-            purchase_units: [
-              {
-                amount: {
-                  // PayPal wants strings with 2 decimal places.
-                  value: price.toFixed(2),
-                  currency_code: live.currency,
-                },
-                description: `ניהול הורדות פלוס — Pro ${meta.label} (${meta.days} ימים)`,
-              },
-            ],
-            application_context: {
-              brand_name: 'ניהול הורדות פלוס',
-              user_action: 'PAY_NOW',
-              shipping_preference: 'NO_SHIPPING',
-            },
-          })
-        },
-        onApprove: async (data) => {
-          setStatus({ kind: 'processing' })
-          try {
-            const payload: Record<string, string> = {
-              orderID: data.orderID,
+        createSubscription: async () => {
+          const r = await fetch('/api/paypal?action=create-subscription', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
               plan: planRef.current,
-            }
-            // Renewal mode bypasses the email field — /api/capture
-            // pulls the buyer's address off the existing key.
-            if (renewTokenRef.current) {
-              payload.renewToken = renewTokenRef.current
-            } else {
-              payload.email = emailRef.current
-            }
-            const r = await fetch('/api/capture', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-            })
-            const json = (await r.json()) as {
-              ok: boolean
-              error?: string
-              renewed?: boolean
-              newExpiresAt?: string
-            }
-            if (!r.ok || !json.ok) {
-              throw new Error(
-                json.error || 'התשלום אושר אך יצירת המפתח נכשלה',
-              )
-            }
-            if (json.renewed && json.newExpiresAt) {
-              setStatus({ kind: 'renewed', newExpiresAt: json.newExpiresAt })
-            } else {
-              setStatus({ kind: 'success', email: emailRef.current })
-            }
-          } catch (err) {
-            const message =
-              err instanceof Error ? err.message : 'שגיאה לא ידועה'
-            setStatus({ kind: 'error', message })
+              email: emailRef.current,
+            }),
+          })
+          const json = (await r.json()) as {
+            ok: boolean
+            subscriptionId?: string
+            error?: string
           }
+          if (!r.ok || !json.ok || !json.subscriptionId) {
+            throw new Error(json.error || 'יצירת המנוי נכשלה')
+          }
+          return json.subscriptionId
+        },
+        onApprove: () => {
+          window.location.href = '/buy?subscribed=1'
         },
         onError: (err) => {
-          console.error('PayPal error', err)
+          console.error('PayPal subscribe error', err)
           setStatus({
             kind: 'error',
             message: 'התרחשה שגיאה בתהליך התשלום. נסה שוב.',
@@ -487,7 +453,7 @@ export function BuyPage() {
         },
         onCancel: () => setStatus({ kind: 'idle' }),
       })
-      .render('#paypal-button-container')
+      .render(buttonContainer.current)
       .catch((err) => console.error('PayPal render failed', err))
     // `renewLoading` is in deps even though we don't read it
     // inside the effect: it gates whether the PayPal container is
@@ -905,9 +871,10 @@ export function BuyPage() {
               pricing={pricingRef.current}
               autoRenewAccepted={autoRenewAccepted}
               setAutoRenewAccepted={setAutoRenewAccepted}
-              submitting={subSubmitting}
               error={subError}
-              onSubmit={submitSubscription}
+              setError={setSubError}
+              sdkReady={sdkReady}
+              sdkError={sdkError}
             />
           )}
         </motion.div>
@@ -1268,9 +1235,10 @@ function SubscriptionFlow({
   pricing,
   autoRenewAccepted,
   setAutoRenewAccepted,
-  submitting,
   error,
-  onSubmit,
+  setError,
+  sdkReady,
+  sdkError,
 }: {
   postReturn: 'subscribed' | 'cancelled' | null
   email: string
@@ -1279,9 +1247,10 @@ function SubscriptionFlow({
   pricing: LivePricing
   autoRenewAccepted: boolean
   setAutoRenewAccepted: (b: boolean) => void
-  submitting: boolean
   error: string | null
-  onSubmit: (e: React.FormEvent) => void
+  setError: (s: string | null) => void
+  sdkReady: boolean
+  sdkError: string | null
 }) {
   if (postReturn === 'subscribed') {
     return (
@@ -1342,8 +1311,99 @@ function SubscriptionFlow({
   // text makes the auto-renew commitment explicit.
   const [termsOpen, setTermsOpen] = useState(false)
 
+  // Email + checkbox readiness controls whether the PayPal Buttons
+  // are usable. We don't render disabled buttons (PayPal Smart
+  // Buttons don't have a disabled state) — instead we render a
+  // placeholder hint when not ready and swap in the real Buttons
+  // once the user fills the form.
+  const trimmedEmail = email.trim().toLowerCase()
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)
+  const canPay = emailValid && autoRenewAccepted
+  const paypalContainerRef = useRef<HTMLDivElement | null>(null)
+  // Refs mirror the latest values of email + plan so the
+  // createSubscription callback (which closes over them at button
+  // mount time) reads the user's current selection, not a stale
+  // snapshot. Without these the user could change the plan after
+  // the Buttons rendered and still be charged for the old plan.
+  const emailLatestRef = useRef(trimmedEmail)
+  const planLatestRef = useRef(plan)
+  emailLatestRef.current = trimmedEmail
+  planLatestRef.current = plan
+
+  // Render the embedded PayPal Buttons once the SDK is loaded AND
+  // the form (email + checkbox) is valid. The Buttons component
+  // includes both the PayPal account flow AND an inline debit/
+  // credit-card section by default — which is what the user asked
+  // for: "enter card details right inside the website" instead of
+  // bouncing to paypal.com.
+  useEffect(() => {
+    if (!sdkReady) return
+    if (!canPay) return
+    if (!window.paypal?.Buttons) return
+    const container = paypalContainerRef.current
+    if (!container) return
+    container.innerHTML = ''
+    window.paypal
+      .Buttons({
+        style: {
+          layout: 'vertical',
+          color: 'gold',
+          shape: 'rect',
+          label: 'subscribe',
+          height: 48,
+        },
+        createSubscription: async () => {
+          try {
+            const r = await fetch('/api/paypal?action=create-subscription', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                plan: planLatestRef.current,
+                email: emailLatestRef.current,
+              }),
+            })
+            const json = (await r.json()) as {
+              ok: boolean
+              subscriptionId?: string
+              error?: string
+            }
+            if (!r.ok || !json.ok || !json.subscriptionId) {
+              throw new Error(json.error || 'יצירת המנוי נכשלה')
+            }
+            return json.subscriptionId
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'שגיאת רשת')
+            throw err
+          }
+        },
+        onApprove: () => {
+          // The PayPal popup closed successfully. The actual
+          // subscription activation + license-key minting happens
+          // server-side via webhook; here we just redirect the
+          // browser to the success view of /buy which polls / shows
+          // the post-subscribed state.
+          window.location.href = '/buy?subscribed=1'
+        },
+        onError: (err) => {
+          console.error('PayPal subscription error', err)
+          setError('התרחשה שגיאה בתהליך התשלום. נסה שוב.')
+        },
+        onCancel: () => {
+          // User closed the popup. Don't error — they explicitly
+          // chose to back out.
+          setError(null)
+        },
+      })
+      .render(container)
+      .catch((err) => console.error('PayPal render failed', err))
+    // Re-render on plan change so the right Plan ID is wired up to
+    // the next click — even though we read planRef inside the
+    // callback, PayPal caches the funding-source UI on the first
+    // render so a re-render keeps things in sync.
+  }, [sdkReady, canPay, plan, setError])
+
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
+    <form onSubmit={(e) => e.preventDefault()} className="space-y-4">
       <label className="block">
         <span className="mb-1.5 block text-xs text-fg-secondary">
           כתובת מייל לקבלת מפתח המנוי
@@ -1356,7 +1416,7 @@ function SubscriptionFlow({
           placeholder="you@example.com"
           dir="ltr"
           className="w-full rounded-xl border border-border bg-bg-elevated px-4 py-3 text-right text-base text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none"
-          disabled={submitting}
+          disabled={false}
         />
       </label>
 
@@ -1372,7 +1432,7 @@ function SubscriptionFlow({
           checked={autoRenewAccepted}
           onChange={(e) => setAutoRenewAccepted(e.target.checked)}
           className="mt-[3px] h-4 w-4 shrink-0 cursor-pointer accent-primary"
-          disabled={submitting}
+          disabled={false}
         />
         <span className="text-xs text-fg-secondary leading-relaxed">
           אני מאשר/ת חיוב אוטומטי מתחדש בסך {formatPrice(eff)} {sym} כל{' '}
@@ -1491,29 +1551,50 @@ function SubscriptionFlow({
         </div>
       )}
 
-      <button
-        type="submit"
-        disabled={submitting || !autoRenewAccepted}
-        className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl bg-primary px-6 py-4 text-base font-bold text-bg shadow-lg shadow-primary/30 transition-all hover:bg-primary-hover hover:shadow-xl hover:shadow-primary/40 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {submitting ? (
-          <>
-            <Loader2 className="h-5 w-5 animate-spin" />
-            מעביר ל-PayPal...
-          </>
-        ) : (
-          <>
-            <Crown className="h-5 w-5" />
-            <span className="flex flex-col items-center leading-tight">
-              <span className="text-base md:text-lg">המשך לתשלום ב-PayPal</span>
-              <span className="text-[11px] font-medium opacity-80">
-                {formatPrice(eff)} {sym} / {cycleLabel} · מתחדש אוטומטית
-              </span>
-            </span>
-            <ArrowRight className="h-4 w-4 rotate-180 transition-transform group-hover:-translate-x-1" />
-          </>
-        )}
-      </button>
+      {/* Embedded PayPal Smart Buttons. The default rendering
+          surfaces THREE payment options stacked vertically:
+            1. PayPal button (opens PayPal popup; user logs in &
+               approves the subscription).
+            2. Pay-later button (if eligible for the user's locale).
+            3. "Debit or Credit Card" button → expands an inline
+               card-fields iframe ON THIS PAGE — user types card
+               number / exp / CVV without leaving dm-plus.vercel.app.
+          That third option is the embedded-card experience the
+          user explicitly asked for: "let them enter credit card
+          details right inside the website" (as in the previous
+          one-shot purchase flow before the subscription migration).
+
+          The container only renders once the form is valid
+          (`canPay`) so we don't show empty/disabled buttons. The
+          actual render is wired in the useEffect above. */}
+      {!canPay ? (
+        <div className="rounded-xl border border-border bg-bg-elevated/40 px-4 py-3 text-center text-xs text-fg-secondary">
+          {!emailValid
+            ? '↑ הזן כתובת מייל תקינה כדי להמשיך לתשלום'
+            : '↑ אשר את החיוב המתחדש כדי להמשיך לתשלום'}
+        </div>
+      ) : sdkError ? (
+        <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {sdkError}
+        </div>
+      ) : !sdkReady ? (
+        <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-elevated/40 px-4 py-4 text-xs text-fg-muted">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          טוען את PayPal…
+        </div>
+      ) : (
+        <>
+          <div
+            ref={paypalContainerRef}
+            className="min-h-[48px]"
+            aria-label="אפשרויות תשלום של PayPal"
+          />
+          <p className="text-center text-[11px] text-fg-muted">
+            {formatPrice(eff)} {sym} / {cycleLabel} · מתחדש אוטומטית · ביטול בכל
+            עת
+          </p>
+        </>
+      )}
     </form>
   )
 }
