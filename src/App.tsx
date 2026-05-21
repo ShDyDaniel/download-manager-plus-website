@@ -8,6 +8,7 @@ import { Footer } from './components/Footer'
 import { SiteHeader } from './components/SiteHeader'
 import { BuyPage } from './pages/BuyPage'
 import AccountPage from './pages/AccountPage'
+import AuthActionPage from './pages/AuthActionPage'
 
 // Top-level layout. The marketing site is the default route (`/`);
 // the purchase flow lives at `/buy` so the URL is shareable, deep-
@@ -42,6 +43,12 @@ function App() {
         />
         <Route path="/buy" element={<BuyPage />} />
         <Route path="/account" element={<AccountPage />} />
+        {/* Custom Firebase Auth action handler. Hosts the password-
+            reset (and future verifyEmail) flow on our domain so the
+            user never sees the firebaseapp.com fallback page. Wired
+            via Firebase Console → Authentication → Templates →
+            Customize action URL. */}
+        <Route path="/auth-action" element={<AuthActionPage />} />
         {/* /manage was the original subscription-management page
             before /account absorbed all its functionality. Keep a
             permanent redirect so old emails, footers, the desktop

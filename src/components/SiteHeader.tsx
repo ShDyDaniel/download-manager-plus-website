@@ -42,7 +42,11 @@ import { Link, useLocation } from 'react-router-dom'
  */
 export function SiteHeader() {
   const location = useLocation()
+  // Hide on /account (the link's destination) and on /auth-action
+  // (the user is mid-flow on a password reset — surfacing a "go to
+  // account" link there would be distracting).
   if (location.pathname.startsWith('/account')) return null
+  if (location.pathname.startsWith('/auth-action')) return null
 
   // Per-route alignment. If we add more pages later (e.g. /pricing,
   // /docs), extend this conditional with their max-width and top
