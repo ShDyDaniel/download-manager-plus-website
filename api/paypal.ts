@@ -1165,7 +1165,7 @@ async function handleCancel(req: VercelRequest, res: VercelResponse) {
   const subscriptionId = (body.subscriptionId || '').trim()
   const reason =
     (body.reason || '').slice(0, MAX_REASON_LENGTH).trim() ||
-    'User cancelled via dm-plus.vercel.app/manage'
+    'User cancelled via dm-plus.vercel.app/account'
   if (!token || !subscriptionId) {
     return res.status(400).json({ ok: false, error: 'חסרים פרטי בקשה' })
   }
@@ -1551,7 +1551,7 @@ async function sendSubscriptionWelcomeEmail(args: {
               <div>• תוכנית: ${args.planLabel} (${args.price} ${symbol})</div>
               <div>• חיוב הבא: ${nextDate}</div>
               <div>• מתחדש אוטומטית עד שתבטל</div>
-              <div>• ניהול / ביטול: <a href="${WEBSITE_BASE}/manage" style="color:#fbbf24;">${WEBSITE_BASE}/manage</a></div>
+              <div>• ניהול / ביטול: <a href="${WEBSITE_BASE}/account" style="color:#fbbf24;">${WEBSITE_BASE}/account</a></div>
             </div>
             <p style="margin:28px 0 0;font-size:11px;color:#6b7280;">
               מנוי ID: <span dir="ltr">${args.subscriptionId}</span>

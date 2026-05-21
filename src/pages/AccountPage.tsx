@@ -514,14 +514,7 @@ export default function AccountPage() {
                   )}
                 </ProfileRow>
 
-                <ProfileRow
-                  icon={<Calendar className="h-3.5 w-3.5 text-success" />}
-                  label="בתוקף עד"
-                >
-                  <span className="text-sm text-fg">
-                    {profile?.validUntil ? formatDate(profile.validUntil) : 'ללא הגבלה'}
-                  </span>
-                </ProfileRow>
+                <ValidityRow profile={profile ?? null} />
               </div>
 
               {/* Change password */}
@@ -786,6 +779,56 @@ function ProfileRow({
       </div>
       <div>{children}</div>
     </div>
+  )
+}
+
+/**
+ * "בתוקף עד" row with state-aware rendering. Four cases:
+ *   1. Admin           → "ללא הגבלה" (admins don't expire)
+ *   2. No key at all   → "—" with muted text (user never redeemed)
+ *   3. Key expired     → "פג תוקף" in destructive color, red calendar
+ *   4. Key valid       → formatted date in normal text, green calendar
+ *
+ * Earlier this just printed the raw date even when it was in the
+ * past, which confused users into thinking their key was still
+ * good — the user explicitly asked to surface "פג תוקף" in that
+ * case so there's no ambiguity.
+ */
+function ValidityRow({ profile }: { profile: Profile | null }) {
+  const isAdmin = profile?.plan === 'admin'
+  const validUntil = profile?.validUntil ?? null
+  const expired = validUntil
+    ? Date.parse(validUntil) <= Date.now()
+    : false
+
+  let iconColor: string
+  let content: React.ReactNode
+
+  if (isAdmin) {
+    iconColor = 'text-success'
+    content = <span className="text-sm text-fg">ללא הגבלה</span>
+  } else if (!validUntil) {
+    iconColor = 'text-fg-muted'
+    content = <span className="text-xs text-fg-muted">—</span>
+  } else if (expired) {
+    iconColor = 'text-destructive'
+    content = (
+      <span className="text-sm font-semibold text-destructive">
+        פג תוקף ({formatDate(validUntil)})
+      </span>
+    )
+  } else {
+    iconColor = 'text-success'
+    content = <span className="text-sm text-fg">{formatDate(validUntil)}</span>
+  }
+
+  return (
+    <ProfileRow
+      icon={<Calendar className={`h-3.5 w-3.5 ${iconColor}`} />}
+      label="בתוקף עד"
+    >
+      {content}
+    </ProfileRow>
   )
 }
 

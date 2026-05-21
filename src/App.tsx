@@ -1,12 +1,11 @@
 import { motion } from 'framer-motion'
-import { Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes } from 'react-router-dom'
 import { Hero } from './components/Hero'
 import { Features } from './components/Features'
 import { QuickStart } from './components/QuickStart'
 import { FAQ } from './components/FAQ'
 import { Footer } from './components/Footer'
 import { BuyPage } from './pages/BuyPage'
-import { ManagePage } from './pages/ManagePage'
 import AccountPage from './pages/AccountPage'
 
 // Top-level layout. The marketing site is the default route (`/`);
@@ -34,8 +33,13 @@ function App() {
         }
       />
       <Route path="/buy" element={<BuyPage />} />
-      <Route path="/manage" element={<ManagePage />} />
       <Route path="/account" element={<AccountPage />} />
+      {/* /manage was the original subscription-management page
+          before /account absorbed all its functionality. Keep a
+          permanent redirect so old emails, footers, the desktop
+          app's pre-update "ניהול תוכנית" button, and Google
+          results still land somewhere useful. */}
+      <Route path="/manage" element={<Navigate to="/account" replace />} />
     </Routes>
   )
 }

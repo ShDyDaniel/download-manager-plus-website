@@ -597,7 +597,7 @@ async function sendAnnualReportEmail(args: {
               שאלות? תשובה ישירה למייל הזה תגיע לתמיכה.
             </p>
             <p style="margin:8px 0 0;font-size:11px;color:#6b7280;">
-              לניהול או ביטול המנוי: <a href="https://dm-plus.vercel.app/manage" style="color:#fbbf24;">ניהול תוכנית</a>
+              לניהול או ביטול המנוי: <a href="https://dm-plus.vercel.app/account" style="color:#fbbf24;">החשבון שלי</a>
             </p>
           </td></tr>
         </table>

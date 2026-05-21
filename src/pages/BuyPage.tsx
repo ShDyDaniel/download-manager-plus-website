@@ -1301,10 +1301,10 @@ function SubscriptionFlow({
         <p className="mt-3 text-xs text-fg-muted">
           המנוי מתחדש אוטומטית. לביטול בכל עת:{' '}
           <a
-            href="/manage"
+            href="/account"
             className="text-accent underline underline-offset-2"
           >
-            ניהול תוכנית
+            החשבון שלי
           </a>
         </p>
       </div>
@@ -1457,10 +1457,10 @@ function SubscriptionFlow({
               <li>
                 • <strong>ביטול:</strong> ניתן לבטל בכל עת בדף{' '}
                 <a
-                  href="/manage"
+                  href="/account"
                   className="text-accent underline underline-offset-2"
                 >
-                  ניהול תוכנית
+                  החשבון שלי
                 </a>
                 . הביטול נכנס לתוקף מיידית — לא תחויב על תקופות עתידיות. גישת
                 ה-Pro תישאר פעילה עד סוף התקופה ששולמה.

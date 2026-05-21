@@ -62,7 +62,7 @@ export function Footer() {
             ולא תחויב על תקופות עתידיות.
           </div>
           <Link
-            to="/manage"
+            to="/account"
             className="mt-2 inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/[0.06] px-3 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/[0.12] md:mt-0"
           >
             <XCircle className="h-3.5 w-3.5" />
