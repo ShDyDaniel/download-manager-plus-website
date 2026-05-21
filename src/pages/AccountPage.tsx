@@ -179,6 +179,15 @@ export default function AccountPage() {
   const [marketingSaving, setMarketingSaving] = useState(false)
   const [marketingError, setMarketingError] = useState<string | null>(null)
 
+  // "Buy / renew" button state. The button takes two different
+  // paths depending on whether the user already has a redeemed
+  // key: renew flow (mint a renewToken + redirect to /buy?renew=…
+  // → existing yellow renewal panel + webhook extends the same
+  // key) vs. fresh-purchase flow (sessionStorage handoff so the
+  // webhook auto-redeems a new key to this account).
+  const [going, setGoing] = useState(false)
+  const [goError, setGoError] = useState<string | null>(null)
+
   // Billing state (lazy)
   const [billingOpen, setBillingOpen] = useState(false)
   const [billingLoading, setBillingLoading] = useState(false)
@@ -361,6 +370,60 @@ export default function AccountPage() {
       setProfile({ ...profile, marketingOptIn: prev })
     } finally {
       setMarketingSaving(false)
+    }
+  }
+
+  async function handleGoBuy() {
+    if (going) return
+    setGoing(true)
+    setGoError(null)
+    try {
+      // Path A: user has an existing key — renew it. Mint a
+      // renewToken server-side, then redirect to /buy?renew=…
+      // which lights up the existing yellow "חידוש מנוי קיים"
+      // panel. The webhook will EXTEND this key rather than
+      // create a new one.
+      if (profile?.keyLast8 && token) {
+        const r = await fetch('/api/paypal?action=mint-renew-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        })
+        const json = (await r.json()) as {
+          ok: boolean
+          renewToken?: string
+          error?: string
+        }
+        if (!r.ok || !json.ok || !json.renewToken) {
+          throw new Error(json.error || 'יצירת לינק חידוש נכשלה')
+        }
+        navigate(`/buy?renew=${encodeURIComponent(json.renewToken)}`)
+        return
+      }
+
+      // Path B: user has no existing key — this is a fresh
+      // purchase. Use the sessionStorage handoff so the webhook
+      // can auto-redeem the brand-new key to this account.
+      if (typeof window !== 'undefined' && token) {
+        try {
+          window.sessionStorage.setItem(
+            PURCHASE_CONTEXT_KEY,
+            JSON.stringify({
+              sessionToken: token,
+              email: profile?.email || sessionEmail || '',
+              hasExpiredKey: false,
+            }),
+          )
+        } catch {
+          // sessionStorage off — proceed as guest. The buyer
+          // will still need to manually redeem in the app.
+        }
+      }
+      navigate('/buy')
+    } catch (err) {
+      setGoError(err instanceof Error ? err.message : 'שגיאה')
+    } finally {
+      setGoing(false)
     }
   }
 
@@ -638,36 +701,21 @@ export default function AccountPage() {
               {subs.length === 0 ? (
                 <div className="rounded-md border border-border bg-bg-elevated px-4 py-6 text-center text-sm text-fg-muted">
                   אין לך מנוי פעיל כרגע.
+                  {goError && (
+                    <div className="mt-2 text-xs text-destructive">{goError}</div>
+                  )}
                   <div className="mt-3">
                     <button
                       type="button"
-                      onClick={() => {
-                        // Stash a "purchase context" so BuyPage knows
-                        // this is a signed-in account upgrading, not
-                        // a brand-new visitor. After purchase the
-                        // webhook auto-redeems the new key to this
-                        // uid — no manual paste-key-in-app step.
-                        if (typeof window !== 'undefined' && token) {
-                          try {
-                            window.sessionStorage.setItem(
-                              PURCHASE_CONTEXT_KEY,
-                              JSON.stringify({
-                                sessionToken: token,
-                                email: profile?.email || sessionEmail || '',
-                                hasExpiredKey: !!profile?.keyLast8,
-                              }),
-                            )
-                          } catch {
-                            // sessionStorage off (private mode etc.)
-                            // — proceed without; BuyPage will treat
-                            // the user as a guest.
-                          }
-                        }
-                        navigate('/buy')
-                      }}
-                      className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-primary-hover"
+                      disabled={going}
+                      onClick={() => void handleGoBuy()}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-primary-hover disabled:opacity-60"
                     >
-                      <Crown className="h-3 w-3" />
+                      {going ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Crown className="h-3 w-3" />
+                      )}
                       {profile?.keyLast8 ? 'חידוש המנוי שלי' : 'לקניית רישיון'}
                     </button>
                   </div>

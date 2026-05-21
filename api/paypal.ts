@@ -563,6 +563,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleUnsubscribe(req, res)
       case 'update-marketing-opt-in':
         return await handleUpdateMarketingOptIn(req, res)
+      case 'mint-renew-token':
+        return await handleMintRenewToken(req, res)
       default:
         return res
           .status(400)
@@ -793,24 +795,28 @@ async function ensureKeyForSubscription(
   const key = generateKeyString()
   const initialExpiresAt = new Date(Date.now() + planDays * 86_400_000)
 
-  // If the buyer purchased from inside their /account page (signed
-  // in), pendingSubscriptions has their uid as linkToUid. Auto-
-  // redeem the new key to that account so the user doesn't need
-  // to open the desktop app and paste the key — and reuse the
-  // same account-lock logic that /api/keys/redeem runs so any
-  // prior key on the same account gets unlinked atomically.
-  // Guest purchases (linkToUid=null) keep the old behaviour:
-  // unredeemed key, user redeems manually inside the app.
+  // Read the pendingSubscriptions context for this subscription
+  // — linkToUid (auto-redeem hint) and renewKeyId (extend-existing
+  // -key hint). Guests have neither; signed-in buyers from
+  // /account have linkToUid; renewals (email link OR /account
+  // "renew" button) have renewKeyId AND linkToUid.
   let linkToUid: string | null = null
+  let renewKeyId: string | null = null
   try {
     const pendingDoc = await db
       .collection('pendingSubscriptions')
       .doc(subscriptionId)
       .get()
     if (pendingDoc.exists) {
-      const data = pendingDoc.data() as { linkToUid?: string | null }
+      const data = pendingDoc.data() as {
+        linkToUid?: string | null
+        renewKeyId?: string | null
+      }
       if (typeof data.linkToUid === 'string' && data.linkToUid) {
         linkToUid = data.linkToUid
+      }
+      if (typeof data.renewKeyId === 'string' && data.renewKeyId) {
+        renewKeyId = data.renewKeyId
       }
     }
   } catch (err) {
@@ -818,6 +824,84 @@ async function ensureKeyForSubscription(
       '[webhook/sale-completed] pendingSubscriptions lookup failed:',
       err,
     )
+  }
+
+  // ── RENEWAL BRANCH: extend the existing key in-place ──
+  //
+  // The renewToken pointed at this key. Don't create a new one —
+  // bump its expiresAt forward by planDays (anchored to the LATER
+  // of "now" and the key's current expiresAt so an early renewal
+  // adds to the remaining time instead of throwing it away), swap
+  // in the new subscriptionId, append to billingHistory if present,
+  // and clear any reminder-sent stamps so the next cron cycle
+  // works fresh.
+  if (renewKeyId) {
+    const existingRef = db.collection('productKeys').doc(renewKeyId)
+    const existingSnap = await existingRef.get()
+    if (!existingSnap.exists) {
+      // The key vanished between the renewToken being minted and
+      // the payment landing. Fall through to "create new key"
+      // (logged for forensics).
+      console.warn(
+        `[webhook/sale-completed] renewKeyId ${renewKeyId} not found, falling back to create-new`,
+      )
+      renewKeyId = null
+    } else {
+      const existing = existingSnap.data() as {
+        expiresAt?: string
+        billingHistory?: Array<{ at: string; amount: number; currency: string }>
+      }
+      const currentExpMs = existing.expiresAt
+        ? Date.parse(existing.expiresAt)
+        : 0
+      const anchorMs = Math.max(currentExpMs, Date.now())
+      const newExpiresAt = new Date(anchorMs + planDays * 86_400_000)
+      const billingHistory = Array.isArray(existing.billingHistory)
+        ? existing.billingHistory.slice()
+        : []
+      billingHistory.push({
+        at: new Date().toISOString(),
+        amount: planPrice,
+        currency: planCurrency,
+      })
+      await existingRef.update({
+        expiresAt: newExpiresAt.toISOString(),
+        subscriptionId,
+        planId: sub.plan_id,
+        subscriptionPrice: planPrice,
+        subscriptionCurrency: planCurrency,
+        subscriptionPlanDays: planDays,
+        planDays,
+        subscriptionStatus: 'active',
+        subscriptionStartedAt: new Date().toISOString(),
+        subscriptionCancelledAt: null,
+        billingHistory,
+        // Clear reminder stamps so the next cycle's cron emails
+        // fire fresh.
+        reminder10dSentAt: null,
+        reminder2dSentAt: null,
+        reminderSentAt: null,
+      })
+      try {
+        await sendSubscriptionWelcomeEmail({
+          to: existing.expiresAt
+            ? buyerEmail
+            : buyerEmail,
+          key: renewKeyId,
+          planLabel: planDays === 30 ? 'חודש' : 'שנה',
+          price: planPrice,
+          currency: planCurrency,
+          nextBillingAt: newExpiresAt,
+          subscriptionId,
+        })
+      } catch (err) {
+        console.error('[webhook] renewal email failed for', renewKeyId, err)
+      }
+      return {
+        ok: true,
+        summary: `renewed key ${renewKeyId} via subscription ${subscriptionId} until ${newExpiresAt.toISOString()}`,
+      }
+    }
   }
 
   const baseKeyDoc = {
@@ -957,28 +1041,43 @@ async function handleCreateSubscription(
     plan?: 'monthly' | 'yearly'
     email?: string
     sessionToken?: string
+    renewToken?: string
   }
   const plan = body.plan
   const email = (body.email || '').trim().toLowerCase()
-  // Optional: the buyer arrived from /account already signed-in to
-  // their existing dmplus account. We stash their uid alongside the
-  // pending subscription so the webhook that fires when payment
-  // completes can AUTO-REDEEM the new key to that account — no
-  // "open the app, paste the key" step needed, and the
-  // account-lock logic in keys/redeem also runs (unlinks any prior
-  // expired key the user had on the same account). When the token
-  // is invalid/expired we just ignore it and fall through to the
-  // guest-purchase flow.
+  // Optional: the buyer arrived from /account already signed-in.
+  // - sessionToken: webhook auto-redeems the NEW key to this uid
+  //   (used for fresh-purchase-from-account, where user has no
+  //    prior key).
+  // - renewToken: webhook EXTENDS the existing key referenced by
+  //   the token instead of creating a new one (used by both the
+  //   /account "חידוש המנוי שלי" button and the email-link
+  //   renewal flow).
+  // Either may be present (renewToken implies a uid via its
+  // claims), neither, or both. Both invalid → guest purchase.
   let linkToUid: string | null = null
+  let renewKeyId: string | null = null
   if (body.sessionToken) {
     const claims = verifySessionToken(body.sessionToken.trim())
     if (claims) {
-      // Optional second guard: refuse if the typed email doesn't
-      // match the account's email. Protects against a logged-in
-      // user accidentally buying a sub for someone ELSE's email.
       if (!email || claims.email.toLowerCase() === email) {
         linkToUid = claims.uid
       }
+    }
+  }
+  if (body.renewToken) {
+    // The renew token is JWT-shaped; verify in-line rather than
+    // importing the helper from renew.ts (cross-function imports
+    // have been flaky in this codebase). Same HMAC scheme + the
+    // shared RENEW_TOKEN_SECRET means tokens minted by either
+    // file verify identically.
+    const claims = verifyRenewTokenLocal(body.renewToken.trim())
+    if (claims) {
+      renewKeyId = claims.key
+      // The renew token's uid also implies the linkToUid — useful
+      // for the email-link renewal flow where there's no session
+      // (user clicked from inbox without logging into /account).
+      if (!linkToUid) linkToUid = claims.uid
     }
   }
   if (plan !== 'monthly' && plan !== 'yearly') {
@@ -1082,6 +1181,12 @@ async function handleCreateSubscription(
     // null = guest purchase, redeem manually inside the app.
     // string = signed-in buyer; webhook auto-redeems to this uid.
     linkToUid,
+    // null = create a new key. string = extend this existing key
+    // instead. Used by the /account "חידוש המנוי שלי" button + the
+    // email-link renewal flow so the SAME key's expiry rolls
+    // forward (instead of the user ending up with two keys, an
+    // expired one and a fresh one).
+    renewKeyId,
   })
   return res.status(200).json({
     ok: true,
@@ -2985,4 +3090,113 @@ async function handleUpdateMarketingOptIn(
       .json({ ok: false, error: err instanceof Error ? err.message : 'failed' })
   }
   return res.status(200).json({ ok: true, marketingOptIn: optIn })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Mint a renew token for the session user's primary key
+ *
+ *  Called by /account's "חידוש המנוי שלי" button. We pick the
+ *  user's longest-lived owned key, sign a JWT with {uid, key}
+ *  using the same HMAC scheme + RENEW_TOKEN_SECRET as the cron
+ *  expiry-reminder emails, and return it. The frontend then
+ *  navigates to /buy?renew=<token>, which lights up the existing
+ *  yellow "חידוש מנוי קיים" panel + extends THIS key (rather than
+ *  creating a brand-new one) when the payment lands.
+ *
+ *  Returns 404 if the user has no keys at all — that flow should
+ *  go through the regular guest-purchase path instead.
+ * ───────────────────────────────────────────────────────────── */
+
+const RENEW_TOKEN_TTL_DAYS_DEFAULT = 14
+
+function b64urlEncodePaypal(buf: Buffer): string {
+  return buf.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
+}
+
+function signRenewTokenForKey(uid: string, key: string): string {
+  const iat = Math.floor(Date.now() / 1000)
+  const exp = iat + RENEW_TOKEN_TTL_DAYS_DEFAULT * 86400
+  const header = b64urlEncodePaypal(
+    Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })),
+  )
+  const payload = b64urlEncodePaypal(
+    Buffer.from(JSON.stringify({ uid, key, iat, exp })),
+  )
+  const signature = b64urlEncodePaypal(
+    crypto.createHmac('sha256', tokenSecret()).update(`${header}.${payload}`).digest(),
+  )
+  return `${header}.${payload}.${signature}`
+}
+
+interface RenewTokenClaims {
+  uid: string
+  key: string
+  iat?: number
+  exp?: number
+}
+
+function verifyRenewTokenLocal(token: string): RenewTokenClaims | null {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    const [headerB64, payloadB64, sigB64] = parts
+    const expected = crypto
+      .createHmac('sha256', tokenSecret())
+      .update(`${headerB64}.${payloadB64}`)
+      .digest()
+    const actual = b64urlDecode(sigB64)
+    if (expected.length !== actual.length) return null
+    if (!crypto.timingSafeEqual(expected, actual)) return null
+    const claims = JSON.parse(
+      b64urlDecode(payloadB64).toString('utf8'),
+    ) as RenewTokenClaims
+    if (typeof claims.uid !== 'string' || typeof claims.key !== 'string') return null
+    const now = Math.floor(Date.now() / 1000)
+    if (claims.exp && claims.exp < now) return null
+    return claims
+  } catch {
+    return null
+  }
+}
+
+async function handleMintRenewToken(req: VercelRequest, res: VercelResponse) {
+  const body = req.body as { token?: string }
+  const token = (body.token || '').trim()
+  if (!token) {
+    return res.status(401).json({ ok: false, error: 'invalid or expired session' })
+  }
+  const claims = verifySessionToken(token)
+  if (!claims) {
+    return res.status(401).json({ ok: false, error: 'invalid or expired session' })
+  }
+  // Find the user's primary key. Same picker logic as
+  // respondWithSession's profile.keyLast8 selection — longest-
+  // lived owned key (so an active key wins over an expired one,
+  // and the most recently-bought wins among expired-keys).
+  const db = getDb()
+  const snap = await db
+    .collection('productKeys')
+    .where('redeemedBy', '==', claims.uid)
+    .get()
+  if (snap.empty) {
+    return res
+      .status(404)
+      .json({ ok: false, error: 'אין לך מפתח קיים לחדש. בצע רכישה חדשה.' })
+  }
+  let primaryKey: string | null = null
+  let primaryExpMs = 0
+  for (const d of snap.docs) {
+    const data = d.data() as { key?: string; expiresAt?: string }
+    const k = typeof data.key === 'string' ? data.key : d.id
+    const expMs = typeof data.expiresAt === 'string' ? Date.parse(data.expiresAt) : 0
+    if (!primaryKey || expMs > primaryExpMs) {
+      primaryKey = k
+      primaryExpMs = expMs
+    }
+  }
+  if (!primaryKey) {
+    return res.status(404).json({ ok: false, error: 'no primary key' })
+  }
+  const renewToken = signRenewTokenForKey(claims.uid, primaryKey)
+  return res.status(200).json({ ok: true, renewToken, key: primaryKey })
 }

@@ -482,6 +482,11 @@ export function BuyPage() {
             body: JSON.stringify({
               plan: planRef.current,
               email: emailRef.current,
+              // Renewal-mode buttons run on /buy?renew=<token>.
+              // Passing the renewToken makes the backend webhook
+              // EXTEND the existing key instead of creating a new
+              // one — what the user wants on the renewal panel.
+              renewToken: renewTokenRef.current,
             }),
           })
           const json = (await r.json()) as {
@@ -1493,32 +1498,9 @@ function SubscriptionFlow({
 
   return (
     <form onSubmit={(e) => e.preventDefault()} className="space-y-4">
-      {/* Logged-in-account banner. When the buyer arrived here from
-          /account (purchaseContext set), this badge reassures them
-          that the new subscription is going to land directly on
-          their existing account — no need to copy a key out of an
-          email and paste it inside the app. The email field below
-          is also locked to the account's email so they can't
-          accidentally type a different address mid-purchase and
-          end up with a guest-orphaned subscription. */}
-      {purchaseContext && (
-        <div className="rounded-xl border border-success/40 bg-success/10 px-4 py-3 text-sm text-success">
-          <div className="font-semibold">✓ מחובר לחשבון שלך</div>
-          <div className="mt-1 text-xs leading-relaxed text-success/85">
-            המנוי החדש יתחבר אוטומטית ל-
-            <span dir="ltr" className="font-mono">
-              {purchaseContext.email}
-            </span>
-            {purchaseContext.hasExpiredKey
-              ? '. המפתח הקיים שלך יוחלף במפתח החדש.'
-              : '. תוכל להשתמש בו מיד באפליקציה — אין צורך לאמת אותו.'}
-          </div>
-        </div>
-      )}
-
       <label className="block">
         <span className="mb-1.5 block text-xs text-fg-secondary">
-          {purchaseContext ? 'כתובת המייל של החשבון' : 'כתובת מייל לקבלת מפתח המנוי'}
+          כתובת מייל לקבלת מפתח המנוי
         </span>
         <input
           type="email"
@@ -1528,10 +1510,9 @@ function SubscriptionFlow({
           placeholder="you@example.com"
           dir="ltr"
           className="w-full rounded-xl border border-border bg-bg-elevated px-4 py-3 text-right text-base text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none disabled:opacity-60"
-          // Email is read-only when the buyer is upgrading from
-          // their account — changing it would break the auto-redeem
-          // contract (subscription would be tied to a different
-          // email, webhook couldn't link to the right uid).
+          // Email locked when the buyer is upgrading from their
+          // account — typing a different address would orphan the
+          // subscription off their account.
           disabled={Boolean(purchaseContext)}
         />
       </label>
