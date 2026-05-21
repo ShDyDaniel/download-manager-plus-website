@@ -3,7 +3,65 @@ import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
 import nodemailer from 'nodemailer'
-import { loadCurrentPricing } from '../api-lib/paypal'
+
+// NOTE: loadCurrentPricing is duplicated inline here (and in
+// pricing.ts, paypal.ts) on purpose. We tried sharing it via a
+// helper file at `api/_paypal.ts` and at `api-lib/paypal.ts`
+// (outside api/). Both setups built cleanly and type-checked, but
+// crashed at runtime with FUNCTION_INVOCATION_FAILED. Vercel's
+// per-function bundler doesn't reliably include helper modules
+// imported via relative paths from api/ in every shape. Inlining
+// is the only configuration we've confirmed works in production.
+// Keep these three copies in sync if you change pricing schema.
+const PRICING_DEFAULTS_LOCAL = {
+  monthly: { regular: 9, sale: null as number | null },
+  yearly: { regular: 60, sale: null as number | null },
+  currency: 'ILS',
+}
+interface LivePricingLocal {
+  monthly: { regular: number; sale: number | null }
+  yearly: { regular: number; sale: number | null }
+  currency: string
+  saleLabel?: string
+}
+async function loadCurrentPricing(): Promise<LivePricingLocal> {
+  try {
+    const db = getFirestore(getFirebase())
+    const snap = await db.collection('appConfig').doc('pricing').get()
+    if (!snap.exists) return { ...PRICING_DEFAULTS_LOCAL }
+    const data = snap.data() as {
+      monthly?: { regular?: unknown; sale?: unknown }
+      yearly?: { regular?: unknown; sale?: unknown }
+      currency?: unknown
+      saleLabel?: unknown
+    }
+    const numOr = (v: unknown, fallback: number): number =>
+      typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : fallback
+    const numOrNull = (v: unknown): number | null =>
+      typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+    return {
+      monthly: {
+        regular: numOr(data.monthly?.regular, PRICING_DEFAULTS_LOCAL.monthly.regular),
+        sale: numOrNull(data.monthly?.sale),
+      },
+      yearly: {
+        regular: numOr(data.yearly?.regular, PRICING_DEFAULTS_LOCAL.yearly.regular),
+        sale: numOrNull(data.yearly?.sale),
+      },
+      currency:
+        typeof data.currency === 'string' && data.currency
+          ? data.currency
+          : PRICING_DEFAULTS_LOCAL.currency,
+      saleLabel:
+        typeof data.saleLabel === 'string' && data.saleLabel.trim()
+          ? data.saleLabel.trim()
+          : undefined,
+    }
+  } catch (err) {
+    console.error('[capture] loadCurrentPricing failed:', err)
+    return { ...PRICING_DEFAULTS_LOCAL }
+  }
+}
 
 /**
  * PayPal Smart Buttons hand the orderID back to the frontend via

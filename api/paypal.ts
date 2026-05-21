@@ -1,14 +1,349 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'node:crypto'
-import { FieldValue } from 'firebase-admin/firestore'
+import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
+import { getFirestore, FieldValue, type Firestore } from 'firebase-admin/firestore'
 import nodemailer from 'nodemailer'
-import {
-  getDb,
-  loadCurrentPricing,
-  paypalCall,
-  syncPlansForPricing,
-  verifyWebhookSignature,
-} from '../api-lib/paypal'
+
+// ─── Inlined PayPal + Firebase helpers ──────────────────────────
+//
+// IMPORTANT — DO NOT REFACTOR THESE INTO A SHARED HELPER MODULE.
+// Earlier versions imported them from `./_paypal` and then from
+// `../api-lib/paypal` (outside api/). Both setups built cleanly and
+// type-checked, but at runtime caused FUNCTION_INVOCATION_FAILED.
+// Vercel's per-function bundler doesn't reliably include helper
+// modules imported via relative paths from api/ in every shape.
+// Keeping them inline here is the only configuration we've
+// confirmed works in production. capture.ts and pricing.ts each
+// keep their own copy of loadCurrentPricing for the same reason.
+//
+// If you change anything below, also update the corresponding copy
+// in capture.ts (loadCurrentPricing only).
+
+const PAYPAL_BASE =
+  (process.env.PAYPAL_ENV || 'live') === 'sandbox'
+    ? 'https://api-m.sandbox.paypal.com'
+    : 'https://api-m.paypal.com'
+
+let firebaseApp: App | null = null
+function getFirebase(): App {
+  if (firebaseApp) return firebaseApp
+  const existing = getApps()[0]
+  if (existing) {
+    firebaseApp = existing
+    return firebaseApp
+  }
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT
+  if (!raw) throw new Error('FIREBASE_SERVICE_ACCOUNT env var not set')
+  firebaseApp = initializeApp({ credential: cert(JSON.parse(raw)) })
+  return firebaseApp
+}
+function getDb(): Firestore {
+  return getFirestore(getFirebase())
+}
+
+let cachedToken: { value: string; expiresAt: number } | null = null
+async function paypalAccessToken(): Promise<string> {
+  if (cachedToken && cachedToken.expiresAt > Date.now() + 30_000) {
+    return cachedToken.value
+  }
+  const clientId = process.env.PAYPAL_CLIENT_ID
+  const secret = process.env.PAYPAL_CLIENT_SECRET
+  if (!clientId || !secret) {
+    throw new Error('PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET not set')
+  }
+  const auth = Buffer.from(`${clientId.trim()}:${secret.trim()}`).toString('base64')
+  const r = await fetch(`${PAYPAL_BASE}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${auth}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials',
+  })
+  if (!r.ok) {
+    const text = await r.text().catch(() => '<no body>')
+    throw new Error(`PayPal auth failed: ${r.status} — ${text.slice(0, 200)}`)
+  }
+  const json = (await r.json()) as { access_token: string; expires_in: number }
+  cachedToken = { value: json.access_token, expiresAt: Date.now() + json.expires_in * 1000 }
+  return json.access_token
+}
+
+async function paypalCall<T = unknown>(
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  path: string,
+  body?: unknown,
+  extraHeaders?: Record<string, string>,
+): Promise<T> {
+  const token = await paypalAccessToken()
+  const r = await fetch(`${PAYPAL_BASE}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      ...(extraHeaders || {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  const text = await r.text()
+  if (r.status === 204) return undefined as T
+  let parsed: unknown
+  try {
+    parsed = text ? JSON.parse(text) : null
+  } catch {
+    parsed = text
+  }
+  if (!r.ok) {
+    const summary =
+      typeof parsed === 'object' && parsed !== null && 'message' in parsed
+        ? (parsed as { message?: string }).message
+        : text.slice(0, 200)
+    throw new Error(`PayPal ${method} ${path} failed: ${r.status} — ${summary}`)
+  }
+  return parsed as T
+}
+
+const PRICING_DEFAULTS_LOCAL = {
+  monthly: { regular: 9, sale: null as number | null },
+  yearly: { regular: 60, sale: null as number | null },
+  currency: 'ILS',
+}
+interface LivePricingLocal {
+  monthly: { regular: number; sale: number | null }
+  yearly: { regular: number; sale: number | null }
+  currency: string
+  saleLabel?: string
+}
+async function loadCurrentPricing(): Promise<LivePricingLocal> {
+  try {
+    const db = getDb()
+    const snap = await db.collection('appConfig').doc('pricing').get()
+    if (!snap.exists) return { ...PRICING_DEFAULTS_LOCAL }
+    const data = snap.data() as {
+      monthly?: { regular?: unknown; sale?: unknown }
+      yearly?: { regular?: unknown; sale?: unknown }
+      currency?: unknown
+      saleLabel?: unknown
+    }
+    const numOr = (v: unknown, fallback: number): number =>
+      typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : fallback
+    const numOrNull = (v: unknown): number | null =>
+      typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+    return {
+      monthly: {
+        regular: numOr(data.monthly?.regular, PRICING_DEFAULTS_LOCAL.monthly.regular),
+        sale: numOrNull(data.monthly?.sale),
+      },
+      yearly: {
+        regular: numOr(data.yearly?.regular, PRICING_DEFAULTS_LOCAL.yearly.regular),
+        sale: numOrNull(data.yearly?.sale),
+      },
+      currency:
+        typeof data.currency === 'string' && data.currency
+          ? data.currency
+          : PRICING_DEFAULTS_LOCAL.currency,
+      saleLabel:
+        typeof data.saleLabel === 'string' && data.saleLabel.trim()
+          ? data.saleLabel.trim()
+          : undefined,
+    }
+  } catch (err) {
+    console.error('[paypal] loadCurrentPricing failed:', err)
+    return { ...PRICING_DEFAULTS_LOCAL }
+  }
+}
+
+const PAYPAL_PRODUCT_DOC = 'paypal'
+const PAYPAL_PRODUCT_NAME = 'ניהול הורדות פלוס Pro'
+const PAYPAL_PRODUCT_DESCRIPTION =
+  'Subscription to the Pro tier of Download Manager Plus desktop application'
+
+async function getOrCreateProduct(): Promise<string> {
+  const db = getDb()
+  const ref = db.collection('appConfig').doc(PAYPAL_PRODUCT_DOC)
+  const snap = await ref.get()
+  if (snap.exists) {
+    const data = snap.data() as { productId?: string }
+    if (data.productId) return data.productId
+  }
+  const created = await paypalCall<{ id: string }>('POST', '/v1/catalogs/products', {
+    name: PAYPAL_PRODUCT_NAME,
+    description: PAYPAL_PRODUCT_DESCRIPTION,
+    type: 'SERVICE',
+    category: 'SOFTWARE',
+  })
+  await ref.set({ productId: created.id }, { merge: true })
+  return created.id
+}
+
+async function createPaypalPlan(args: {
+  productId: string
+  label: string
+  amount: number
+  currency: string
+  interval: 'monthly' | 'yearly'
+}): Promise<string> {
+  const frequency =
+    args.interval === 'monthly'
+      ? { interval_unit: 'MONTH', interval_count: 1 }
+      : { interval_unit: 'YEAR', interval_count: 1 }
+  const created = await paypalCall<{ id: string }>('POST', '/v1/billing/plans', {
+    product_id: args.productId,
+    name: `${PAYPAL_PRODUCT_NAME} — ${args.label}`,
+    description: `${args.amount} ${args.currency} ${args.interval === 'monthly' ? 'per month' : 'per year'}`,
+    billing_cycles: [
+      {
+        frequency,
+        tenure_type: 'REGULAR',
+        sequence: 1,
+        total_cycles: 0,
+        pricing_scheme: {
+          fixed_price: { value: args.amount.toFixed(2), currency_code: args.currency },
+        },
+      },
+    ],
+    payment_preferences: {
+      auto_bill_outstanding: true,
+      payment_failure_threshold: 1,
+      setup_fee_failure_action: 'CANCEL',
+    },
+    taxes: undefined,
+  })
+  await paypalCall('POST', `/v1/billing/plans/${created.id}/activate`, {})
+  return created.id
+}
+
+async function deactivatePaypalPlan(planId: string): Promise<void> {
+  try {
+    await paypalCall('POST', `/v1/billing/plans/${planId}/deactivate`, {})
+  } catch (err) {
+    console.warn(
+      `[paypal] deactivatePlan ${planId} failed (ignoring):`,
+      err instanceof Error ? err.message : err,
+    )
+  }
+}
+
+async function verifyWebhookSignature(args: {
+  webhookId: string
+  transmissionId: string
+  transmissionTime: string
+  certUrl: string
+  authAlgo: string
+  transmissionSig: string
+  body: unknown
+}): Promise<boolean> {
+  try {
+    const r = await paypalCall<{ verification_status: string }>(
+      'POST',
+      '/v1/notifications/verify-webhook-signature',
+      {
+        auth_algo: args.authAlgo,
+        cert_url: args.certUrl,
+        transmission_id: args.transmissionId,
+        transmission_sig: args.transmissionSig,
+        transmission_time: args.transmissionTime,
+        webhook_id: args.webhookId,
+        webhook_event: args.body,
+      },
+    )
+    return r.verification_status === 'SUCCESS'
+  } catch (err) {
+    console.error('[paypal] webhook signature verify call failed:', err)
+    return false
+  }
+}
+
+interface PlanSetForPricing {
+  monthlyRegularPlanId: string
+  monthlySalePlanId: string | null
+  yearlyRegularPlanId: string
+  yearlySalePlanId: string | null
+}
+
+async function syncPlansForPricing(pricing: {
+  monthly: { regular: number; sale: number | null }
+  yearly: { regular: number; sale: number | null }
+  currency: string
+}): Promise<PlanSetForPricing> {
+  const db = getDb()
+  const ref = db.collection('appConfig').doc('pricing')
+  const snap = await ref.get()
+  const existing = snap.exists
+    ? (snap.data() as unknown as Record<string, unknown>)
+    : {}
+  const existingPlans = (existing.paypalPlans ?? {}) as {
+    monthlyRegular?: { planId: string; amount: number }
+    monthlySale?: { planId: string; amount: number } | null
+    yearlyRegular?: { planId: string; amount: number }
+    yearlySale?: { planId: string; amount: number } | null
+  }
+  const productId = await getOrCreateProduct()
+  async function reuseOrCreate(
+    slot: 'monthlyRegular' | 'monthlySale' | 'yearlyRegular' | 'yearlySale',
+    amount: number | null,
+    interval: 'monthly' | 'yearly',
+    label: string,
+  ): Promise<{ planId: string; amount: number } | null> {
+    if (amount === null) return null
+    const persisted = existingPlans[slot]
+    if (persisted && persisted.amount === amount) return persisted
+    if (persisted) await deactivatePaypalPlan(persisted.planId)
+    const newId = await createPaypalPlan({
+      productId,
+      label,
+      amount,
+      currency: pricing.currency,
+      interval,
+    })
+    return { planId: newId, amount }
+  }
+  const monthlyRegular = await reuseOrCreate(
+    'monthlyRegular',
+    pricing.monthly.regular,
+    'monthly',
+    `Monthly Regular (${pricing.monthly.regular} ${pricing.currency})`,
+  )
+  const monthlySale = await reuseOrCreate(
+    'monthlySale',
+    pricing.monthly.sale,
+    'monthly',
+    `Monthly Sale (${pricing.monthly.sale} ${pricing.currency})`,
+  )
+  const yearlyRegular = await reuseOrCreate(
+    'yearlyRegular',
+    pricing.yearly.regular,
+    'yearly',
+    `Yearly Regular (${pricing.yearly.regular} ${pricing.currency})`,
+  )
+  const yearlySale = await reuseOrCreate(
+    'yearlySale',
+    pricing.yearly.sale,
+    'yearly',
+    `Yearly Sale (${pricing.yearly.sale} ${pricing.currency})`,
+  )
+  if (!monthlyRegular || !yearlyRegular) {
+    throw new Error('Pricing missing regular monthly/yearly')
+  }
+  await ref.set(
+    {
+      paypalPlans: {
+        monthlyRegular,
+        monthlySale,
+        yearlyRegular,
+        yearlySale,
+      },
+    },
+    { merge: true },
+  )
+  return {
+    monthlyRegularPlanId: monthlyRegular.planId,
+    monthlySalePlanId: monthlySale?.planId ?? null,
+    yearlyRegularPlanId: yearlyRegular.planId,
+    yearlySalePlanId: yearlySale?.planId ?? null,
+  }
+}
 
 /**
  * Unified PayPal endpoint. ONE serverless function handles every
