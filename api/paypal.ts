@@ -561,6 +561,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSendMarketingEmail(req, res)
       case 'unsubscribe':
         return await handleUnsubscribe(req, res)
+      case 'update-marketing-opt-in':
+        return await handleUpdateMarketingOptIn(req, res)
       default:
         return res
           .status(400)
@@ -1141,6 +1143,12 @@ interface ProfileSummary {
   keyLast8: string | null
   validUntil: string | null
   hasActiveSubscription: boolean
+  /** Current state of the marketing email opt-in flag in
+   *  users/{uid}. The /account page surfaces this as a toggle so
+   *  the user can flip it from inside the app, satisfying the
+   *  "you can unsubscribe at any time" promise in the signup
+   *  checkbox text. */
+  marketingOptIn: boolean
 }
 
 /**
@@ -1241,6 +1249,21 @@ async function respondWithSession(
     const hasActiveSub = subs.some(
       (s) => s.status === 'ACTIVE' || s.status === 'APPROVAL_PENDING',
     )
+
+    // Read marketing-opt-in from the user doc. Best-effort: if the
+    // doc is missing or the field isn't there, default false (the
+    // safe default per Israeli תקשורת sec. 30א — never assume opt-in).
+    let marketingOptIn = false
+    try {
+      const userSnap = await db.collection('users').doc(uid).get()
+      if (userSnap.exists) {
+        const d = userSnap.data() as { marketingOptIn?: unknown }
+        marketingOptIn = d.marketingOptIn === true
+      }
+    } catch (err) {
+      console.warn('[paypal/session] marketingOptIn lookup failed:', err)
+    }
+
     const profile: ProfileSummary = {
       email,
       plan: isAdmin ? 'admin' : primaryIsActive || hasActiveSub ? 'pro' : 'free',
@@ -1248,6 +1271,7 @@ async function respondWithSession(
       keyLast8: primaryKeyStr ? primaryKeyStr.slice(-8) : null,
       validUntil: primaryExpiresAt,
       hasActiveSubscription: hasActiveSub,
+      marketingOptIn,
     }
 
     const token = signSessionToken({
@@ -2812,4 +2836,47 @@ async function handleUnsubscribe(req: VercelRequest, res: VercelResponse) {
         true,
       ),
     )
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Update marketing opt-in (session-gated)
+ *
+ *  Called from the /account page when the user flips the toggle.
+ *  Auth: the same session JWT the /account page already holds
+ *  (no need to re-prompt for password). Flips users/{uid}
+ *  .marketingOptIn to the supplied boolean and stamps an
+ *  audit timestamp.
+ * ───────────────────────────────────────────────────────────── */
+async function handleUpdateMarketingOptIn(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { token?: string; optIn?: boolean }
+  const token = (body.token || '').trim()
+  const optIn = body.optIn === true
+  if (!token) {
+    return res.status(401).json({ ok: false, error: 'invalid or expired session' })
+  }
+  const claims = verifySessionToken(token)
+  if (!claims) {
+    return res.status(401).json({ ok: false, error: 'invalid or expired session' })
+  }
+  try {
+    const db = getDb()
+    const update: Record<string, unknown> = { marketingOptIn: optIn }
+    // Mirror the timestamps signup-verify-code uses so the audit
+    // trail stays consistent regardless of where the opt-in flipped.
+    if (optIn) {
+      update.marketingOptInAt = new Date().toISOString()
+    } else {
+      update.marketingOptOutAt = new Date().toISOString()
+    }
+    await db.collection('users').doc(claims.uid).set(update, { merge: true })
+  } catch (err) {
+    console.error('[paypal/update-marketing-opt-in] write failed:', err)
+    return res
+      .status(500)
+      .json({ ok: false, error: err instanceof Error ? err.message : 'failed' })
+  }
+  return res.status(200).json({ ok: true, marketingOptIn: optIn })
 }

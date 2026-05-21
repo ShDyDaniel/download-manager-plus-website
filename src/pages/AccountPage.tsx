@@ -73,6 +73,7 @@ interface Profile {
   keyLast8: string | null
   validUntil: string | null
   hasActiveSubscription: boolean
+  marketingOptIn: boolean
 }
 
 interface SessionResponse {
@@ -158,6 +159,13 @@ export default function AccountPage() {
   const [resetSending, setResetSending] = useState(false)
   const [resetSent, setResetSent] = useState(false)
   const [resetError, setResetError] = useState<string | null>(null)
+
+  // Marketing opt-in toggle state. `marketingSaving` is true while
+  // the PATCH is in flight so the toggle UI can show a spinner +
+  // disable double-clicks. `marketingError` surfaces any failure
+  // inline below the row.
+  const [marketingSaving, setMarketingSaving] = useState(false)
+  const [marketingError, setMarketingError] = useState<string | null>(null)
 
   // Billing state (lazy)
   const [billingOpen, setBillingOpen] = useState(false)
@@ -314,6 +322,33 @@ export default function AccountPage() {
       setResetError(err instanceof Error ? err.message : 'שגיאת רשת')
     } finally {
       setResetSending(false)
+    }
+  }
+
+  async function handleMarketingToggle(next: boolean) {
+    if (!token || !profile) return
+    // Optimistic update — flip the UI immediately so the toggle
+    // feels snappy. Roll back if the backend rejects.
+    const prev = profile.marketingOptIn
+    setProfile({ ...profile, marketingOptIn: next })
+    setMarketingSaving(true)
+    setMarketingError(null)
+    try {
+      const r = await fetch('/api/paypal?action=update-marketing-opt-in', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, optIn: next }),
+      })
+      const json = (await r.json()) as { ok: boolean; error?: string }
+      if (!r.ok || !json.ok) {
+        throw new Error(json.error || 'עדכון העדפת ההתראות נכשל')
+      }
+    } catch (err) {
+      setMarketingError(err instanceof Error ? err.message : 'שגיאת רשת')
+      // Roll back the optimistic flip.
+      setProfile({ ...profile, marketingOptIn: prev })
+    } finally {
+      setMarketingSaving(false)
     }
   }
 
@@ -515,6 +550,33 @@ export default function AccountPage() {
                 </ProfileRow>
 
                 <ValidityRow profile={profile ?? null} />
+
+                {/* Marketing opt-in toggle. Sits inside the
+                    profile rows so the user reads it as part of
+                    "my account settings", not a buried preference.
+                    Visually matches a ProfileRow but the right-hand
+                    slot holds an interactive switch. Optimistically
+                    updates the UI on flip + rolls back if the
+                    backend rejects. */}
+                <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-elevated px-3 py-2.5">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Mail className="h-3.5 w-3.5 text-accent" />
+                    <span className="text-fg-muted">התראות במייל</span>
+                  </div>
+                  <MarketingToggle
+                    enabled={profile?.marketingOptIn ?? false}
+                    saving={marketingSaving}
+                    onChange={(v) => void handleMarketingToggle(v)}
+                  />
+                </div>
+                <p className="-mt-1 px-1 text-[11px] text-fg-muted">
+                  קבלת הצעות מיוחדות, מבצעים ועדכוני מוצר. ניתן לשנות בכל עת.
+                </p>
+                {marketingError && (
+                  <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {marketingError}
+                  </div>
+                )}
               </div>
 
               {/* Change password */}
@@ -906,6 +968,48 @@ function SubscriptionCard({
         </button>
       )}
     </li>
+  )
+}
+
+/**
+ * Pill-style toggle (NOT a native checkbox) so the marketing-opt-in
+ * row reads as a settings control, not a form field. Animates the
+ * thumb across; while `saving` is true the row dims slightly and
+ * pointer events are disabled so the user can't spam-click during
+ * the round-trip.
+ */
+function MarketingToggle({
+  enabled,
+  saving,
+  onChange,
+}: {
+  enabled: boolean
+  saving: boolean
+  onChange: (next: boolean) => void
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      disabled={saving}
+      onClick={() => onChange(!enabled)}
+      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+        enabled
+          ? 'border-success/60 bg-success/30'
+          : 'border-border bg-bg-elevated'
+      }`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-fg shadow-md transition-transform ${
+          enabled ? '-translate-x-1' : '-translate-x-6'
+        }`}
+        aria-hidden
+      />
+      <span className="sr-only">
+        {enabled ? 'מקבל התראות במייל' : 'לא מקבל התראות במייל'}
+      </span>
+    </button>
   )
 }
 
