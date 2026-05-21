@@ -5,6 +5,7 @@ import { Features } from './components/Features'
 import { QuickStart } from './components/QuickStart'
 import { FAQ } from './components/FAQ'
 import { Footer } from './components/Footer'
+import { SiteHeader } from './components/SiteHeader'
 import { BuyPage } from './pages/BuyPage'
 import AccountPage from './pages/AccountPage'
 
@@ -14,33 +15,40 @@ import AccountPage from './pages/AccountPage'
 // non-/api requests to index.html so deep links survive refresh.
 function App() {
   return (
-    <Routes>
-      <Route
-        path="/"
-        element={
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.4 }}
-            className="relative"
-          >
-            <Hero />
-            <Features />
-            <QuickStart />
-            <FAQ />
-            <Footer />
-          </motion.div>
-        }
-      />
-      <Route path="/buy" element={<BuyPage />} />
-      <Route path="/account" element={<AccountPage />} />
-      {/* /manage was the original subscription-management page
-          before /account absorbed all its functionality. Keep a
-          permanent redirect so old emails, footers, the desktop
-          app's pre-update "ניהול תוכנית" button, and Google
-          results still land somewhere useful. */}
-      <Route path="/manage" element={<Navigate to="/account" replace />} />
-    </Routes>
+    <>
+      {/* Floating top-left "החשבון שלי" link — rendered outside
+          Routes so it persists across every page. SiteHeader has
+          its own visibility check (hides on /account where the user
+          is already at the dashboard). */}
+      <SiteHeader />
+      <Routes>
+        <Route
+          path="/"
+          element={
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.4 }}
+              className="relative"
+            >
+              <Hero />
+              <Features />
+              <QuickStart />
+              <FAQ />
+              <Footer />
+            </motion.div>
+          }
+        />
+        <Route path="/buy" element={<BuyPage />} />
+        <Route path="/account" element={<AccountPage />} />
+        {/* /manage was the original subscription-management page
+            before /account absorbed all its functionality. Keep a
+            permanent redirect so old emails, footers, the desktop
+            app's pre-update "ניהול תוכנית" button, and Google
+            results still land somewhere useful. */}
+        <Route path="/manage" element={<Navigate to="/account" replace />} />
+      </Routes>
+    </>
   )
 }
 
