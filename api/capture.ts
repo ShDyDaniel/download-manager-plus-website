@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
 import nodemailer from 'nodemailer'
-import { loadCurrentPricing } from './pricing'
+import { loadCurrentPricing } from './_paypal'
 
 /**
  * PayPal Smart Buttons hand the orderID back to the frontend via

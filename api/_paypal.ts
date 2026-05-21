@@ -25,6 +25,75 @@ export const PAYPAL_BASE =
     ? 'https://api-m.sandbox.paypal.com'
     : 'https://api-m.paypal.com'
 
+// ─── Live pricing reader ──────────────────────────────────────
+//
+// Reads `appConfig/pricing` and returns the current monthly /
+// yearly prices (regular + optional sale). Lives in this shared
+// helper module (rather than `pricing.ts`, which is itself a
+// serverless function file) because Vercel's bundler has issues
+// when one serverless function imports from another. By keeping
+// this in `_paypal.ts` (a non-function helper, conventionally
+// underscore-prefixed), every caller — `paypal.ts`, `capture.ts`,
+// and `pricing.ts` itself — bundles it cleanly without the
+// cross-function-file import that was previously crashing the
+// runtime with FUNCTION_INVOCATION_FAILED on capture and paypal.
+//
+// Always returns SOMETHING — on any failure (missing doc, network
+// down, malformed data) falls back to the hard-coded defaults so
+// the /buy page never breaks for a backend hiccup.
+
+const PRICING_DEFAULTS = {
+  monthly: { regular: 9, sale: null as number | null },
+  yearly: { regular: 60, sale: null as number | null },
+  currency: 'ILS',
+}
+
+export interface LivePricing {
+  monthly: { regular: number; sale: number | null }
+  yearly: { regular: number; sale: number | null }
+  currency: string
+  saleLabel?: string
+}
+
+export async function loadCurrentPricing(): Promise<LivePricing> {
+  try {
+    const db = getDb()
+    const snap = await db.collection('appConfig').doc('pricing').get()
+    if (!snap.exists) return { ...PRICING_DEFAULTS }
+    const data = snap.data() as {
+      monthly?: { regular?: unknown; sale?: unknown }
+      yearly?: { regular?: unknown; sale?: unknown }
+      currency?: unknown
+      saleLabel?: unknown
+    }
+    const numOr = (v: unknown, fallback: number): number =>
+      typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : fallback
+    const numOrNull = (v: unknown): number | null =>
+      typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+    return {
+      monthly: {
+        regular: numOr(data.monthly?.regular, PRICING_DEFAULTS.monthly.regular),
+        sale: numOrNull(data.monthly?.sale),
+      },
+      yearly: {
+        regular: numOr(data.yearly?.regular, PRICING_DEFAULTS.yearly.regular),
+        sale: numOrNull(data.yearly?.sale),
+      },
+      currency:
+        typeof data.currency === 'string' && data.currency
+          ? data.currency
+          : PRICING_DEFAULTS.currency,
+      saleLabel:
+        typeof data.saleLabel === 'string' && data.saleLabel.trim()
+          ? data.saleLabel.trim()
+          : undefined,
+    }
+  } catch (err) {
+    console.error('[pricing] loadCurrentPricing failed:', err)
+    return { ...PRICING_DEFAULTS }
+  }
+}
+
 // ─── Firebase singleton ────────────────────────────────────────
 
 let firebaseApp: App | null = null

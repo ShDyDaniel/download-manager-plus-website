@@ -4,11 +4,11 @@ import { FieldValue } from 'firebase-admin/firestore'
 import nodemailer from 'nodemailer'
 import {
   getDb,
+  loadCurrentPricing,
   paypalCall,
   syncPlansForPricing,
   verifyWebhookSignature,
 } from './_paypal'
-import { loadCurrentPricing } from './pricing'
 
 /**
  * Unified PayPal endpoint. ONE serverless function handles every
