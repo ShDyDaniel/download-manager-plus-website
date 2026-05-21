@@ -16,7 +16,10 @@ import {
   currencySymbol,
   DEFAULT_PRICING,
   effectivePrice,
+  fetchLivePricing,
   formatPrice,
+  readPricingCache,
+  writePricingCache,
   type LivePricing,
 } from '../lib/pricing'
 
@@ -189,7 +192,15 @@ export function BuyPage() {
   // Refs of the pricing alongside the state value so the PayPal
   // createOrder callback (which runs much later than the render
   // that registered it) sees the latest prices, not a snapshot.
-  const [pricing, setPricing] = useState<LivePricing | null>(null)
+  // Lazy initial state seeded from the localStorage pricing cache.
+  // Returning visitors (anyone who hit the site once before in this
+  // browser) get the right prices on the very first paint — no
+  // flash of the hardcoded DEFAULT_PRICING that the user saw under
+  // the old "always start with null" approach. First-ever visitors
+  // still get null + skeleton until the fetch resolves.
+  const [pricing, setPricing] = useState<LivePricing | null>(() =>
+    readPricingCache(),
+  )
   const pricingRef = useRef<LivePricing>(DEFAULT_PRICING)
   pricingRef.current = pricing ?? DEFAULT_PRICING
 
@@ -238,35 +249,23 @@ export function BuyPage() {
   // popup/inline-card UI rather than navigating away.)
 
 
-  // Fetch pricing once on mount. We don't block render on this —
-  // the page renders with `pricing=null` initially, the plan cards
-  // show a loading skeleton, and once the fetch resolves the real
-  // prices appear. Same swap-in pattern Vercel-hosted SaaS sites
-  // use to avoid CLS while waiting on dynamic data.
+  // Fetch pricing once on mount. The shared `fetchLivePricing` +
+  // localStorage cache is in src/lib/pricing.ts; using it directly
+  // here (instead of inline fetch) means returning visitors get the
+  // cached value rendered on the FIRST PAINT — no flash of the
+  // hardcoded DEFAULT_PRICING. First-ever visitors with no cache
+  // still see the skeleton state in the plan cards (`pricing=null`)
+  // until the network response lands.
   useEffect(() => {
     let alive = true
-    void (async () => {
-      try {
-        const r = await fetch('/api/pricing', { cache: 'no-store' })
-        const json = (await r.json()) as
-          | ({ ok: true } & LivePricing)
-          | { ok: false; error?: string }
-        if (!alive) return
-        if (json.ok) {
-          setPricing({
-            monthly: json.monthly,
-            yearly: json.yearly,
-            currency: json.currency,
-            saleLabel: json.saleLabel,
-          })
-        } else {
-          setPricing(DEFAULT_PRICING)
-        }
-      } catch {
-        // Network down? Cached fallback so the page still works.
-        if (alive) setPricing(DEFAULT_PRICING)
-      }
-    })()
+    // Synchronous cache read for first-paint freshness.
+    const cached = readPricingCache()
+    if (cached) setPricing(cached)
+    void fetchLivePricing().then((p) => {
+      if (!alive) return
+      setPricing(p)
+      writePricingCache(p)
+    })
     return () => {
       alive = false
     }
@@ -1157,13 +1156,22 @@ function PlanCard({
         </div>
       </div>
 
-      {/* Price row — the centerpiece. When there's a sale we show
-          the regular price small and struck-through above, with the
-          effective (sale) price big below it. Sale price gets a
-          green-ish tint to reinforce "this is cheaper". When no
-          sale, the regular price renders standalone in the original
-          big copper-tinged style. */}
-      {onSale ? (
+      {/* Price row. When pricing is still loading (no cache + no
+          response yet) we render a shimmer skeleton instead of the
+          numbers — the previous version flashed the hardcoded
+          DEFAULT_PRICING for ~200ms which read as "the price just
+          changed" when it actually didn't. Skeleton is sized to
+          match the real price block so the layout doesn't jump
+          when the data arrives. */}
+      {loading ? (
+        <div className="mb-1" dir="ltr">
+          <div className="flex items-baseline justify-end gap-1.5">
+            <span className="h-9 w-16 animate-pulse rounded bg-fg-muted/20" />
+            <span className="h-5 w-3 animate-pulse rounded bg-fg-muted/15" />
+            <span className="h-3 w-10 animate-pulse rounded bg-fg-muted/10" />
+          </div>
+        </div>
+      ) : onSale ? (
         <div className="mb-1" dir="ltr">
           <div className="flex items-baseline justify-end gap-1.5 text-fg-muted">
             <span className="text-base font-medium tabular-nums line-through decoration-fg-muted/60">
@@ -1196,13 +1204,19 @@ function PlanCard({
           generated monthly-equivalent calculation for the yearly
           plan. We compute the equivalent against the EFFECTIVE
           price (sale if active) so a yearly sale doesn't show a
-          stale "5 ₪/חודש" when it's actually less. */}
+          stale "5 ₪/חודש" when it's actually less. While loading,
+          render a skeleton placeholder of similar visual weight so
+          the card's vertical rhythm doesn't shift. */}
       <div className="mt-auto text-[11px] text-fg-muted">
-        {monthlyEquivalent
-          ? `שווה ערך ל-${formatPrice(
-              Math.round((effective / 12) * 100) / 100,
-            )} ${sym}/חודש`
-          : note}
+        {loading ? (
+          <span className="inline-block h-3 w-32 animate-pulse rounded bg-fg-muted/15" />
+        ) : monthlyEquivalent ? (
+          `שווה ערך ל-${formatPrice(
+            Math.round((effective / 12) * 100) / 100,
+          )} ${sym}/חודש`
+        ) : (
+          note
+        )}
       </div>
     </button>
   )

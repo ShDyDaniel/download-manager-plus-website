@@ -92,18 +92,68 @@ export async function fetchLivePricing(): Promise<LivePricing> {
   }
 }
 
-/** React hook — fetches the live pricing on mount and returns
- *  it. Starts with `DEFAULT_PRICING` so renders never need to
- *  null-check; the real numbers swap in once the fetch resolves.
- *  No retry logic — admin pricing changes propagate within ~60s
- *  via the Vercel-edge cache anyway, and a page reload is the
- *  natural recovery. */
-export function useLivePricing(): LivePricing {
-  const [pricing, setPricing] = useState<LivePricing>(DEFAULT_PRICING)
+/** localStorage key for the cached pricing snapshot. Bumping the
+ *  version forces a cache invalidation if the pricing shape ever
+ *  changes — readers that get an unparseable / wrong-shape blob
+ *  just ignore it and fall back to the network fetch. */
+const PRICING_CACHE_KEY = 'dmplus.pricing.v1'
+
+export function readPricingCache(): LivePricing | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(PRICING_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<LivePricing>
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      !parsed.monthly ||
+      !parsed.yearly ||
+      typeof parsed.monthly.regular !== 'number' ||
+      typeof parsed.yearly.regular !== 'number' ||
+      typeof parsed.currency !== 'string'
+    ) {
+      return null
+    }
+    return parsed as LivePricing
+  } catch {
+    return null
+  }
+}
+
+export function writePricingCache(p: LivePricing): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(PRICING_CACHE_KEY, JSON.stringify(p))
+  } catch {
+    // Ignore — quota exceeded / private-browsing storage off.
+    // Caching is best-effort; the fetch path still works.
+  }
+}
+
+/** React hook — fetches the live pricing and returns it. Strategy:
+ *
+ *   1. On mount, synchronously read the most recently-cached
+ *      pricing from localStorage. If present, that's the initial
+ *      state — returning visitors see the right prices on the very
+ *      first render with zero flash.
+ *   2. Regardless, fire a background `/api/pricing` fetch and update
+ *      state + cache if the response differs. Catches the case where
+ *      the admin changed prices since the user's last visit.
+ *   3. Returns `null` only on the very-first-ever visit (no cache,
+ *      no fetch yet) so callers know to show a skeleton instead of
+ *      flashing the hardcoded DEFAULT_PRICING. Callers that prefer
+ *      a default fallback can do `pricing ?? DEFAULT_PRICING`. */
+export function useLivePricing(): LivePricing | null {
+  const [pricing, setPricing] = useState<LivePricing | null>(() =>
+    readPricingCache(),
+  )
   useEffect(() => {
     let alive = true
     void fetchLivePricing().then((p) => {
-      if (alive) setPricing(p)
+      if (!alive) return
+      setPricing(p)
+      writePricingCache(p)
     })
     return () => {
       alive = false

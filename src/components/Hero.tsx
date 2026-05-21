@@ -51,11 +51,14 @@ const DRIVE_DOWNLOAD_WIN =
 
 export function Hero() {
   // Live pricing for the Pro CTA's "starting from X ₪/month" line.
-  // The hook handles fetch + fallback; we just compute the smallest
-  // per-month figure and format it.
+  // Returns null on the very-first-ever visit (no localStorage
+  // cache, no fetch yet) — in that case we omit the price line
+  // entirely rather than flashing hardcoded defaults. Subsequent
+  // visits read the cached value synchronously and render the
+  // right number on the first paint.
   const pricing = useLivePricing()
-  const minPerMonth = minPricePerMonth(pricing)
-  const sym = currencySymbol(pricing.currency)
+  const minPerMonth = pricing ? minPricePerMonth(pricing) : null
+  const sym = pricing ? currencySymbol(pricing.currency) : ''
 
   const scrollToFeatures = () => {
     document
@@ -210,9 +213,11 @@ export function Hero() {
               <Crown className="h-5 w-5 text-primary" />
               <span className="flex items-baseline gap-2">
                 <span className="text-base md:text-lg">רכישת מנוי Pro</span>
-                <span className="text-xs font-medium text-fg-muted">
-                  · מ-{formatPrice(minPerMonth)} {sym}/חודש
-                </span>
+                {minPerMonth !== null && (
+                  <span className="text-xs font-medium text-fg-muted">
+                    · מ-{formatPrice(minPerMonth)} {sym}/חודש
+                  </span>
+                )}
               </span>
               <ChevronDown className="h-4 w-4 -rotate-90 text-primary transition-transform group-hover:-translate-x-1" />
             </Link>
