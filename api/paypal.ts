@@ -95,10 +95,30 @@ async function paypalCall<T = unknown>(
     parsed = text
   }
   if (!r.ok) {
-    const summary =
-      typeof parsed === 'object' && parsed !== null && 'message' in parsed
-        ? (parsed as { message?: string }).message
-        : text.slice(0, 200)
+    // PayPal error responses for v1/v2 follow:
+    //   { name, message, details: [{ issue, description }, ...], debug_id }
+    // The `message` is human-readable but generic ("could not be
+    // performed"); the SPECIFIC error code lives in `details[].issue`
+    // (e.g. SUBSCRIPTION_STATUS_INVALID, RESOURCE_NOT_FOUND). We
+    // surface both — the issue codes are what callers grep for to
+    // distinguish recoverable errors (e.g. "already cancelled") from
+    // genuine failures.
+    let summary: string = text.slice(0, 200)
+    if (typeof parsed === 'object' && parsed !== null) {
+      const obj = parsed as {
+        message?: string
+        name?: string
+        details?: Array<{ issue?: string; description?: string }>
+      }
+      const issues = (obj.details || [])
+        .map((d) => d.issue)
+        .filter((x): x is string => typeof x === 'string' && x.length > 0)
+      const parts: string[] = []
+      if (obj.message) parts.push(obj.message)
+      if (issues.length > 0) parts.push(`[${issues.join(',')}]`)
+      else if (obj.name) parts.push(`[${obj.name}]`)
+      if (parts.length > 0) summary = parts.join(' ')
+    }
     throw new Error(`PayPal ${method} ${path} failed: ${r.status} — ${summary}`)
   }
   return parsed as T
@@ -903,6 +923,61 @@ async function ensureKeyForSubscription(
       const isPlanSwitch =
         previousPlanDays > 0 && previousPlanDays !== planDays
 
+      const currentExpMs = existing.expiresAt
+        ? Date.parse(existing.expiresAt)
+        : 0
+      const anchorMs = Math.max(currentExpMs, Date.now())
+      const newExpiresAt = new Date(anchorMs + planDays * 86_400_000)
+      const billingHistory = Array.isArray(existing.billingHistory)
+        ? existing.billingHistory.slice()
+        : []
+      billingHistory.push({
+        at: new Date().toISOString(),
+        amount: planPrice,
+        currency: planCurrency,
+      })
+
+      // ── ORDER MATTERS: update key BEFORE cancelling old sub ──
+      //
+      // The cancel triggers PayPal to fire a CANCELLED webhook for
+      // the previous subscriptionId. handleSubscriptionEnded looks
+      // up the key by subscriptionId — and as long as we've already
+      // overwritten it with the NEW one, the lookup returns empty
+      // and the handler ignores the event (good — we don't want to
+      // mark this key as 'cancelled' or send a cancellation email
+      // for a sub the buyer didn't choose to cancel).
+      //
+      // If we cancelled FIRST, the CANCELLED webhook could race in
+      // before this update lands and the buyer would receive an
+      // unwanted "your subscription was cancelled" email even
+      // though they actually just switched plans. Update-first
+      // closes that window because by the time PayPal can deliver
+      // the cancellation webhook (~hundreds of ms minimum), the
+      // key has already been moved off the old subscriptionId.
+      await existingRef.update({
+        expiresAt: newExpiresAt.toISOString(),
+        subscriptionId,
+        planId: sub.plan_id,
+        subscriptionPrice: planPrice,
+        subscriptionCurrency: planCurrency,
+        subscriptionPlanDays: planDays,
+        planDays,
+        subscriptionStatus: 'active',
+        subscriptionStartedAt: new Date().toISOString(),
+        subscriptionCancelledAt: null,
+        // Reset payment-failure stamps. If the buyer was being
+        // dunned on the old sub for a card decline, a fresh paid
+        // subscription wipes the slate.
+        paymentFailedAt: null,
+        paymentFailureCount: 0,
+        billingHistory,
+        // Clear reminder stamps so the next cycle's cron emails
+        // fire fresh.
+        reminder10dSentAt: null,
+        reminder2dSentAt: null,
+        reminderSentAt: null,
+      })
+
       // ── Cancel the OLD PayPal subscription, if any ──
       //
       // When a buyer upgrades/downgrades via the in-account
@@ -932,8 +1007,18 @@ async function ensureKeyForSubscription(
           )
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
-          if (msg.includes('SUBSCRIPTION_STATUS_INVALID')) {
-            // Old sub already not-active. Nothing to do.
+          // SUBSCRIPTION_STATUS_INVALID = already cancelled / expired
+          // / suspended — exactly the states we WANT (we just want
+          // the old sub to stop billing). RESOURCE_NOT_FOUND = the
+          // old sub id doesn't exist on PayPal's side, probably a
+          // legacy data issue. Both are harmless; everything else
+          // is a real failure worth surfacing in logs.
+          if (
+            msg.includes('SUBSCRIPTION_STATUS_INVALID') ||
+            msg.includes('RESOURCE_NOT_FOUND')
+          ) {
+            // Old sub already not-active or doesn't exist. Nothing
+            // to do.
           } else {
             console.error(
               `[upgrade] failed to cancel prior sub ${previousSubId} (key ${renewKeyId}):`,
@@ -942,43 +1027,6 @@ async function ensureKeyForSubscription(
           }
         }
       }
-
-      const currentExpMs = existing.expiresAt
-        ? Date.parse(existing.expiresAt)
-        : 0
-      const anchorMs = Math.max(currentExpMs, Date.now())
-      const newExpiresAt = new Date(anchorMs + planDays * 86_400_000)
-      const billingHistory = Array.isArray(existing.billingHistory)
-        ? existing.billingHistory.slice()
-        : []
-      billingHistory.push({
-        at: new Date().toISOString(),
-        amount: planPrice,
-        currency: planCurrency,
-      })
-      await existingRef.update({
-        expiresAt: newExpiresAt.toISOString(),
-        subscriptionId,
-        planId: sub.plan_id,
-        subscriptionPrice: planPrice,
-        subscriptionCurrency: planCurrency,
-        subscriptionPlanDays: planDays,
-        planDays,
-        subscriptionStatus: 'active',
-        subscriptionStartedAt: new Date().toISOString(),
-        subscriptionCancelledAt: null,
-        // Reset payment-failure stamps. If the buyer was being
-        // dunned on the old sub for a card decline, a fresh paid
-        // subscription wipes the slate.
-        paymentFailedAt: null,
-        paymentFailureCount: 0,
-        billingHistory,
-        // Clear reminder stamps so the next cycle's cron emails
-        // fire fresh.
-        reminder10dSentAt: null,
-        reminder2dSentAt: null,
-        reminderSentAt: null,
-      })
       try {
         if (isPlanSwitch) {
           // Plan-switch path — dedicated email explaining the
