@@ -545,6 +545,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleSignupRequestCode(req, res)
       case 'signup-verify-code':
         return await handleSignupVerifyCode(req, res)
+      case 'verify-existing-request-code':
+        return await handleVerifyExistingRequestCode(req, res)
+      case 'verify-existing-confirm-code':
+        return await handleVerifyExistingConfirmCode(req, res)
       case 'admin-migrate-email-verified':
         return await handleAdminMigrateEmailVerified(req, res)
       default:
@@ -1978,15 +1982,242 @@ async function handleSignupVerifyCode(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ─────────────────────────────────────────────────────────────
+ *  Verify-existing flow (for users who signed up BEFORE we
+ *  required verification). On their next login the desktop app
+ *  detects emailVerified=false and routes them through the
+ *  blocking VerifyEmailScreen, which calls these two endpoints.
+ *  Symmetric to the signup-* pair, but instead of creating a
+ *  Firebase user it flips emailVerified=true on the existing
+ *  one.
+ * ───────────────────────────────────────────────────────────── */
+
+async function handleVerifyExistingRequestCode(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { idToken?: string }
+  const idToken = (body.idToken || '').trim()
+  if (!idToken) {
+    return res.status(401).json({ ok: false, error: 'missing id token' })
+  }
+  let uid: string
+  let email: string
+  let alreadyVerified = false
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken)
+    uid = decoded.uid
+    email = (decoded.email || '').toLowerCase().trim()
+    if (!email) {
+      return res.status(400).json({ ok: false, error: 'No email on account' })
+    }
+    alreadyVerified = !!decoded.email_verified
+  } catch (err) {
+    console.error('[paypal/verify-existing-request-code] token verify failed', err)
+    return res.status(401).json({ ok: false, error: 'invalid id token' })
+  }
+  if (alreadyVerified) {
+    // Nothing to do; the desktop just needs to reload its cached
+    // Firebase user record.
+    return res.status(200).json({ ok: true, alreadyVerified: true })
+  }
+
+  // Rate limit so the existing-user verify flow can't be turned
+  // into an email blaster or used to enumerate registered users.
+  const ip =
+    (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ||
+    'unknown'
+  const allowed = await Promise.all([
+    tryRateLimit(`verify-existing_uid_${uid}`, 5, 60 * 60),
+    tryRateLimit(`verify-existing_ip_${ip.replace(/[^a-z0-9_.-]/gi, '_').slice(0, 60)}`, 30, 60 * 60),
+  ])
+  if (!allowed.every(Boolean)) {
+    return res.status(429).json({
+      ok: false,
+      error: 'יותר מדי בקשות. נסה שוב בעוד שעה.',
+    })
+  }
+
+  // Reuse the same emailVerifications/{email} doc shape as the
+  // signup flow — it's the same one-shot 6-digit code, just
+  // applied to a different post-validation action.
+  const code = String(Math.floor(100000 + Math.random() * 900000))
+  const codeId = sanitizeEmailKey(email)
+  const ttlSecs = 15 * 60
+  const expiresAt = Date.now() + ttlSecs * 1000
+  const salt = process.env.RENEW_TOKEN_SECRET || 'unset'
+  const codeHash = hashCode(code, salt)
+
+  const db = getDb()
+  await db
+    .collection('emailVerifications')
+    .doc(codeId)
+    .set({
+      email,
+      uid,
+      codeHash,
+      expiresAt,
+      attempts: 0,
+      createdAt: Date.now(),
+      purpose: 'verify-existing',
+    })
+
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) {
+    return res
+      .status(500)
+      .json({ ok: false, error: 'שירות שליחת המייל לא מוגדר. פנה לתמיכה.' })
+  }
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth: { user, pass },
+  })
+  const html = `<!doctype html>
+<html dir="rtl" lang="he">
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,'Segoe UI',sans-serif;color:#e5e7eb;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0a0a0a;padding:40px 20px;">
+<tr><td align="center">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;">
+<tr><td style="padding:32px;">
+  <h1 style="font-size:18px;margin:0 0 16px;color:#fbbf24;font-weight:600;">ניהול הורדות פלוס</h1>
+  <h2 style="font-size:24px;margin:0 0 12px;color:#e5e7eb;font-weight:700;">אימות כתובת המייל</h2>
+  <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+    הוספנו דרישה לאמת את כתובת המייל לכל המשתמשים. הזן את הקוד הבא בתוכנה כדי להמשיך:
+  </p>
+  <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
+    <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">${code}</div>
+  </div>
+  <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
+    הקוד תקף ל-15 דקות. אם לא ביקשת אותו, יש לפנות לתמיכה — ייתכן שמישהו מנסה להיכנס לחשבון שלך.
+  </p>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: email,
+    subject: `קוד אימות: ${code} — ניהול הורדות פלוס`,
+    html,
+    text: `קוד אימות לחשבון שלך: ${code}\nתקף ל-15 דקות.`,
+  })
+
+  return res.status(200).json({ ok: true, email })
+}
+
+async function handleVerifyExistingConfirmCode(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { idToken?: string; code?: string }
+  const idToken = (body.idToken || '').trim()
+  const code = (body.code || '').trim()
+  if (!idToken) {
+    return res.status(401).json({ ok: false, error: 'missing id token' })
+  }
+  if (!/^\d{6}$/.test(code)) {
+    return res.status(400).json({ ok: false, error: 'קוד אימות לא תקין' })
+  }
+  let uid: string
+  let email: string
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken)
+    uid = decoded.uid
+    email = (decoded.email || '').toLowerCase().trim()
+    if (!email) {
+      return res.status(400).json({ ok: false, error: 'No email on account' })
+    }
+  } catch (err) {
+    console.error('[paypal/verify-existing-confirm-code] token verify failed', err)
+    return res.status(401).json({ ok: false, error: 'invalid id token' })
+  }
+
+  const codeId = sanitizeEmailKey(email)
+  const db = getDb()
+  const ref = db.collection('emailVerifications').doc(codeId)
+  const salt = process.env.RENEW_TOKEN_SECRET || 'unset'
+  const submittedHash = hashCode(code, salt)
+
+  const txnResult = await db.runTransaction<
+    | { ok: true }
+    | { ok: false; status: number; error: string }
+  >(async (txn) => {
+    const snap = await txn.get(ref)
+    if (!snap.exists) {
+      return { ok: false, status: 400, error: 'קוד פג תוקף — בקש קוד חדש' }
+    }
+    const data = snap.data() as {
+      email?: string
+      uid?: string
+      codeHash?: string
+      expiresAt?: number
+      attempts?: number
+      purpose?: string
+    }
+    // Cross-validate: the code doc must belong to the same uid +
+    // email we just verified. Defends against the case where two
+    // different users (different uids on the same email — shouldn't
+    // happen, but) both have a code outstanding.
+    if (data.uid && data.uid !== uid) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'הקוד לא משוייך לחשבון הזה — בקש קוד חדש',
+      }
+    }
+    const attempts = typeof data.attempts === 'number' ? data.attempts : 0
+    if (attempts >= 5) {
+      txn.delete(ref)
+      return {
+        ok: false,
+        status: 400,
+        error: 'יותר מדי ניסיונות שגויים. בקש קוד חדש.',
+      }
+    }
+    if (typeof data.expiresAt !== 'number' || data.expiresAt < Date.now()) {
+      txn.delete(ref)
+      return { ok: false, status: 400, error: 'קוד פג תוקף — בקש קוד חדש' }
+    }
+    if (data.codeHash !== submittedHash) {
+      txn.update(ref, { attempts: attempts + 1 })
+      return { ok: false, status: 400, error: 'קוד שגוי' }
+    }
+    txn.delete(ref)
+    return { ok: true }
+  })
+
+  if (!txnResult.ok) {
+    return res.status(txnResult.status).json({ ok: false, error: txnResult.error })
+  }
+
+  // Flip the user's emailVerified flag. The desktop will then call
+  // user.reload() to pick up the change locally.
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    await getAuth(getFirebase()).updateUser(uid, { emailVerified: true })
+  } catch (err) {
+    console.error('[paypal/verify-existing-confirm-code] updateUser failed:', err)
+    return res
+      .status(500)
+      .json({ ok: false, error: 'עדכון הסטטוס נכשל. נסה שוב.' })
+  }
+  return res.status(200).json({ ok: true })
+}
+
+/* ─────────────────────────────────────────────────────────────
  *  Migration: set emailVerified=true on every existing Firebase
  *  user.
  *
- *  Run this ONCE by the operator (admin-allowlist gate) after
- *  deploying the email-verification flow. It grandfathers in
- *  every user who signed up before we required verification —
- *  they've been using the system, no need to make them re-verify.
- *  After the migration, enforce-email-verified can be turned on
- *  via env var without locking out legitimate users.
+ *  (No longer required for the standard rollout — the user opted
+ *  to force every existing user through verify-existing-* on
+ *  their next login instead. Kept as an admin tool for support
+ *  cases where you need to grandfather someone in manually.)
  *
  *  Idempotent: re-running just no-ops on users already verified.
  * ───────────────────────────────────────────────────────────── */
