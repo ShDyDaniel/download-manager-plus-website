@@ -905,59 +905,93 @@ async function handleSession(req: VercelRequest, res: VercelResponse) {
       .status(502)
       .json({ ok: false, error: 'שירות ההתחברות אינו זמין כרגע. נסו שוב.' })
   }
-  const db = getDb()
-  const snap = await db
-    .collection('productKeys')
-    .where('redeemedBy', '==', uid)
-    .get()
-  const subs = snap.docs
-    .map((d) => d.data() as KeyDoc)
-    .filter((k) => k.subscriptionId)
-    .map((k) => ({
-      key: k.key || '',
-      subscriptionId: k.subscriptionId!,
-      status: k.subscriptionStatus || 'unknown',
-      expiresAt: k.expiresAt || null,
-      startedAt: k.subscriptionStartedAt || null,
-      cancelledAt: k.subscriptionCancelledAt || null,
-      price: k.subscriptionPrice ?? null,
-      currency: k.subscriptionCurrency || 'ILS',
-      planDays: k.subscriptionPlanDays || 30,
-      cycleLabel: (k.subscriptionPlanDays || 30) === 30 ? 'חודשי' : 'שנתי',
-    }))
-    .sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''))
+  // Belt-and-suspenders try-catch around the whole subscription-
+  // gathering block. Earlier this handler was crashing with
+  // FUNCTION_INVOCATION_FAILED (Vercel HTML error page, not our JSON
+  // 500) on the success path, which meant something was escaping
+  // the dispatcher-level try/catch. The two most likely culprits
+  // were the `where('redeemedBy', '==', null)` compound query (some
+  // firebase-admin versions throw on null-equality) and an
+  // unexpected doc shape in productKeys. Catching here + returning
+  // a graceful JSON 500 means the user gets a real error message
+  // instead of a parse failure on the client.
+  try {
+    const db = getDb()
+    const ownedSnap = await db
+      .collection('productKeys')
+      .where('redeemedBy', '==', uid)
+      .get()
+    const subs: Array<{
+      key: string
+      subscriptionId: string
+      status: string
+      expiresAt: string | null
+      startedAt: string | null
+      cancelledAt: string | null
+      price: number | null
+      currency: string
+      planDays: number
+      cycleLabel: string
+    }> = []
 
-  // Also pick up unredeemed buyer-only subscriptions (user subscribed
-  // but hasn't redeemed the key in the app yet) so they can still
-  // cancel.
-  const buyerSnap = await db
-    .collection('productKeys')
-    .where('buyerEmail', '==', email)
-    .where('redeemedBy', '==', null)
-    .get()
-  for (const doc of buyerSnap.docs) {
-    const k = doc.data() as KeyDoc
-    if (!k.subscriptionId) continue
-    if (subs.some((s) => s.subscriptionId === k.subscriptionId)) continue
-    subs.push({
-      key: k.key || '',
-      subscriptionId: k.subscriptionId,
-      status: k.subscriptionStatus || 'unknown',
-      expiresAt: k.expiresAt || null,
-      startedAt: k.subscriptionStartedAt || null,
-      cancelledAt: k.subscriptionCancelledAt || null,
-      price: k.subscriptionPrice ?? null,
-      currency: k.subscriptionCurrency || 'ILS',
-      planDays: k.subscriptionPlanDays || 30,
-      cycleLabel: (k.subscriptionPlanDays || 30) === 30 ? 'חודשי' : 'שנתי',
+    function pushSub(k: KeyDoc) {
+      if (!k.subscriptionId) return
+      if (subs.some((s) => s.subscriptionId === k.subscriptionId)) return
+      const days = typeof k.subscriptionPlanDays === 'number' ? k.subscriptionPlanDays : 30
+      subs.push({
+        key: typeof k.key === 'string' ? k.key : '',
+        subscriptionId: k.subscriptionId,
+        status: typeof k.subscriptionStatus === 'string' ? k.subscriptionStatus : 'unknown',
+        expiresAt: typeof k.expiresAt === 'string' ? k.expiresAt : null,
+        startedAt: typeof k.subscriptionStartedAt === 'string' ? k.subscriptionStartedAt : null,
+        cancelledAt:
+          typeof k.subscriptionCancelledAt === 'string' ? k.subscriptionCancelledAt : null,
+        price: typeof k.subscriptionPrice === 'number' ? k.subscriptionPrice : null,
+        currency: typeof k.subscriptionCurrency === 'string' ? k.subscriptionCurrency : 'ILS',
+        planDays: days,
+        cycleLabel: days >= 300 ? 'שנתי' : 'חודשי',
+      })
+    }
+
+    for (const doc of ownedSnap.docs) {
+      pushSub(doc.data() as KeyDoc)
+    }
+
+    // Also pick up unredeemed buyer-only subscriptions (user
+    // subscribed but hasn't redeemed the key in the app yet) so they
+    // can still cancel. We query JUST by buyerEmail and filter in
+    // JS rather than using a compound `.where(..., '==', null)`
+    // query — the null-equality filter caused FUNCTION_INVOCATION
+    // _FAILED on the live runtime and isn't reliable across all
+    // firebase-admin versions.
+    const buyerSnap = await db
+      .collection('productKeys')
+      .where('buyerEmail', '==', email)
+      .get()
+    for (const doc of buyerSnap.docs) {
+      const k = doc.data() as KeyDoc
+      // Only include if NOT redeemed (or redeemed by null/empty).
+      // The owned-by-uid query above already covered the redeemed
+      // case, so we'd just dedupe anyway — but filtering here keeps
+      // the result intent obvious.
+      if (k.redeemedBy && k.redeemedBy !== uid) continue
+      pushSub(k)
+    }
+
+    subs.sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''))
+
+    const token = signSessionToken({
+      uid,
+      email,
+      subscriptionIds: subs.map((s) => s.subscriptionId),
     })
+    return res.status(200).json({ ok: true, token, email, subscriptions: subs })
+  } catch (err) {
+    console.error('[paypal/session] post-auth failure:', err)
+    const message =
+      err instanceof Error ? err.message : 'שגיאה בלתי צפויה בטעינת המנויים'
+    return res.status(500).json({ ok: false, error: message })
   }
-  const token = signSessionToken({
-    uid,
-    email,
-    subscriptionIds: subs.map((s) => s.subscriptionId),
-  })
-  return res.status(200).json({ ok: true, token, email, subscriptions: subs })
 }
 
 /* ─────────────────────────────────────────────────────────────
