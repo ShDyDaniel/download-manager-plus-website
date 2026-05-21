@@ -1001,20 +1001,33 @@ function SubscriptionCard({
   sub: Subscription
   onCancel: () => void
 }) {
-  const isActive = sub.status === 'ACTIVE'
-  const isCancelled = sub.status === 'CANCELLED' || sub.cancelledAt
+  // Backend normalizes status to UPPERCASE before sending — we
+  // can rely on exact-match checks here. Defensive .toUpperCase()
+  // anyway in case an older client hits a freshly-deployed
+  // backend response that already arrived during deploy.
+  const status = (sub.status || '').toUpperCase()
+  const isActive = status === 'ACTIVE'
+  const isCancelled = status === 'CANCELLED' || sub.cancelledAt
+  const isPastDue = status === 'PAST_DUE'
+  const isSuspended = status === 'SUSPENDED'
   const statusLabel = isCancelled
     ? 'בוטל'
     : isActive
       ? 'פעיל'
-      : sub.status === 'SUSPENDED'
-        ? 'מושעה'
-        : sub.status
+      : isPastDue
+        ? 'בעיית חיוב'
+        : isSuspended
+          ? 'מושעה'
+          : status === 'EXPIRED'
+            ? 'פג תוקף'
+            : status || 'לא ידוע'
   const statusColor = isCancelled
     ? 'text-fg-muted'
     : isActive
       ? 'text-success'
-      : 'text-accent'
+      : isPastDue || isSuspended
+        ? 'text-destructive'
+        : 'text-accent'
 
   return (
     <li className="rounded-md border border-border bg-bg-elevated p-4">

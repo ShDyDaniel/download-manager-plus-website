@@ -1464,7 +1464,19 @@ async function respondWithSession(
       subs.push({
         key: typeof k.key === 'string' ? k.key : '',
         subscriptionId: k.subscriptionId,
-        status: typeof k.subscriptionStatus === 'string' ? k.subscriptionStatus : 'unknown',
+        // Normalize to UPPERCASE for the wire. Backend writes
+        // 'active' / 'cancelled' / 'past_due' / 'expired' to
+        // Firestore (lowercase) but PayPal's own API + the
+        // frontend's status checks (sub.status === 'ACTIVE',
+        // 'CANCELLED', 'SUSPENDED') expect UPPERCASE. Without
+        // this the AccountPage's cancel button never appears
+        // because isActive = ('active' === 'ACTIVE') = false.
+        // Historical Firestore data stays as-is; only the API
+        // response is normalized.
+        status:
+          typeof k.subscriptionStatus === 'string'
+            ? k.subscriptionStatus.toUpperCase()
+            : 'UNKNOWN',
         expiresAt: typeof k.expiresAt === 'string' ? k.expiresAt : null,
         startedAt: typeof k.subscriptionStartedAt === 'string' ? k.subscriptionStartedAt : null,
         cancelledAt:
