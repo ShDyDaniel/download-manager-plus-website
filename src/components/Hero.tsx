@@ -294,7 +294,7 @@ function HeroProductVisual() {
         />
         <span className="h-3 w-3 rounded-full bg-success opacity-70" />
         <div className="flex-1 text-center text-xs text-fg-muted" dir="rtl">
-          ניהול הורדות פלוס — Studio.proj
+          ניהול הורדות פלוס — טריילר_סרט_הקיץ.proj
         </div>
         <span className="w-12" aria-hidden />
       </div>
@@ -303,8 +303,13 @@ function HeroProductVisual() {
           convey routing direction. The "Music / Video / Photos"
           tags hint at the app's project-folder model. */}
       <div className="p-5">
+        {/* Header gets px-3 to match the file rows' inset — without
+            it the labels ("קבצים אחרונים" / "נותב ל־") were flush
+            against the panel edge while the row content underneath
+            sat 12px inward, which read as a misalignment between
+            each label and its column. */}
         <div
-          className="mb-4 flex items-center justify-between text-xs uppercase tracking-wider text-fg-muted"
+          className="mb-4 flex items-center justify-between px-3 text-xs uppercase tracking-wider text-fg-muted"
           dir="rtl"
         >
           <span>קבצים אחרונים</span>
@@ -312,12 +317,15 @@ function HeroProductVisual() {
         </div>
 
         <div className="space-y-2.5" dir="rtl">
+          {/* `highlight` removed — earlier the Video row got a
+              copper-tinted pill to draw the eye, but on a static
+              marketing mockup it implied "this one is special" and
+              the user wanted all four rows to read as peers. */}
           <FileRow
             name="Interview_Cut_03.mp4"
             size="248 MB"
             target="Video"
             time="now"
-            highlight
           />
           <FileRow
             name="bgm_loop_dark.wav"
@@ -339,24 +347,12 @@ function HeroProductVisual() {
           />
         </div>
 
-        {/* Status footer — gives the window a "live app" feeling
-            with a soft pulsing dot. */}
-        <div
-          className="mt-5 flex items-center justify-between border-t border-border pt-4 text-xs text-fg-muted"
-          dir="rtl"
-        >
-          <div className="flex items-center gap-2">
-            <span
-              className="h-1.5 w-1.5 rounded-full"
-              style={{
-                backgroundColor: 'var(--success)',
-                boxShadow: '0 0 8px var(--success)',
-              }}
-            />
-            <span>במעקב — 5 פרויקטים פעילים</span>
-          </div>
-          <span className="tabular text-fg-faint">v1.7.3</span>
-        </div>
+        {/* The "במעקב — N פרויקטים פעילים" + version footer used to
+            live here. Removed at user request — the version was
+            stale-looking the moment we bumped the real app's
+            version, and "5 פרויקטים פעילים" was an arbitrary
+            number that didn't add information. The mockup now ends
+            cleanly at the last file row. */}
       </div>
     </div>
   )

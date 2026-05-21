@@ -64,16 +64,20 @@ export function Footer() {
           <div className="flex flex-col items-start gap-1 md:items-end">
             <div className="label">— Made in Israel —</div>
             <div className="flex flex-wrap items-center gap-x-1.5 text-sm text-fg-muted">
-              <span>
-                © <span className="tabular">{year}</span> · כל הזכויות שמורות
-              </span>
-              <span aria-hidden>·</span>
+              {/* RTL flex orders DOM right→left visually. Putting
+                  the cancel link FIRST in the DOM means it sits on
+                  the visual RIGHT, with copyright trailing on the
+                  visual LEFT — matches the user's requested order. */}
               <Link
                 to="/account"
                 className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
               >
                 ביטול מנוי
               </Link>
+              <span aria-hidden>·</span>
+              <span>
+                © <span className="tabular">{year}</span> · כל הזכויות שמורות
+              </span>
             </div>
           </div>
         </div>
