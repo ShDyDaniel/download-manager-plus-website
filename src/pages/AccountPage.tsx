@@ -323,9 +323,27 @@ export default function AccountPage() {
     }
   }
 
-  async function handleSendResetEmail() {
-    const target = sessionEmail || profile?.email
-    if (!target) return
+  /**
+   * Send a password-reset email.
+   *
+   * Two callers:
+   *   1. Authenticated dashboard ("שינוי סיסמה" inside the account
+   *      card) — uses sessionEmail / profile.email.
+   *   2. Unauthenticated login form ("שכחתי סיסמה" link under the
+   *      submit button) — passes the typed email via `overrideEmail`
+   *      because there's no session yet.
+   *
+   * Backend `/api/reset-password` returns 200 either way (it
+   * deliberately doesn't leak whether the email exists, to prevent
+   * account enumeration), so a "sent" state in our UI just means
+   * "we tried" — not "the email definitely exists".
+   */
+  async function handleSendResetEmail(overrideEmail?: string) {
+    const target = overrideEmail || sessionEmail || profile?.email
+    if (!target) {
+      setResetError('הזן את כתובת המייל קודם')
+      return
+    }
     setResetSending(true)
     setResetError(null)
     try {
@@ -535,9 +553,16 @@ export default function AccountPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
-                dir="ltr"
                 autoComplete="email"
                 disabled={authing}
+                // No explicit dir — inherits dir="rtl" from <html lang="he">.
+                // The latin characters of the email still render LTR
+                // because of Unicode bidi, but the field's text anchor
+                // is on the right edge so the placeholder and typed
+                // content align with the Hebrew label above. The old
+                // dir="ltr" override was left-aligning the email
+                // visually, which looked wrong next to the right-
+                // aligned "אימייל" label.
                 className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
               />
             </label>
@@ -548,7 +573,6 @@ export default function AccountPage() {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                dir="ltr"
                 autoComplete="current-password"
                 disabled={authing}
                 className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
@@ -571,9 +595,60 @@ export default function AccountPage() {
               )}
               התחברות
             </button>
-            <p className="pt-2 text-center text-[11px] text-fg-muted">
-              שכחת סיסמה? פתח את התוכנה ולחץ "שכחתי סיסמה" במסך ההתחברות.
-            </p>
+            {/* "שכחתי סיסמה" affordance — wires up to the same
+                /api/reset-password endpoint the desktop app uses.
+                Uses the form's email state (the user types their
+                address into the same field that the login flow
+                uses), so there's no extra input to fill.
+                Backend deliberately returns 200 even for unknown
+                emails to prevent account enumeration, so the
+                success copy is intentionally hedged: "if the
+                account exists, an email was sent". */}
+            <div className="pt-2 text-center">
+              {resetSent ? (
+                <div className="space-y-1">
+                  <p className="text-[11px] text-success">
+                    ✓ אם החשבון קיים, נשלח אליו מייל איפוס סיסמה.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResetSent(false)
+                      setResetError(null)
+                    }}
+                    className="text-[11px] text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
+                  >
+                    חזרה להתחברות
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const cleanEmail = email.trim().toLowerCase()
+                      if (!cleanEmail) {
+                        setResetError('הזן את כתובת המייל שלך קודם')
+                        return
+                      }
+                      setResetError(null)
+                      void handleSendResetEmail(cleanEmail)
+                    }}
+                    disabled={resetSending || authing}
+                    className="text-[11px] text-fg-muted underline-offset-4 transition-colors hover:text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {resetSending
+                      ? 'שולח קישור איפוס…'
+                      : 'שכחתי סיסמה — שלח לי קישור איפוס למייל'}
+                  </button>
+                  {resetError && (
+                    <p className="mt-1 text-[11px] text-destructive">
+                      {resetError}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
           </form>
         ) : (
           /* ── Authenticated dashboard ── */
@@ -672,7 +747,10 @@ export default function AccountPage() {
                     <button
                       type="button"
                       disabled={resetSending}
-                      onClick={handleSendResetEmail}
+                      // Wrap in arrow so the MouseEvent React passes
+                      // doesn't get coerced into the new optional
+                      // `overrideEmail` string parameter.
+                      onClick={() => void handleSendResetEmail()}
                       className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-bg-faint disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {resetSending ? (
