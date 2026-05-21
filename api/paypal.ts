@@ -2744,7 +2744,7 @@ async function handleAdminSendMarketingEmail(
     const footerHtml = `
       <hr style="border:0;border-top:1px solid rgba(245,239,230,0.08);margin:28px 0 16px;"/>
       <p style="font-size:11px;color:#5C5444;line-height:1.6;margin:0;">
-        אתה מקבל את המייל הזה כי בחרת לקבל עדכוני מוצר ומבצעים. <a href="${unsubUrl}" style="color:#D4A574;text-decoration:underline;">להסרה מרשימת הדיוור</a>.
+        אתה מקבל את המייל הזה כי בחרת לקבל עדכוני מוצר ומבצעים. <a href="${unsubUrl}" style="color:#D4A574;text-decoration:underline;">להסרה מרשימת התפוצה</a>.
       </p>
     `
     const html = renderEmail({
@@ -2841,7 +2841,7 @@ async function handleUnsubscribe(req: VercelRequest, res: VercelResponse) {
     .status(200)
     .send(
       htmlPage(
-        'הוסרת בהצלחה מרשימת הדיוור. לא תקבל יותר הודעות שיווקיות.',
+        'הוסרת בהצלחה מרשימת התפוצה. לא תקבל יותר הודעות שיווקיות.',
         true,
       ),
     )
