@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { syncPlansForPricing, getDb } from '../_paypal'
+import { syncPlansForPricing } from '../_paypal'
 import { loadCurrentPricing } from '../pricing'
 
 /**
@@ -97,7 +97,3 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ ok: false, error: message })
   }
 }
-
-// Re-export getDb so any future admin endpoint can import it
-// without re-importing _paypal — keeps the API folder coherent.
-export { getDb }
