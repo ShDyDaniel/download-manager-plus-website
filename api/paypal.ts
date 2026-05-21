@@ -504,6 +504,11 @@ interface KeyDoc {
   subscriptionCurrency?: string
   subscriptionPlanDays?: number
   planDays?: number
+  // Stamped by handlePaymentFailed when PayPal's PAYMENT.FAILED
+  // webhook fires; lets the admin panel surface at-risk
+  // subscriptions and lets us debug retry behaviour after the fact.
+  paymentFailedAt?: string
+  paymentFailureCount?: number
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -678,10 +683,7 @@ async function handleWebhook(req: VercelRequest, res: VercelResponse) {
         result = await handleSubscriptionSuspended(event)
         break
       case 'BILLING.SUBSCRIPTION.PAYMENT.FAILED':
-        result = {
-          ok: true,
-          summary: `logged payment failure for ${(event.resource as { id?: string } | undefined)?.id || '?'}`,
-        }
+        result = await handlePaymentFailed(event)
         break
       case 'CUSTOMER.DISPUTE.CREATED':
         console.error('[webhook] DISPUTE — manual review needed:', event.id)
@@ -760,6 +762,14 @@ async function handleSaleCompleted(
     subscriptionStatus: 'active',
     reminder10dSentAt: null,
     reminder2dSentAt: null,
+    // Clear payment-failure stamps — a successful charge means the
+    // buyer either updated their card or the prior failure was a
+    // transient blip that PayPal retried through. Without this
+    // reset, paymentFailureCount would accumulate forever and the
+    // admin panel's "at risk" filter would surface customers who
+    // are actually fine.
+    paymentFailedAt: null,
+    paymentFailureCount: 0,
     billingHistory: FieldValue.arrayUnion({
       eventId: event.id,
       amount: paidAmount,
@@ -945,6 +955,22 @@ async function ensureKeyForSubscription(
     planDays,
     subscriptionStatus: 'active',
     subscriptionStartedAt: new Date().toISOString(),
+    // Seed billingHistory with the initial activation payment.
+    // PayPal V1 Subscriptions does NOT fire PAYMENT.SALE.COMPLETED
+    // for the initial activation charge (only for recurring charges
+    // in subsequent cycles), so handleSaleCompleted never runs for
+    // this first payment. Without this seed, the annual billing
+    // report (sec. 13ב(ב1)) would be short by exactly one charge
+    // per subscription. The synthetic `initial-<subId>` eventId is
+    // chosen so it can never collide with a real PayPal webhook id
+    // (which always start with `WH-`), making this entry safely
+    // distinguishable in audits.
+    billingHistory: [{
+      eventId: `initial-${subscriptionId}`,
+      amount: planPrice,
+      currency: planCurrency,
+      at: new Date().toISOString(),
+    }],
   }
 
   if (linkToUid) {
@@ -1053,15 +1079,27 @@ async function handleSubscriptionEnded(
     subscriptionCancelledAt: new Date().toISOString(),
   })
 
-  // Confirmation email ONLY for genuine cancellations — EXPIRED
-  // means the subscription's natural end-of-life (e.g. a
-  // one-year sub completed its term), where we either already
-  // sent expiry reminders or the user explicitly chose not to
-  // renew. CANCELLED is the "user pulled the plug from inside
-  // PayPal directly" path; they didn't see our /account UI fire,
-  // so we owe them an acknowledgement just like the in-account
-  // cancel flow.
-  if (event.event_type === 'BILLING.SUBSCRIPTION.CANCELLED') {
+  // Confirmation email ONLY for genuine PayPal-direct cancellations
+  // — EXPIRED means the subscription's natural end-of-life (e.g. a
+  // one-year sub completed its term), where we either already sent
+  // expiry reminders or the user explicitly chose not to renew.
+  // CANCELLED is the "user pulled the plug from inside PayPal
+  // directly" path; they didn't see our /account UI fire, so we owe
+  // them an acknowledgement just like the in-account cancel flow.
+  //
+  // Dedup guard: when the cancellation came through OUR /account UI,
+  // handleCancel has already marked the key as `cancelled` AND sent
+  // the email synchronously, then PayPal fires this webhook a few
+  // seconds later. Without this guard, the buyer receives the same
+  // legal-acknowledgement email twice (once from handleCancel, once
+  // from here). We read keyData BEFORE the status update above is
+  // visible to subsequent reads — so if status was already
+  // `cancelled` at the time of this snapshot, the in-account path
+  // already handled the email and we must NOT re-send.
+  if (
+    event.event_type === 'BILLING.SUBSCRIPTION.CANCELLED' &&
+    keyData.subscriptionStatus !== 'cancelled'
+  ) {
     const recipient =
       keyData.buyerEmail || keyData.redeemedByEmail || null
     if (recipient) {
@@ -1103,6 +1141,89 @@ async function handleSubscriptionSuspended(
   if (keys.empty) return { ok: true, summary: `no key for ${resource.id}` }
   await keys.docs[0].ref.update({ subscriptionStatus: 'past_due' })
   return { ok: true, summary: `marked ${keys.docs[0].id} as past_due` }
+}
+
+/**
+ * BILLING.SUBSCRIPTION.PAYMENT.FAILED — fired by PayPal when an
+ * attempted recurring charge fails (declined card, insufficient
+ * funds, expired card, etc.). PayPal will retry on its own retry
+ * schedule (typically 3 attempts over ~5 days) before transitioning
+ * the subscription to SUSPENDED.
+ *
+ * We notify the buyer immediately so they have time to update their
+ * payment method before PayPal exhausts retries — losing access is
+ * a bad customer experience, especially when fixable. Also stamp
+ * the key with paymentFailedAt + paymentFailureCount so the admin
+ * panel can surface "at risk" subscriptions, and emit a loud
+ * console.error so Vercel logs are searchable for forensics.
+ *
+ * Best-effort email — a Gmail failure shouldn't fail the webhook
+ * (PayPal would retry, double-noting the failure in our event log).
+ */
+async function handlePaymentFailed(
+  event: PayPalWebhookEvent,
+): Promise<{ ok: boolean; summary: string; error?: string }> {
+  const resource = event.resource as { id?: string } | undefined
+  const subscriptionId = resource?.id
+  if (!subscriptionId) {
+    return { ok: true, summary: 'payment-failed without subscription id — ignored' }
+  }
+  const db = getDb()
+  const keys = await db
+    .collection('productKeys')
+    .where('subscriptionId', '==', subscriptionId)
+    .limit(1)
+    .get()
+  if (keys.empty) {
+    console.error(
+      '[webhook] PAYMENT.FAILED for unknown subscription',
+      subscriptionId,
+    )
+    return {
+      ok: true,
+      summary: `payment-failed for unknown subscription ${subscriptionId} — logged only`,
+    }
+  }
+  const keyDoc = keys.docs[0]
+  const keyData = keyDoc.data() as KeyDoc
+  const recipient =
+    keyData.buyerEmail || keyData.redeemedByEmail || null
+
+  // Stamp the key for admin visibility. paymentFailureCount lets
+  // the admin distinguish "blip" (1 attempt) from "they're really
+  // not coming back" (3+). FieldValue.increment handles concurrent
+  // updates cleanly if PayPal fires multiple FAILED events in
+  // sequence before we can process them.
+  await keyDoc.ref.update({
+    paymentFailedAt: new Date().toISOString(),
+    paymentFailureCount: FieldValue.increment(1),
+  })
+
+  console.error(
+    '[webhook] PAYMENT.FAILED — buyer should update card —',
+    'sub:', subscriptionId,
+    'key:', keyDoc.id,
+    'buyer:', recipient,
+  )
+
+  if (recipient) {
+    void sendPaymentFailedEmail({
+      to: recipient,
+      validUntil: keyData.expiresAt ? new Date(keyData.expiresAt) : null,
+      subscriptionId,
+    }).catch((err) => {
+      console.error(
+        '[webhook] payment-failed email failed for',
+        keyDoc.id,
+        err,
+      )
+    })
+  }
+
+  return {
+    ok: true,
+    summary: `notified buyer about payment failure on ${subscriptionId}`,
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -2205,6 +2326,77 @@ async function sendCancellationEmail(args: {
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
     subject: 'אישור ביטול מנוי — ניהול הורדות פלוס',
+    html,
+  })
+}
+
+/**
+ * Payment-failed notification email. Sent from handlePaymentFailed
+ * when PayPal's BILLING.SUBSCRIPTION.PAYMENT.FAILED webhook arrives.
+ *
+ * Goal: give the buyer time to update their card BEFORE PayPal
+ * exhausts its retry schedule and suspends the subscription. PayPal
+ * sends its own "payment failed" email too, but a branded one from
+ * us is friendlier and links to /account so they can self-serve.
+ *
+ * We deliberately don't mention how many retries PayPal will run
+ * (their schedule changes; we don't want to make a contractual
+ * promise about it).
+ */
+async function sendPaymentFailedEmail(args: {
+  to: string
+  validUntil: Date | null
+  subscriptionId: string
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const validUntilStr = args.validUntil
+    ? args.validUntil.toLocaleDateString('he-IL', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        timeZone: 'Asia/Jerusalem',
+      })
+    : '—'
+  const html = renderEmail({
+    heading: '⚠ התשלום שלך נכשל',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
+        ניסינו לחייב את אמצעי התשלום שלך לחידוש המנוי ב-<strong>ניהול הורדות פלוס Pro</strong>, אבל החיוב נדחה (כרטיס פג תוקף, יתרה לא מספיקה, או חסום).
+      </p>
+      <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה ל-Pro פעילה עד</div>
+        <div style="font-size:18px;color:#F5EFE6;font-weight:600;">${validUntilStr}</div>
+        <div style="margin-top:10px;font-size:11px;line-height:1.6;color:#8B8170;">
+          PayPal ינסה שוב באופן אוטומטי. אם גם הניסיון הבא ייכשל — המנוי יושעה והגישה תיפסק.
+        </div>
+      </div>
+      <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+        כדי להמשיך ברצף, עדכן את אמצעי התשלום ישירות ב-PayPal:
+      </p>
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
+        <tr><td align="center">
+          <a href="https://www.paypal.com/myaccount/autopay/" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">עדכון אמצעי תשלום ב-PayPal</a>
+        </td></tr>
+      </table>
+      <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
+        אפשר גם לראות את סטטוס המנוי ולנהל אותו דרך
+        <a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/account</a>.
+      </p>
+      <p style="font-size:11px;line-height:1.6;margin:18px 0 0;color:#5C5444;">
+        בעיה? תשובה למייל הזה תגיע ישירות לתמיכה.
+      </p>
+    `,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    subject: '⚠ עדכון אמצעי תשלום נדרש — ניהול הורדות פלוס',
     html,
   })
 }
