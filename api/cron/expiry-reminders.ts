@@ -351,7 +351,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // field; once stamped we don't re-send for the same cycle.
         // extendLicense in capture.ts clears both stamps on renewal
         // so the new cycle gets a fresh shot at both reminders.
-        const alreadySent = (data as Record<string, unknown>)[
+        // Double-cast through `unknown` is required because KeyDoc
+        // has no general string index signature, and Vercel's
+        // per-function tsc rejects the direct `as Record<...>` cast.
+        const alreadySent = (data as unknown as Record<string, unknown>)[
           stage.sentField
         ] as string | null | undefined
         if (alreadySent) continue
