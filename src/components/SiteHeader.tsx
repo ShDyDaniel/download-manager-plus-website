@@ -1,46 +1,47 @@
 import { Link, useLocation } from 'react-router-dom'
-import { UserCircle } from 'lucide-react'
 
 /**
- * Site-wide top-left account link.
+ * Editorial top-left "החשבון שלי" link.
  *
- * Rendered above all routes from App.tsx so visitors always have
- * a one-click path to their subscription dashboard (which doubles
- * as the sign-in form when they're not logged in). Hidden on
- * /account itself — surfacing a "go to /account" link while the
- * user is already on /account would just be visual noise.
+ * Visual treatment: deliberately plain text — no border, no
+ * background, no chip. The marketing page's voice is editorial
+ * (subtle wordmark, em-dash labels, "איך זה עובד" scroll cue) and
+ * a bordered pill would have read like a banner ad in that
+ * context. The link adopts the same `text-fg-muted → text-fg`
+ * hover treatment as the in-page scroll cue so all secondary
+ * affordances feel like one family.
  *
- * Positioning: `fixed` to the visual top-left (in RTL = LTR-left),
- * deliberately on the opposite side of the in-Hero brand wordmark
- * which sits on the visual top-right. The two anchor the corners
- * of the page and read as a minimal nav without our needing a
- * full chrome bar.
+ * Position: `absolute` (NOT `fixed`) so the link scrolls away with
+ * the hero. The user explicitly didn't want a persistent corner
+ * link — the marketing site is meant to be read top-to-bottom and
+ * a sticky element competes with that reading rhythm. For deep
+ * pages (/buy, /account) where the user has already committed to
+ * a flow, the link being absent is the right call.
  *
- * Why not a real navbar: the marketing site has no other nav items
- * (no /about, /pricing, /blog). A full bar with one link would feel
- * empty; a corner link feels intentional and editorial.
+ * Hidden on /account because the destination IS /account — no
+ * reason to surface a "go there" affordance to someone already
+ * there. startsWith match catches future sub-routes too.
  *
- * Z-index 30 chosen to sit above hero ambient glows and product
- * mockup (z = 0-10) but BELOW any modal or popover that may open
- * from inside a page (the download-picker popover uses z-30 too,
- * but it stays right-aligned under its trigger so the two never
- * visually clash).
+ * Positioning notes:
+ *   - top-5 / md:top-6 mirrors the in-Hero brand wordmark spacing,
+ *     so wordmark and account link sit at the same y-axis.
+ *   - left-5 / md:left-6 in RTL = visual LEFT, opposite the
+ *     wordmark on visual RIGHT. The two anchor the top corners
+ *     editorial-style.
+ *   - z-10 lifts above the hero ambient glow (no z-index, defaults
+ *     to 0) but stays below any modal/popover that may open
+ *     (z-30+).
  */
 export function SiteHeader() {
   const location = useLocation()
-  // Hide on /account — the user is already there. Using startsWith
-  // so any future sub-routes like /account/settings still hide it.
   if (location.pathname.startsWith('/account')) return null
 
   return (
-    <div className="fixed top-4 left-4 z-30 md:top-6 md:left-6">
-      <Link
-        to="/account"
-        className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-card/70 px-3.5 py-2 text-xs font-medium text-fg-secondary backdrop-blur transition-all hover:border-primary/60 hover:bg-bg-card/90 hover:text-fg hover:shadow-lg hover:shadow-primary/10 md:text-sm"
-      >
-        <UserCircle className="h-4 w-4" />
-        <span>החשבון שלי</span>
-      </Link>
-    </div>
+    <Link
+      to="/account"
+      className="absolute top-5 left-5 z-10 text-sm text-fg-muted transition-colors hover:text-fg md:top-6 md:left-6"
+    >
+      החשבון שלי
+    </Link>
   )
 }
