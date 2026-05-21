@@ -64,27 +64,27 @@ async function sendResetEmail(to: string, resetUrl: string): Promise<void> {
   const html = renderEmail({
     heading: 'איפוס סיסמה',
     contentHtml: `
-      <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#d1d5db;">
+      <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
         קיבלנו בקשה לאיפוס הסיסמה לחשבון שלך ב-<strong>ניהול הורדות פלוס</strong>.
       </p>
-      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
         לחץ על הכפתור כדי לקבוע סיסמה חדשה:
       </p>
       <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
         <tr><td align="center">
-          <a href="${resetUrl}" target="_blank" style="display:inline-block;background:#fbbf24;color:#0a0a0a;padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;">לאיפוס הסיסמה</a>
+          <a href="${resetUrl}" target="_blank" style="display:inline-block;background:#B8794F;color:#F5EFE6;padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;">לאיפוס הסיסמה</a>
         </td></tr>
       </table>
-      <p style="font-size:12px;line-height:1.6;margin:0 0 6px;color:#9ca3af;">
+      <p style="font-size:12px;line-height:1.6;margin:0 0 6px;color:#8B8170;">
         או הדבק את הקישור הבא לדפדפן:
       </p>
-      <p dir="ltr" style="font-size:11px;line-height:1.5;margin:0 0 22px;color:#d1d5db;word-break:break-all;text-align:left;direction:ltr;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;">
+      <p dir="ltr" style="font-size:11px;line-height:1.5;margin:0 0 22px;color:#C9BFA8;word-break:break-all;text-align:left;direction:ltr;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;">
         ${resetUrl}
       </p>
-      <p style="font-size:12px;line-height:1.6;margin:0 0 14px;color:#9ca3af;">
+      <p style="font-size:12px;line-height:1.6;margin:0 0 14px;color:#8B8170;">
         ⚠️ הקישור תקף לשעה אחת בלבד.
       </p>
-      <p style="font-size:11px;line-height:1.6;margin:24px 0 0;color:#6b7280;">
+      <p style="font-size:11px;line-height:1.6;margin:24px 0 0;color:#5C5444;">
         לא ביקשת לאפס סיסמה? פשוט התעלם מהמייל הזה — אף אחד לא יכול להחליף לך את הסיסמה בלי לחיצה על הקישור למעלה.
       </p>
     `,
@@ -150,6 +150,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  *  other three too.
  * ───────────────────────────────────────────────────────────── */
 function renderEmail(args: { heading: string; contentHtml: string }): string {
+  // Brand palette — kept in sync with api/paypal.ts. See that
+  // file's renderEmail for the rationale.
   return `<!doctype html>
 <html dir="rtl" lang="he">
 <head>
@@ -157,17 +159,19 @@ function renderEmail(args: { heading: string; contentHtml: string }): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="color-scheme" content="only dark"/>
   <meta name="supported-color-schemes" content="only dark"/>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&display=swap" rel="stylesheet"/>
 </head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e5e7eb;direction:rtl;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0a0a0a;padding:40px 20px;">
+<body style="margin:0;padding:0;background:#16110D;font-family:'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;color:#F5EFE6;direction:rtl;-webkit-font-smoothing:antialiased;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#16110D;padding:48px 20px;">
 <tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;">
-<tr><td style="padding:32px;text-align:right;direction:rtl;">
-  <h1 style="font-size:18px;margin:0 0 16px;color:#fbbf24;font-weight:600;direction:rtl;text-align:right;">ניהול הורדות פלוס</h1>
-  <h2 style="font-size:24px;margin:0 0 12px;color:#e5e7eb;font-weight:700;direction:rtl;text-align:right;">${args.heading}</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
+<tr><td style="padding:40px 36px;text-align:right;direction:rtl;">
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— ניהול הורדות פלוס</div>
+  <h1 style="font-size:28px;margin:0 0 22px;color:#F5EFE6;font-weight:500;line-height:1.18;letter-spacing:-0.015em;direction:rtl;text-align:right;">${args.heading}</h1>
   ${args.contentHtml}
 </td></tr>
 </table>
+<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— ניהול הורדות פלוס —</div>
 </td></tr>
 </table>
 </body>

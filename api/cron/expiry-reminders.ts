@@ -201,24 +201,24 @@ async function sendReminderEmail(
   const html = renderEmail({
     heading: '⏳ המנוי שלך עומד להסתיים',
     contentHtml: `
-      <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#d1d5db;">
+      <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
         המפתח שלך לתוכנה <strong>ניהול הורדות פלוס</strong> פג בעוד <strong>${daysWord}</strong> (${dateStr}).
       </p>
-      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
         לחיצה על הכפתור למטה תעביר אותך לעמוד החידוש. המפתח שלך נשאר אותו דבר — אין מה לעדכן באפליקציה, פשוט מאריכים את התוקף.
       </p>
       <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
         <tr><td align="center">
-          <a href="${renewUrl}" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#fbbf24;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">חידוש המנוי 👑</a>
+          <a href="${renewUrl}" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">חידוש המנוי 👑</a>
         </td></tr>
       </table>
-      <p style="font-size:12px;margin:0 0 6px;color:#9ca3af;">
+      <p style="font-size:12px;margin:0 0 6px;color:#8B8170;">
         או העתיקו את הקישור הבא:
       </p>
-      <p dir="ltr" style="font-size:11px;line-height:1.5;margin:0;color:#6b7280;word-break:break-all;text-align:left;direction:ltr;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;">
+      <p dir="ltr" style="font-size:11px;line-height:1.5;margin:0;color:#5C5444;word-break:break-all;text-align:left;direction:ltr;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;">
         ${renewUrl}
       </p>
-      <p style="font-size:11px;margin:22px 0 0;color:#6b7280;">
+      <p style="font-size:11px;margin:22px 0 0;color:#5C5444;">
         הקישור תקף ל-${REMINDER_TOKEN_TTL_DAYS} ימים. לא רוצים להמשיך? אל תעשו כלום — המנוי פג מעצמו.
       </p>
     `,
@@ -517,39 +517,39 @@ async function sendAnnualReportEmail(args: {
           })
         : '—'
       const sym = cur === 'ILS' ? '₪' : cur === 'USD' ? '$' : cur
-      return `<tr><td style="padding:6px 12px;border-bottom:1px solid #2a2a3a;color:#e5e7eb;">${dateStr}</td><td style="padding:6px 12px;border-bottom:1px solid #2a2a3a;color:#fbbf24;text-align:left;direction:ltr;">${amount} ${sym}</td></tr>`
+      return `<tr><td style="padding:6px 12px;border-bottom:1px solid #2a2a3a;color:#F5EFE6;">${dateStr}</td><td style="padding:6px 12px;border-bottom:1px solid #2a2a3a;color:#D4A574;text-align:left;direction:ltr;">${amount} ${sym}</td></tr>`
     })
     .join('')
   const totalsHtml = Object.entries(totalByCurrency)
     .map(([cur, amt]) => {
       const sym = cur === 'ILS' ? '₪' : cur === 'USD' ? '$' : cur
-      return `<strong style="color:#fbbf24;">${amt} ${sym}</strong>`
+      return `<strong style="color:#D4A574;">${amt} ${sym}</strong>`
     })
     .join(' / ')
   const html = renderEmail({
     heading: `סיכום חיובים שנתי — ${args.year}`,
     contentHtml: `
-      <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#d1d5db;">
+      <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
         ריכוז כל החיובים שבוצעו על המנוי שלך ל-<strong>ניהול הורדות פלוס</strong> במהלך ${args.year}.
         מסמך זה נשלח אליך אחת לשנה לפי דרישת חוק הגנת הצרכן.
       </p>
-      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 18px;border:1px solid #2a2a2a;border-radius:8px;overflow:hidden;">
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 18px;border:1px solid rgba(245,239,230,0.08);border-radius:8px;overflow:hidden;">
         <thead>
-          <tr style="background:#0a0a0a;">
-            <th style="padding:10px 12px;text-align:right;color:#9ca3af;font-weight:500;font-size:12px;">תאריך</th>
-            <th style="padding:10px 12px;text-align:left;color:#9ca3af;font-weight:500;font-size:12px;direction:ltr;">סכום</th>
+          <tr style="background:#16110D;">
+            <th style="padding:10px 12px;text-align:right;color:#8B8170;font-weight:500;font-size:12px;">תאריך</th>
+            <th style="padding:10px 12px;text-align:left;color:#8B8170;font-weight:500;font-size:12px;direction:ltr;">סכום</th>
           </tr>
         </thead>
         <tbody style="font-size:13px;">${rows}</tbody>
       </table>
-      <p style="margin:14px 0;font-size:14px;color:#e5e7eb;">
+      <p style="margin:14px 0;font-size:14px;color:#F5EFE6;">
         <strong>סה״כ ${args.year}:</strong> ${totalsHtml}
       </p>
-      <p style="margin:24px 0 0;font-size:11px;color:#6b7280;">
+      <p style="margin:24px 0 0;font-size:11px;color:#5C5444;">
         שאלות? תשובה ישירה למייל הזה תגיע לתמיכה.
       </p>
-      <p style="margin:8px 0 0;font-size:11px;color:#6b7280;">
-        לניהול או ביטול המנוי: <a href="https://dm-plus.vercel.app/account" style="color:#fbbf24;text-decoration:underline;">החשבון שלי</a>
+      <p style="margin:8px 0 0;font-size:11px;color:#5C5444;">
+        לניהול או ביטול המנוי: <a href="https://dm-plus.vercel.app/account" style="color:#D4A574;text-decoration:underline;">החשבון שלי</a>
       </p>
     `,
   })
@@ -568,6 +568,8 @@ async function sendAnnualReportEmail(args: {
  *  is unreliable with helper-only modules out of api/.
  * ───────────────────────────────────────────────────────────── */
 function renderEmail(args: { heading: string; contentHtml: string }): string {
+  // Brand palette — kept in sync with api/paypal.ts. See that
+  // file's renderEmail for the rationale.
   return `<!doctype html>
 <html dir="rtl" lang="he">
 <head>
@@ -575,17 +577,19 @@ function renderEmail(args: { heading: string; contentHtml: string }): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="color-scheme" content="only dark"/>
   <meta name="supported-color-schemes" content="only dark"/>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&display=swap" rel="stylesheet"/>
 </head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e5e7eb;direction:rtl;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0a0a0a;padding:40px 20px;">
+<body style="margin:0;padding:0;background:#16110D;font-family:'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;color:#F5EFE6;direction:rtl;-webkit-font-smoothing:antialiased;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#16110D;padding:48px 20px;">
 <tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;">
-<tr><td style="padding:32px;text-align:right;direction:rtl;">
-  <h1 style="font-size:18px;margin:0 0 16px;color:#fbbf24;font-weight:600;direction:rtl;text-align:right;">ניהול הורדות פלוס</h1>
-  <h2 style="font-size:24px;margin:0 0 12px;color:#e5e7eb;font-weight:700;direction:rtl;text-align:right;">${args.heading}</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
+<tr><td style="padding:40px 36px;text-align:right;direction:rtl;">
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— ניהול הורדות פלוס</div>
+  <h1 style="font-size:28px;margin:0 0 22px;color:#F5EFE6;font-weight:500;line-height:1.18;letter-spacing:-0.015em;direction:rtl;text-align:right;">${args.heading}</h1>
   ${args.contentHtml}
 </td></tr>
 </table>
+<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— ניהול הורדות פלוס —</div>
 </td></tr>
 </table>
 </body>

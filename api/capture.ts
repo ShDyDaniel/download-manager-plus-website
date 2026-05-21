@@ -521,21 +521,21 @@ async function sendLicenseEmail(
   const html = renderEmail({
     heading: 'תודה על הרכישה 🎉',
     contentHtml: `
-      <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#d1d5db;">
-        מצורף מפתח <span style="color:#fbbf24;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${durationLabel} מהיום <span style="color:#9ca3af;">(תוקף עד ${expiryDate})</span>.
+      <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
+        מצורף מפתח <span style="color:#D4A574;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${durationLabel} מהיום <span style="color:#8B8170;">(תוקף עד ${expiryDate})</span>.
       </p>
-      <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
-        <div style="font-size:11px;color:#9ca3af;margin-bottom:8px;">מפתח המוצר</div>
-        <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#fbbf24;letter-spacing:0.08em;font-weight:700;">${key}</div>
+      <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:11px;color:#8B8170;margin-bottom:8px;">מפתח המוצר</div>
+        <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#D4A574;letter-spacing:0.08em;font-weight:700;">${key}</div>
       </div>
-      <h3 style="font-size:14px;margin:24px 0 8px;color:#e5e7eb;font-weight:600;">איך מממשים?</h3>
-      <div style="font-size:13px;line-height:1.9;color:#d1d5db;">
+      <h3 style="font-size:14px;margin:24px 0 8px;color:#F5EFE6;font-weight:600;">איך מממשים?</h3>
+      <div style="font-size:13px;line-height:1.9;color:#C9BFA8;">
         <div>1. פותחים את התוכנה ונכנסים לחשבון.</div>
         <div>2. לוחצים על השם בצד שמאל למטה ← <strong>מימוש מפתח מוצר</strong>.</div>
         <div>3. מדביקים את המפתח ולוחצים <strong>אישור</strong>.</div>
         <div>4. זהו, יש לך Pro! 🚀</div>
       </div>
-      <p style="font-size:11px;margin:24px 0 0;color:#6b7280;">
+      <p style="font-size:11px;margin:24px 0 0;color:#5C5444;">
         המפתח שמור לחשבון שלך. בכל בעיה — תשובה ישירה למייל הזה.
       </p>
     `,
@@ -576,16 +576,16 @@ async function sendRenewalEmail(
   const html = renderEmail({
     heading: 'המנוי שלך הוארך ✓',
     contentHtml: `
-      <p style="font-size:14px;line-height:1.7;margin:0 0 20px;color:#d1d5db;">
+      <p style="font-size:14px;line-height:1.7;margin:0 0 20px;color:#C9BFA8;">
         הוספנו <strong>${durationLabel}</strong> נוסף למפתח Pro שלך לתוכנה <strong>ניהול הורדות פלוס</strong>. המפתח עצמו נשאר זהה — אין מה לעדכן באפליקציה.
       </p>
-      <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:18px;margin:0 0 24px;text-align:center;">
-        <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף קודם</div>
-        <div style="font-size:14px;color:#6b7280;text-decoration:line-through;margin-bottom:14px;">${previousDate}</div>
-        <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף חדש</div>
-        <div style="font-size:20px;color:#34d399;font-weight:700;">${newDate}</div>
+      <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:18px;margin:0 0 24px;text-align:center;">
+        <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">תוקף קודם</div>
+        <div style="font-size:14px;color:#5C5444;text-decoration:line-through;margin-bottom:14px;">${previousDate}</div>
+        <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">תוקף חדש</div>
+        <div style="font-size:20px;color:#7DAA6B;font-weight:700;">${newDate}</div>
       </div>
-      <p style="font-size:11px;margin:24px 0 0;color:#6b7280;">
+      <p style="font-size:11px;margin:24px 0 0;color:#5C5444;">
         תודה שאתם איתנו. בכל בעיה — תשובה ישירה למייל הזה.
       </p>
     `,
@@ -742,6 +742,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  *  out of api/. Keep them in sync if you change the chrome.
  * ───────────────────────────────────────────────────────────── */
 function renderEmail(args: { heading: string; contentHtml: string }): string {
+  // Brand palette — kept in sync with api/paypal.ts. See that
+  // file's renderEmail for the rationale.
   return `<!doctype html>
 <html dir="rtl" lang="he">
 <head>
@@ -749,17 +751,19 @@ function renderEmail(args: { heading: string; contentHtml: string }): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="color-scheme" content="only dark"/>
   <meta name="supported-color-schemes" content="only dark"/>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&display=swap" rel="stylesheet"/>
 </head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e5e7eb;direction:rtl;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0a0a0a;padding:40px 20px;">
+<body style="margin:0;padding:0;background:#16110D;font-family:'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;color:#F5EFE6;direction:rtl;-webkit-font-smoothing:antialiased;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#16110D;padding:48px 20px;">
 <tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;">
-<tr><td style="padding:32px;text-align:right;direction:rtl;">
-  <h1 style="font-size:18px;margin:0 0 16px;color:#fbbf24;font-weight:600;direction:rtl;text-align:right;">ניהול הורדות פלוס</h1>
-  <h2 style="font-size:24px;margin:0 0 12px;color:#e5e7eb;font-weight:700;direction:rtl;text-align:right;">${args.heading}</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
+<tr><td style="padding:40px 36px;text-align:right;direction:rtl;">
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— ניהול הורדות פלוס</div>
+  <h1 style="font-size:28px;margin:0 0 22px;color:#F5EFE6;font-weight:500;line-height:1.18;letter-spacing:-0.015em;direction:rtl;text-align:right;">${args.heading}</h1>
   ${args.contentHtml}
 </td></tr>
 </table>
+<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— ניהול הורדות פלוס —</div>
 </td></tr>
 </table>
 </body>

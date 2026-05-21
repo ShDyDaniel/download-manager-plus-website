@@ -972,11 +972,22 @@ function SubscriptionCard({
 }
 
 /**
- * Pill-style toggle (NOT a native checkbox) so the marketing-opt-in
- * row reads as a settings control, not a form field. Animates the
- * thumb across; while `saving` is true the row dims slightly and
- * pointer events are disabled so the user can't spam-click during
- * the round-trip.
+ * Settings-style toggle with a clearly distinct visual between
+ * on and off states. Previous version used a 30%-opacity success
+ * bg vs the elevated bg, which looked nearly identical in dark
+ * mode — user couldn't tell at a glance which state they were in.
+ *
+ * New design borrows the iOS pattern:
+ *   - ON  → SOLID success green pill, thumb pinned right (RTL
+ *           reading order: right = active), tiny "פעיל" badge
+ *           inside the pill for absolute clarity.
+ *   - OFF → muted gray pill (darker than the row bg so it stands
+ *           out), thumb pinned left, "כבוי" badge inside the pill.
+ *
+ * The state label sits INSIDE the pill on the opposite side of
+ * the thumb, so the user reads the pill as a labeled control
+ * rather than a mystery switch. Larger overall size (48×26) so
+ * the label fits at a readable size.
  */
 function MarketingToggle({
   enabled,
@@ -994,15 +1005,31 @@ function MarketingToggle({
       aria-checked={enabled}
       disabled={saving}
       onClick={() => onChange(!enabled)}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+      className={`relative inline-flex h-7 w-[68px] shrink-0 cursor-pointer items-center rounded-full px-1 transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
         enabled
-          ? 'border-success/60 bg-success/30'
-          : 'border-border bg-bg-elevated'
+          ? 'bg-success'
+          : 'bg-fg-faint/30 ring-1 ring-inset ring-border'
       }`}
     >
+      {/* The label sits INSIDE the pill on the side OPPOSITE to the
+          thumb's resting position — so when ON the label "פעיל" is
+          on the LEFT (under the thumb-on-right), when OFF the label
+          "כבוי" is on the RIGHT (under the thumb-on-left). Same
+          pattern iOS uses with the 1/0 inside system switches. */}
       <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-fg shadow-md transition-transform ${
-          enabled ? '-translate-x-1' : '-translate-x-6'
+        className={`absolute top-1/2 -translate-y-1/2 text-[9px] font-bold uppercase tracking-wider pointer-events-none transition-colors ${
+          enabled ? 'left-2 text-bg/80' : 'right-2 text-fg-muted'
+        }`}
+      >
+        {enabled ? 'פעיל' : 'כבוי'}
+      </span>
+
+      {/* Thumb — solid cream circle so it pops against either the
+          green or gray bg. Negative translate-x here is the RTL-
+          aware way to move "right" vs "left" in the pill. */}
+      <span
+        className={`relative z-10 inline-block h-5 w-5 rounded-full bg-fg shadow-md transition-transform ${
+          enabled ? 'translate-x-0' : '-translate-x-[40px]'
         }`}
         aria-hidden
       />

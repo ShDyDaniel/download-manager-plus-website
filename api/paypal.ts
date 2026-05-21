@@ -1717,21 +1717,21 @@ async function sendSubscriptionWelcomeEmail(args: {
   const html = renderEmail({
     heading: 'ברוך הבא ל-Pro 🎉',
     contentHtml: `
-      <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#d1d5db;">
+      <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
         המנוי שלך פעיל! מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong>.
       </p>
-      <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
-        <div style="font-size:11px;color:#9ca3af;margin-bottom:8px;">מפתח המוצר</div>
-        <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#fbbf24;letter-spacing:0.08em;font-weight:700;">${args.key}</div>
+      <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:11px;color:#8B8170;margin-bottom:8px;">מפתח המוצר</div>
+        <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#D4A574;letter-spacing:0.08em;font-weight:700;">${args.key}</div>
       </div>
-      <h3 style="font-size:14px;margin:24px 0 8px;color:#e5e7eb;font-weight:600;">פרטי המנוי</h3>
-      <div style="font-size:13px;line-height:1.9;color:#d1d5db;">
+      <h3 style="font-size:14px;margin:24px 0 8px;color:#F5EFE6;font-weight:600;">פרטי המנוי</h3>
+      <div style="font-size:13px;line-height:1.9;color:#C9BFA8;">
         <div>• תוכנית: ${args.planLabel} (${args.price} ${symbol})</div>
         <div>• חיוב הבא: ${nextDate}</div>
         <div>• מתחדש אוטומטית עד שתבטל</div>
-        <div>• ניהול / ביטול: <a href="${WEBSITE_BASE}/account" style="color:#fbbf24;text-decoration:underline;">${WEBSITE_BASE}/account</a></div>
+        <div>• ניהול / ביטול: <a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/account</a></div>
       </div>
-      <p style="margin:24px 0 0;font-size:11px;color:#6b7280;">
+      <p style="margin:24px 0 0;font-size:11px;color:#5C5444;">
         מנוי ID: <span dir="ltr">${args.subscriptionId}</span>
       </p>
     `,
@@ -1875,16 +1875,16 @@ async function handleSignupRequestCode(req: VercelRequest, res: VercelResponse) 
   const html = renderEmail({
     heading: 'קוד האימות שלך',
     contentHtml: `
-      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
         הזן את הקוד הזה בתוכנה כדי לסיים את ההרשמה:
       </p>
-      <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
-        <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">${code}</div>
+      <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#D4A574;">${code}</div>
       </div>
-      <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
+      <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
         הקוד תקף ל-15 דקות. אם לא ביקשת אותו, אפשר להתעלם מהמייל הזה.
       </p>
-      <p style="font-size:11px;margin:0;color:#6b7280;">
+      <p style="font-size:11px;margin:0;color:#5C5444;">
         אל תשתף את הקוד הזה עם אף אחד.
       </p>
     `,
@@ -2133,13 +2133,13 @@ async function handleVerifyExistingRequestCode(
   const html = renderEmail({
     heading: 'אימות כתובת המייל',
     contentHtml: `
-      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
         הוספנו דרישה לאמת את כתובת המייל לכל המשתמשים. הזן את הקוד הבא בתוכנה כדי להמשיך:
       </p>
-      <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
-        <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">${code}</div>
+      <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#D4A574;">${code}</div>
       </div>
-      <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
+      <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
         הקוד תקף ל-15 דקות. אם לא ביקשת אותו, יש לפנות לתמיכה — ייתכן שמישהו מנסה להיכנס לחשבון שלך.
       </p>
     `,
@@ -2324,6 +2324,12 @@ async function handleAdminMigrateEmailVerified(
  *  consistent dark frame for free.
  * ───────────────────────────────────────────────────────────── */
 function renderEmail(args: { heading: string; contentHtml: string }): string {
+  // Brand palette mirroring src/index.css — warm espresso bg, copper
+  // accent, cream foreground. Replaces the earlier "generic dark +
+  // bright yellow" Material-look that didn't match the desktop app
+  // or the website at all. Rubik is the website's display font; we
+  // request it from Google Fonts but fall back gracefully because
+  // most email clients strip remote stylesheets.
   return `<!doctype html>
 <html dir="rtl" lang="he">
 <head>
@@ -2331,17 +2337,19 @@ function renderEmail(args: { heading: string; contentHtml: string }): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="color-scheme" content="only dark"/>
   <meta name="supported-color-schemes" content="only dark"/>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&display=swap" rel="stylesheet"/>
 </head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e5e7eb;direction:rtl;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0a0a0a;padding:40px 20px;">
+<body style="margin:0;padding:0;background:#16110D;font-family:'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;color:#F5EFE6;direction:rtl;-webkit-font-smoothing:antialiased;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#16110D;padding:48px 20px;">
 <tr><td align="center">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;">
-<tr><td style="padding:32px;text-align:right;direction:rtl;">
-  <h1 style="font-size:18px;margin:0 0 16px;color:#fbbf24;font-weight:600;direction:rtl;text-align:right;">ניהול הורדות פלוס</h1>
-  <h2 style="font-size:24px;margin:0 0 12px;color:#e5e7eb;font-weight:700;direction:rtl;text-align:right;">${args.heading}</h2>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
+<tr><td style="padding:40px 36px;text-align:right;direction:rtl;">
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— ניהול הורדות פלוס</div>
+  <h1 style="font-size:28px;margin:0 0 22px;color:#F5EFE6;font-weight:500;line-height:1.18;letter-spacing:-0.015em;direction:rtl;text-align:right;">${args.heading}</h1>
   ${args.contentHtml}
 </td></tr>
 </table>
+<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— ניהול הורדות פלוס —</div>
 </td></tr>
 </table>
 </body>
@@ -2387,21 +2395,21 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
         html: renderEmail({
           heading: 'ברוך הבא ל-Pro 🎉',
           contentHtml: `
-            <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#d1d5db;">
+            <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
               [תצוגת בדיקה] המנוי שלך פעיל! מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong>.
             </p>
-            <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
-              <div style="font-size:11px;color:#9ca3af;margin-bottom:8px;">מפתח המוצר</div>
-              <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#fbbf24;letter-spacing:0.08em;font-weight:700;">${mockKey}</div>
+            <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
+              <div style="font-size:11px;color:#8B8170;margin-bottom:8px;">מפתח המוצר</div>
+              <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#D4A574;letter-spacing:0.08em;font-weight:700;">${mockKey}</div>
             </div>
-            <h3 style="font-size:14px;margin:24px 0 8px;color:#e5e7eb;font-weight:600;">פרטי המנוי</h3>
-            <div style="font-size:13px;line-height:1.9;color:#d1d5db;">
+            <h3 style="font-size:14px;margin:24px 0 8px;color:#F5EFE6;font-weight:600;">פרטי המנוי</h3>
+            <div style="font-size:13px;line-height:1.9;color:#C9BFA8;">
               <div>• תוכנית: חודשי (9 ₪)</div>
               <div>• חיוב הבא: ${mockExpiry}</div>
               <div>• מתחדש אוטומטית עד שתבטל</div>
-              <div>• ניהול / ביטול: <a href="${WEBSITE_BASE}/account" style="color:#fbbf24;text-decoration:underline;">${WEBSITE_BASE}/account</a></div>
+              <div>• ניהול / ביטול: <a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/account</a></div>
             </div>
-            <p style="margin:24px 0 0;font-size:11px;color:#6b7280;">
+            <p style="margin:24px 0 0;font-size:11px;color:#5C5444;">
               מנוי ID: <span dir="ltr">${mockSubId}</span>
             </p>
           `,
@@ -2413,13 +2421,13 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
         html: renderEmail({
           heading: 'קוד האימות שלך',
           contentHtml: `
-            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
               [תצוגת בדיקה] הזן את הקוד הזה בתוכנה כדי לסיים את ההרשמה:
             </p>
-            <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
-              <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">123456</div>
+            <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
+              <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#D4A574;">123456</div>
             </div>
-            <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
+            <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
               הקוד תקף ל-15 דקות.
             </p>
           `,
@@ -2431,13 +2439,13 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
         html: renderEmail({
           heading: 'אימות כתובת המייל',
           contentHtml: `
-            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
               [תצוגת בדיקה] הוספנו דרישה לאמת את כתובת המייל לכל המשתמשים. הזן את הקוד הבא:
             </p>
-            <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
-              <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">654321</div>
+            <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
+              <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#D4A574;">654321</div>
             </div>
-            <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
+            <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
               הקוד תקף ל-15 דקות.
             </p>
           `,
@@ -2449,18 +2457,18 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
         html: renderEmail({
           heading: 'איפוס סיסמה',
           contentHtml: `
-            <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#d1d5db;">
+            <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
               [תצוגת בדיקה] קיבלנו בקשה לאיפוס הסיסמה לחשבון שלך ב-<strong>ניהול הורדות פלוס</strong>.
             </p>
-            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
               לחץ על הכפתור כדי לקבוע סיסמה חדשה:
             </p>
             <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
               <tr><td align="center">
-                <a href="https://example.com/reset?token=test" target="_blank" style="display:inline-block;background:#fbbf24;color:#0a0a0a;padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;">לאיפוס הסיסמה</a>
+                <a href="https://example.com/reset?token=test" target="_blank" style="display:inline-block;background:#B8794F;color:#F5EFE6;padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;">לאיפוס הסיסמה</a>
               </td></tr>
             </table>
-            <p style="font-size:12px;line-height:1.6;margin:0 0 14px;color:#9ca3af;">
+            <p style="font-size:12px;line-height:1.6;margin:0 0 14px;color:#8B8170;">
               ⚠️ הקישור תקף לשעה אחת בלבד.
             </p>
           `,
@@ -2472,15 +2480,15 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
         html: renderEmail({
           heading: 'תודה על הרכישה 🎉',
           contentHtml: `
-            <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#d1d5db;">
-              [תצוגת בדיקה] מצורף מפתח <span style="color:#fbbf24;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של שנה מהיום (תוקף עד ${mockExpiry}).
+            <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
+              [תצוגת בדיקה] מצורף מפתח <span style="color:#D4A574;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של שנה מהיום (תוקף עד ${mockExpiry}).
             </p>
-            <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
-              <div style="font-size:11px;color:#9ca3af;margin-bottom:8px;">מפתח המוצר</div>
-              <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#fbbf24;letter-spacing:0.08em;font-weight:700;">${mockKey}</div>
+            <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
+              <div style="font-size:11px;color:#8B8170;margin-bottom:8px;">מפתח המוצר</div>
+              <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#D4A574;letter-spacing:0.08em;font-weight:700;">${mockKey}</div>
             </div>
-            <h3 style="font-size:14px;margin:24px 0 8px;color:#e5e7eb;font-weight:600;">איך מממשים?</h3>
-            <div style="font-size:13px;line-height:1.9;color:#d1d5db;">
+            <h3 style="font-size:14px;margin:24px 0 8px;color:#F5EFE6;font-weight:600;">איך מממשים?</h3>
+            <div style="font-size:13px;line-height:1.9;color:#C9BFA8;">
               <div>1. פותחים את התוכנה ונכנסים לחשבון.</div>
               <div>2. לוחצים על השם בצד שמאל למטה ← <strong>מימוש מפתח מוצר</strong>.</div>
               <div>3. מדביקים את המפתח ולוחצים <strong>אישור</strong>.</div>
@@ -2494,14 +2502,14 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
         html: renderEmail({
           heading: 'המנוי שלך הוארך ✓',
           contentHtml: `
-            <p style="font-size:14px;line-height:1.7;margin:0 0 20px;color:#d1d5db;">
+            <p style="font-size:14px;line-height:1.7;margin:0 0 20px;color:#C9BFA8;">
               [תצוגת בדיקה] הוספנו <strong>שנה</strong> נוסף למפתח Pro שלך.
             </p>
-            <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:18px;margin:0 0 24px;text-align:center;">
-              <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף קודם</div>
-              <div style="font-size:14px;color:#6b7280;text-decoration:line-through;margin-bottom:14px;">01.06.2025</div>
-              <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף חדש</div>
-              <div style="font-size:20px;color:#34d399;font-weight:700;">${mockExpiry}</div>
+            <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:18px;margin:0 0 24px;text-align:center;">
+              <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">תוקף קודם</div>
+              <div style="font-size:14px;color:#5C5444;text-decoration:line-through;margin-bottom:14px;">01.06.2025</div>
+              <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">תוקף חדש</div>
+              <div style="font-size:20px;color:#7DAA6B;font-weight:700;">${mockExpiry}</div>
             </div>
           `,
         }),
@@ -2512,15 +2520,15 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
         html: renderEmail({
           heading: '⏳ המנוי שלך עומד להסתיים',
           contentHtml: `
-            <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#d1d5db;">
+            <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
               [תצוגת בדיקה] המפתח שלך לתוכנה <strong>ניהול הורדות פלוס</strong> פג בעוד <strong>2 ימים</strong> (${mockExpiry}).
             </p>
-            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
               לחיצה על הכפתור למטה תעביר אותך לעמוד החידוש. המפתח שלך נשאר אותו דבר.
             </p>
             <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
               <tr><td align="center">
-                <a href="https://example.com/buy?renew=test" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#fbbf24;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">חידוש המנוי 👑</a>
+                <a href="https://example.com/buy?renew=test" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">חידוש המנוי 👑</a>
               </td></tr>
             </table>
           `,
@@ -2532,24 +2540,24 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
         html: renderEmail({
           heading: 'סיכום חיובים שנתי — 2025',
           contentHtml: `
-            <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#d1d5db;">
+            <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
               [תצוגת בדיקה] ריכוז כל החיובים שבוצעו על המנוי שלך במהלך 2025.
             </p>
-            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 18px;border:1px solid #2a2a2a;border-radius:8px;overflow:hidden;">
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 18px;border:1px solid rgba(245,239,230,0.08);border-radius:8px;overflow:hidden;">
               <thead>
-                <tr style="background:#0a0a0a;">
-                  <th style="padding:10px 12px;text-align:right;color:#9ca3af;font-weight:500;font-size:12px;">תאריך</th>
-                  <th style="padding:10px 12px;text-align:left;color:#9ca3af;font-weight:500;font-size:12px;direction:ltr;">סכום</th>
+                <tr style="background:#16110D;">
+                  <th style="padding:10px 12px;text-align:right;color:#8B8170;font-weight:500;font-size:12px;">תאריך</th>
+                  <th style="padding:10px 12px;text-align:left;color:#8B8170;font-weight:500;font-size:12px;direction:ltr;">סכום</th>
                 </tr>
               </thead>
               <tbody style="font-size:13px;">
-                <tr><td style="padding:6px 12px;border-bottom:1px solid #2a2a2a;color:#e5e7eb;">15.03.2025</td><td style="padding:6px 12px;border-bottom:1px solid #2a2a2a;color:#fbbf24;text-align:left;direction:ltr;">9 ₪</td></tr>
-                <tr><td style="padding:6px 12px;border-bottom:1px solid #2a2a2a;color:#e5e7eb;">15.06.2025</td><td style="padding:6px 12px;border-bottom:1px solid #2a2a2a;color:#fbbf24;text-align:left;direction:ltr;">9 ₪</td></tr>
-                <tr><td style="padding:6px 12px;color:#e5e7eb;">15.09.2025</td><td style="padding:6px 12px;color:#fbbf24;text-align:left;direction:ltr;">9 ₪</td></tr>
+                <tr><td style="padding:6px 12px;border-bottom:1px solid rgba(245,239,230,0.08);color:#F5EFE6;">15.03.2025</td><td style="padding:6px 12px;border-bottom:1px solid rgba(245,239,230,0.08);color:#D4A574;text-align:left;direction:ltr;">9 ₪</td></tr>
+                <tr><td style="padding:6px 12px;border-bottom:1px solid rgba(245,239,230,0.08);color:#F5EFE6;">15.06.2025</td><td style="padding:6px 12px;border-bottom:1px solid rgba(245,239,230,0.08);color:#D4A574;text-align:left;direction:ltr;">9 ₪</td></tr>
+                <tr><td style="padding:6px 12px;color:#F5EFE6;">15.09.2025</td><td style="padding:6px 12px;color:#D4A574;text-align:left;direction:ltr;">9 ₪</td></tr>
               </tbody>
             </table>
-            <p style="margin:14px 0;font-size:14px;color:#e5e7eb;">
-              <strong>סה״כ 2025:</strong> <strong style="color:#fbbf24;">27 ₪</strong>
+            <p style="margin:14px 0;font-size:14px;color:#F5EFE6;">
+              <strong>סה״כ 2025:</strong> <strong style="color:#D4A574;">27 ₪</strong>
             </p>
           `,
         }),
@@ -2734,9 +2742,9 @@ async function handleAdminSendMarketingEmail(
       r.uid,
     )}&token=${unsubscribeToken(r.uid)}`
     const footerHtml = `
-      <hr style="border:0;border-top:1px solid #2a2a2a;margin:28px 0 16px;"/>
-      <p style="font-size:11px;color:#6b7280;line-height:1.6;margin:0;">
-        אתה מקבל את המייל הזה כי בחרת לקבל עדכוני מוצר ומבצעים. <a href="${unsubUrl}" style="color:#fbbf24;text-decoration:underline;">להסרה מרשימת הדיוור</a>.
+      <hr style="border:0;border-top:1px solid rgba(245,239,230,0.08);margin:28px 0 16px;"/>
+      <p style="font-size:11px;color:#5C5444;line-height:1.6;margin:0;">
+        אתה מקבל את המייל הזה כי בחרת לקבל עדכוני מוצר ומבצעים. <a href="${unsubUrl}" style="color:#D4A574;text-decoration:underline;">להסרה מרשימת הדיוור</a>.
       </p>
     `
     const html = renderEmail({
@@ -2790,14 +2798,15 @@ async function handleUnsubscribe(req: VercelRequest, res: VercelResponse) {
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&display=swap" rel="stylesheet"/>
   <title>הסרה מרשימת דיוור</title>
 </head>
-<body style="margin:0;padding:0;background:#0a0a0a;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;min-height:100vh;display:flex;align-items:center;justify-content:center;">
-<div style="max-width:480px;width:90%;background:#1a1a1a;border-radius:12px;border:1px solid #2a2a2a;padding:40px 32px;text-align:center;">
-  <div style="font-size:18px;color:#fbbf24;font-weight:600;margin:0 0 16px;">ניהול הורדות פלוס</div>
-  <div style="font-size:48px;margin:0 0 12px;">${ok ? '✓' : '⚠️'}</div>
-  <p style="font-size:15px;line-height:1.7;color:${ok ? '#34d399' : '#f87171'};margin:0 0 16px;">${message}</p>
-  <p style="font-size:12px;color:#9ca3af;margin:0;">ניתן להירשם מחדש מתוך הגדרות החשבון בכל עת.</p>
+<body style="margin:0;padding:0;background:#16110D;color:#F5EFE6;font-family:'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;min-height:100vh;display:flex;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased;">
+<div style="max-width:480px;width:90%;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);padding:48px 36px;text-align:center;box-shadow:0 24px 48px rgba(13,8,4,0.55);">
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 16px;font-weight:500;">— ניהול הורדות פלוס</div>
+  <div style="font-size:48px;margin:0 0 16px;color:${ok ? '#7DAA6B' : '#C16B5F'};line-height:1;">${ok ? '✓' : '⚠'}</div>
+  <h1 style="font-size:22px;margin:0 0 14px;color:#F5EFE6;font-weight:500;line-height:1.3;letter-spacing:-0.01em;">${message}</h1>
+  <p style="font-size:13px;color:#8B8170;margin:0;line-height:1.6;">ניתן להירשם מחדש מתוך הגדרות החשבון בכל עת.</p>
 </div>
 </body>
 </html>`
