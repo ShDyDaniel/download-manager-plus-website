@@ -54,12 +54,23 @@ export function SiteHeader() {
   const topClass = isBuyPage ? 'top-12 md:top-20' : 'top-12 md:top-[5.5rem]'
 
   return (
-    <div className={`absolute inset-x-0 z-10 ${topClass}`}>
+    // pointer-events-none on the wrapper so the invisible full-width
+    // div doesn't intercept clicks on whatever sits below it. The
+    // wrapper IS full-width (inset-x-0) so the inner max-w container
+    // can center on wide screens, but that means without this guard
+    // the wrapper's transparent area was eating clicks on the
+    // /buy "חזרה לדף הבית" back-link that lives at the same
+    // y-position on the opposite side of the rail.
+    //
+    // The Link itself opts back into pointer-events so it stays
+    // clickable — only the empty space around it passes clicks
+    // through to the page beneath.
+    <div className={`pointer-events-none absolute inset-x-0 z-10 ${topClass}`}>
       <div className={`mx-auto px-5 md:px-6 ${widthClass}`}>
         <div className="text-left">
           <Link
             to="/account"
-            className="text-sm text-fg-muted transition-colors hover:text-fg"
+            className="pointer-events-auto text-sm text-fg-muted transition-colors hover:text-fg"
           >
             החשבון שלי
           </Link>
