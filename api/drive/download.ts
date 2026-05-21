@@ -147,11 +147,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const v = upstream.headers.get(h)
       if (v) res.setHeader(h, v)
     }
-    // RFC 5987 filename* for non-ASCII filenames (Hebrew, etc.).
+    // Content-Disposition with both a plain `filename=` (for ancient
+    // clients) and an RFC 5987 `filename*=` (modern). The trick: Node
+    // throws "Invalid character in header content" if ANY byte in a
+    // header value is non-ASCII (i.e. > 0x7E). The plain `filename="..."`
+    // part therefore can't include Hebrew / emoji / other Unicode —
+    // even though it's "just a fallback" the header itself never gets
+    // sent because Node refuses to construct it.
+    //
+    // So we strip non-ASCII (and a couple of other syntax-breaking
+    // chars) from the plain part. Modern clients ignore it anyway —
+    // they read `filename*=UTF-8''…` and get the real Unicode name.
+    // If after stripping nothing is left, we fall back to a generic
+    // "download" so the header still parses.
+    const asciiFallback =
+      filename
+        .replace(/[^\x20-\x7E]/g, '_')
+        .replace(/["\\]/g, '')
+        .trim() || 'download'
     const encodedFilename = encodeURIComponent(filename)
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="${filename.replace(/"/g, '')}"; filename*=UTF-8''${encodedFilename}`,
+      `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedFilename}`,
     )
 
     if (req.method === 'HEAD') {
