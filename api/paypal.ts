@@ -565,6 +565,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleUpdateMarketingOptIn(req, res)
       case 'mint-renew-token':
         return await handleMintRenewToken(req, res)
+      case 'admin-grant-pro':
+        return await handleAdminGrantPro(req, res)
       default:
         return res
           .status(400)
@@ -651,6 +653,18 @@ async function handleWebhook(req: VercelRequest, res: VercelResponse) {
         result = await handleSaleCompleted(event)
         break
       case 'BILLING.SUBSCRIPTION.CREATED':
+        // SECURITY: do NOT mint a key here. CREATED fires the
+        // moment we POST /v1/billing/subscriptions — BEFORE the
+        // buyer has approved or paid. Treating it the same as
+        // ACTIVATED let anyone who called create-subscription
+        // receive a free key (the vulnerability the test
+        // account exposed on 2026-05-21). Log + ignore;
+        // ACTIVATED + SALE.COMPLETED handle the real activation.
+        result = {
+          ok: true,
+          summary: `ignored CREATED (not paid yet) for ${(event.resource as { id?: string } | undefined)?.id || '?'}`,
+        }
+        break
       case 'BILLING.SUBSCRIPTION.ACTIVATED':
         result = await ensureKeyForSubscription(
           (event.resource as { id?: string } | undefined)?.id || '',
@@ -778,6 +792,18 @@ async function ensureKeyForSubscription(
     status: string
     subscriber: { email_address: string }
   }>('GET', `/v1/billing/subscriptions/${subscriptionId}`)
+  // SECURITY belt-and-suspenders: only mint a key for genuinely
+  // ACTIVE subscriptions. If a webhook for a different event ever
+  // lands here with an un-paid subscription (CREATED, APPROVAL_
+  // PENDING, APPROVED-not-yet-billed, etc.), refuse. The dispatch
+  // above filters CREATED out, but this query against PayPal's
+  // current state is the load-bearing check.
+  if (sub.status !== 'ACTIVE') {
+    return {
+      ok: true,
+      summary: `subscription ${subscriptionId} is ${sub.status} — not minting key`,
+    }
+  }
   const plan = await paypalCall<{
     id: string
     billing_cycles: Array<{
@@ -3301,4 +3327,144 @@ async function handleMintRenewToken(req: VercelRequest, res: VercelResponse) {
   }
   const renewToken = signRenewTokenForKey(claims.uid, primaryKey)
   return res.status(200).json({ ok: true, renewToken, key: primaryKey })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Admin: grant Pro to a user manually (bypass PayPal)
+ *
+ *  For support cases — complimentary access, end-to-end testing
+ *  without spending money on a real PayPal payment, refund-and-
+ *  reissue scenarios. Creates a productKey that's already
+ *  redeemed to the target user, with expiresAt = now + days,
+ *  and runs the same account-lock cleanup that real redemptions
+ *  do (any prior keys on that uid get unlinked + audit-stamped).
+ *  Fires the "Pro activated" email so the user knows it
+ *  happened, just like a real subscription would.
+ *
+ *  Admin-EMAIL-allowlist gated (NOT just any session) — this
+ *  bypasses payment, so it must be locked to operator hands only.
+ * ───────────────────────────────────────────────────────────── */
+async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {
+  const body = req.body as {
+    idToken?: string
+    targetEmail?: string
+    days?: number
+    reason?: string
+  }
+  const idToken = (body.idToken || '').trim()
+  const targetEmail = (body.targetEmail || '').trim().toLowerCase()
+  const days = typeof body.days === 'number' ? Math.floor(body.days) : 30
+  const reason = (body.reason || '').slice(0, 200) || 'admin grant'
+
+  if (!idToken) {
+    return res.status(401).json({ ok: false, error: 'missing id token' })
+  }
+  if (!targetEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetEmail)) {
+    return res.status(400).json({ ok: false, error: 'כתובת מייל יעד לא תקינה' })
+  }
+  if (days <= 0 || days > 365 * 5) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'מספר ימים לא תקין (1–1825)' })
+  }
+  let adminEmail: string
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken)
+    adminEmail = (decoded.email || '').toLowerCase()
+  } catch {
+    return res.status(401).json({ ok: false, error: 'invalid id token' })
+  }
+  if (!ADMIN_EMAILS.includes(adminEmail)) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+
+  // Look up the target Firebase user by email so we can bind the
+  // key to their uid (and not just dangle it on an email).
+  let targetUid: string
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const targetRecord = await getAuth(getFirebase()).getUserByEmail(targetEmail)
+    targetUid = targetRecord.uid
+  } catch (err) {
+    const code = (err as { code?: string }).code
+    if (code === 'auth/user-not-found') {
+      return res
+        .status(404)
+        .json({ ok: false, error: 'משתמש עם המייל הזה לא קיים' })
+    }
+    console.error('[paypal/admin-grant-pro] getUserByEmail failed:', err)
+    return res.status(500).json({ ok: false, error: 'lookup failed' })
+  }
+
+  const db = getDb()
+
+  // Account-lock: unlink any prior keys the target had so the new
+  // key becomes their primary. Symmetric to /api/keys/redeem and
+  // the webhook auto-redeem branch.
+  const priorKeysSnap = await db
+    .collection('productKeys')
+    .where('redeemedBy', '==', targetUid)
+    .get()
+  const replacedAt = new Date().toISOString()
+
+  const newKey = generateKeyString()
+  const expiresAt = new Date(Date.now() + days * 86_400_000)
+  const replacedPriorKeys: string[] = []
+
+  for (const d of priorKeysSnap.docs) {
+    replacedPriorKeys.push(d.id)
+    try {
+      await d.ref.update({
+        redeemedBy: null,
+        redeemedByEmail: null,
+        replacedAt,
+        replacedByKey: newKey,
+      })
+    } catch (err) {
+      console.warn(
+        `[admin-grant-pro] failed to unlink prior key ${d.id}:`,
+        err,
+      )
+    }
+  }
+
+  await db.collection('productKeys').doc(newKey).set({
+    key: newKey,
+    tier: 'pro',
+    redeemedBy: targetUid,
+    redeemedByEmail: targetEmail,
+    redeemedAt: new Date().toISOString(),
+    expiresAt: expiresAt.toISOString(),
+    createdAt: new Date().toISOString(),
+    createdBy: `admin-grant:${adminEmail}`,
+    buyerEmail: targetEmail,
+    grantReason: reason,
+    grantedByAdmin: adminEmail,
+    grantedDays: days,
+    replacedPriorKeys,
+    // Mark as a non-paid grant so it doesn't appear in billing
+    // history queries or annual-report cron sums.
+    nonPaidGrant: true,
+  })
+
+  // Fire the Pro-activated email so the target knows what
+  // happened. Don't fail the grant on a mail failure (it's a
+  // best-effort notification, not a contract).
+  try {
+    await sendProActivatedEmail({
+      to: targetEmail,
+      key: newKey,
+      validUntil: expiresAt,
+    })
+  } catch (err) {
+    console.error('[admin-grant-pro] pro-activated email failed:', err)
+  }
+
+  return res.status(200).json({
+    ok: true,
+    key: newKey,
+    expiresAt: expiresAt.toISOString(),
+    replacedPriorKeys,
+  })
 }
