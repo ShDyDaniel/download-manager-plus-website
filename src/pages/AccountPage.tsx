@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   ArrowRight,
@@ -125,7 +125,19 @@ function formatDateTime(iso: string): string {
   })
 }
 
+/** sessionStorage key the AccountPage drops a "purchase context"
+ *  into before navigating to /buy. BuyPage picks it up on mount,
+ *  pre-fills the email field with the logged-in account's email,
+ *  and sends the session token along with create-subscription so
+ *  the webhook can auto-redeem the new key to this uid (instead
+ *  of leaving it unredeemed until the user manually pastes the
+ *  key inside the app). Same-origin sessionStorage avoids putting
+ *  the session token in the URL where it could leak via referrer
+ *  / history / screenshots. */
+const PURCHASE_CONTEXT_KEY = 'dmplus.purchaseContext.v1'
+
 export default function AccountPage() {
+  const navigate = useNavigate()
   // SSO-bootstrap state. `ssoState` distinguishes:
   //   - 'idle' before any work
   //   - 'exchanging' while we POST the Firebase token
@@ -627,13 +639,37 @@ export default function AccountPage() {
                 <div className="rounded-md border border-border bg-bg-elevated px-4 py-6 text-center text-sm text-fg-muted">
                   אין לך מנוי פעיל כרגע.
                   <div className="mt-3">
-                    <Link
-                      to="/buy"
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Stash a "purchase context" so BuyPage knows
+                        // this is a signed-in account upgrading, not
+                        // a brand-new visitor. After purchase the
+                        // webhook auto-redeems the new key to this
+                        // uid — no manual paste-key-in-app step.
+                        if (typeof window !== 'undefined' && token) {
+                          try {
+                            window.sessionStorage.setItem(
+                              PURCHASE_CONTEXT_KEY,
+                              JSON.stringify({
+                                sessionToken: token,
+                                email: profile?.email || sessionEmail || '',
+                                hasExpiredKey: !!profile?.keyLast8,
+                              }),
+                            )
+                          } catch {
+                            // sessionStorage off (private mode etc.)
+                            // — proceed without; BuyPage will treat
+                            // the user as a guest.
+                          }
+                        }
+                        navigate('/buy')
+                      }}
                       className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-bg transition-colors hover:bg-primary-hover"
                     >
                       <Crown className="h-3 w-3" />
-                      לקניית רישיון
-                    </Link>
+                      {profile?.keyLast8 ? 'חידוש המנוי שלי' : 'לקניית רישיון'}
+                    </button>
                   </div>
                 </div>
               ) : (

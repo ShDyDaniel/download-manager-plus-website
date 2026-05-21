@@ -792,12 +792,37 @@ async function ensureKeyForSubscription(
   const buyerEmail = sub.subscriber.email_address
   const key = generateKeyString()
   const initialExpiresAt = new Date(Date.now() + planDays * 86_400_000)
-  await db.collection('productKeys').doc(key).set({
+
+  // If the buyer purchased from inside their /account page (signed
+  // in), pendingSubscriptions has their uid as linkToUid. Auto-
+  // redeem the new key to that account so the user doesn't need
+  // to open the desktop app and paste the key — and reuse the
+  // same account-lock logic that /api/keys/redeem runs so any
+  // prior key on the same account gets unlinked atomically.
+  // Guest purchases (linkToUid=null) keep the old behaviour:
+  // unredeemed key, user redeems manually inside the app.
+  let linkToUid: string | null = null
+  try {
+    const pendingDoc = await db
+      .collection('pendingSubscriptions')
+      .doc(subscriptionId)
+      .get()
+    if (pendingDoc.exists) {
+      const data = pendingDoc.data() as { linkToUid?: string | null }
+      if (typeof data.linkToUid === 'string' && data.linkToUid) {
+        linkToUid = data.linkToUid
+      }
+    }
+  } catch (err) {
+    console.warn(
+      '[webhook/sale-completed] pendingSubscriptions lookup failed:',
+      err,
+    )
+  }
+
+  const baseKeyDoc = {
     key,
     tier: 'pro',
-    redeemedBy: null,
-    redeemedByEmail: null,
-    redeemedAt: null,
     expiresAt: initialExpiresAt.toISOString(),
     createdAt: new Date().toISOString(),
     createdBy: `paypal-subscription-${planDays === 30 ? 'monthly' : 'yearly'}`,
@@ -810,7 +835,51 @@ async function ensureKeyForSubscription(
     planDays,
     subscriptionStatus: 'active',
     subscriptionStartedAt: new Date().toISOString(),
-  })
+  }
+
+  if (linkToUid) {
+    // Account-lock: find any other keys this uid has redeemed and
+    // null out their redemption pointer. The doc is kept for audit
+    // (replacedAt + replacedByKey).
+    const priorKeys = await db
+      .collection('productKeys')
+      .where('redeemedBy', '==', linkToUid)
+      .get()
+    const replacedAt = new Date().toISOString()
+    const replacedPriorKeys: string[] = []
+    for (const d of priorKeys.docs) {
+      if (d.id === key) continue
+      replacedPriorKeys.push(d.id)
+      try {
+        await d.ref.update({
+          redeemedBy: null,
+          redeemedByEmail: null,
+          replacedAt,
+          replacedByKey: key,
+        })
+      } catch (err) {
+        console.warn(
+          `[webhook/sale-completed] failed to unlink prior key ${d.id}:`,
+          err,
+        )
+      }
+    }
+    await db.collection('productKeys').doc(key).set({
+      ...baseKeyDoc,
+      redeemedBy: linkToUid,
+      redeemedByEmail: buyerEmail,
+      redeemedAt: new Date().toISOString(),
+      autoRedeemedFromWebhook: true,
+      replacedPriorKeys,
+    })
+  } else {
+    await db.collection('productKeys').doc(key).set({
+      ...baseKeyDoc,
+      redeemedBy: null,
+      redeemedByEmail: null,
+      redeemedAt: null,
+    })
+  }
   try {
     await sendSubscriptionWelcomeEmail({
       to: buyerEmail,
@@ -884,9 +953,34 @@ async function handleCreateSubscription(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  const body = req.body as { plan?: 'monthly' | 'yearly'; email?: string }
+  const body = req.body as {
+    plan?: 'monthly' | 'yearly'
+    email?: string
+    sessionToken?: string
+  }
   const plan = body.plan
   const email = (body.email || '').trim().toLowerCase()
+  // Optional: the buyer arrived from /account already signed-in to
+  // their existing dmplus account. We stash their uid alongside the
+  // pending subscription so the webhook that fires when payment
+  // completes can AUTO-REDEEM the new key to that account — no
+  // "open the app, paste the key" step needed, and the
+  // account-lock logic in keys/redeem also runs (unlinks any prior
+  // expired key the user had on the same account). When the token
+  // is invalid/expired we just ignore it and fall through to the
+  // guest-purchase flow.
+  let linkToUid: string | null = null
+  if (body.sessionToken) {
+    const claims = verifySessionToken(body.sessionToken.trim())
+    if (claims) {
+      // Optional second guard: refuse if the typed email doesn't
+      // match the account's email. Protects against a logged-in
+      // user accidentally buying a sub for someone ELSE's email.
+      if (!email || claims.email.toLowerCase() === email) {
+        linkToUid = claims.uid
+      }
+    }
+  }
   if (plan !== 'monthly' && plan !== 'yearly') {
     return res
       .status(400)
@@ -985,6 +1079,9 @@ async function handleCreateSubscription(
     currency: pricing.currency,
     createdAt: new Date().toISOString(),
     status: subscription.status,
+    // null = guest purchase, redeem manually inside the app.
+    // string = signed-in buyer; webhook auto-redeems to this uid.
+    linkToUid,
   })
   return res.status(200).json({
     ok: true,

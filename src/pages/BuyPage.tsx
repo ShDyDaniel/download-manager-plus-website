@@ -155,10 +155,28 @@ declare global {
   }
 }
 
+/** sessionStorage key AccountPage uses to hand off the "I'm a
+ *  signed-in account upgrading" context. Mirrored from
+ *  AccountPage — keep both in sync if you rename. */
+const PURCHASE_CONTEXT_KEY = 'dmplus.purchaseContext.v1'
+
+interface PurchaseContext {
+  sessionToken: string
+  email: string
+  hasExpiredKey: boolean
+}
+
 export function BuyPage() {
   const [plan, setPlan] = useState<Plan>('yearly')
   const [email, setEmail] = useState('')
   const [emailLocked, setEmailLocked] = useState(false)
+  // Populated on mount from sessionStorage if the buyer arrived
+  // from /account (logged in). When set, the email is pre-filled
+  // and locked, and the session token is forwarded to create-
+  // subscription so the backend webhook can auto-redeem the new
+  // key to this account.
+  const [purchaseContext, setPurchaseContext] =
+    useState<PurchaseContext | null>(null)
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
   const [sdkReady, setSdkReady] = useState<boolean>(
     typeof window !== 'undefined' && Boolean(window.paypal),
@@ -268,6 +286,42 @@ export function BuyPage() {
     })
     return () => {
       alive = false
+    }
+  }, [])
+
+  // Pick up the "purchase context" sessionStorage handoff from
+  // /account, if any. We DON'T delete the entry immediately — the
+  // user might refresh the page before completing payment and we
+  // want them to stay in the "logged-in" flow. We clear it after
+  // PayPal's onApprove fires successfully, AND on unmount, so a
+  // stale token from a previous session doesn't bleed into a
+  // future guest visit.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const raw = window.sessionStorage.getItem(PURCHASE_CONTEXT_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as Partial<PurchaseContext>
+      if (
+        typeof parsed.sessionToken !== 'string' ||
+        typeof parsed.email !== 'string'
+      ) {
+        window.sessionStorage.removeItem(PURCHASE_CONTEXT_KEY)
+        return
+      }
+      const ctx: PurchaseContext = {
+        sessionToken: parsed.sessionToken,
+        email: parsed.email,
+        hasExpiredKey: parsed.hasExpiredKey === true,
+      }
+      setPurchaseContext(ctx)
+      setEmail(ctx.email)
+    } catch {
+      try {
+        window.sessionStorage.removeItem(PURCHASE_CONTEXT_KEY)
+      } catch {
+        // ignore — storage might be off in some browsers
+      }
     }
   }, [])
 
@@ -874,6 +928,7 @@ export function BuyPage() {
               setError={setSubError}
               sdkReady={sdkReady}
               sdkError={sdkError}
+              purchaseContext={purchaseContext}
             />
           )}
         </motion.div>
@@ -1253,6 +1308,7 @@ function SubscriptionFlow({
   setError,
   sdkReady,
   sdkError,
+  purchaseContext,
 }: {
   postReturn: 'subscribed' | 'cancelled' | null
   email: string
@@ -1265,6 +1321,7 @@ function SubscriptionFlow({
   setError: (s: string | null) => void
   sdkReady: boolean
   sdkError: string | null
+  purchaseContext: PurchaseContext | null
 }) {
   if (postReturn === 'subscribed') {
     return (
@@ -1374,6 +1431,12 @@ function SubscriptionFlow({
               body: JSON.stringify({
                 plan: planLatestRef.current,
                 email: emailLatestRef.current,
+                // Pass-through the signed-in session token so the
+                // backend webhook can auto-redeem the new key to
+                // this account. Guests don't have one and fall
+                // through to the normal "redeem manually in the
+                // app" flow.
+                sessionToken: purchaseContext?.sessionToken,
               }),
             })
             const json = (await r.json()) as {
@@ -1396,6 +1459,15 @@ function SubscriptionFlow({
           // server-side via webhook; here we just redirect the
           // browser to the success view of /buy which polls / shows
           // the post-subscribed state.
+          // Also clear the one-shot purchase context — the
+          // sessionStorage token has done its job.
+          if (typeof window !== 'undefined') {
+            try {
+              window.sessionStorage.removeItem(PURCHASE_CONTEXT_KEY)
+            } catch {
+              // ignore
+            }
+          }
           window.location.href = '/buy?subscribed=1'
         },
         onError: (err) => {
@@ -1414,13 +1486,39 @@ function SubscriptionFlow({
     // the next click — even though we read planRef inside the
     // callback, PayPal caches the funding-source UI on the first
     // render so a re-render keeps things in sync.
-  }, [sdkReady, canPay, plan, setError])
+    // purchaseContext is in the dep array so the Buttons re-render
+    // when the user becomes signed-in mid-session (very unlikely
+    // in practice, but cheap to handle correctly).
+  }, [sdkReady, canPay, plan, setError, purchaseContext])
 
   return (
     <form onSubmit={(e) => e.preventDefault()} className="space-y-4">
+      {/* Logged-in-account banner. When the buyer arrived here from
+          /account (purchaseContext set), this badge reassures them
+          that the new subscription is going to land directly on
+          their existing account — no need to copy a key out of an
+          email and paste it inside the app. The email field below
+          is also locked to the account's email so they can't
+          accidentally type a different address mid-purchase and
+          end up with a guest-orphaned subscription. */}
+      {purchaseContext && (
+        <div className="rounded-xl border border-success/40 bg-success/10 px-4 py-3 text-sm text-success">
+          <div className="font-semibold">✓ מחובר לחשבון שלך</div>
+          <div className="mt-1 text-xs leading-relaxed text-success/85">
+            המנוי החדש יתחבר אוטומטית ל-
+            <span dir="ltr" className="font-mono">
+              {purchaseContext.email}
+            </span>
+            {purchaseContext.hasExpiredKey
+              ? '. המפתח הקיים שלך יוחלף במפתח החדש.'
+              : '. תוכל להשתמש בו מיד באפליקציה — אין צורך לאמת אותו.'}
+          </div>
+        </div>
+      )}
+
       <label className="block">
         <span className="mb-1.5 block text-xs text-fg-secondary">
-          כתובת מייל לקבלת מפתח המנוי
+          {purchaseContext ? 'כתובת המייל של החשבון' : 'כתובת מייל לקבלת מפתח המנוי'}
         </span>
         <input
           type="email"
@@ -1429,8 +1527,12 @@ function SubscriptionFlow({
           onChange={(e) => setEmail(e.target.value)}
           placeholder="you@example.com"
           dir="ltr"
-          className="w-full rounded-xl border border-border bg-bg-elevated px-4 py-3 text-right text-base text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none"
-          disabled={false}
+          className="w-full rounded-xl border border-border bg-bg-elevated px-4 py-3 text-right text-base text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none disabled:opacity-60"
+          // Email is read-only when the buyer is upgrading from
+          // their account — changing it would break the auto-redeem
+          // contract (subscription would be tied to a different
+          // email, webhook couldn't link to the right uid).
+          disabled={Boolean(purchaseContext)}
         />
       </label>
 
