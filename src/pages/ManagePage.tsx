@@ -127,7 +127,7 @@ export function ManagePage() {
     }
     setAuthing(true)
     try {
-      const r = await fetch('/api/subscription/session', {
+      const r = await fetch('/api/paypal?action=session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: cleanEmail, password }),
@@ -155,7 +155,7 @@ export function ManagePage() {
   async function refreshSubs() {
     if (!token) return
     try {
-      const r = await fetch('/api/subscription/status', {
+      const r = await fetch('/api/paypal?action=status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token }),
@@ -174,7 +174,7 @@ export function ManagePage() {
     setCancellingId(sub.subscriptionId)
     setCancelError(null)
     try {
-      const r = await fetch('/api/subscription/cancel', {
+      const r = await fetch('/api/paypal?action=cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -230,7 +230,7 @@ export function BuyPage() {
     }
     setSubSubmitting(true)
     try {
-      const r = await fetch('/api/subscription/create-link', {
+      const r = await fetch('/api/paypal?action=create-subscription', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ plan, email: cleanEmail }),
@@ -301,7 +301,7 @@ export function BuyPage() {
     setRenewToken(token)
     setRenewLoading(true)
     setEmailLocked(true)
-    fetch('/api/renew/info', {
+    fetch('/api/renew?action=info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token }),
@@ -546,7 +546,7 @@ export function BuyPage() {
     setSigninError(null)
     setSigninSubmitting(true)
     try {
-      const r = await fetch('/api/renew/signin', {
+      const r = await fetch('/api/renew?action=signin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: trimmedEmail, password: signinPassword }),
