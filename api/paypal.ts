@@ -410,6 +410,71 @@ const SESSION_TTL_SECONDS = 60 * 60 // 1 hour
 const MAX_REASON_LENGTH = 500
 const WEBSITE_BASE = 'https://dm-plus.vercel.app'
 
+/** Feature flag — if set to "true" the SSO/session/trial/redeem
+ *  endpoints enforce that the Firebase ID token's email_verified
+ *  claim is true. Default OFF so the deploy doesn't lock out
+ *  existing users (whose accounts were created before we required
+ *  verification). Flow:
+ *    1. Deploy with the flag off.
+ *    2. Operator calls action=admin-migrate-email-verified once
+ *       to flip emailVerified=true on every existing user.
+ *    3. Operator sets ENFORCE_EMAIL_VERIFIED="true" in Vercel.
+ *    4. Enforcement begins on next request.
+ *  Without the flag, users with email_verified=false would lose
+ *  access between (1) and (2) — including the operator who needs
+ *  to perform the migration. */
+function emailVerificationEnforced(): boolean {
+  return process.env.ENFORCE_EMAIL_VERIFIED === 'true'
+}
+
+/**
+ * Sliding-window rate limit backed by Firestore. Returns true if
+ * the action is allowed, false if the caller has exceeded `max`
+ * actions in the last `windowSecs` seconds.
+ *
+ * Why Firestore and not Upstash/Redis: Upstash is already in
+ * package.json but never configured (no env vars, no working
+ * client). Adding a second infra dependency just for rate-limiting
+ * would require the operator to provision Upstash. Firestore is
+ * already running, can do this for free, and the per-action cost
+ * (one get + one set) is well under the daily quota for any
+ * realistic load on a SaaS this size.
+ *
+ * The window is "naive sliding" — we store windowStart + count and
+ * reset both when the window expires. A more sophisticated leaky
+ * bucket would be marginally more accurate near the edge but
+ * isn't worth the extra complexity for this kind of soft DOS
+ * protection.
+ */
+async function tryRateLimit(
+  key: string,
+  max: number,
+  windowSecs: number,
+): Promise<boolean> {
+  const db = getDb()
+  const ref = db.collection('rateLimits').doc(key)
+  const now = Date.now()
+  const windowMs = windowSecs * 1000
+  return await db.runTransaction(async (txn) => {
+    const snap = await txn.get(ref)
+    const data = snap.exists
+      ? (snap.data() as { windowStart?: number; count?: number })
+      : {}
+    const windowStart = typeof data.windowStart === 'number' ? data.windowStart : 0
+    const count = typeof data.count === 'number' ? data.count : 0
+    if (now - windowStart > windowMs) {
+      // New window — reset.
+      txn.set(ref, { windowStart: now, count: 1 })
+      return true
+    }
+    if (count >= max) {
+      return false
+    }
+    txn.set(ref, { windowStart, count: count + 1 })
+    return true
+  })
+}
+
 interface IdentityResponse {
   localId?: string
   email?: string
@@ -476,6 +541,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleBillingHistory(req, res)
       case 'sync-plans':
         return await handleSyncPlans(req, res)
+      case 'signup-request-code':
+        return await handleSignupRequestCode(req, res)
+      case 'signup-verify-code':
+        return await handleSignupVerifyCode(req, res)
+      case 'admin-migrate-email-verified':
+        return await handleAdminMigrateEmailVerified(req, res)
       default:
         return res
           .status(400)
@@ -808,6 +879,43 @@ async function handleCreateSubscription(
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
   }
+  // ── Rate limit ─────────────────────────────────────────────
+  //
+  // The /buy form is genuinely public — first-time visitors don't
+  // have a Firebase account yet, so we can't gate on an idToken
+  // without breaking the new-customer flow. Instead we throttle
+  // per-IP and per-email so an attacker can't spam subscription
+  // creation (which costs PayPal API quota + fills our
+  // pendingSubscriptions collection).
+  //
+  // Limits are intentionally generous so a legitimate user
+  // (browser back/refresh, accidental double-click) never trips
+  // them. Storage is a tiny Firestore doc per IP/email with a
+  // sliding 60-minute window.
+  const ip =
+    (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ||
+    (req.headers['x-real-ip'] as string | undefined) ||
+    'unknown'
+  const ipKey = ip.replace(/[^a-z0-9_-]/gi, '_').slice(0, 60)
+  const emailKey = email.replace(/[^a-z0-9_-]/gi, '_').slice(0, 60)
+  try {
+    const allowed = await Promise.all([
+      tryRateLimit(`create-sub_ip_${ipKey}`, 10, 60 * 60),
+      tryRateLimit(`create-sub_email_${emailKey}`, 5, 60 * 60),
+    ])
+    if (!allowed.every(Boolean)) {
+      return res.status(429).json({
+        ok: false,
+        error:
+          'יותר מדי ניסיונות רישום מהכתובת הזו בשעה האחרונה. נסה שוב מאוחר יותר.',
+      })
+    }
+  } catch (err) {
+    // Rate-limit infra failure (Firestore down?) shouldn't block
+    // legitimate buyers. Log and proceed — the per-PayPal-account
+    // limits will eventually kick in.
+    console.warn('[paypal/create-subscription] rate-limit check failed:', err)
+  }
   const pricing = await loadCurrentPricing()
   const usingSale = pricing[plan].sale != null
   const lockedPrice = usingSale ? pricing[plan].sale! : pricing[plan].regular
@@ -909,6 +1017,29 @@ async function handleSession(req: VercelRequest, res: VercelResponse) {
       .status(502)
       .json({ ok: false, error: 'שירות ההתחברות אינו זמין כרגע. נסו שוב.' })
   }
+  // Email-verified gate. Otherwise an attacker who registered
+  // victim@example.com directly via Firebase REST (with their own
+  // password) could log in here and SSO-in to all of victim's
+  // subscriptions tied to that buyerEmail. signInWithPassword
+  // doesn't return emailVerified in the response, so we look it
+  // up with the Admin SDK.
+  if (emailVerificationEnforced()) {
+    try {
+      const { getAuth } = await import('firebase-admin/auth')
+      const userRecord = await getAuth(getFirebase()).getUser(uid)
+      if (!userRecord.emailVerified) {
+        return res.status(403).json({
+          ok: false,
+          error: 'יש לאמת את כתובת המייל לפני התחברות. הירשם מחדש בתוכנה.',
+        })
+      }
+    } catch (err) {
+      console.error('[paypal/session] email-verified lookup failed', err)
+      return res
+        .status(502)
+        .json({ ok: false, error: 'שירות ההתחברות אינו זמין כרגע. נסו שוב.' })
+    }
+  }
   return await respondWithSession(res, { uid, email })
 }
 
@@ -954,6 +1085,20 @@ async function handleSso(req: VercelRequest, res: VercelResponse) {
       return res
         .status(400)
         .json({ ok: false, error: 'id token has no email claim' })
+    }
+    // Email-verified gate. Without this, anyone could register
+    // `victim@example.com` directly via the Firebase REST API
+    // (no need to actually own the inbox), and then SSO-in to
+    // surface every subscription on the system tied to that
+    // buyerEmail — including the ability to cancel them. The
+    // sign-up flow goes through /api/paypal?action=signup-verify
+    // -code which creates users with emailVerified=true; the
+    // one-shot migration grandfathers in pre-existing accounts.
+    if (emailVerificationEnforced() && !decoded.email_verified) {
+      return res.status(403).json({
+        ok: false,
+        error: 'יש לאמת את כתובת המייל לפני התחברות. הירשם מחדש בתוכנה.',
+      })
     }
   } catch (err) {
     console.error('[paypal/sso] token verification failed', err)
@@ -1417,7 +1562,10 @@ function b64urlDecode(s: string): Buffer {
 function tokenSecret(): Buffer {
   const s = process.env.RENEW_TOKEN_SECRET
   if (!s) throw new Error('RENEW_TOKEN_SECRET env var not set')
-  return Buffer.from(s, 'hex')
+  // UTF-8, not hex — see capture.ts for the rationale. tldr:
+  // Buffer.from(s,'hex') silently truncates non-hex chars to nothing,
+  // which yields an empty HMAC key if the operator set a passphrase.
+  return Buffer.from(s, 'utf8')
 }
 
 function signSessionToken(args: {
@@ -1568,4 +1716,320 @@ async function sendSubscriptionWelcomeEmail(args: {
     subject: 'המנוי שלך פעיל — ניהול הורדות פלוס Pro',
     html,
   })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Signup verification flow (request-code / verify-code)
+ *
+ *  Replaces the old "create Firebase user immediately on signup"
+ *  flow with a two-step email-code verification. The attacker
+ *  can't register `victim@example.com` and impersonate them
+ *  through the SSO / session endpoints if they can't read the
+ *  verification email.
+ *
+ *  Flow:
+ *    1. Desktop calls signup-request-code with {email}
+ *       → backend generates 6-digit code, stores in
+ *         emailVerifications/{email_sanitized} with 15-min TTL,
+ *         sends email via Gmail SMTP.
+ *    2. Desktop shows "enter code" UI to the user.
+ *    3. Desktop calls signup-verify-code with {email, code, password}
+ *       → backend validates code, creates Firebase Auth user via
+ *         Admin SDK with emailVerified=true, deletes the code doc.
+ *    4. Desktop signs in via the normal signInWithEmailAndPassword
+ *       flow with the credentials the user just provided.
+ *
+ *  Security:
+ *    - Codes are 6 random digits, single-use, 15-min TTL.
+ *    - Code lookup is by email — there's no enumeration risk
+ *      (the email is supplied by the same caller who got the code).
+ *    - Attempts are rate-limited at 5/hour/email.
+ *    - Codes are stored hashed (SHA-256) — leaking the
+ *      emailVerifications collection doesn't reveal valid codes.
+ * ───────────────────────────────────────────────────────────── */
+
+function sanitizeEmailKey(email: string): string {
+  return email.toLowerCase().trim().replace(/[^a-z0-9_-]/g, '_').slice(0, 100)
+}
+
+function hashCode(code: string, salt: string): string {
+  return crypto
+    .createHmac('sha256', salt)
+    .update(code)
+    .digest('hex')
+}
+
+async function handleSignupRequestCode(req: VercelRequest, res: VercelResponse) {
+  const body = req.body as { email?: string }
+  const email = (body.email || '').trim().toLowerCase()
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
+  }
+
+  // Rate limit so an attacker can't spam Gmail SMTP quota or use
+  // us as a free email-blast service. 5 codes per hour per email
+  // is more than enough for a legit user who keeps mistyping their
+  // address.
+  const ip =
+    (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ||
+    'unknown'
+  const allowed = await Promise.all([
+    tryRateLimit(`signup-code_email_${sanitizeEmailKey(email)}`, 5, 60 * 60),
+    tryRateLimit(`signup-code_ip_${ip.replace(/[^a-z0-9_.-]/gi, '_').slice(0, 60)}`, 30, 60 * 60),
+  ])
+  if (!allowed.every(Boolean)) {
+    return res.status(429).json({
+      ok: false,
+      error: 'יותר מדי בקשות. נסה שוב מאוחר יותר.',
+    })
+  }
+
+  // Reject if the email is already a registered Firebase user.
+  // We DO leak existence here, but only to people who provide a
+  // valid email — the rate limit above caps enumeration.
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    await getAuth(getFirebase()).getUserByEmail(email)
+    return res
+      .status(409)
+      .json({ ok: false, error: 'כתובת המייל כבר רשומה. התחבר עם הסיסמה שלך.' })
+  } catch (err) {
+    // The Admin SDK throws auth/user-not-found here — which is the
+    // happy path for signup. Any OTHER error (network etc.) should
+    // bubble; we don't want to send a code if we couldn't verify
+    // uniqueness.
+    const code = (err as { code?: string }).code
+    if (code !== 'auth/user-not-found') {
+      console.error('[paypal/signup-request-code] getUserByEmail failed:', err)
+      return res
+        .status(500)
+        .json({ ok: false, error: 'שירות לא זמין כרגע. נסה שוב.' })
+    }
+  }
+
+  // Generate a 6-digit code. Math.random is fine here — the
+  // keyspace is intentionally narrow (10^6) so the code is easy
+  // for a human to type, and the brute-force defense is the
+  // single-use + 15-min TTL combination, not entropy.
+  const code = String(Math.floor(100000 + Math.random() * 900000))
+  const codeId = sanitizeEmailKey(email)
+  const ttlSecs = 15 * 60
+  const expiresAt = Date.now() + ttlSecs * 1000
+  const salt = process.env.RENEW_TOKEN_SECRET || 'unset'
+  const codeHash = hashCode(code, salt)
+
+  const db = getDb()
+  await db
+    .collection('emailVerifications')
+    .doc(codeId)
+    .set({
+      email,
+      codeHash,
+      expiresAt,
+      attempts: 0,
+      createdAt: Date.now(),
+    })
+
+  // Send the code via Gmail SMTP — same path /api/capture and
+  // /api/reset-password use, so the operator already has the env
+  // vars set up.
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) {
+    return res
+      .status(500)
+      .json({ ok: false, error: 'שירות שליחת המייל לא מוגדר. פנה לתמיכה.' })
+  }
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth: { user, pass },
+  })
+  const html = `<!doctype html>
+<html dir="rtl" lang="he">
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,'Segoe UI',sans-serif;color:#e5e7eb;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0a0a0a;padding:40px 20px;">
+<tr><td align="center">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;">
+<tr><td style="padding:32px;">
+  <h1 style="font-size:18px;margin:0 0 16px;color:#fbbf24;font-weight:600;">ניהול הורדות פלוס</h1>
+  <h2 style="font-size:24px;margin:0 0 12px;color:#e5e7eb;font-weight:700;">קוד האימות שלך</h2>
+  <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+    הזן את הקוד הזה בתוכנה כדי לסיים את ההרשמה:
+  </p>
+  <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
+    <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">${code}</div>
+  </div>
+  <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
+    הקוד תקף ל-15 דקות. אם לא ביקשת אותו, אפשר להתעלם מהמייל הזה.
+  </p>
+  <p style="font-size:11px;margin:0;color:#6b7280;">
+    אל תשתף את הקוד הזה עם אף אחד.
+  </p>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: email,
+    subject: `קוד אימות: ${code} — ניהול הורדות פלוס`,
+    html,
+    text: `קוד האימות שלך: ${code}\nתקף ל-15 דקות.`,
+  })
+
+  return res.status(200).json({ ok: true })
+}
+
+async function handleSignupVerifyCode(req: VercelRequest, res: VercelResponse) {
+  const body = req.body as { email?: string; code?: string; password?: string; name?: string }
+  const email = (body.email || '').trim().toLowerCase()
+  const code = (body.code || '').trim()
+  const password = body.password || ''
+  const displayName = (body.name || '').trim().slice(0, 100) || undefined
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
+  }
+  if (!/^\d{6}$/.test(code)) {
+    return res.status(400).json({ ok: false, error: 'קוד אימות לא תקין' })
+  }
+  if (!password || password.length < 6) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'סיסמה חייבת להיות לפחות 6 תווים' })
+  }
+
+  const codeId = sanitizeEmailKey(email)
+  const db = getDb()
+  const ref = db.collection('emailVerifications').doc(codeId)
+  const salt = process.env.RENEW_TOKEN_SECRET || 'unset'
+  const submittedHash = hashCode(code, salt)
+
+  // Validate inside a transaction so concurrent verify attempts
+  // can't race past the attempts counter.
+  const txnResult = await db.runTransaction<
+    | { ok: true; email: string }
+    | { ok: false; status: number; error: string }
+  >(async (txn) => {
+    const snap = await txn.get(ref)
+    if (!snap.exists) {
+      return { ok: false, status: 400, error: 'קוד פג תוקף — בקש קוד חדש' }
+    }
+    const data = snap.data() as {
+      email?: string
+      codeHash?: string
+      expiresAt?: number
+      attempts?: number
+    }
+    const attempts = typeof data.attempts === 'number' ? data.attempts : 0
+    if (attempts >= 5) {
+      txn.delete(ref)
+      return {
+        ok: false,
+        status: 400,
+        error: 'יותר מדי ניסיונות שגויים. בקש קוד חדש.',
+      }
+    }
+    if (typeof data.expiresAt !== 'number' || data.expiresAt < Date.now()) {
+      txn.delete(ref)
+      return { ok: false, status: 400, error: 'קוד פג תוקף — בקש קוד חדש' }
+    }
+    if (data.codeHash !== submittedHash) {
+      txn.update(ref, { attempts: attempts + 1 })
+      return { ok: false, status: 400, error: 'קוד שגוי' }
+    }
+    // Match. Delete the doc to make the code single-use.
+    txn.delete(ref)
+    return { ok: true, email: data.email || email }
+  })
+
+  if (!txnResult.ok) {
+    return res.status(txnResult.status).json({ ok: false, error: txnResult.error })
+  }
+
+  // Create the Firebase Auth user, already-verified.
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    await getAuth(getFirebase()).createUser({
+      email,
+      password,
+      displayName,
+      emailVerified: true,
+    })
+  } catch (err) {
+    const code = (err as { code?: string }).code
+    if (code === 'auth/email-already-exists') {
+      // Race: someone else (or the same user from another tab)
+      // verified between our code-issued and code-verified steps.
+      // Return success — the account exists, the caller can sign
+      // in normally.
+      return res.status(200).json({ ok: true, alreadyExisted: true })
+    }
+    console.error('[paypal/signup-verify-code] createUser failed:', err)
+    return res
+      .status(500)
+      .json({ ok: false, error: 'יצירת המשתמש נכשלה. נסה שוב.' })
+  }
+  return res.status(200).json({ ok: true })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Migration: set emailVerified=true on every existing Firebase
+ *  user.
+ *
+ *  Run this ONCE by the operator (admin-allowlist gate) after
+ *  deploying the email-verification flow. It grandfathers in
+ *  every user who signed up before we required verification —
+ *  they've been using the system, no need to make them re-verify.
+ *  After the migration, enforce-email-verified can be turned on
+ *  via env var without locking out legitimate users.
+ *
+ *  Idempotent: re-running just no-ops on users already verified.
+ * ───────────────────────────────────────────────────────────── */
+async function handleAdminMigrateEmailVerified(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { idToken?: string }
+  const idToken = (body.idToken || '').trim()
+  if (!idToken) {
+    return res.status(401).json({ ok: false, error: 'missing id token' })
+  }
+  let email: string
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken, true)
+    email = (decoded.email || '').toLowerCase()
+  } catch {
+    return res.status(401).json({ ok: false, error: 'invalid id token' })
+  }
+  if (!ADMIN_EMAILS.includes(email)) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+  const { getAuth } = await import('firebase-admin/auth')
+  const auth = getAuth(getFirebase())
+  let updated = 0
+  let nextPageToken: string | undefined
+  try {
+    do {
+      const page = await auth.listUsers(1000, nextPageToken)
+      for (const user of page.users) {
+        if (!user.emailVerified) {
+          await auth.updateUser(user.uid, { emailVerified: true })
+          updated++
+        }
+      }
+      nextPageToken = page.pageToken
+    } while (nextPageToken)
+  } catch (err) {
+    console.error('[paypal/admin-migrate-email-verified] failed:', err)
+    return res
+      .status(500)
+      .json({ ok: false, error: err instanceof Error ? err.message : 'failed', updated })
+  }
+  return res.status(200).json({ ok: true, updated })
 }

@@ -90,14 +90,15 @@ async function verifyAdmin(
   const email = (decoded.email || '').toLowerCase().trim()
   const uid = decoded.uid
   const allow = adminEmailsFromEnv()
+  // Hard ADMIN_EMAILS allowlist ONLY. The previous fallback path
+  // ("else check users/{uid}.role === 'admin'") was removed: it
+  // depended entirely on Firestore rules to prevent a regular user
+  // from writing `role:'admin'` to their own doc via the client
+  // SDK, and a permissive rules file would silently turn it into a
+  // self-promotion vulnerability. ADMIN_EMAILS lives in Vercel env
+  // vars where only the operator can touch it — no Firestore-rules
+  // dependency.
   if (email && allow.includes(email)) return { ok: true, uid, email }
-  try {
-    const snap = await db.collection('users').doc(uid).get()
-    const role = (snap.data() as { role?: string } | undefined)?.role
-    if (role === 'admin') return { ok: true, uid, email }
-  } catch {
-    // fall through to deny
-  }
   return { ok: false, status: 403, error: 'אין הרשאת אדמין' }
 }
 

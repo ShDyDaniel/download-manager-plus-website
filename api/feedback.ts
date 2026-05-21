@@ -302,17 +302,15 @@ async function verifyAdminFromIdToken(
   }
   const email = (decoded.email || '').toLowerCase().trim()
   const uid = decoded.uid
-  // Allowed if the email is on the env-var allowlist OR the user
-  // doc carries `role === 'admin'`. Either signal is enough.
+  // Hard ADMIN_EMAILS allowlist ONLY. The fallback to users/{uid}
+  // .role === 'admin' was removed: it relied entirely on Firestore
+  // rules to prevent a regular user from self-promoting by writing
+  // `role:'admin'` to their own doc via the client SDK, and a
+  // permissive rules file would silently turn it into a privilege
+  // escalation. ADMIN_EMAILS lives in Vercel env vars where only
+  // the operator can change it.
   const allow = adminEmailsFromEnv()
   if (email && allow.includes(email)) return { ok: true, uid, email }
-  try {
-    const snap = await db.collection('users').doc(uid).get()
-    const role = (snap.data() as { role?: string } | undefined)?.role
-    if (role === 'admin') return { ok: true, uid, email }
-  } catch {
-    // Fall through to deny.
-  }
   return { ok: false, status: 403, error: 'אין הרשאת אדמין' }
 }
 

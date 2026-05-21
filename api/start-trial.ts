@@ -117,6 +117,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .status(400)
         .json({ ok: false, error: 'לא נמצא מייל בחשבון' })
     }
+    // Email-verified gate. Without this, an attacker registers
+    // throwaway@one.gmail.com (no need to receive verification —
+    // Firebase doesn't require it by default), gets an idToken,
+    // and trips a new 30-day trial for each fresh email. The
+    // signup flow at /api/paypal?action=signup-verify-code already
+    // creates users with emailVerified=true; the migration grand
+    // -fathers in pre-existing users.
+    if (process.env.ENFORCE_EMAIL_VERIFIED === 'true' && !decoded.email_verified) {
+      return res.status(403).json({
+        ok: false,
+        error: 'יש לאמת את כתובת המייל לפני שמתחילים את תקופת הניסיון.',
+      })
+    }
 
     const emailFingerprintId = `email_${sanitizeForDocId(email)}`
     const deviceFingerprintId = `device_${sanitizeForDocId(deviceId)}`

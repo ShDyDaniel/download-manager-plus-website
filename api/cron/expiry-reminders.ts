@@ -124,7 +124,8 @@ function b64urlEncode(buf: Buffer): string {
 function renewTokenSecret(): Buffer {
   const s = process.env.RENEW_TOKEN_SECRET
   if (!s) throw new Error('RENEW_TOKEN_SECRET env var not set')
-  return Buffer.from(s, 'hex')
+  // UTF-8 bytes, not hex — see capture.ts comment for the rationale.
+  return Buffer.from(s, 'utf8')
 }
 
 function signRenewToken(uid: string, key: string): string {

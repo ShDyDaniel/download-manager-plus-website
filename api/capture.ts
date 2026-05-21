@@ -322,7 +322,14 @@ function b64urlDecode(s: string): Buffer {
 function renewTokenSecret(): Buffer {
   const s = process.env.RENEW_TOKEN_SECRET
   if (!s) throw new Error('RENEW_TOKEN_SECRET env var not set')
-  return Buffer.from(s, 'hex')
+  // Read as raw UTF-8 bytes, not hex. Earlier this was Buffer.from(s,
+  // 'hex'), which silently truncates / returns an empty buffer if the
+  // secret contains any non-hex character. An operator who set the
+  // env var to a passphrase ("my-secret-2026!") would end up with a
+  // 0-2 byte HMAC key — trivially forgeable. UTF-8 always produces
+  // the full key length the operator typed. (HMAC-SHA256 accepts
+  // keys of any length; the spec hashes longer keys down to 32B.)
+  return Buffer.from(s, 'utf8')
 }
 
 function verifyRenewToken(token: string): RenewClaims | null {

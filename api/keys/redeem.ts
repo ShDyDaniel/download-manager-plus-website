@@ -100,6 +100,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .status(400)
         .json({ ok: false, error: 'לא נמצא מייל בחשבון' })
     }
+    // Email-verified gate. Otherwise an attacker registers
+    // someone-else's-email@example.com, signs in, and redeems
+    // any key that was bought with that email but never claimed
+    // (an unredeemed productKey with redeemedBy=null and
+    // buyerEmail=victim). The signup flow already issues users
+    // with emailVerified=true; the migration covers pre-existing
+    // users.
+    if (process.env.ENFORCE_EMAIL_VERIFIED === 'true' && !decoded.email_verified) {
+      return res.status(403).json({
+        ok: false,
+        error: 'יש לאמת את כתובת המייל לפני מימוש מפתח.',
+      })
+    }
 
     // ── Account-key lock: enforce one active key per account ──
     //
