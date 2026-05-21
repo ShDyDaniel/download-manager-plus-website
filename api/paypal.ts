@@ -511,9 +511,6 @@ interface KeyDoc {
  * ───────────────────────────────────────────────────────────── */
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ ok: false, error: 'Method not allowed' })
-  }
   // Action can come from query string or body; both work so the
   // PayPal Dashboard webhook URL can use ?action=webhook in the URL
   // without needing custom body params.
@@ -522,6 +519,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     (typeof (req.body as { action?: string })?.action === 'string'
       ? (req.body as { action: string }).action
       : '')
+  // Most actions are POST. `unsubscribe` is the lone exception —
+  // it's hit by a GET link inside a marketing email so the
+  // recipient can click straight from their inbox. We still reject
+  // GETs for anything else to keep the surface area tight.
+  if (req.method !== 'POST' && !(req.method === 'GET' && action === 'unsubscribe')) {
+    return res.status(405).json({ ok: false, error: 'Method not allowed' })
+  }
 
   try {
     switch (action) {
@@ -551,6 +555,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleVerifyExistingConfirmCode(req, res)
       case 'admin-migrate-email-verified':
         return await handleAdminMigrateEmailVerified(req, res)
+      case 'admin-send-test-email':
+        return await handleAdminSendTestEmail(req, res)
+      case 'admin-send-marketing-email':
+        return await handleAdminSendMarketingEmail(req, res)
+      case 'unsubscribe':
+        return await handleUnsubscribe(req, res)
       default:
         return res
           .status(400)
@@ -1867,11 +1877,21 @@ async function handleSignupRequestCode(req: VercelRequest, res: VercelResponse) 
 }
 
 async function handleSignupVerifyCode(req: VercelRequest, res: VercelResponse) {
-  const body = req.body as { email?: string; code?: string; password?: string; name?: string }
+  const body = req.body as {
+    email?: string
+    code?: string
+    password?: string
+    name?: string
+    marketingOptIn?: boolean
+  }
   const email = (body.email || '').trim().toLowerCase()
   const code = (body.code || '').trim()
   const password = body.password || ''
   const displayName = (body.name || '').trim().slice(0, 100) || undefined
+  // OPT-IN by default false — Israeli תקשורת law sec. 30א needs
+  // a clear affirmative tick to count as consent. We never default
+  // this to true even if the body omits it.
+  const marketingOptIn = body.marketingOptIn === true
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
@@ -1934,14 +1954,16 @@ async function handleSignupVerifyCode(req: VercelRequest, res: VercelResponse) {
   }
 
   // Create the Firebase Auth user, already-verified.
+  let createdUid: string | null = null
   try {
     const { getAuth } = await import('firebase-admin/auth')
-    await getAuth(getFirebase()).createUser({
+    const created = await getAuth(getFirebase()).createUser({
       email,
       password,
       displayName,
       emailVerified: true,
     })
+    createdUid = created.uid
   } catch (err) {
     const code = (err as { code?: string }).code
     if (code === 'auth/email-already-exists') {
@@ -1956,6 +1978,37 @@ async function handleSignupVerifyCode(req: VercelRequest, res: VercelResponse) {
       .status(500)
       .json({ ok: false, error: 'יצירת המשתמש נכשלה. נסה שוב.' })
   }
+
+  // Persist marketing opt-in (and the email + timestamp for audit)
+  // to the user doc BEFORE the desktop's first sign-in. The desktop's
+  // loadOrCreateUserDoc uses merge:true so it won't clobber these
+  // fields; it just adds its own (deviceId, version, etc.).
+  // Best-effort: an error here doesn't fail the signup — the user
+  // is already created in Firebase, we just lose their marketing
+  // preference. Logged so we can backfill manually if it ever
+  // happens.
+  if (createdUid) {
+    try {
+      await db
+        .collection('users')
+        .doc(createdUid)
+        .set(
+          {
+            email,
+            marketingOptIn,
+            marketingOptInAt: marketingOptIn ? new Date().toISOString() : null,
+            createdAt: new Date().toISOString(),
+          },
+          { merge: true },
+        )
+    } catch (err) {
+      console.warn(
+        '[paypal/signup-verify-code] user doc write failed (continuing):',
+        err,
+      )
+    }
+  }
+
   return res.status(200).json({ ok: true })
 }
 
@@ -2269,4 +2322,494 @@ function renderEmail(args: { heading: string; contentHtml: string }): string {
 </table>
 </body>
 </html>`
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Admin: send a test email of any template to a target inbox.
+ *
+ *  Lets the operator preview how a template actually renders in
+ *  Gmail / Outlook / Apple Mail without going through the real
+ *  user flow (no need to actually expire a key just to see what
+ *  the expiry reminder looks like). Each "template" is a tiny
+ *  inline factory that produces a complete HTML + subject pair
+ *  from mock data.
+ *
+ *  Admin-allowlist gated. The target email is whatever the
+ *  caller types — the admin is trusted to type their own address.
+ * ───────────────────────────────────────────────────────────── */
+
+type TestEmailKind =
+  | 'welcome-subscription'
+  | 'verify-signup'
+  | 'verify-existing'
+  | 'reset-password'
+  | 'capture-key'
+  | 'renewal-extension'
+  | 'expiry-reminder'
+  | 'annual-report'
+
+function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } {
+  // Mock data — deliberately recognisable so the recipient can
+  // tell "yep this is the test version" at a glance. All values
+  // are static strings; no real PII leaks.
+  const mockKey = 'TEST-XXXX-YYYY-ZZZZ'
+  const mockExpiry = '01.06.2026'
+  const mockSubId = 'I-TESTSUBSCRIPTION'
+
+  switch (kind) {
+    case 'welcome-subscription':
+      return {
+        subject: '[בדיקה] המנוי שלך פעיל — ניהול הורדות פלוס Pro',
+        html: renderEmail({
+          heading: 'ברוך הבא ל-Pro 🎉',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#d1d5db;">
+              [תצוגת בדיקה] המנוי שלך פעיל! מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong>.
+            </p>
+            <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
+              <div style="font-size:11px;color:#9ca3af;margin-bottom:8px;">מפתח המוצר</div>
+              <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#fbbf24;letter-spacing:0.08em;font-weight:700;">${mockKey}</div>
+            </div>
+            <h3 style="font-size:14px;margin:24px 0 8px;color:#e5e7eb;font-weight:600;">פרטי המנוי</h3>
+            <div style="font-size:13px;line-height:1.9;color:#d1d5db;">
+              <div>• תוכנית: חודשי (9 ₪)</div>
+              <div>• חיוב הבא: ${mockExpiry}</div>
+              <div>• מתחדש אוטומטית עד שתבטל</div>
+              <div>• ניהול / ביטול: <a href="${WEBSITE_BASE}/account" style="color:#fbbf24;text-decoration:underline;">${WEBSITE_BASE}/account</a></div>
+            </div>
+            <p style="margin:24px 0 0;font-size:11px;color:#6b7280;">
+              מנוי ID: <span dir="ltr">${mockSubId}</span>
+            </p>
+          `,
+        }),
+      }
+    case 'verify-signup':
+      return {
+        subject: '[בדיקה] קוד אימות: 123456 — ניהול הורדות פלוס',
+        html: renderEmail({
+          heading: 'קוד האימות שלך',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+              [תצוגת בדיקה] הזן את הקוד הזה בתוכנה כדי לסיים את ההרשמה:
+            </p>
+            <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
+              <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">123456</div>
+            </div>
+            <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
+              הקוד תקף ל-15 דקות.
+            </p>
+          `,
+        }),
+      }
+    case 'verify-existing':
+      return {
+        subject: '[בדיקה] קוד אימות לחשבון שלך',
+        html: renderEmail({
+          heading: 'אימות כתובת המייל',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+              [תצוגת בדיקה] הוספנו דרישה לאמת את כתובת המייל לכל המשתמשים. הזן את הקוד הבא:
+            </p>
+            <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
+              <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">654321</div>
+            </div>
+            <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
+              הקוד תקף ל-15 דקות.
+            </p>
+          `,
+        }),
+      }
+    case 'reset-password':
+      return {
+        subject: '[בדיקה] איפוס סיסמה — ניהול הורדות פלוס',
+        html: renderEmail({
+          heading: 'איפוס סיסמה',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#d1d5db;">
+              [תצוגת בדיקה] קיבלנו בקשה לאיפוס הסיסמה לחשבון שלך ב-<strong>ניהול הורדות פלוס</strong>.
+            </p>
+            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+              לחץ על הכפתור כדי לקבוע סיסמה חדשה:
+            </p>
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
+              <tr><td align="center">
+                <a href="https://example.com/reset?token=test" target="_blank" style="display:inline-block;background:#fbbf24;color:#0a0a0a;padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;">לאיפוס הסיסמה</a>
+              </td></tr>
+            </table>
+            <p style="font-size:12px;line-height:1.6;margin:0 0 14px;color:#9ca3af;">
+              ⚠️ הקישור תקף לשעה אחת בלבד.
+            </p>
+          `,
+        }),
+      }
+    case 'capture-key':
+      return {
+        subject: '[בדיקה] מפתח ניהול הורדות פלוס Pro שלך',
+        html: renderEmail({
+          heading: 'תודה על הרכישה 🎉',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#d1d5db;">
+              [תצוגת בדיקה] מצורף מפתח <span style="color:#fbbf24;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של שנה מהיום (תוקף עד ${mockExpiry}).
+            </p>
+            <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
+              <div style="font-size:11px;color:#9ca3af;margin-bottom:8px;">מפתח המוצר</div>
+              <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#fbbf24;letter-spacing:0.08em;font-weight:700;">${mockKey}</div>
+            </div>
+            <h3 style="font-size:14px;margin:24px 0 8px;color:#e5e7eb;font-weight:600;">איך מממשים?</h3>
+            <div style="font-size:13px;line-height:1.9;color:#d1d5db;">
+              <div>1. פותחים את התוכנה ונכנסים לחשבון.</div>
+              <div>2. לוחצים על השם בצד שמאל למטה ← <strong>מימוש מפתח מוצר</strong>.</div>
+              <div>3. מדביקים את המפתח ולוחצים <strong>אישור</strong>.</div>
+            </div>
+          `,
+        }),
+      }
+    case 'renewal-extension':
+      return {
+        subject: '[בדיקה] חידוש מנוי ניהול הורדות פלוס',
+        html: renderEmail({
+          heading: 'המנוי שלך הוארך ✓',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 20px;color:#d1d5db;">
+              [תצוגת בדיקה] הוספנו <strong>שנה</strong> נוסף למפתח Pro שלך.
+            </p>
+            <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:18px;margin:0 0 24px;text-align:center;">
+              <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף קודם</div>
+              <div style="font-size:14px;color:#6b7280;text-decoration:line-through;margin-bottom:14px;">01.06.2025</div>
+              <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף חדש</div>
+              <div style="font-size:20px;color:#34d399;font-weight:700;">${mockExpiry}</div>
+            </div>
+          `,
+        }),
+      }
+    case 'expiry-reminder':
+      return {
+        subject: '[בדיקה] ⏳ המנוי שלך מסתיים בעוד 2 ימים',
+        html: renderEmail({
+          heading: '⏳ המנוי שלך עומד להסתיים',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#d1d5db;">
+              [תצוגת בדיקה] המפתח שלך לתוכנה <strong>ניהול הורדות פלוס</strong> פג בעוד <strong>2 ימים</strong> (${mockExpiry}).
+            </p>
+            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+              לחיצה על הכפתור למטה תעביר אותך לעמוד החידוש. המפתח שלך נשאר אותו דבר.
+            </p>
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
+              <tr><td align="center">
+                <a href="https://example.com/buy?renew=test" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#fbbf24;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">חידוש המנוי 👑</a>
+              </td></tr>
+            </table>
+          `,
+        }),
+      }
+    case 'annual-report':
+      return {
+        subject: '[בדיקה] סיכום חיובים שנתי — 2025',
+        html: renderEmail({
+          heading: 'סיכום חיובים שנתי — 2025',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#d1d5db;">
+              [תצוגת בדיקה] ריכוז כל החיובים שבוצעו על המנוי שלך במהלך 2025.
+            </p>
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 18px;border:1px solid #2a2a2a;border-radius:8px;overflow:hidden;">
+              <thead>
+                <tr style="background:#0a0a0a;">
+                  <th style="padding:10px 12px;text-align:right;color:#9ca3af;font-weight:500;font-size:12px;">תאריך</th>
+                  <th style="padding:10px 12px;text-align:left;color:#9ca3af;font-weight:500;font-size:12px;direction:ltr;">סכום</th>
+                </tr>
+              </thead>
+              <tbody style="font-size:13px;">
+                <tr><td style="padding:6px 12px;border-bottom:1px solid #2a2a2a;color:#e5e7eb;">15.03.2025</td><td style="padding:6px 12px;border-bottom:1px solid #2a2a2a;color:#fbbf24;text-align:left;direction:ltr;">9 ₪</td></tr>
+                <tr><td style="padding:6px 12px;border-bottom:1px solid #2a2a2a;color:#e5e7eb;">15.06.2025</td><td style="padding:6px 12px;border-bottom:1px solid #2a2a2a;color:#fbbf24;text-align:left;direction:ltr;">9 ₪</td></tr>
+                <tr><td style="padding:6px 12px;color:#e5e7eb;">15.09.2025</td><td style="padding:6px 12px;color:#fbbf24;text-align:left;direction:ltr;">9 ₪</td></tr>
+              </tbody>
+            </table>
+            <p style="margin:14px 0;font-size:14px;color:#e5e7eb;">
+              <strong>סה״כ 2025:</strong> <strong style="color:#fbbf24;">27 ₪</strong>
+            </p>
+          `,
+        }),
+      }
+  }
+}
+
+async function handleAdminSendTestEmail(req: VercelRequest, res: VercelResponse) {
+  const body = req.body as { idToken?: string; targetEmail?: string; kind?: string }
+  const idToken = (body.idToken || '').trim()
+  const targetEmail = (body.targetEmail || '').trim().toLowerCase()
+  const kind = (body.kind || '').trim() as TestEmailKind
+  if (!idToken) {
+    return res.status(401).json({ ok: false, error: 'missing id token' })
+  }
+  if (!targetEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetEmail)) {
+    return res.status(400).json({ ok: false, error: 'כתובת מייל יעד לא תקינה' })
+  }
+  const allowed: TestEmailKind[] = [
+    'welcome-subscription',
+    'verify-signup',
+    'verify-existing',
+    'reset-password',
+    'capture-key',
+    'renewal-extension',
+    'expiry-reminder',
+    'annual-report',
+  ]
+  if (!allowed.includes(kind)) {
+    return res.status(400).json({ ok: false, error: `unknown template: ${kind}` })
+  }
+  let email: string
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken)
+    email = (decoded.email || '').toLowerCase()
+  } catch {
+    return res.status(401).json({ ok: false, error: 'invalid id token' })
+  }
+  if (!ADMIN_EMAILS.includes(email)) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+
+  const { subject, html } = buildTestEmail(kind)
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) {
+    return res.status(500).json({ ok: false, error: 'GMAIL credentials not set' })
+  }
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  try {
+    await transporter.sendMail({
+      from: `"ניהול הורדות פלוס" <${user}>`,
+      to: targetEmail,
+      subject,
+      html,
+    })
+  } catch (err) {
+    console.error('[paypal/admin-send-test-email] sendMail failed:', err)
+    return res.status(500).json({
+      ok: false,
+      error: err instanceof Error ? err.message : 'send failed',
+    })
+  }
+  return res.status(200).json({ ok: true, sentTo: targetEmail, kind })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Admin: broadcast a marketing email to every user who opted
+ *  in at signup (users/{uid}.marketingOptIn === true).
+ *
+ *  Each recipient gets a personalised unsubscribe link in the
+ *  footer (signed token referencing their uid). Israeli תקשורת
+ *  law sec. 30א requires every promotional email to include a
+ *  one-click opt-out, regardless of how the opt-in was captured.
+ *
+ *  Throttling: Gmail SMTP caps free accounts at ~500/day. We
+ *  iterate the recipient list sequentially with a tiny sleep
+ *  between sends to avoid tripping the rate-limit and getting
+ *  the whole account temporarily suspended. For lists > ~400
+ *  the operator should split the broadcast across days OR move
+ *  to a transactional provider; we'll cross that bridge when
+ *  the user base actually approaches that size.
+ *
+ *  Failures don't abort the broadcast — we log the address that
+ *  failed and continue. The response includes counts so the
+ *  operator can see how many got through.
+ * ───────────────────────────────────────────────────────────── */
+
+function unsubscribeToken(uid: string): string {
+  // Plain HMAC of the uid — no expiry. Recipients of old marketing
+  // emails should still be able to click and unsubscribe years
+  // later. The HMAC means an attacker can't unsubscribe arbitrary
+  // uids by guessing their token; they'd need the secret.
+  return crypto
+    .createHmac('sha256', tokenSecret())
+    .update(uid)
+    .digest('hex')
+}
+
+function verifyUnsubscribeToken(uid: string, token: string): boolean {
+  const expected = unsubscribeToken(uid)
+  if (expected.length !== token.length) return false
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(token))
+  } catch {
+    return false
+  }
+}
+
+async function handleAdminSendMarketingEmail(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as {
+    idToken?: string
+    subject?: string
+    heading?: string
+    contentHtml?: string
+    dryRun?: boolean
+  }
+  const idToken = (body.idToken || '').trim()
+  const subject = (body.subject || '').trim().slice(0, 200)
+  const heading = (body.heading || '').trim().slice(0, 100)
+  const contentHtml = (body.contentHtml || '').trim()
+  const dryRun = body.dryRun === true
+  if (!idToken) {
+    return res.status(401).json({ ok: false, error: 'missing id token' })
+  }
+  if (!subject || !heading || !contentHtml) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'יש למלא subject + heading + contentHtml' })
+  }
+  let adminEmail: string
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken)
+    adminEmail = (decoded.email || '').toLowerCase()
+  } catch {
+    return res.status(401).json({ ok: false, error: 'invalid id token' })
+  }
+  if (!ADMIN_EMAILS.includes(adminEmail)) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+
+  const db = getDb()
+  const snap = await db
+    .collection('users')
+    .where('marketingOptIn', '==', true)
+    .get()
+  const recipients: Array<{ uid: string; email: string }> = []
+  for (const d of snap.docs) {
+    const data = d.data() as { email?: string }
+    const e = typeof data.email === 'string' ? data.email.trim().toLowerCase() : ''
+    if (!e) continue
+    recipients.push({ uid: d.id, email: e })
+  }
+
+  if (dryRun) {
+    return res.status(200).json({ ok: true, recipientCount: recipients.length })
+  }
+
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) {
+    return res.status(500).json({ ok: false, error: 'GMAIL credentials not set' })
+  }
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+
+  let sent = 0
+  let failed = 0
+  const failures: string[] = []
+  for (const r of recipients) {
+    const unsubUrl = `${WEBSITE_BASE}/api/paypal?action=unsubscribe&uid=${encodeURIComponent(
+      r.uid,
+    )}&token=${unsubscribeToken(r.uid)}`
+    const footerHtml = `
+      <hr style="border:0;border-top:1px solid #2a2a2a;margin:28px 0 16px;"/>
+      <p style="font-size:11px;color:#6b7280;line-height:1.6;margin:0;">
+        אתה מקבל את המייל הזה כי בחרת לקבל עדכוני מוצר ומבצעים. <a href="${unsubUrl}" style="color:#fbbf24;text-decoration:underline;">להסרה מרשימת הדיוור</a>.
+      </p>
+    `
+    const html = renderEmail({
+      heading,
+      contentHtml: `${contentHtml}\n${footerHtml}`,
+    })
+    try {
+      await transporter.sendMail({
+        from: `"ניהול הורדות פלוס" <${user}>`,
+        to: r.email,
+        subject,
+        html,
+      })
+      sent++
+    } catch (err) {
+      failed++
+      failures.push(r.email)
+      console.error(`[marketing] send to ${r.email} failed:`, err)
+    }
+    // Mild throttle so a 100-recipient broadcast doesn't get the
+    // Gmail account flagged. 200ms between sends ≈ 5/sec which is
+    // well under the daily quota for free Gmail (500/day).
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+
+  return res.status(200).json({
+    ok: true,
+    recipientCount: recipients.length,
+    sent,
+    failed,
+    failureSample: failures.slice(0, 10),
+  })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Unsubscribe (GET) — one-click marketing opt-out.
+ *
+ *  The marketing email footer links here. Token is an HMAC of
+ *  the user's uid (no expiry — old emails should still work).
+ *  On valid token we flip marketingOptIn=false and render a
+ *  small "you've been unsubscribed" page. No JSON, no need for
+ *  the user to be logged in — they click the link, the cookie
+ *  jar doesn't matter, the token is the proof.
+ * ───────────────────────────────────────────────────────────── */
+async function handleUnsubscribe(req: VercelRequest, res: VercelResponse) {
+  const uid = (req.query.uid as string | undefined)?.trim() || ''
+  const token = (req.query.token as string | undefined)?.trim() || ''
+  function htmlPage(message: string, ok: boolean): string {
+    return `<!doctype html>
+<html dir="rtl" lang="he">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>הסרה מרשימת דיוור</title>
+</head>
+<body style="margin:0;padding:0;background:#0a0a0a;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;min-height:100vh;display:flex;align-items:center;justify-content:center;">
+<div style="max-width:480px;width:90%;background:#1a1a1a;border-radius:12px;border:1px solid #2a2a2a;padding:40px 32px;text-align:center;">
+  <div style="font-size:18px;color:#fbbf24;font-weight:600;margin:0 0 16px;">ניהול הורדות פלוס</div>
+  <div style="font-size:48px;margin:0 0 12px;">${ok ? '✓' : '⚠️'}</div>
+  <p style="font-size:15px;line-height:1.7;color:${ok ? '#34d399' : '#f87171'};margin:0 0 16px;">${message}</p>
+  <p style="font-size:12px;color:#9ca3af;margin:0;">ניתן להירשם מחדש מתוך הגדרות החשבון בכל עת.</p>
+</div>
+</body>
+</html>`
+  }
+  if (!uid || !token || !verifyUnsubscribeToken(uid, token)) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8')
+    return res
+      .status(400)
+      .send(htmlPage('הקישור לא תקין או שפג תוקפו.', false))
+  }
+  try {
+    const db = getDb()
+    await db
+      .collection('users')
+      .doc(uid)
+      .set(
+        {
+          marketingOptIn: false,
+          marketingOptOutAt: new Date().toISOString(),
+        },
+        { merge: true },
+      )
+  } catch (err) {
+    console.error('[paypal/unsubscribe] firestore write failed:', err)
+    res.setHeader('Content-Type', 'text/html; charset=utf-8')
+    return res
+      .status(500)
+      .send(htmlPage('משהו השתבש. נסה שוב בעוד דקה.', false))
+  }
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  return res
+    .status(200)
+    .send(
+      htmlPage(
+        'הוסרת בהצלחה מרשימת הדיוור. לא תקבל יותר הודעות שיווקיות.',
+        true,
+      ),
+    )
 }
