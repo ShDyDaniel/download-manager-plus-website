@@ -195,6 +195,17 @@ export default function AccountPage() {
   const [going, setGoing] = useState(false)
   const [goError, setGoError] = useState<string | null>(null)
 
+  // "Switch plan" (שינוי תוכנית) state. Same renewToken-based flow
+  // as the renew button, but redirects to /buy with a `switchTo`
+  // hint so BuyPage knows to (a) show the plan-switch banner
+  // instead of the renewal banner and (b) lock the current plan
+  // card with a "המנוי הנוכחי" badge so the user can only pick the
+  // OTHER plan. Tracked per-subscription-id so multi-sub accounts
+  // (theoretical — we don't show multi-sub UI today but the data
+  // model supports it) can each spin independently.
+  const [switchingSubId, setSwitchingSubId] = useState<string | null>(null)
+  const [switchError, setSwitchError] = useState<string | null>(null)
+
   // Billing state (lazy)
   const [billingOpen, setBillingOpen] = useState(false)
   const [billingLoading, setBillingLoading] = useState(false)
@@ -449,6 +460,57 @@ export default function AccountPage() {
       setGoError(err instanceof Error ? err.message : 'שגיאה')
     } finally {
       setGoing(false)
+    }
+  }
+
+  /**
+   * Switch from the current plan to the opposite one.
+   *
+   * Same mechanism as handleGoBuy's renew path — mints a
+   * renewToken so the webhook will EXTEND the existing key rather
+   * than create a new one — but with two differences:
+   *   1. We pass `switchTo=<opposite-plan>` so BuyPage knows to
+   *      show the plan-switch banner and lock the current plan
+   *      with a "המנוי הנוכחי" badge.
+   *   2. The backend's renewal branch will detect the planDays
+   *      change, cancel the old PayPal sub, and fire the
+   *      sendPlanSwitchEmail variant (the "you switched to X"
+   *      email) instead of the generic welcome email.
+   *
+   * The `currentPlanDays` argument is read from the subscription
+   * card the button lives in; we compute the opposite here so the
+   * UI doesn't need to know about the 30/365 magic numbers in two
+   * places.
+   */
+  async function handleSwitchPlan(
+    subscriptionId: string,
+    currentPlanDays: number,
+  ) {
+    if (switchingSubId) return
+    if (!token) return
+    setSwitchingSubId(subscriptionId)
+    setSwitchError(null)
+    const switchTo = currentPlanDays === 30 ? 'yearly' : 'monthly'
+    try {
+      const r = await fetch('/api/paypal?action=mint-renew-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      })
+      const json = (await r.json()) as {
+        ok: boolean
+        renewToken?: string
+        error?: string
+      }
+      if (!r.ok || !json.ok || !json.renewToken) {
+        throw new Error(json.error || 'יצירת לינק שינוי תוכנית נכשלה')
+      }
+      navigate(
+        `/buy?renew=${encodeURIComponent(json.renewToken)}&switchTo=${switchTo}`,
+      )
+    } catch (err) {
+      setSwitchError(err instanceof Error ? err.message : 'שגיאה')
+      setSwitchingSubId(null)
     }
   }
 
@@ -895,6 +957,15 @@ export default function AccountPage() {
                       key={s.subscriptionId}
                       sub={s}
                       onCancel={() => setPendingCancelId(s.subscriptionId)}
+                      onSwitchPlan={() =>
+                        void handleSwitchPlan(s.subscriptionId, s.planDays)
+                      }
+                      switchingThisSub={switchingSubId === s.subscriptionId}
+                      switchError={
+                        switchingSubId === null && switchError
+                          ? switchError
+                          : null
+                      }
                     />
                   ))}
                 </ul>
@@ -1165,9 +1236,20 @@ function PlanBadge({ plan, label }: { plan: Profile['plan']; label: string }) {
 function SubscriptionCard({
   sub,
   onCancel,
+  onSwitchPlan,
+  switchingThisSub,
+  switchError,
 }: {
   sub: Subscription
   onCancel: () => void
+  onSwitchPlan: () => void
+  /** True while we're minting the renewToken + navigating for THIS
+   *  card's subscription. Used to disable the link + show a spinner
+   *  in place of the label so the user knows something's happening. */
+  switchingThisSub: boolean
+  /** Error from the most recent switch attempt — surfaced below the
+   *  status row when present. */
+  switchError: string | null
 }) {
   // Backend normalizes status to UPPERCASE before sending — we
   // can rely on exact-match checks here. Defensive .toUpperCase()
@@ -1197,6 +1279,12 @@ function SubscriptionCard({
         ? 'text-destructive'
         : 'text-accent'
 
+  // The "שינוי תוכנית" affordance only makes sense while the
+  // subscription is ACTIVE — once it's cancelled/suspended/expired
+  // the user goes through the renewal flow instead (handled by the
+  // main "חידוש המנוי שלי" button elsewhere on the page).
+  const canSwitch = isActive && !isCancelled
+
   return (
     <li className="rounded-md border border-border bg-bg-elevated p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -1208,8 +1296,49 @@ function SubscriptionCard({
               : '—'}
           </div>
         </div>
-        <span className={`text-xs font-medium ${statusColor}`}>{statusLabel}</span>
+        {/* Status + "שינוי תוכנית" affordance — sit side-by-side,
+            with the link to the RIGHT of the status text per user's
+            request. The link only renders for active subscriptions
+            (otherwise the user has nothing to switch FROM). */}
+        <div className="flex items-center gap-2">
+          {canSwitch && (
+            <>
+              <button
+                type="button"
+                onClick={onSwitchPlan}
+                disabled={switchingThisSub}
+                title={
+                  sub.planDays === 30
+                    ? 'מעבר למסלול שנתי'
+                    : 'מעבר למסלול חודשי'
+                }
+                className="inline-flex items-center gap-1 text-xs text-fg-muted underline-offset-4 transition-colors hover:text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {switchingThisSub ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    טוען…
+                  </>
+                ) : (
+                  'שינוי תוכנית'
+                )}
+              </button>
+              <span className="text-xs text-fg-faint" aria-hidden>
+                ·
+              </span>
+            </>
+          )}
+          <span className={`text-xs font-medium ${statusColor}`}>
+            {statusLabel}
+          </span>
+        </div>
       </div>
+
+      {switchError && (
+        <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[11px] text-destructive">
+          {switchError}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2 border-t border-border pt-3 text-xs">
         <div>

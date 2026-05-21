@@ -190,6 +190,17 @@ export function BuyPage() {
   const [renewInfo, setRenewInfo] = useState<RenewInfo | null>(null)
   const [renewLoading, setRenewLoading] = useState(false)
   const [renewError, setRenewError] = useState<string | null>(null)
+  // Plan-switch mode — populated when the URL carries
+  // ?switchTo=monthly|yearly alongside ?renew=<token>. The /account
+  // "שינוי תוכנית" link sends users here. When set:
+  //   - The target plan (the one they're switching TO) is
+  //     pre-selected on mount.
+  //   - The OTHER plan card shows a "המנוי הנוכחי" badge and is
+  //     non-clickable (no logic to "switch" to the plan you're
+  //     already on).
+  //   - A dedicated switch banner replaces the generic renewal
+  //     banner with a full explanation of what's about to happen.
+  const [switchTo, setSwitchTo] = useState<Plan | null>(null)
   // Self-service renewal (no email link): the buyer opens the panel,
   // types their account credentials, we authenticate via
   // /api/renew/signin, and either auto-select their one key or show
@@ -450,6 +461,17 @@ export function BuyPage() {
     const params = new URLSearchParams(window.location.search)
     const token = params.get('renew')
     if (!token) return
+    // Also parse ?switchTo=monthly|yearly — passed by the /account
+    // "שינוי תוכנית" link. Pre-selects the target plan so the
+    // buyer doesn't have to find it; the OPPOSITE card will get
+    // locked + badged as "המנוי הנוכחי" further down. Setting it
+    // before the fetch resolves means the plan picker reflects
+    // the right choice on first paint, no flash of the default.
+    const switchToParam = params.get('switchTo')
+    if (switchToParam === 'monthly' || switchToParam === 'yearly') {
+      setSwitchTo(switchToParam)
+      setPlan(switchToParam)
+    }
     setRenewToken(token)
     setRenewLoading(true)
     setEmailLocked(true)
@@ -875,6 +897,11 @@ export function BuyPage() {
             comparisonMonthly={pricingRef.current.monthly}
             recommended
             loading={pricing === null}
+            // Plan-switch flow: when user is switching TO monthly,
+            // their current plan is yearly — this card needs the
+            // "המנוי הנוכחי" badge + non-clickable styling so they
+            // can only pick the other one.
+            currentPlanBadge={switchTo === 'monthly'}
           />
           <PlanCard
             plan="monthly"
@@ -888,6 +915,9 @@ export function BuyPage() {
             cycle="לחודש"
             note="מתחדש אוטומטית מדי 30 יום"
             loading={pricing === null}
+            // Mirror of the yearly card: switching TO yearly =
+            // current is monthly = this card locks.
+            currentPlanBadge={switchTo === 'yearly'}
           />
         </div>
 
@@ -917,13 +947,117 @@ export function BuyPage() {
             ))}
           </ul>
 
+          {/* Plan-switch banner — shown when ?switchTo=... is on
+              the URL (user came in via /account "שינוי תוכנית").
+              Replaces the generic renewal banner with a full
+              explanation of what's about to happen: payment amount,
+              auto-cancellation of the old sub, carried-forward
+              days, new expiry. Heavy on detail by design — the
+              buyer needs to understand they won't be double-charged
+              before they hit pay. */}
+          {renewInfo &&
+            switchTo &&
+            status.kind !== 'success' &&
+            status.kind !== 'renewed' &&
+            (() => {
+              const oldExpMs = Math.max(
+                new Date(renewInfo.expiresAt).getTime(),
+                Date.now(),
+              )
+              const newExpMs = oldExpMs + PLAN_META[switchTo].days * 86_400_000
+              const carriedDays = renewInfo.isExpired
+                ? 0
+                : Math.max(
+                    0,
+                    Math.ceil(
+                      (new Date(renewInfo.expiresAt).getTime() - Date.now()) /
+                        (24 * 60 * 60 * 1000),
+                    ),
+                  )
+              const fromLabel = switchTo === 'yearly' ? 'חודשי' : 'שנתי'
+              const toLabel = switchTo === 'yearly' ? 'שנתי' : 'חודשי'
+              const newCycleWord = switchTo === 'yearly' ? 'שנה' : 'חודש'
+              return (
+                <div className="mb-4 rounded-2xl border border-primary/40 bg-primary/[0.06] p-4">
+                  <div className="flex items-start gap-3">
+                    <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                    <div className="flex-1 text-right text-sm">
+                      <div className="text-base font-semibold text-primary">
+                        מעבר ממסלול {fromLabel} למסלול {toLabel}
+                      </div>
+                      <div className="mt-2 text-xs text-fg-secondary">
+                        מפתח{' '}
+                        <span className="font-mono text-fg" dir="ltr">
+                          {renewInfo.keyMasked}
+                        </span>{' '}
+                        · משויך ל-
+                        <span className="font-mono text-fg" dir="ltr">
+                          {renewInfo.emailMasked}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 space-y-1.5 text-xs text-fg-secondary">
+                        <div className="flex items-start gap-2">
+                          <span className="text-primary">✓</span>
+                          <span>
+                            תחויב היום עבור ה{newCycleWord} הבא{' '}
+                            <strong className="text-fg">
+                              (לפי המסלול ה{toLabel})
+                            </strong>
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="text-primary">✓</span>
+                          <span>
+                            המנוי ה{fromLabel} הקיים{' '}
+                            <strong className="text-fg">יבוטל אוטומטית</strong>{' '}
+                            — לא תחויב עליו שוב
+                          </span>
+                        </div>
+                        {carriedDays > 0 && (
+                          <div className="flex items-start gap-2">
+                            <span className="text-primary">✓</span>
+                            <span>
+                              <strong className="text-fg">
+                                {carriedDays} הימים
+                              </strong>{' '}
+                              שנותרו לך מהמסלול ה{fromLabel}{' '}
+                              <strong className="text-fg">יישמרו</strong>{' '}
+                              ויתווספו על גבי ה{newCycleWord} החדש
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-3 rounded-lg border border-accent/30 bg-accent/[0.05] px-3 py-2.5">
+                        <div className="text-[11px] text-fg-muted">
+                          הגישה תהיה בתוקף עד
+                        </div>
+                        <div className="text-base font-semibold text-accent">
+                          {formatExpiry(new Date(newExpMs).toISOString())}
+                        </div>
+                      </div>
+
+                      <div className="mt-2 text-[11px] text-fg-muted">
+                        המפתח עצמו לא משתנה — אין צורך להזין שום דבר חדש בתוכנה.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
+
           {/* Renewal banner — shown whenever we're in renewal mode
-              (URL had ?renew=<token>). Sits above the email/PayPal
-              area so the user sees what they're extending before
-              they hit pay. The actual extension math (adds plan days
-              to whichever is later: current expiry or now) happens
-              server-side in /api/capture's renewal branch. */}
-          {renewInfo && status.kind !== 'success' && status.kind !== 'renewed' && (
+              (URL had ?renew=<token>) but NOT in plan-switch mode
+              (?switchTo=...). The two banners are mutually exclusive:
+              switch has its own explainer above, regular renewal
+              keeps the simpler banner below. Sits above the
+              email/PayPal area so the user sees what they're
+              extending before they hit pay. The actual extension
+              math (adds plan days to whichever is later: current
+              expiry or now) happens server-side in the renewal
+              branch. */}
+          {renewInfo && !switchTo && status.kind !== 'success' && status.kind !== 'renewed' && (
             <div className="mb-4 rounded-2xl border border-accent/30 bg-accent/[0.05] p-4">
               <div className="flex items-start gap-3">
                 <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
@@ -1248,6 +1382,7 @@ function PlanCard({
   comparisonMonthly,
   recommended,
   loading,
+  currentPlanBadge,
 }: {
   plan: Plan
   active: boolean
@@ -1281,6 +1416,12 @@ function PlanCard({
   comparisonMonthly?: { regular: number; sale: number | null }
   recommended?: boolean
   loading?: boolean
+  /** When true, this card represents the buyer's CURRENT plan in a
+   *  plan-switch flow (?switchTo=... on the URL). The card becomes
+   *  non-interactive (no onSelect) and shows a "המנוי הנוכחי" pill
+   *  so the user understands why they can't pick it. Used by /buy
+   *  when the user arrives via the /account "שינוי תוכנית" link. */
+  currentPlanBadge?: boolean
 }) {
   // Effective values used everywhere — these abstract away
   // "is there a sale or not" so each render block doesn't have to
@@ -1314,16 +1455,31 @@ function PlanCard({
   return (
     <button
       type="button"
-      onClick={onSelect}
+      onClick={currentPlanBadge ? undefined : onSelect}
+      disabled={currentPlanBadge}
+      aria-disabled={currentPlanBadge || undefined}
       dir="rtl"
       className={`relative flex h-full flex-col rounded-2xl border p-5 text-right transition-all ${
-        active
-          ? 'border-primary bg-primary/[0.06] shadow-lg'
-          : 'border-border bg-bg-elevated/50 hover:border-border-strong hover:bg-bg-elevated'
+        currentPlanBadge
+          ? 'cursor-not-allowed border-border bg-bg-elevated/30 opacity-55'
+          : active
+            ? 'border-primary bg-primary/[0.06] shadow-lg'
+            : 'border-border bg-bg-elevated/50 hover:border-border-strong hover:bg-bg-elevated'
       } ${loading ? 'opacity-70' : ''}`}
     >
+      {/* "המנוי הנוכחי" — sticker on plan-switch flow. Anchored
+          top-left so it sits opposite the 'מומלץ' ribbon (which
+          floats top-right in RTL). The two never collide because
+          you can't be BOTH "currently on this plan" AND "the
+          recommended one to switch to" at the same time — switchTo
+          locks the current card and disables 'מומלץ'-driven styling. */}
+      {currentPlanBadge && (
+        <div className="absolute -top-3 right-4 z-10 rounded-full border border-fg-muted/30 bg-bg px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-fg-muted shadow">
+          המנוי הנוכחי
+        </div>
+      )}
       {/* 'מומלץ' flag — floats above the card edge like a ribbon. */}
-      {recommended && (
+      {recommended && !currentPlanBadge && (
         <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-primary px-3 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-bg">
           ✨ מומלץ
         </span>

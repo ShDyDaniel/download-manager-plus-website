@@ -885,8 +885,64 @@ async function ensureKeyForSubscription(
     } else {
       const existing = existingSnap.data() as {
         expiresAt?: string
+        subscriptionId?: string
+        subscriptionPlanDays?: number
+        planDays?: number
         billingHistory?: Array<{ at: string; amount: number; currency: string }>
       }
+      // Plan-switch detection: if the existing key was bound to a
+      // DIFFERENT subscription, this is either a regular renewal
+      // (same plan, new sub created by the renew flow because the
+      // old one was cancelled/expired) or a PLAN SWITCH (monthly
+      // ↔ yearly). We distinguish by comparing planDays. Both
+      // paths still extend the same key in-place; only the email
+      // and the old-sub-cancellation behaviour differ.
+      const previousSubId = existing.subscriptionId || null
+      const previousPlanDays =
+        existing.planDays || existing.subscriptionPlanDays || 0
+      const isPlanSwitch =
+        previousPlanDays > 0 && previousPlanDays !== planDays
+
+      // ── Cancel the OLD PayPal subscription, if any ──
+      //
+      // When a buyer upgrades/downgrades via the in-account
+      // "שינוי תוכנית" flow (or re-subscribes while their old
+      // sub is somehow still active), the old PayPal subscription
+      // would otherwise keep billing them. Without this guard the
+      // buyer is double-charged until they manually cancel inside
+      // PayPal — bad UX and an unambiguous bug.
+      //
+      // We only cancel when the IDs differ (a literal renewal that
+      // happened to mint the same sub id is a no-op) and we
+      // swallow SUBSCRIPTION_STATUS_INVALID, which means the old
+      // sub is already cancelled/expired/suspended — exactly the
+      // states where cancel-again would error. Any other failure
+      // is logged loudly so it shows up in Vercel logs and the
+      // operator can manually clean up.
+      if (previousSubId && previousSubId !== subscriptionId) {
+        try {
+          await paypalCall(
+            'POST',
+            `/v1/billing/subscriptions/${previousSubId}/cancel`,
+            {
+              reason: isPlanSwitch
+                ? `Replaced by plan switch to ${planDays === 30 ? 'monthly' : 'yearly'}`
+                : 'Replaced by new subscription via renewal',
+            },
+          )
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if (msg.includes('SUBSCRIPTION_STATUS_INVALID')) {
+            // Old sub already not-active. Nothing to do.
+          } else {
+            console.error(
+              `[upgrade] failed to cancel prior sub ${previousSubId} (key ${renewKeyId}):`,
+              err,
+            )
+          }
+        }
+      }
+
       const currentExpMs = existing.expiresAt
         ? Date.parse(existing.expiresAt)
         : 0
@@ -911,6 +967,11 @@ async function ensureKeyForSubscription(
         subscriptionStatus: 'active',
         subscriptionStartedAt: new Date().toISOString(),
         subscriptionCancelledAt: null,
+        // Reset payment-failure stamps. If the buyer was being
+        // dunned on the old sub for a card decline, a fresh paid
+        // subscription wipes the slate.
+        paymentFailedAt: null,
+        paymentFailureCount: 0,
         billingHistory,
         // Clear reminder stamps so the next cycle's cron emails
         // fire fresh.
@@ -919,23 +980,43 @@ async function ensureKeyForSubscription(
         reminderSentAt: null,
       })
       try {
-        await sendSubscriptionWelcomeEmail({
-          to: existing.expiresAt
-            ? buyerEmail
-            : buyerEmail,
-          key: renewKeyId,
-          planLabel: planDays === 30 ? 'חודש' : 'שנה',
-          price: planPrice,
-          currency: planCurrency,
-          nextBillingAt: newExpiresAt,
-          subscriptionId,
-        })
+        if (isPlanSwitch) {
+          // Plan-switch path — dedicated email explaining the
+          // transition (old → new plan, days carried forward,
+          // next charge date) so the buyer doesn't think we
+          // double-charged them.
+          await sendPlanSwitchEmail({
+            to: buyerEmail,
+            key: renewKeyId,
+            oldPlanDays: previousPlanDays,
+            newPlanDays: planDays,
+            previousExpiresAt: existing.expiresAt
+              ? new Date(existing.expiresAt)
+              : null,
+            newExpiresAt,
+            price: planPrice,
+            currency: planCurrency,
+            subscriptionId,
+          })
+        } else {
+          await sendSubscriptionWelcomeEmail({
+            to: buyerEmail,
+            key: renewKeyId,
+            planLabel: planDays === 30 ? 'חודש' : 'שנה',
+            price: planPrice,
+            currency: planCurrency,
+            nextBillingAt: newExpiresAt,
+            subscriptionId,
+          })
+        }
       } catch (err) {
         console.error('[webhook] renewal email failed for', renewKeyId, err)
       }
       return {
         ok: true,
-        summary: `renewed key ${renewKeyId} via subscription ${subscriptionId} until ${newExpiresAt.toISOString()}`,
+        summary: isPlanSwitch
+          ? `switched plan for key ${renewKeyId} (${previousPlanDays}d→${planDays}d) via subscription ${subscriptionId} until ${newExpiresAt.toISOString()}`
+          : `renewed key ${renewKeyId} via subscription ${subscriptionId} until ${newExpiresAt.toISOString()}`,
       }
     }
   }
@@ -2170,6 +2251,144 @@ async function sendSubscriptionWelcomeEmail(args: {
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
     subject: 'המנוי שלך פעיל — ניהול הורדות פלוס Pro',
+    html,
+  })
+}
+
+/**
+ * Plan-switch confirmation email — sent when a buyer moves between
+ * monthly ↔ yearly via the /account "שינוי תוכנית" flow. Different
+ * from the generic welcome email because it has to address three
+ * questions buyers will have:
+ *
+ *   1. "Was I double-charged?" — No, the old subscription was
+ *      auto-cancelled. We say so explicitly.
+ *   2. "Did I lose the days I already paid for?" — No, they
+ *      carry forward as bonus on top of the new plan. We show the
+ *      exact new expiry date so they can see it.
+ *   3. "When will the new plan charge next?" — The new plan's
+ *      first auto-renewal date (which is `now + planDays` per
+ *      PayPal, NOT the key's expiry which has the bonus added).
+ *
+ * The buyer's key stays the same — they don't need to redeem
+ * anything. We surface it anyway as a sanity check (some buyers
+ * compare it to what they have inside the desktop app).
+ */
+async function sendPlanSwitchEmail(args: {
+  to: string
+  key: string
+  oldPlanDays: number
+  newPlanDays: number
+  /** The key's expiry BEFORE the switch — used to compute the
+   *  "carried forward" days. Null only for unusual cases where
+   *  the previous key had no expiry stamp. */
+  previousExpiresAt: Date | null
+  /** The key's expiry AFTER the switch (= max(oldExpiry, now) +
+   *  newPlanDays). This is what we show as "your access is valid
+   *  until X". */
+  newExpiresAt: Date
+  price: number
+  currency: string
+  subscriptionId: string
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const symbol =
+    args.currency === 'ILS' ? '₪' : args.currency === 'USD' ? '$' : args.currency
+
+  const oldPlanLabel = args.oldPlanDays === 30 ? 'חודשי' : 'שנתי'
+  const newPlanLabel = args.newPlanDays === 30 ? 'חודשי' : 'שנתי'
+  const newPlanLabelLong =
+    args.newPlanDays === 30 ? 'מסלול חודשי' : 'מסלול שנתי'
+  const newCycleWord = args.newPlanDays === 30 ? 'חודש' : 'שנה'
+  const isUpgrade = args.newPlanDays > args.oldPlanDays
+  const titleEmoji = isUpgrade ? '⬆️' : '⬇️'
+
+  // Carried-forward days = days that were left on the old plan
+  // at switch time. Computed as (previousExpiresAt - now), clamped
+  // to >=0 because a switch right after the old plan expired
+  // shouldn't show negative days.
+  const nowMs = Date.now()
+  const carriedDays = args.previousExpiresAt
+    ? Math.max(
+        0,
+        Math.ceil(
+          (args.previousExpiresAt.getTime() - nowMs) / (24 * 60 * 60 * 1000),
+        ),
+      )
+    : 0
+
+  const newExpiresStr = args.newExpiresAt.toLocaleDateString('he-IL', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: 'Asia/Jerusalem',
+  })
+  // Next-charge date = now + newPlanDays. PayPal's recurring
+  // cycle starts from the moment the new subscription activated,
+  // not from when the key happens to expire (the key's date has
+  // the carried-forward bonus baked in).
+  const nextChargeDate = new Date(nowMs + args.newPlanDays * 86_400_000)
+  const nextChargeStr = nextChargeDate.toLocaleDateString('he-IL', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: 'Asia/Jerusalem',
+  })
+
+  const html = renderEmail({
+    heading: `${titleEmoji} עברת ל${newPlanLabelLong}`,
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
+        המעבר ממסלול <strong>${oldPlanLabel}</strong> ל<strong>${newPlanLabel}</strong> בוצע בהצלחה. הנה מה שקרה:
+      </p>
+      <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:18px;margin:0 0 22px;">
+        <div style="font-size:13px;line-height:1.85;color:#C9BFA8;">
+          <div style="margin-bottom:8px;">
+            ✓ <strong>חויבת ב-${args.price} ${symbol}</strong> עבור המסלול ה${newPlanLabel}
+          </div>
+          <div style="margin-bottom:8px;">
+            ✓ <strong>המנוי ה${oldPlanLabel} הקודם בוטל</strong> אוטומטית — לא תחויב עליו שוב
+          </div>
+          ${
+            carriedDays > 0
+              ? `<div style="margin-bottom:8px;">
+                  ✓ <strong>${carriedDays} ימים</strong> שנותרו לך מהמסלול ה${oldPlanLabel} <strong>נשמרו כבונוס</strong> — נוספים על גבי ה${newCycleWord} החדש
+                </div>`
+              : ''
+          }
+        </div>
+      </div>
+      <h3 style="font-size:14px;margin:24px 0 8px;color:#F5EFE6;font-weight:600;">מה התוקף החדש?</h3>
+      <div style="background:#2A211A;border:1px solid rgba(212,165,116,0.35);border-radius:8px;padding:16px;margin:0 0 22px;">
+        <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה תקפה עד</div>
+        <div style="font-size:20px;color:#D4A574;font-weight:700;">${newExpiresStr}</div>
+      </div>
+      <h3 style="font-size:14px;margin:0 0 8px;color:#F5EFE6;font-weight:600;">חיוב הבא</h3>
+      <div style="font-size:13px;line-height:1.85;margin:0 0 22px;color:#C9BFA8;">
+        החיוב הבא יתבצע ב-<strong>${nextChargeStr}</strong> — ${args.price} ${symbol} עבור ה${newCycleWord} הבא. תוכל לבטל בכל עת מ-<a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/account</a>.
+      </div>
+      <h3 style="font-size:14px;margin:0 0 8px;color:#F5EFE6;font-weight:600;">המפתח שלך</h3>
+      <p style="font-size:12px;line-height:1.6;margin:0 0 10px;color:#8B8170;">
+        אותו מפתח נשאר — אין צורך להזין משהו חדש בתוכנה.
+      </p>
+      <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:16px;margin:0 0 22px;">
+        <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:18px;color:#D4A574;letter-spacing:0.08em;font-weight:700;">${args.key}</div>
+      </div>
+      <p style="margin:0;font-size:11px;color:#5C5444;">
+        מנוי ID חדש: <span dir="ltr">${args.subscriptionId}</span>
+      </p>
+    `,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    subject: `${titleEmoji} עברת ל${newPlanLabelLong} — ניהול הורדות פלוס`,
     html,
   })
 }
