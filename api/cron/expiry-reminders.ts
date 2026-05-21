@@ -87,6 +87,24 @@ interface KeyDoc {
   // Some legacy docs store buyer uid here.
   buyerUid?: string
   redeemedBy?: string | null
+  /** When set, this key is backed by an auto-renewing PayPal
+   *  subscription — the user doesn't need our manual-renewal
+   *  reminders because PayPal handles the recurring charge. We
+   *  skip these in the 10d/2d reminder loop. */
+  subscriptionId?: string
+  subscriptionPlanDays?: number
+  billingHistory?: Array<{
+    eventId?: string
+    amount?: number
+    currency?: string
+    at?: string
+  }>
+  /** Stamped on March 1st when we send the annual billing report
+   *  to satisfy sec. 13ב(ב1) of the Israeli consumer-protection
+   *  law. The year suffix prevents re-sending if the cron runs
+   *  multiple times on March 1st (Vercel won't, but defence-in-
+   *  depth). Format: "annualReport2026SentAt". */
+  [annualReportField: `annualReport${number}SentAt`]: string | null | undefined
 }
 
 // ----- JWT (sign) ----------------------------------------------------
@@ -299,6 +317,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ).trim()
       const expiresAtIso = data.expiresAt
 
+      // Subscription keys auto-renew via PayPal — sending them a
+      // "manually renew" email would be confusing and might prompt
+      // duplicate payments. The PayPal webhook handles the renewal
+      // and extends expiresAt without our cron's help.
+      if (data.subscriptionId) {
+        results.push({ key, action: 'skipped', reason: 'auto-renewing subscription' })
+        continue
+      }
+
       if (!buyerEmail) {
         results.push({ key, action: 'skipped', reason: 'no buyer email' })
         continue
@@ -378,6 +405,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.info(
       `[cron/expiry-reminders] scanned ${results.length} keys; sent=${sent} skipped=${skipped} failed=${failed}`,
     )
+
+    // ─── Annual billing report (sec. 13ב(ב1)) ─────────────────
+    // Once a year, on March 1st (Israel time), email each
+    // subscriber a summary of every charge from the previous
+    // calendar year. This is a hard legal requirement for
+    // continuing transactions, regardless of how the user is
+    // billed. Idempotent — each key gets stamped with
+    // annualReport{YEAR}SentAt so a re-run on the same day
+    // doesn't double-send.
+    const annualResults = await maybeSendAnnualReports(db)
+
     return res.status(200).json({
       ok: true,
       scanned: results.length,
@@ -385,10 +423,183 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       skipped,
       failed,
       results,
+      annual: annualResults,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
     console.error('cron/expiry-reminders failed', err)
     return res.status(500).json({ ok: false, error: message })
   }
+}
+
+// ─── Annual billing report ────────────────────────────────────
+
+/** Check if today is March 1st (Israel time). The annual report is
+ *  triggered on this date per sec. 13ב(ב1) — the law says "during
+ *  March" but most practitioners interpret as "early in March", and
+ *  the 1st gives users the maximum time to review/dispute. */
+function isMarchFirstIsraelTime(): boolean {
+  // Convert "now" to Israel time by formatting through Intl, then
+  // parsing the resulting MM-DD. Simpler than a tz library; works
+  // because we only care about the date, not exact moment.
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jerusalem',
+    month: '2-digit',
+    day: '2-digit',
+  })
+  const parts = fmt.format(new Date()).split('-')
+  // 'en-CA' gives YYYY-MM-DD, but with the format above we only
+  // get MM-DD. The parts will be ['03', '01'] on March 1st.
+  if (parts.length === 2) {
+    return parts[0] === '03' && parts[1] === '01'
+  }
+  // Defensive: if parsing weird, just don't send (better than
+  // false positive).
+  return false
+}
+
+async function maybeSendAnnualReports(
+  db: ReturnType<typeof getFirestore>,
+): Promise<{ ran: boolean; sent: number; failed: number; skipped: number }> {
+  if (!isMarchFirstIsraelTime()) {
+    return { ran: false, sent: 0, failed: 0, skipped: 0 }
+  }
+  const year = new Date().getFullYear() - 1 // report for PREVIOUS year
+  const stampField = `annualReport${year}SentAt` as const
+  const yearStart = new Date(`${year}-01-01T00:00:00Z`).toISOString()
+  const yearEnd = new Date(`${year + 1}-01-01T00:00:00Z`).toISOString()
+
+  // Pull every productKey backed by a subscription that has any
+  // billing history. We can't filter inside Firestore (Firestore
+  // doesn't support array-of-objects-with-date predicates) so we
+  // post-filter in code.
+  const snap = await db
+    .collection('productKeys')
+    .where('subscriptionId', '!=', null)
+    .get()
+
+  let sent = 0
+  let failed = 0
+  let skipped = 0
+  for (const doc of snap.docs) {
+    const data = doc.data() as KeyDoc
+    const recipient = (data.buyerEmail || data.redeemedByEmail || '').trim()
+    if (!recipient) {
+      skipped += 1
+      continue
+    }
+    // Already sent this year's report? Skip.
+    if (data[stampField]) {
+      skipped += 1
+      continue
+    }
+    // Filter the billing history to last calendar year's charges.
+    const charges = (data.billingHistory || []).filter((c) => {
+      if (!c.at) return false
+      return c.at >= yearStart && c.at < yearEnd
+    })
+    if (charges.length === 0) {
+      skipped += 1
+      continue
+    }
+    try {
+      await sendAnnualReportEmail({
+        to: recipient,
+        year,
+        charges,
+        keyId: doc.id,
+      })
+      await doc.ref.update({ [stampField]: new Date().toISOString() })
+      sent += 1
+    } catch (err) {
+      console.error(`annual report failed for ${doc.id}:`, err)
+      failed += 1
+    }
+  }
+  return { ran: true, sent, failed, skipped }
+}
+
+async function sendAnnualReportEmail(args: {
+  to: string
+  year: number
+  charges: Array<{ amount?: number; currency?: string; at?: string }>
+  keyId: string
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  // Build the table of charges
+  const totalByCurrency: Record<string, number> = {}
+  const rows = args.charges
+    .slice()
+    .sort((a, b) => (a.at || '').localeCompare(b.at || ''))
+    .map((c) => {
+      const amount = c.amount || 0
+      const cur = c.currency || 'ILS'
+      totalByCurrency[cur] = (totalByCurrency[cur] || 0) + amount
+      const dateStr = c.at
+        ? new Date(c.at).toLocaleDateString('he-IL', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            timeZone: 'Asia/Jerusalem',
+          })
+        : '—'
+      const sym = cur === 'ILS' ? '₪' : cur === 'USD' ? '$' : cur
+      return `<tr><td style="padding:6px 12px;border-bottom:1px solid #2a2a3a;color:#e5e7eb;">${dateStr}</td><td style="padding:6px 12px;border-bottom:1px solid #2a2a3a;color:#fbbf24;text-align:left;direction:ltr;">${amount} ${sym}</td></tr>`
+    })
+    .join('')
+  const totalsHtml = Object.entries(totalByCurrency)
+    .map(([cur, amt]) => {
+      const sym = cur === 'ILS' ? '₪' : cur === 'USD' ? '$' : cur
+      return `<strong style="color:#fbbf24;">${amt} ${sym}</strong>`
+    })
+    .join(' / ')
+  const html = `<!doctype html>
+<html lang="he" dir="rtl">
+  <head><meta charset="utf-8"/><meta name="color-scheme" content="only dark"/></head>
+  <body style="margin:0;padding:0;background-color:#0b0b14;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;">
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#0b0b14;">
+      <tr><td align="center" style="padding:32px 16px;">
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width:560px;width:100%;background-color:#14141f;border-radius:16px;border:1px solid #2a2a3a;">
+          <tr><td style="padding:32px;text-align:right;direction:rtl;">
+            <h1 style="margin:0 0 16px;font-size:22px;color:#fbbf24;font-weight:700;">סיכום חיובים שנתי — ${args.year}</h1>
+            <p style="margin:0 0 14px;font-size:14px;line-height:1.7;color:#e5e7eb;">
+              ריכוז כל החיובים שבוצעו על המנוי שלך ל-<strong>ניהול הורדות פלוס</strong> במהלך ${args.year}.
+              מסמך זה נשלח אליך אחת לשנה לפי דרישת חוק הגנת הצרכן.
+            </p>
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:18px 0;border:1px solid #2a2a3a;border-radius:8px;overflow:hidden;">
+              <thead>
+                <tr style="background:#0b0b14;">
+                  <th style="padding:8px 12px;text-align:right;color:#9ca3af;font-weight:500;font-size:12px;">תאריך</th>
+                  <th style="padding:8px 12px;text-align:left;color:#9ca3af;font-weight:500;font-size:12px;direction:ltr;">סכום</th>
+                </tr>
+              </thead>
+              <tbody style="font-size:13px;">${rows}</tbody>
+            </table>
+            <p style="margin:14px 0;font-size:14px;color:#e5e7eb;text-align:right;">
+              <strong>סה״כ ${args.year}:</strong> ${totalsHtml}
+            </p>
+            <p style="margin:24px 0 0;font-size:11px;color:#6b7280;">
+              שאלות? תשובה ישירה למייל הזה תגיע לתמיכה.
+            </p>
+            <p style="margin:8px 0 0;font-size:11px;color:#6b7280;">
+              לניהול או ביטול המנוי: <a href="https://dm-plus.vercel.app/manage" style="color:#fbbf24;">ניהול תוכנית</a>
+            </p>
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>`
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    subject: `סיכום חיובים שנתי — ${args.year}`,
+    html,
+  })
 }

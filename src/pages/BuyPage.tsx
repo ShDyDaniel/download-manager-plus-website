@@ -171,6 +171,25 @@ export function BuyPage() {
   const pricingRef = useRef<LivePricing>(DEFAULT_PRICING)
   pricingRef.current = pricing ?? DEFAULT_PRICING
 
+  // ── Subscription flow state (NEW, replaces the per-purchase
+  //    capture flow for non-renewal mode) ────────────────────────
+  // Required by Israeli consumer-protection law: the buyer must
+  // tick a separate checkbox affirming consent to auto-renewal,
+  // distinct from the general terms agreement. We DO NOT pre-tick
+  // it — the user has to act.
+  const [autoRenewAccepted, setAutoRenewAccepted] = useState(false)
+  // While true, the create-link request is in flight. Disables the
+  // submit button so the user can't double-submit and accidentally
+  // create two subscriptions.
+  const [subSubmitting, setSubSubmitting] = useState(false)
+  // Returned URL param after PayPal redirects the user back here
+  // post-approval (`?subscribed=1`) or post-cancel-on-PayPal-side
+  // (`?cancelled=1`). Drives the post-redirect success/cancel UI.
+  const [postReturn, setPostReturn] = useState<
+    'subscribed' | 'cancelled' | null
+  >(null)
+  const [subError, setSubError] = useState<string | null>(null)
+
   const planRef = useRef(plan)
   planRef.current = plan
   const emailRef = useRef(email)
@@ -178,6 +197,63 @@ export function BuyPage() {
   const renewTokenRef = useRef<string | null>(renewToken)
   renewTokenRef.current = renewToken
   const buttonContainer = useRef<HTMLDivElement>(null)
+
+  // Detect ?subscribed=1 / ?cancelled=1 returned by PayPal after
+  // the user finishes (or backs out of) the approval flow. We do
+  // this once on mount — same place we already parse ?renew=token.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('subscribed') === '1') setPostReturn('subscribed')
+    else if (params.get('cancelled') === '1') setPostReturn('cancelled')
+  }, [])
+
+  /** Create the subscription server-side and redirect the user to
+   *  PayPal's approval page. The server picks the locked-in plan_id
+   *  based on the LIVE pricing in Firestore — the client has no
+   *  say in the price, only in the cycle ("monthly" | "yearly")
+   *  and the email to attach to the subscription. See the SECURITY
+   *  comment in /api/subscription/create-link.ts for the full
+   *  threat model. */
+  async function submitSubscription(e: React.FormEvent) {
+    e.preventDefault()
+    if (subSubmitting) return
+    setSubError(null)
+    const cleanEmail = email.trim().toLowerCase()
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setSubError('הזן כתובת מייל תקינה')
+      return
+    }
+    if (!autoRenewAccepted) {
+      setSubError('יש לאשר את החיוב המתחדש')
+      return
+    }
+    setSubSubmitting(true)
+    try {
+      const r = await fetch('/api/subscription/create-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan, email: cleanEmail }),
+      })
+      const json = (await r.json()) as {
+        ok: boolean
+        approvalUrl?: string
+        error?: string
+      }
+      if (!r.ok || !json.ok || !json.approvalUrl) {
+        throw new Error(json.error || 'יצירת המנוי נכשלה')
+      }
+      // Whole-page redirect to PayPal. After the user approves (or
+      // cancels), PayPal sends them back to /buy?subscribed=1 or
+      // /buy?cancelled=1 per the application_context.return_url /
+      // cancel_url we set when creating the subscription.
+      window.location.href = json.approvalUrl
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
+      setSubError(message)
+      setSubSubmitting(false)
+    }
+  }
 
   // Fetch pricing once on mount. We don't block render on this —
   // the page renders with `pricing=null` initially, the plan cards
@@ -729,6 +805,17 @@ export function BuyPage() {
             </div>
           )}
 
+          {/* Two flows live in this card:
+              - Renewal mode (?renew=<token> in URL): existing flow
+                that uses the embedded PayPal Smart Buttons + capture
+                endpoint to extend a one-shot key. Untouched.
+              - Subscription mode (no renew token): NEW auto-renewing
+                subscription flow that POSTs the buyer to PayPal's
+                full-page approval URL. Returns here with
+                ?subscribed=1 (success) or ?cancelled=1 (backed out).
+
+              The discriminator is `renewToken`. When it's null, we're
+              in subscription mode. */}
           {renewLoading ? (
             <div className="flex items-center justify-center gap-2 rounded-2xl border border-border bg-bg-elevated p-5 text-primary">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -751,133 +838,77 @@ export function BuyPage() {
                 מייל אישור.
               </p>
             </div>
-          ) : status.kind === 'success' ? (
-            <div className="rounded-2xl border border-success/40 bg-success/10 p-5 text-center">
-              <div className="mb-2 text-base font-semibold text-success">
-                התשלום הושלם בהצלחה ✓
+          ) : renewToken ? (
+            /* ─── RENEWAL MODE (existing one-shot extension flow) ─── */
+            status.kind === 'success' ? (
+              <div className="rounded-2xl border border-success/40 bg-success/10 p-5 text-center">
+                <div className="mb-2 text-base font-semibold text-success">
+                  התשלום הושלם בהצלחה ✓
+                </div>
+                <p className="text-sm text-fg-secondary">
+                  שלחנו לך מייל ל-
+                  <span dir="ltr" className="font-mono text-fg">
+                    {' '}
+                    {status.email}{' '}
+                  </span>
+                  עם מפתח המוצר.
+                </p>
               </div>
-              <p className="text-sm text-fg-secondary">
-                שלחנו לך מייל ל-
-                <span dir="ltr" className="font-mono text-fg">
-                  {' '}
-                  {status.email}{' '}
-                </span>
-                עם מפתח המוצר. פתח את התוכנה, לחץ "מימוש מפתח מוצר" והדבק.
-              </p>
-              <p className="mt-3 rounded-lg border border-primary/30 bg-primary/[0.06] px-3 py-2 text-xs text-primary">
-                💡 <strong>לא רואה את המייל?</strong> יכול להיות שהוא בספאם או
-                בקידום מכירות.
-              </p>
-            </div>
-          ) : status.kind === 'processing' ? (
-            <div className="flex items-center justify-center gap-2 rounded-2xl border border-primary/30 bg-primary/10 p-5 text-primary">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              מייצר עבורך מפתח ושולח במייל...
-            </div>
-          ) : !emailLocked ? (
-            <form onSubmit={confirmEmail} className="space-y-4">
-              <label className="block">
-                <span className="mb-1.5 block text-xs text-fg-secondary">
-                  כתובת מייל לקבלת המפתח
-                </span>
-                <input
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  dir="ltr"
-                  className="w-full rounded-xl border border-border bg-bg-elevated px-4 py-3 text-right text-base text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none"
-                />
-              </label>
-              {/* Primary purchase CTA. Bigger, bolder, with a Crown
-                  glyph anchoring it as the unmistakable "buy Pro"
-                  action on the page. Copper glow + scale-on-hover
-                  give it the visual weight the previous flat button
-                  was missing — buyers were getting lost between the
-                  features list and the PayPal block, unsure where to
-                  click. The plan + price are spelled out on a second
-                  line so the commitment is fully transparent before
-                  PayPal even renders. */}
-              <button
-                type="submit"
-                className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl bg-primary px-6 py-4 text-base font-bold text-bg shadow-lg shadow-primary/30 transition-all hover:bg-primary-hover hover:shadow-xl hover:shadow-primary/40 active:scale-[0.98]"
-              >
-                <Crown className="h-5 w-5" />
-                <span className="flex flex-col items-center leading-tight">
-                  <span className="text-base md:text-lg">
-                    רכישת מנוי Pro
-                  </span>
-                  <span className="text-[11px] font-medium opacity-80">
-                    {PLAN_META[plan].label} ·{' '}
-                    {formatPrice(
-                      effectivePrice(pricingRef.current[plan]),
-                    )}{' '}
-                    {currencySymbol(pricingRef.current.currency)}
-                    {plan === 'yearly' && ' לשנה'}
-                    {plan === 'monthly' && ' לחודש'}
-                  </span>
-                </span>
-                <ArrowRight className="h-4 w-4 rotate-180 transition-transform group-hover:-translate-x-1" />
-              </button>
-              <p className="text-center text-[11px] text-fg-muted">
-                תשלום מאובטח דרך PayPal · אין אחסון של פרטי כרטיס אצלנו
-              </p>
-            </form>
+            ) : status.kind === 'processing' ? (
+              <div className="flex items-center justify-center gap-2 rounded-2xl border border-primary/30 bg-primary/10 p-5 text-primary">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                מאריך את המפתח שלך...
+              </div>
+            ) : !emailLocked ? (
+              <form onSubmit={confirmEmail} className="space-y-4">
+                {/* Renewal mode uses the email field as a confirmation
+                    step — the buyer's email is already known from the
+                    renew token; this is just to acknowledge it before
+                    PayPal renders. */}
+                <button
+                  type="submit"
+                  className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl bg-primary px-6 py-4 text-base font-bold text-bg shadow-lg shadow-primary/30 transition-all hover:bg-primary-hover hover:shadow-xl hover:shadow-primary/40 active:scale-[0.98]"
+                >
+                  <Crown className="h-5 w-5" />
+                  המשך לחידוש —{' '}
+                  {formatPrice(effectivePrice(pricingRef.current[plan]))}{' '}
+                  {currencySymbol(pricingRef.current.currency)}
+                </button>
+              </form>
+            ) : (
+              <>
+                {status.kind === 'error' && (
+                  <div className="mb-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-xs text-destructive">
+                    {status.message}
+                  </div>
+                )}
+                {sdkError ? (
+                  <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive">
+                    {sdkError}
+                  </div>
+                ) : !sdkReady ? (
+                  <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-elevated px-4 py-4 text-xs text-fg-muted">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    טוען את PayPal...
+                  </div>
+                ) : null}
+                <div id="paypal-button-container" ref={buttonContainer} />
+              </>
+            )
           ) : (
-            <>
-              {/* In renewal mode the buyer + key are already shown
-                  in the cyan banner above, and they can't change
-                  the email (it's bound to the existing key) — so
-                  skip this summary row entirely. */}
-              {!renewToken && (
-                <div className="mb-3 rounded-xl border border-border bg-bg-elevated px-4 py-2.5 text-sm">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <span className="text-fg-muted">מייל: </span>
-                      <span dir="ltr" className="font-mono text-fg">
-                        {email}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEmailLocked(false)
-                        setStatus({ kind: 'idle' })
-                      }}
-                      className="text-xs text-primary hover:text-accent"
-                    >
-                      שינוי
-                    </button>
-                  </div>
-                  <div className="mt-1 text-xs text-fg-faint">
-                    תוכנית: {PLAN_META[plan].label} ·{' '}
-                    {formatPrice(effectivePrice(pricingRef.current[plan]))}{' '}
-                    {currencySymbol(pricingRef.current.currency)}
-                  </div>
-                </div>
-              )}
-              {status.kind === 'error' && (
-                <div className="mb-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-xs text-destructive">
-                  {status.message}
-                </div>
-              )}
-              {sdkError ? (
-                <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-                  {sdkError}
-                </div>
-              ) : !sdkReady ? (
-                <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-elevated px-4 py-4 text-xs text-fg-muted">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  טוען את PayPal...
-                </div>
-              ) : null}
-              <div id="paypal-button-container" ref={buttonContainer} />
-              <p className="mt-4 text-center text-[11px] text-fg-muted">
-                התשלום מאובטח דרך PayPal. אתה לא מועבר לאתר חיצוני — חלון
-                התשלום נפתח כאן באתר.
-              </p>
-            </>
+            /* ─── SUBSCRIPTION MODE (new auto-renewing flow) ─── */
+            <SubscriptionFlow
+              postReturn={postReturn}
+              email={email}
+              setEmail={setEmail}
+              plan={plan}
+              pricing={pricingRef.current}
+              autoRenewAccepted={autoRenewAccepted}
+              setAutoRenewAccepted={setAutoRenewAccepted}
+              submitting={subSubmitting}
+              error={subError}
+              onSubmit={submitSubscription}
+            />
           )}
         </motion.div>
       </div>
@@ -1207,5 +1238,240 @@ function PlanCard({
           : note}
       </div>
     </button>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  SubscriptionFlow — the new auto-renewing payment flow.
+ *
+ *  Renders ONE of three states:
+ *    1. Subscribed success (returned from PayPal with ?subscribed=1)
+ *    2. User cancelled at PayPal (?cancelled=1)
+ *    3. Default — the email + auto-renew checkbox + submit form
+ *
+ *  Legal-compliance disclosures embedded directly in the form
+ *  (Israeli consumer-protection law sec. 13ג, 13ד):
+ *    - Plan + price + currency clearly stated
+ *    - Auto-renewal disclosure with the exact billing cycle
+ *    - How to cancel (link to /manage)
+ *    - Separate explicit consent checkbox (NOT pre-ticked)
+ *    - No-refund policy disclosure
+ *
+ *  The actual price comes from `pricing` so admin changes (including
+ *  active sales) propagate to the form immediately.
+ * ───────────────────────────────────────────────────────────── */
+function SubscriptionFlow({
+  postReturn,
+  email,
+  setEmail,
+  plan,
+  pricing,
+  autoRenewAccepted,
+  setAutoRenewAccepted,
+  submitting,
+  error,
+  onSubmit,
+}: {
+  postReturn: 'subscribed' | 'cancelled' | null
+  email: string
+  setEmail: (s: string) => void
+  plan: Plan
+  pricing: LivePricing
+  autoRenewAccepted: boolean
+  setAutoRenewAccepted: (b: boolean) => void
+  submitting: boolean
+  error: string | null
+  onSubmit: (e: React.FormEvent) => void
+}) {
+  if (postReturn === 'subscribed') {
+    return (
+      <div className="rounded-2xl border border-success/40 bg-success/10 p-5 text-center">
+        <CheckCircle2 className="mx-auto mb-2 h-6 w-6 text-success" />
+        <div className="mb-2 text-base font-semibold text-success">
+          המנוי נוצר בהצלחה ✓
+        </div>
+        <p className="text-sm text-fg-secondary">
+          שלחנו לך מייל עם מפתח המוצר. פתח את התוכנה, לחץ "מימוש מפתח מוצר"
+          והדבק.
+        </p>
+        <p className="mt-3 rounded-lg border border-primary/30 bg-primary/[0.06] px-3 py-2 text-xs text-primary">
+          💡 <strong>לא רואה את המייל?</strong> ייקח לפעמים עד דקה. בדוק גם
+          בספאם / קידום מכירות.
+        </p>
+        <p className="mt-3 text-xs text-fg-muted">
+          המנוי מתחדש אוטומטית. לביטול בכל עת:{' '}
+          <a
+            href="/manage"
+            className="text-accent underline underline-offset-2"
+          >
+            ניהול תוכנית
+          </a>
+        </p>
+      </div>
+    )
+  }
+
+  if (postReturn === 'cancelled') {
+    return (
+      <div className="rounded-2xl border border-border bg-bg-elevated p-5 text-center">
+        <div className="mb-2 text-base font-semibold text-fg">
+          הרישום בוטל
+        </div>
+        <p className="text-sm text-fg-secondary">
+          לא נוצר מנוי ולא חויבת. אם זה היה בטעות — פשוט נסה שוב למטה.
+        </p>
+        <a
+          href="/buy"
+          className="mt-3 inline-block text-xs text-accent underline underline-offset-2"
+        >
+          חזרה לטופס הרישום
+        </a>
+      </div>
+    )
+  }
+
+  const eff = effectivePrice(pricing[plan])
+  const sym = currencySymbol(pricing.currency)
+  const cycleLabel = plan === 'monthly' ? 'חודש' : 'שנה'
+  const onSale = pricing[plan].sale != null
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-4">
+      <label className="block">
+        <span className="mb-1.5 block text-xs text-fg-secondary">
+          כתובת מייל לקבלת מפתח המנוי
+        </span>
+        <input
+          type="email"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
+          dir="ltr"
+          className="w-full rounded-xl border border-border bg-bg-elevated px-4 py-3 text-right text-base text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none"
+          disabled={submitting}
+        />
+      </label>
+
+      {/* Legal disclosure block — required by Israeli consumer-
+          protection law (sec. 13ג). All material terms of the
+          recurring transaction in one prominent box, in clear
+          Hebrew, BEFORE the user clicks subscribe. */}
+      <div className="rounded-xl border border-primary/30 bg-primary/[0.05] p-4 text-xs leading-relaxed">
+        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-primary">
+          <Crown className="h-4 w-4" />
+          סיכום העסקה — אנא קרא לפני אישור
+        </div>
+        <ul className="space-y-1.5 text-fg-secondary">
+          <li>
+            • <strong>תוכנית:</strong> מנוי Pro {cycleLabel === 'חודש' ? 'חודשי' : 'שנתי'}.
+          </li>
+          <li>
+            • <strong>סכום החיוב:</strong>{' '}
+            {onSale ? (
+              <>
+                <span className="line-through text-fg-faint">
+                  {formatPrice(pricing[plan].regular)} {sym}
+                </span>{' '}
+                <strong className="text-success">
+                  {formatPrice(eff)} {sym}
+                </strong>{' '}
+                לכל {cycleLabel}
+                {pricing.saleLabel && (
+                  <span className="ms-1 text-success">({pricing.saleLabel})</span>
+                )}
+              </>
+            ) : (
+              <strong className="text-fg">
+                {formatPrice(eff)} {sym} לכל {cycleLabel}
+              </strong>
+            )}
+          </li>
+          <li>
+            • <strong>חידוש אוטומטי:</strong> החיוב יתחדש אוטומטית כל {cycleLabel}{' '}
+            עד לביטול.
+            {onSale && (
+              <>
+                {' '}
+                המחיר ה<strong>מוזל</strong> שלך נשמר לכל אורך תקופת המנוי —
+                גם אם המבצע יסתיים, אתה תמשיך לשלם {formatPrice(eff)} {sym} עד
+                שתבטל.
+              </>
+            )}
+          </li>
+          <li>
+            • <strong>ביטול:</strong> ניתן לבטל בכל עת בדף{' '}
+            <a href="/manage" className="text-accent underline underline-offset-2">
+              ניהול תוכנית
+            </a>
+            . הביטול נכנס לתוקף מיידית — לא תחויב על תקופות עתידיות. גישת ה-Pro
+            תישאר פעילה עד סוף התקופה ששולמה.
+          </li>
+          <li>
+            • <strong>מדיניות החזרים:</strong> מאחר שמדובר במוצר דיגיטלי שניתן
+            לשימוש מיידי, אין החזר על תקופות שכבר שולמו.
+          </li>
+          <li>
+            • <strong>אבטחה:</strong> התשלום מתבצע ישירות אצל PayPal. אנחנו לא
+            מאחסנים פרטי כרטיס.
+          </li>
+        </ul>
+      </div>
+
+      {/* Separate explicit consent checkbox — required by the law
+          to be DISTINCT from any general terms-of-use acceptance,
+          and NOT pre-ticked. */}
+      <label className="flex items-start gap-2.5 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={autoRenewAccepted}
+          onChange={(e) => setAutoRenewAccepted(e.target.checked)}
+          className="mt-[3px] h-4 w-4 shrink-0 cursor-pointer accent-primary"
+          disabled={submitting}
+        />
+        <span className="text-xs text-fg-secondary leading-relaxed">
+          אני מאשר/ת חיוב אוטומטי מתחדש בסך {formatPrice(eff)} {sym} כל{' '}
+          {cycleLabel}, עד שאבטל את המנוי דרך{' '}
+          <a
+            href="/manage"
+            className="text-accent underline underline-offset-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            ניהול תוכנית
+          </a>
+          .
+        </span>
+      </label>
+
+      {error && (
+        <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      )}
+
+      <button
+        type="submit"
+        disabled={submitting || !autoRenewAccepted}
+        className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl bg-primary px-6 py-4 text-base font-bold text-bg shadow-lg shadow-primary/30 transition-all hover:bg-primary-hover hover:shadow-xl hover:shadow-primary/40 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {submitting ? (
+          <>
+            <Loader2 className="h-5 w-5 animate-spin" />
+            מעביר ל-PayPal...
+          </>
+        ) : (
+          <>
+            <Crown className="h-5 w-5" />
+            <span className="flex flex-col items-center leading-tight">
+              <span className="text-base md:text-lg">המשך לתשלום ב-PayPal</span>
+              <span className="text-[11px] font-medium opacity-80">
+                {formatPrice(eff)} {sym} / {cycleLabel} · מתחדש אוטומטית
+              </span>
+            </span>
+            <ArrowRight className="h-4 w-4 rotate-180 transition-transform group-hover:-translate-x-1" />
+          </>
+        )}
+      </button>
+    </form>
   )
 }
