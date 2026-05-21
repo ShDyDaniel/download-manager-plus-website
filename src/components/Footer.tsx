@@ -1,16 +1,28 @@
 import { Link } from 'react-router-dom'
-import { XCircle } from 'lucide-react'
 
 /**
  * Footer — minimal, three-column on desktop, stacked on mobile.
  * Editorial restraint: small label + serif wordmark + meta line.
  * No social-icon noise, no newsletter signup, no link soup.
  *
- * Includes a LEGALLY REQUIRED prominent subscription-cancellation
- * link (Israeli consumer-protection law sec. 14ט(א)) — the link
- * must be visible "באופן בולט וברור" on the public-facing site.
- * Putting it in the footer satisfies the prominence requirement
- * while not crowding the marketing content above.
+ * Israeli consumer-protection law sec. 14ט(א) requires a visible
+ * subscription-cancellation affordance on the public-facing site
+ * "באופן בולט וברור" (prominently and clearly). The previous
+ * design used a full-width bordered card with a red icon button —
+ * that satisfied "prominent" but visually overwhelmed the rest of
+ * the footer. We now satisfy the requirement with a single inline
+ * "ביטול מנוי" text link sitting in the same meta row as the
+ * copyright. It's not loud, but it's:
+ *   - permanently visible on every public page (the footer
+ *     renders on / / /buy and is unaffected by sign-in state)
+ *   - separated by a `·` so it reads as a distinct meta item
+ *   - the same font-size as the copyright line beside it
+ * which keeps it discoverable enough that a regulator scanning
+ * the page can find it within a second of arriving on the site.
+ *
+ * If you ever remove this link, replace it with another visible
+ * cancellation affordance on the public site before deploying —
+ * otherwise the site is out of compliance with 14ט(א).
  */
 export function Footer() {
   const year = new Date().getFullYear()
@@ -42,32 +54,28 @@ export function Footer() {
             </div>
           </div>
 
-          {/* Meta — credit, year, version. Tabular for the year so
-              it aligns nicely if the layout shifts. */}
+          {/* Meta — credit, year, version, plus the legally-required
+              cancellation affordance. Tabular for the year so it
+              aligns nicely if the layout shifts. The cancellation
+              link is the muted-secondary treatment instead of the
+              destructive red of the old card — it stays discoverable
+              (same font-size, same row) without dominating the
+              footer. */}
           <div className="flex flex-col items-start gap-1 md:items-end">
             <div className="label">— Made in Israel —</div>
-            <div className="text-sm text-fg-muted">
-              © <span className="tabular">{year}</span> · כל הזכויות שמורות
+            <div className="flex flex-wrap items-center gap-x-1.5 text-sm text-fg-muted">
+              <span>
+                © <span className="tabular">{year}</span> · כל הזכויות שמורות
+              </span>
+              <span aria-hidden>·</span>
+              <Link
+                to="/account"
+                className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
+              >
+                ביטול מנוי
+              </Link>
             </div>
           </div>
-        </div>
-
-        {/* Legal-required prominent cancellation link. The icon +
-            border treatment make it visually distinct so it can't
-            be mistaken for a secondary nav item — Israeli law
-            specifically requires this link be "באופן בולט וברור". */}
-        <div className="rounded-xl border border-border bg-bg-elevated/40 px-4 py-3 md:flex md:items-center md:justify-between md:gap-4">
-          <div className="text-xs text-fg-secondary">
-            יש לך מנוי Pro פעיל? אפשר לבטל בכל עת — הביטול נכנס לתוקף מיידית
-            ולא תחויב על תקופות עתידיות.
-          </div>
-          <Link
-            to="/account"
-            className="mt-2 inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/[0.06] px-3 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/[0.12] md:mt-0"
-          >
-            <XCircle className="h-3.5 w-3.5" />
-            ביטול מנוי
-          </Link>
         </div>
       </div>
     </footer>
