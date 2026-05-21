@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { getFirestore } from 'firebase-admin/firestore'
+import nodemailer from 'nodemailer'
 
 /**
  * Server-side product-key redemption. Replaces the previous flow
@@ -152,6 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           expiresAt: string | null
           keyId: string
           replacedKeys: string[]
+          newlyActivated: boolean
         }
       | { ok: false; status: number; error: string }
     >(async (txn) => {
@@ -202,6 +204,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           expiresAt: data.expiresAt ?? null,
           keyId: rawKey,
           replacedKeys: [],
+          // No state change — the caller should NOT send a
+          // "Pro activated" email this round; the user was
+          // already Pro.
+          newlyActivated: false,
         }
       }
 
@@ -250,10 +256,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         expiresAt: data.expiresAt ?? null,
         keyId: rawKey,
         replacedKeys: priorKeyIds,
+        // First-time redemption (or replacement of a different
+        // key) — caller should send the "Pro activated" email
+        // so the user has a record that the activation worked.
+        newlyActivated: true,
       }
     })
 
     if (result.ok) {
+      // Pro-activation email — sent only on a NEW redemption
+      // (newlyActivated=true), not on the idempotent
+      // already-redeemed-by-this-user path. Fire-and-forget;
+      // an email failure shouldn't fail the redemption itself.
+      if (result.newlyActivated) {
+        void sendProActivatedEmail({
+          to: email,
+          key: result.keyId,
+          validUntil: result.expiresAt ? new Date(result.expiresAt) : null,
+        }).catch((err) => {
+          console.error('[keys/redeem] pro-activated email failed:', err)
+        })
+      }
       return res.status(200).json({
         ok: true,
         tier: result.tier,
@@ -270,4 +293,110 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error('keys/redeem handler failed', err)
     return res.status(500).json({ ok: false, error: message })
   }
+}
+
+const WEBSITE_BASE_REDEEM = 'https://dm-plus.vercel.app'
+
+/**
+ * Pro-activation email. Twin of the same-named function in
+ * api/paypal.ts (kept duplicated, not shared, because Vercel's
+ * per-function bundler has been unreliable with cross-file
+ * imports out of api/). Keep the markup in sync if you tweak
+ * the design.
+ */
+async function sendProActivatedEmail(args: {
+  to: string
+  key: string
+  validUntil: Date | null
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const validUntilStr = args.validUntil
+    ? args.validUntil.toLocaleDateString('he-IL', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        timeZone: 'Asia/Jerusalem',
+      })
+    : 'ללא תפוגה'
+  const keyLast8 = args.key.length >= 8 ? args.key.slice(-8) : args.key
+  const html = renderEmail({
+    heading: '✓ החשבון שלך עכשיו Pro',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
+        המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי Pro בתוכנה <strong>ניהול הורדות פלוס</strong>.
+      </p>
+      <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;line-height:1.8;color:#C9BFA8;">
+          <div>
+            <div style="color:#8B8170;font-size:11px;margin-bottom:4px;">מפתח</div>
+            <div dir="ltr" style="font-family:ui-monospace,'SF Mono',monospace;color:#D4A574;font-size:14px;font-weight:600;">…${keyLast8}</div>
+          </div>
+          <div style="text-align:left;">
+            <div style="color:#8B8170;font-size:11px;margin-bottom:4px;">בתוקף עד</div>
+            <div style="color:#F5EFE6;font-size:14px;font-weight:600;">${validUntilStr}</div>
+          </div>
+        </div>
+      </div>
+      <h3 style="font-size:14px;margin:24px 0 8px;color:#F5EFE6;font-weight:600;">מה אפשר עכשיו</h3>
+      <div style="font-size:13px;line-height:1.9;color:#C9BFA8;">
+        <div>• מיון אוטומטי + חוקי ניתוב מותאמים אישית</div>
+        <div>• הורדה מסרטוני וידאו ב-MP3 / 1080p / 4K</div>
+        <div>• המרת קבצים בין כל הפורמטים</div>
+        <div>• דחיסת וידאו לגודל יעד</div>
+        <div>• הצעות מחיר עם יועץ AI ופלט PDF</div>
+        <div>• ניהול תשלומים והכנסות</div>
+        <div>• עדכונים אוטומטיים ותמיכה מועדפת</div>
+      </div>
+      <p style="font-size:12px;line-height:1.7;margin:24px 0 0;color:#8B8170;">
+        אפשר לראות את פרטי החשבון ולנהל את המנוי בכל עת ב-
+        <a href="${WEBSITE_BASE_REDEEM}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE_REDEEM}/account</a>.
+      </p>
+      <p style="font-size:11px;line-height:1.6;margin:14px 0 0;color:#5C5444;">
+        בכל בעיה — תשובה ישירה למייל הזה תגיע לתמיכה.
+      </p>
+    `,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    subject: '✓ החשבון שלך פעיל — ניהול הורדות פלוס Pro',
+    html,
+  })
+}
+
+/**
+ * Email-template wrapper. Mirror of api/paypal.ts (and friends).
+ * If you change the chrome, change all four files.
+ */
+function renderEmail(args: { heading: string; contentHtml: string }): string {
+  return `<!doctype html>
+<html dir="rtl" lang="he">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="color-scheme" content="only dark"/>
+  <meta name="supported-color-schemes" content="only dark"/>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&display=swap" rel="stylesheet"/>
+</head>
+<body style="margin:0;padding:0;background:#16110D;font-family:'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;color:#F5EFE6;direction:rtl;-webkit-font-smoothing:antialiased;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#16110D;padding:48px 20px;">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
+<tr><td style="padding:40px 36px;text-align:right;direction:rtl;">
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— ניהול הורדות פלוס</div>
+  <h1 style="font-size:28px;margin:0 0 22px;color:#F5EFE6;font-weight:500;line-height:1.18;letter-spacing:-0.015em;direction:rtl;text-align:right;">${args.heading}</h1>
+  ${args.contentHtml}
+</td></tr>
+</table>
+<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— ניהול הורדות פלוס —</div>
+</td></tr>
+</table>
+</body>
+</html>`
 }

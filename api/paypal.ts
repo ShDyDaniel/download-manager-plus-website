@@ -964,6 +964,11 @@ async function ensureKeyForSubscription(
       redeemedAt: null,
     })
   }
+  // Welcome email — always sent, even when the key was auto-
+  // redeemed in the linkToUid branch above. Backup safety net so
+  // the buyer has the key value in their inbox if anything goes
+  // wrong with the auto-bind (or if they want to add the same
+  // license to a second machine some day).
   try {
     await sendSubscriptionWelcomeEmail({
       to: buyerEmail,
@@ -976,6 +981,21 @@ async function ensureKeyForSubscription(
     })
   } catch (err) {
     console.error('[webhook] welcome email failed for', key, err)
+  }
+  // Pro-activation email — only when the key was actually bound
+  // to an account (linkToUid path). Guest purchases don't fire it
+  // here; the manual redemption in /api/keys/redeem will send it
+  // when the user pastes the key inside the app.
+  if (linkToUid) {
+    try {
+      await sendProActivatedEmail({
+        to: buyerEmail,
+        key,
+        validUntil: initialExpiresAt,
+      })
+    } catch (err) {
+      console.error('[webhook] pro-activated email failed for', key, err)
+    }
   }
   return {
     ok: true,
@@ -1942,6 +1962,88 @@ async function sendSubscriptionWelcomeEmail(args: {
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
     subject: 'המנוי שלך פעיל — ניהול הורדות פלוס Pro',
+    html,
+  })
+}
+
+/**
+ * Confirmation email sent the moment a user transitions from Free
+ * → Pro — i.e. the moment a key gets bound to their account for
+ * the first time. Two triggers in the codebase:
+ *   - Webhook auto-redeem branch (this file) when a logged-in
+ *     buyer completes the PayPal flow and the key is created
+ *     already-redeemed.
+ *   - Manual redemption via /api/keys/redeem (mirrored helper
+ *     there) when the user pastes a guest-bought key inside the
+ *     desktop app.
+ *
+ * Different from the welcome email: this one says "your account
+ * IS NOW Pro", not "here's the key". Lets the user know the
+ * activation actually worked end-to-end even if they didn't open
+ * the inbox to fish out a key.
+ */
+async function sendProActivatedEmail(args: {
+  to: string
+  key: string
+  validUntil: Date | null
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const validUntilStr = args.validUntil
+    ? args.validUntil.toLocaleDateString('he-IL', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        timeZone: 'Asia/Jerusalem',
+      })
+    : 'ללא תפוגה'
+  const keyLast8 = args.key.length >= 8 ? args.key.slice(-8) : args.key
+  const html = renderEmail({
+    heading: '✓ החשבון שלך עכשיו Pro',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
+        המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי Pro בתוכנה <strong>ניהול הורדות פלוס</strong>.
+      </p>
+      <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;line-height:1.8;color:#C9BFA8;">
+          <div>
+            <div style="color:#8B8170;font-size:11px;margin-bottom:4px;">מפתח</div>
+            <div dir="ltr" style="font-family:ui-monospace,'SF Mono',monospace;color:#D4A574;font-size:14px;font-weight:600;">…${keyLast8}</div>
+          </div>
+          <div style="text-align:left;">
+            <div style="color:#8B8170;font-size:11px;margin-bottom:4px;">בתוקף עד</div>
+            <div style="color:#F5EFE6;font-size:14px;font-weight:600;">${validUntilStr}</div>
+          </div>
+        </div>
+      </div>
+      <h3 style="font-size:14px;margin:24px 0 8px;color:#F5EFE6;font-weight:600;">מה אפשר עכשיו</h3>
+      <div style="font-size:13px;line-height:1.9;color:#C9BFA8;">
+        <div>• מיון אוטומטי + חוקי ניתוב מותאמים אישית</div>
+        <div>• הורדה מסרטוני וידאו ב-MP3 / 1080p / 4K</div>
+        <div>• המרת קבצים בין כל הפורמטים</div>
+        <div>• דחיסת וידאו לגודל יעד</div>
+        <div>• הצעות מחיר עם יועץ AI ופלט PDF</div>
+        <div>• ניהול תשלומים והכנסות</div>
+        <div>• עדכונים אוטומטיים ותמיכה מועדפת</div>
+      </div>
+      <p style="font-size:12px;line-height:1.7;margin:24px 0 0;color:#8B8170;">
+        אפשר לראות את פרטי החשבון ולנהל את המנוי בכל עת ב-
+        <a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/account</a>.
+      </p>
+      <p style="font-size:11px;line-height:1.6;margin:14px 0 0;color:#5C5444;">
+        בכל בעיה — תשובה ישירה למייל הזה תגיע לתמיכה.
+      </p>
+    `,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    subject: '✓ החשבון שלך פעיל — ניהול הורדות פלוס Pro',
     html,
   })
 }

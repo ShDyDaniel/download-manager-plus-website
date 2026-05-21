@@ -325,6 +325,122 @@ export function BuyPage() {
     }
   }, [])
 
+  // ── SSO bootstrap from the desktop "לקניית רישיון" button ──
+  //
+  // The Electron app opens this page with a Firebase ID token in
+  // the URL fragment (#t=…). Same scheme /account uses. We exchange
+  // the token for our session JWT, then route the user to the
+  // right purchase flow:
+  //
+  //   - Has a primary key → mint a renewToken + redirect to
+  //     /buy?renew=<token>, lighting up the existing yellow renewal
+  //     panel. The webhook will EXTEND their key.
+  //   - No primary key   → set purchaseContext (sessionStorage +
+  //     React state) so the webhook AUTO-REDEEMS the new key to
+  //     this account.
+  //
+  // Token is stripped from the URL immediately — back/forward nav
+  // shouldn't expose it, and screenshots shouldn't capture it.
+  // While the SSO round-trip is in flight we show a small overlay
+  // so the user doesn't see a half-rendered guest-purchase form
+  // for a frame.
+  const [ssoBootstrapping, setSsoBootstrapping] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return /[#&]t=[^&]+/.test(window.location.hash)
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const match = window.location.hash.match(/[#&]t=([^&]+)/)
+    if (!match) return
+    const idToken = decodeURIComponent(match[1])
+    try {
+      const cleanUrl =
+        window.location.pathname +
+        window.location.search +
+        (window.location.hash.replace(/[#&]t=[^&]+/, '').replace(/^#$/, '') || '')
+      window.history.replaceState(null, '', cleanUrl)
+    } catch {
+      // ignore — replaceState rejection is rare and we still
+      // proceed (the token will get used immediately, short-lived).
+    }
+
+    void (async () => {
+      try {
+        const r = await fetch('/api/paypal?action=sso', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken }),
+        })
+        const json = (await r.json()) as {
+          ok: boolean
+          token?: string
+          email?: string
+          profile?: { email: string; keyLast8: string | null }
+          error?: string
+        }
+        if (!r.ok || !json.ok || !json.token || !json.profile) {
+          // SSO failed — silently fall back to guest purchase
+          // flow. Better than blocking the user; they can still
+          // type their email manually and buy.
+          console.warn('[BuyPage] SSO failed, continuing as guest', json.error)
+          return
+        }
+        const sessionToken = json.token
+        const profile = json.profile
+
+        if (profile.keyLast8) {
+          // Has key → mint a renewToken + redirect. The new page
+          // load will pick up ?renew=<token> and show the yellow
+          // renewal panel.
+          const r2 = await fetch('/api/paypal?action=mint-renew-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: sessionToken }),
+          })
+          const json2 = (await r2.json()) as {
+            ok: boolean
+            renewToken?: string
+            error?: string
+          }
+          if (r2.ok && json2.ok && json2.renewToken) {
+            window.location.href = `/buy?renew=${encodeURIComponent(json2.renewToken)}`
+            return
+          }
+          // mint-renew-token failed — fall through to no-key path
+          console.warn(
+            '[BuyPage] mint-renew-token failed, falling back to purchaseContext',
+            json2.error,
+          )
+        }
+
+        // No key (or mint failed) → wire up auto-redeem via
+        // purchaseContext. Sets both sessionStorage (so a refresh
+        // keeps the state) and the in-memory state (so the user
+        // sees the locked-email UI immediately).
+        const ctx: PurchaseContext = {
+          sessionToken,
+          email: profile.email,
+          hasExpiredKey: false,
+        }
+        setPurchaseContext(ctx)
+        setEmail(profile.email)
+        try {
+          window.sessionStorage.setItem(
+            PURCHASE_CONTEXT_KEY,
+            JSON.stringify(ctx),
+          )
+        } catch {
+          // storage off — purchaseContext stays in memory only,
+          // which works fine until the user refreshes.
+        }
+      } catch (err) {
+        console.error('[BuyPage] SSO bootstrap threw', err)
+      } finally {
+        setSsoBootstrapping(false)
+      }
+    })()
+  }, [])
+
   // Parse ?renew=<token> from the URL on mount and look it up. If
   // the token resolves, we flip into renewal mode: the email form
   // disappears (the buyer is already on file) and a banner shows
@@ -626,6 +742,31 @@ export function BuyPage() {
       document.body.style.overflow = prevOverflow
     }
   }, [signinOpen, signinSubmitting])
+
+  // While the SSO from the desktop "buy" button is in flight, show
+  // a full-screen overlay so the user doesn't see a half-rendered
+  // guest-mode form for the ~200ms round-trip. The bootstrap
+  // resolves to one of three states: redirect to /buy?renew=…,
+  // fall back to guest, or set purchaseContext. The overlay hides
+  // all of that.
+  if (ssoBootstrapping) {
+    return (
+      <div
+        dir="rtl"
+        className="flex min-h-screen items-center justify-center px-6"
+      >
+        <div className="flex flex-col items-center gap-3 text-center">
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+          <div className="text-sm font-medium text-fg">
+            מתחבר לחשבון שלך…
+          </div>
+          <div className="text-xs text-fg-muted">
+            שניה אחת.
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <motion.div
