@@ -188,29 +188,52 @@ async function createPaypalPlan(args: {
     args.interval === 'monthly'
       ? { interval_unit: 'MONTH', interval_count: 1 }
       : { interval_unit: 'YEAR', interval_count: 1 }
-  const created = await paypalCall<{ id: string }>('POST', '/v1/billing/plans', {
-    product_id: args.productId,
-    name: `${PAYPAL_PRODUCT_NAME} — ${args.label}`,
-    description: `${args.amount} ${args.currency} ${args.interval === 'monthly' ? 'per month' : 'per year'}`,
-    billing_cycles: [
-      {
-        frequency,
-        tenure_type: 'REGULAR',
-        sequence: 1,
-        total_cycles: 0,
-        pricing_scheme: {
-          fixed_price: { value: args.amount.toFixed(2), currency_code: args.currency },
+  const created = await paypalCall<{ id: string; status?: string }>(
+    'POST',
+    '/v1/billing/plans',
+    {
+      product_id: args.productId,
+      name: `${PAYPAL_PRODUCT_NAME} — ${args.label}`,
+      description: `${args.amount} ${args.currency} ${args.interval === 'monthly' ? 'per month' : 'per year'}`,
+      // Explicitly create in ACTIVE state so the plan is ready for
+      // subscriptions immediately. Without this PayPal's default
+      // varies (sometimes ACTIVE, sometimes CREATED depending on
+      // account settings) — and then calling /activate on an
+      // already-ACTIVE plan returns 422 ("semantically incorrect").
+      status: 'ACTIVE',
+      billing_cycles: [
+        {
+          frequency,
+          tenure_type: 'REGULAR',
+          sequence: 1,
+          total_cycles: 0,
+          pricing_scheme: {
+            fixed_price: { value: args.amount.toFixed(2), currency_code: args.currency },
+          },
         },
+      ],
+      payment_preferences: {
+        auto_bill_outstanding: true,
+        payment_failure_threshold: 1,
+        setup_fee_failure_action: 'CANCEL',
       },
-    ],
-    payment_preferences: {
-      auto_bill_outstanding: true,
-      payment_failure_threshold: 1,
-      setup_fee_failure_action: 'CANCEL',
+      taxes: undefined,
     },
-    taxes: undefined,
-  })
-  await paypalCall('POST', `/v1/billing/plans/${created.id}/activate`, {})
+  )
+  // Belt-and-suspenders: if the plan came back in CREATED state
+  // anyway (some PayPal accounts ignore the status field on create),
+  // try to activate it. 422 here = already ACTIVE = we're done.
+  if (created.status !== 'ACTIVE') {
+    try {
+      await paypalCall('POST', `/v1/billing/plans/${created.id}/activate`, {})
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!msg.includes('422')) throw err
+      console.warn(
+        `[paypal] activate ${created.id} returned 422 — assuming already ACTIVE`,
+      )
+    }
+  }
   return created.id
 }
 
