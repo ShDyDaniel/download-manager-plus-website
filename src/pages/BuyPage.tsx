@@ -721,7 +721,7 @@ export function BuyPage() {
             currency={pricingRef.current.currency}
             saleLabel={pricingRef.current.saleLabel}
             cycle="לחודש"
-            note="מתחדש ידנית מדי 30 יום"
+            note="מתחדש אוטומטית מדי 30 יום"
             loading={pricing === null}
           />
         </div>
@@ -1334,6 +1334,13 @@ function SubscriptionFlow({
   const sym = currencySymbol(pricing.currency)
   const cycleLabel = plan === 'monthly' ? 'חודש' : 'שנה'
   const onSale = pricing[plan].sale != null
+  // Terms modal — replaces the previously-inline "סיכום העסקה"
+  // block. The legal requirement (sec. 13ג) is that the user has
+  // ACCESS to the disclosures before paying, not that they're
+  // permanently visible on screen. A click-to-expand link below
+  // the consent checkbox satisfies that as long as the checkbox
+  // text makes the auto-renew commitment explicit.
+  const [termsOpen, setTermsOpen] = useState(false)
 
   return (
     <form onSubmit={onSubmit} className="space-y-4">
@@ -1353,74 +1360,12 @@ function SubscriptionFlow({
         />
       </label>
 
-      {/* Legal disclosure block — required by Israeli consumer-
-          protection law (sec. 13ג). All material terms of the
-          recurring transaction in one prominent box, in clear
-          Hebrew, BEFORE the user clicks subscribe. */}
-      <div className="rounded-xl border border-primary/30 bg-primary/[0.05] p-4 text-xs leading-relaxed">
-        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-primary">
-          <Crown className="h-4 w-4" />
-          סיכום העסקה — אנא קרא לפני אישור
-        </div>
-        <ul className="space-y-1.5 text-fg-secondary">
-          <li>
-            • <strong>תוכנית:</strong> מנוי Pro {cycleLabel === 'חודש' ? 'חודשי' : 'שנתי'}.
-          </li>
-          <li>
-            • <strong>סכום החיוב:</strong>{' '}
-            {onSale ? (
-              <>
-                <span className="line-through text-fg-faint">
-                  {formatPrice(pricing[plan].regular)} {sym}
-                </span>{' '}
-                <strong className="text-success">
-                  {formatPrice(eff)} {sym}
-                </strong>{' '}
-                לכל {cycleLabel}
-                {pricing.saleLabel && (
-                  <span className="ms-1 text-success">({pricing.saleLabel})</span>
-                )}
-              </>
-            ) : (
-              <strong className="text-fg">
-                {formatPrice(eff)} {sym} לכל {cycleLabel}
-              </strong>
-            )}
-          </li>
-          <li>
-            • <strong>חידוש אוטומטי:</strong> החיוב יתחדש אוטומטית כל {cycleLabel}{' '}
-            עד לביטול.
-            {onSale && (
-              <>
-                {' '}
-                המחיר ה<strong>מוזל</strong> שלך נשמר לכל אורך תקופת המנוי —
-                גם אם המבצע יסתיים, אתה תמשיך לשלם {formatPrice(eff)} {sym} עד
-                שתבטל.
-              </>
-            )}
-          </li>
-          <li>
-            • <strong>ביטול:</strong> ניתן לבטל בכל עת בדף{' '}
-            <a href="/manage" className="text-accent underline underline-offset-2">
-              ניהול תוכנית
-            </a>
-            . הביטול נכנס לתוקף מיידית — לא תחויב על תקופות עתידיות. גישת ה-Pro
-            תישאר פעילה עד סוף התקופה ששולמה.
-          </li>
-          <li>
-            • <strong>מדיניות החזרים:</strong> מאחר שמדובר במוצר דיגיטלי שניתן
-            לשימוש מיידי, אין החזר על תקופות שכבר שולמו.
-          </li>
-          <li>
-            • <strong>אבטחה:</strong> התשלום מתבצע ישירות אצל PayPal. אנחנו לא
-            מאחסנים פרטי כרטיס.
-          </li>
-        </ul>
-      </div>
-
-      {/* Separate explicit consent checkbox — required by the law
-          to be DISTINCT from any general terms-of-use acceptance,
-          and NOT pre-ticked. */}
+      {/* Single explicit consent checkbox. Israeli consumer-
+          protection law (sec. 13ג) requires the auto-renew terms
+          to be disclosed up-front; we satisfy that with the
+          checkbox text + a click-to-expand "תנאי המנוי" link that
+          opens the full terms modal below. The checkbox is NOT
+          pre-ticked (also a legal requirement). */}
       <label className="flex items-start gap-2.5 cursor-pointer">
         <input
           type="checkbox"
@@ -1431,17 +1376,114 @@ function SubscriptionFlow({
         />
         <span className="text-xs text-fg-secondary leading-relaxed">
           אני מאשר/ת חיוב אוטומטי מתחדש בסך {formatPrice(eff)} {sym} כל{' '}
-          {cycleLabel}, עד שאבטל את המנוי דרך{' '}
-          <a
-            href="/manage"
-            className="text-accent underline underline-offset-2"
-            onClick={(e) => e.stopPropagation()}
+          {cycleLabel}, ושקראתי ואני מסכים{' '}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              setTermsOpen(true)
+            }}
+            className="text-accent underline underline-offset-2 hover:text-accent/80"
           >
-            ניהול תוכנית
-          </a>
+            לתנאי המנוי
+          </button>
           .
         </span>
       </label>
+
+      {/* Terms modal — full disclosure of every term required by
+          law (sec. 13ג). Opens on demand from the consent checkbox
+          link above. */}
+      {termsOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setTermsOpen(false)
+          }}
+        >
+          <div className="card-elevated relative w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-2xl border-primary/30 bg-bg-elevated p-6 md:p-7">
+            <button
+              type="button"
+              onClick={() => setTermsOpen(false)}
+              className="absolute left-3 top-3 rounded-md p-1 text-fg-muted hover:text-fg"
+              aria-label="סגור"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-primary">
+              <Crown className="h-4 w-4" />
+              תנאי המנוי — סיכום העסקה
+            </div>
+            <ul className="space-y-2.5 text-xs leading-relaxed text-fg-secondary">
+              <li>
+                • <strong>תוכנית:</strong> מנוי Pro {cycleLabel === 'חודש' ? 'חודשי' : 'שנתי'}.
+              </li>
+              <li>
+                • <strong>סכום החיוב:</strong>{' '}
+                {onSale ? (
+                  <>
+                    <span className="line-through text-fg-faint">
+                      {formatPrice(pricing[plan].regular)} {sym}
+                    </span>{' '}
+                    <strong className="text-success">
+                      {formatPrice(eff)} {sym}
+                    </strong>{' '}
+                    לכל {cycleLabel}
+                    {pricing.saleLabel && (
+                      <span className="ms-1 text-success">
+                        ({pricing.saleLabel})
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <strong className="text-fg">
+                    {formatPrice(eff)} {sym} לכל {cycleLabel}
+                  </strong>
+                )}
+              </li>
+              <li>
+                • <strong>חידוש אוטומטי:</strong> החיוב יתחדש אוטומטית כל{' '}
+                {cycleLabel} עד לביטול.
+                {onSale && (
+                  <>
+                    {' '}
+                    המחיר ה<strong>מוזל</strong> שלך נשמר לכל אורך תקופת המנוי
+                    — גם אם המבצע יסתיים, אתה תמשיך לשלם {formatPrice(eff)}{' '}
+                    {sym} עד שתבטל.
+                  </>
+                )}
+              </li>
+              <li>
+                • <strong>ביטול:</strong> ניתן לבטל בכל עת בדף{' '}
+                <a
+                  href="/manage"
+                  className="text-accent underline underline-offset-2"
+                >
+                  ניהול תוכנית
+                </a>
+                . הביטול נכנס לתוקף מיידית — לא תחויב על תקופות עתידיות. גישת
+                ה-Pro תישאר פעילה עד סוף התקופה ששולמה.
+              </li>
+              <li>
+                • <strong>מדיניות החזרים:</strong> מאחר שמדובר במוצר דיגיטלי
+                שניתן לשימוש מיידי, אין החזר על תקופות שכבר שולמו.
+              </li>
+              <li>
+                • <strong>אבטחה:</strong> התשלום מתבצע ישירות אצל PayPal.
+                אנחנו לא מאחסנים פרטי כרטיס.
+              </li>
+            </ul>
+            <button
+              type="button"
+              onClick={() => setTermsOpen(false)}
+              className="mt-5 w-full rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary-hover"
+            >
+              הבנתי
+            </button>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">

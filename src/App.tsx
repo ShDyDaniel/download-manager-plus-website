@@ -7,6 +7,7 @@ import { FAQ } from './components/FAQ'
 import { Footer } from './components/Footer'
 import { BuyPage } from './pages/BuyPage'
 import { ManagePage } from './pages/ManagePage'
+import AccountPage from './pages/AccountPage'
 
 // Top-level layout. The marketing site is the default route (`/`);
 // the purchase flow lives at `/buy` so the URL is shareable, deep-
@@ -34,6 +35,7 @@ function App() {
       />
       <Route path="/buy" element={<BuyPage />} />
       <Route path="/manage" element={<ManagePage />} />
+      <Route path="/account" element={<AccountPage />} />
     </Routes>
   )
 }

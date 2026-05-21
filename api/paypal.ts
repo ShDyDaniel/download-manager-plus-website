@@ -466,10 +466,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleCreateSubscription(req, res)
       case 'session':
         return await handleSession(req, res)
+      case 'sso':
+        return await handleSso(req, res)
       case 'status':
         return await handleStatus(req, res)
       case 'cancel':
         return await handleCancel(req, res)
+      case 'billing-history':
+        return await handleBillingHistory(req, res)
       case 'sync-plans':
         return await handleSyncPlans(req, res)
       default:
@@ -905,34 +909,105 @@ async function handleSession(req: VercelRequest, res: VercelResponse) {
       .status(502)
       .json({ ok: false, error: 'שירות ההתחברות אינו זמין כרגע. נסו שוב.' })
   }
-  // Belt-and-suspenders try-catch around the whole subscription-
-  // gathering block. Earlier this handler was crashing with
-  // FUNCTION_INVOCATION_FAILED (Vercel HTML error page, not our JSON
-  // 500) on the success path, which meant something was escaping
-  // the dispatcher-level try/catch. The two most likely culprits
-  // were the `where('redeemedBy', '==', null)` compound query (some
-  // firebase-admin versions throw on null-equality) and an
-  // unexpected doc shape in productKeys. Catching here + returning
-  // a graceful JSON 500 means the user gets a real error message
-  // instead of a parse failure on the client.
+  return await respondWithSession(res, { uid, email })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  SSO (action=sso) — auto-login from desktop app
+ *
+ *  The desktop app already has a logged-in Firebase user. Instead
+ *  of forcing the user to type their password again on the web
+ *  /account page, the app fetches a fresh Firebase ID token and
+ *  passes it here. We verify the token against Firebase (the cheap,
+ *  cryptographically-safe equivalent of a password) and mint the
+ *  same session JWT the password-based handleSession would issue.
+ *
+ *  Why ID-token-as-auth is safe here:
+ *    - Firebase ID tokens are short-lived (1h) and signed by
+ *      Google's keys; only Firebase can mint a valid one for a
+ *      given uid. Anyone with a fresh ID token already controls
+ *      that account.
+ *    - The token is transferred in the URL fragment (after `#`),
+ *      which the browser NEVER sends to servers in fetch requests.
+ *      The website JS reads it and immediately strips it from the
+ *      URL via history.replaceState before any other navigation.
+ *    - We only return a session for the matching uid — no token
+ *      grants admin powers or access to other users' data.
+ *
+ *  Request body: { idToken: string }
+ *  Response: identical shape to action=session
+ * ───────────────────────────────────────────────────────────── */
+async function handleSso(req: VercelRequest, res: VercelResponse) {
+  const body = req.body as { idToken?: string }
+  const idToken = (body.idToken || '').trim()
+  if (!idToken) {
+    return res.status(400).json({ ok: false, error: 'missing id token' })
+  }
+  let uid: string
+  let email: string
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken, true)
+    uid = decoded.uid
+    email = (decoded.email || '').toLowerCase()
+    if (!email) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'id token has no email claim' })
+    }
+  } catch (err) {
+    console.error('[paypal/sso] token verification failed', err)
+    return res.status(401).json({ ok: false, error: 'invalid id token' })
+  }
+  return await respondWithSession(res, { uid, email })
+}
+
+interface SubscriptionSummary {
+  key: string
+  subscriptionId: string
+  status: string
+  expiresAt: string | null
+  startedAt: string | null
+  cancelledAt: string | null
+  price: number | null
+  currency: string
+  planDays: number
+  cycleLabel: string
+}
+
+interface ProfileSummary {
+  email: string
+  plan: 'admin' | 'pro' | 'free'
+  planLabel: string
+  keyLast8: string | null
+  validUntil: string | null
+  hasActiveSubscription: boolean
+}
+
+/**
+ * Shared post-auth response for session + sso. Loads the user's
+ * subscriptions, computes a profile summary (so the website can
+ * render the account page without a second roundtrip), and signs
+ * a session JWT.
+ *
+ * Wrapped in try/catch because earlier the Firestore queries here
+ * were crashing the function at the Node runtime layer (escaping
+ * the dispatcher try/catch); keep the defensive layer so a future
+ * regression still surfaces as a JSON 500 the client can render.
+ */
+async function respondWithSession(
+  res: VercelResponse,
+  args: { uid: string; email: string },
+) {
+  const { uid, email } = args
   try {
     const db = getDb()
     const ownedSnap = await db
       .collection('productKeys')
       .where('redeemedBy', '==', uid)
       .get()
-    const subs: Array<{
-      key: string
-      subscriptionId: string
-      status: string
-      expiresAt: string | null
-      startedAt: string | null
-      cancelledAt: string | null
-      price: number | null
-      currency: string
-      planDays: number
-      cycleLabel: string
-    }> = []
+    const subs: SubscriptionSummary[] = []
+    const ownedKeyDocs: KeyDoc[] = []
 
     function pushSub(k: KeyDoc) {
       if (!k.subscriptionId) return
@@ -954,38 +1029,76 @@ async function handleSession(req: VercelRequest, res: VercelResponse) {
     }
 
     for (const doc of ownedSnap.docs) {
-      pushSub(doc.data() as KeyDoc)
+      const k = doc.data() as KeyDoc
+      ownedKeyDocs.push(k)
+      pushSub(k)
     }
 
-    // Also pick up unredeemed buyer-only subscriptions (user
-    // subscribed but hasn't redeemed the key in the app yet) so they
-    // can still cancel. We query JUST by buyerEmail and filter in
+    // Buyer-only subscriptions (user subscribed but hasn't redeemed
+    // the key in the app yet) — query by buyerEmail and filter in
     // JS rather than using a compound `.where(..., '==', null)`
-    // query — the null-equality filter caused FUNCTION_INVOCATION
-    // _FAILED on the live runtime and isn't reliable across all
-    // firebase-admin versions.
+    // query (which crashed the runtime on some firebase-admin
+    // versions).
     const buyerSnap = await db
       .collection('productKeys')
       .where('buyerEmail', '==', email)
       .get()
     for (const doc of buyerSnap.docs) {
       const k = doc.data() as KeyDoc
-      // Only include if NOT redeemed (or redeemed by null/empty).
-      // The owned-by-uid query above already covered the redeemed
-      // case, so we'd just dedupe anyway — but filtering here keeps
-      // the result intent obvious.
       if (k.redeemedBy && k.redeemedBy !== uid) continue
       pushSub(k)
     }
 
     subs.sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''))
 
+    // Compute profile summary so the website /account page can
+    // render the user card without a second backend roundtrip.
+    const isAdmin = ADMIN_EMAILS.includes(email)
+    // Pick the longest-lived owned key for the "active key" display.
+    // Active = expiresAt in the future. Falls back to most-recently-
+    // created if no active keys (so user sees their last key, e.g.
+    // expired).
+    let primaryKey: KeyDoc | null = null
+    const now = Date.now()
+    for (const k of ownedKeyDocs) {
+      const expMs = typeof k.expiresAt === 'string' ? Date.parse(k.expiresAt) : 0
+      if (!primaryKey) {
+        primaryKey = k
+        continue
+      }
+      const currentExpMs =
+        typeof primaryKey.expiresAt === 'string' ? Date.parse(primaryKey.expiresAt) : 0
+      if (expMs > currentExpMs) primaryKey = k
+    }
+    const primaryKeyStr =
+      primaryKey && typeof primaryKey.key === 'string' ? primaryKey.key : null
+    const primaryExpiresAt =
+      primaryKey && typeof primaryKey.expiresAt === 'string'
+        ? primaryKey.expiresAt
+        : null
+    const primaryIsActive = primaryExpiresAt
+      ? Date.parse(primaryExpiresAt) > now
+      : false
+    const hasActiveSub = subs.some(
+      (s) => s.status === 'ACTIVE' || s.status === 'APPROVAL_PENDING',
+    )
+    const profile: ProfileSummary = {
+      email,
+      plan: isAdmin ? 'admin' : primaryIsActive || hasActiveSub ? 'pro' : 'free',
+      planLabel: isAdmin ? 'Admin' : primaryIsActive || hasActiveSub ? 'Pro' : 'חינם',
+      keyLast8: primaryKeyStr ? primaryKeyStr.slice(-8) : null,
+      validUntil: primaryExpiresAt,
+      hasActiveSubscription: hasActiveSub,
+    }
+
     const token = signSessionToken({
       uid,
       email,
       subscriptionIds: subs.map((s) => s.subscriptionId),
     })
-    return res.status(200).json({ ok: true, token, email, subscriptions: subs })
+    return res
+      .status(200)
+      .json({ ok: true, token, email, profile, subscriptions: subs })
   } catch (err) {
     console.error('[paypal/session] post-auth failure:', err)
     const message =
@@ -1119,6 +1232,123 @@ async function handleCancel(req: VercelRequest, res: VercelResponse) {
     subscriptionCancelReason: reason,
   })
   return res.status(200).json({ ok: true, alreadyCancelled: false })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Billing history (action=billing-history) — session-gated
+ *
+ *  Returns the full PayPal transaction history (charges, refunds,
+ *  payouts) for every subscription owned by the session user. The
+ *  /account page renders this as a payments table.
+ *
+ *  Request body: { token, subscriptionId? }
+ *    - token: session JWT
+ *    - subscriptionId: optional — limit to one subscription. Omit
+ *      to get history for ALL of the user's subscriptions.
+ *
+ *  Response: { ok: true, transactions: [{ subscriptionId, ... }] }
+ *
+ *  PayPal's /v1/billing/subscriptions/{id}/transactions endpoint
+ *  is the source of truth. We default the window to the past 2
+ *  years which covers every plausible "show me my history" use
+ *  case for a SaaS that just shipped.
+ * ───────────────────────────────────────────────────────────── */
+
+interface BillingTransaction {
+  subscriptionId: string
+  transactionId: string
+  status: string
+  amountValue: string
+  amountCurrency: string
+  time: string
+  payerEmail: string | null
+}
+
+interface PaypalTransactionPayload {
+  transactions?: Array<{
+    id?: string
+    status?: string
+    amount_with_breakdown?: {
+      gross_amount?: { value?: string; currency_code?: string }
+    }
+    payer_name?: { given_name?: string; surname?: string }
+    payer_email?: string
+    time?: string
+  }>
+}
+
+async function handleBillingHistory(req: VercelRequest, res: VercelResponse) {
+  const body = req.body as { token?: string; subscriptionId?: string }
+  const claims = body.token ? verifySessionToken(body.token) : null
+  if (!claims) {
+    return res.status(401).json({ ok: false, error: 'invalid or expired session' })
+  }
+
+  // Determine which subscription ids to pull history for. If the
+  // caller specified one, verify they own it (claims.subscriptionIds
+  // was minted at session time with the full list); otherwise pull
+  // history for all owned subscriptions.
+  let targetIds: string[]
+  if (body.subscriptionId) {
+    if (!claims.subscriptionIds.includes(body.subscriptionId)) {
+      return res
+        .status(403)
+        .json({ ok: false, error: 'subscription not owned by session user' })
+    }
+    targetIds = [body.subscriptionId]
+  } else {
+    targetIds = claims.subscriptionIds
+  }
+
+  if (targetIds.length === 0) {
+    return res.status(200).json({ ok: true, transactions: [] })
+  }
+
+  // PayPal's transactions endpoint requires explicit start/end
+  // time params. Pull a 2-year window — generous enough that no
+  // user will ever miss anything, narrow enough to stay fast.
+  const end = new Date()
+  const start = new Date(end.getTime() - 730 * 24 * 60 * 60 * 1000)
+  const startIso = start.toISOString()
+  const endIso = end.toISOString()
+
+  const transactions: BillingTransaction[] = []
+  for (const subId of targetIds) {
+    try {
+      const payload = await paypalCall<PaypalTransactionPayload>(
+        'GET',
+        `/v1/billing/subscriptions/${encodeURIComponent(
+          subId,
+        )}/transactions?start_time=${encodeURIComponent(
+          startIso,
+        )}&end_time=${encodeURIComponent(endIso)}`,
+      )
+      for (const t of payload.transactions ?? []) {
+        transactions.push({
+          subscriptionId: subId,
+          transactionId: t.id || '',
+          status: t.status || 'unknown',
+          amountValue: t.amount_with_breakdown?.gross_amount?.value || '0',
+          amountCurrency:
+            t.amount_with_breakdown?.gross_amount?.currency_code || 'ILS',
+          time: t.time || '',
+          payerEmail: t.payer_email || null,
+        })
+      }
+    } catch (err) {
+      // Don't fail the whole list if one subscription's history
+      // fails to fetch (e.g. PayPal returns 404 for a very old
+      // cancelled sub). Log + continue with the rest.
+      console.warn(
+        `[paypal/billing-history] subscription ${subId} fetch failed:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
+  }
+
+  // Newest first.
+  transactions.sort((a, b) => b.time.localeCompare(a.time))
+  return res.status(200).json({ ok: true, transactions })
 }
 
 /* ─────────────────────────────────────────────────────────────
