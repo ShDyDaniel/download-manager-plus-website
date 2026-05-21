@@ -1043,16 +1043,49 @@ async function handleSubscriptionEnded(
   if (keys.empty) {
     return { ok: true, summary: `no key for ${resource.id} — ignored` }
   }
-  await keys.docs[0].ref.update({
+  const keyDocSnap = keys.docs[0]
+  const keyData = keyDocSnap.data() as KeyDoc
+  await keyDocSnap.ref.update({
     subscriptionStatus:
       event.event_type === 'BILLING.SUBSCRIPTION.EXPIRED'
         ? 'expired'
         : 'cancelled',
     subscriptionCancelledAt: new Date().toISOString(),
   })
+
+  // Confirmation email ONLY for genuine cancellations — EXPIRED
+  // means the subscription's natural end-of-life (e.g. a
+  // one-year sub completed its term), where we either already
+  // sent expiry reminders or the user explicitly chose not to
+  // renew. CANCELLED is the "user pulled the plug from inside
+  // PayPal directly" path; they didn't see our /account UI fire,
+  // so we owe them an acknowledgement just like the in-account
+  // cancel flow.
+  if (event.event_type === 'BILLING.SUBSCRIPTION.CANCELLED') {
+    const recipient =
+      keyData.buyerEmail || keyData.redeemedByEmail || null
+    if (recipient) {
+      const validUntilDate = keyData.expiresAt
+        ? new Date(keyData.expiresAt)
+        : null
+      void sendCancellationEmail({
+        to: recipient,
+        validUntil: validUntilDate,
+        reason: null,
+        cancelledFrom: 'paypal-direct',
+      }).catch((err) => {
+        console.error(
+          '[webhook] cancellation email failed for',
+          keyDocSnap.id,
+          err,
+        )
+      })
+    }
+  }
+
   return {
     ok: true,
-    summary: `marked ${keys.docs[0].id} as ${event.event_type}`,
+    summary: `marked ${keyDocSnap.id} as ${event.event_type}`,
   }
 }
 
@@ -1662,6 +1695,22 @@ async function handleCancel(req: VercelRequest, res: VercelResponse) {
     subscriptionCancelledAt: new Date().toISOString(),
     subscriptionCancelReason: reason,
   })
+
+  // Fire confirmation email (legally required per Israeli
+  // consumer-protection sec. 14ט(ב)). Best-effort — a mail
+  // failure shouldn't reverse the cancellation. The user already
+  // got HTTP 200 + sees the cancel succeed in the UI.
+  const recipient = key.buyerEmail || key.redeemedByEmail || claims.email
+  const validUntilDate = key.expiresAt ? new Date(key.expiresAt) : null
+  void sendCancellationEmail({
+    to: recipient,
+    validUntil: validUntilDate,
+    reason,
+    cancelledFrom: 'account',
+  }).catch((err) => {
+    console.error('[paypal/cancel] confirmation email failed:', err)
+  })
+
   return res.status(200).json({ ok: true, alreadyCancelled: false })
 }
 
@@ -2070,6 +2119,80 @@ async function sendProActivatedEmail(args: {
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
     subject: '✓ החשבון שלך פעיל — ניהול הורדות פלוס Pro',
+    html,
+  })
+}
+
+/**
+ * Subscription cancellation confirmation email. Sent two places:
+ *   - handleCancel (action=cancel) — user clicked "ביטול המנוי"
+ *     on /account.
+ *   - handleSubscriptionEnded webhook — user cancelled directly
+ *     inside PayPal (e.g. from PayPal account settings) and the
+ *     CANCELLED event fired our way.
+ *
+ * Doubles as the legally-required confirmation under Israeli
+ * consumer-protection law sec. 14ט(ב) (acknowledgement of
+ * cancellation within 3 business days). Sending immediately on
+ * the same call beats that timer comfortably.
+ *
+ * Best-effort — a mail failure logs but doesn't reverse the
+ * cancellation itself.
+ */
+async function sendCancellationEmail(args: {
+  to: string
+  validUntil: Date | null
+  reason?: string | null
+  cancelledFrom: 'account' | 'paypal-direct'
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const validUntilStr = args.validUntil
+    ? args.validUntil.toLocaleDateString('he-IL', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        timeZone: 'Asia/Jerusalem',
+      })
+    : '—'
+  const sourceLine =
+    args.cancelledFrom === 'account'
+      ? 'הביטול בוצע מתוך דף החשבון באתר.'
+      : 'הביטול בוצע ישירות מתוך חשבון PayPal שלך.'
+  const html = renderEmail({
+    heading: 'המנוי שלך בוטל',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
+        קיבלנו את בקשת הביטול שלך למנוי <strong>ניהול הורדות פלוס Pro</strong>. ${sourceLine} לא תחויב שוב.
+      </p>
+      <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה ל-Pro תפעל עד</div>
+        <div style="font-size:18px;color:#F5EFE6;font-weight:600;">${validUntilStr}</div>
+        <div style="margin-top:10px;font-size:11px;line-height:1.6;color:#8B8170;">
+          קיבלת את התקופה ששילמת עליה במלואה. לאחר מכן החשבון יחזור לחינם.
+        </div>
+      </div>
+      <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
+        <strong>אין החזר על תקופות ששולמו</strong> — מאחר שמדובר במוצר דיגיטלי שניתן לשימוש מיידי, אין מדיניות החזרים על תקופות שכבר חויבו ושולמו (תואם תנאי השימוש שאישרת בעת הרישום).
+      </p>
+      <p style="font-size:12px;line-height:1.7;margin:18px 0 0;color:#C9BFA8;">
+        משנים את דעתכם? אפשר להירשם מחדש בכל עת ב-
+        <a href="${WEBSITE_BASE}/buy" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/buy</a>.
+      </p>
+      <p style="font-size:11px;line-height:1.6;margin:14px 0 0;color:#5C5444;">
+        בכל בעיה — תשובה ישירה למייל הזה תגיע לתמיכה.
+      </p>
+    `,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    subject: 'אישור ביטול מנוי — ניהול הורדות פלוס',
     html,
   })
 }
@@ -2702,6 +2825,8 @@ function renderEmail(args: { heading: string; contentHtml: string }): string {
 
 type TestEmailKind =
   | 'welcome-subscription'
+  | 'pro-activated'
+  | 'cancellation'
   | 'verify-signup'
   | 'verify-existing'
   | 'reset-password'
@@ -2741,6 +2866,66 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
             </div>
             <p style="margin:24px 0 0;font-size:11px;color:#5C5444;">
               מנוי ID: <span dir="ltr">${mockSubId}</span>
+            </p>
+          `,
+        }),
+      }
+    case 'pro-activated':
+      return {
+        subject: '[בדיקה] ✓ החשבון שלך פעיל — ניהול הורדות פלוס Pro',
+        html: renderEmail({
+          heading: '✓ החשבון שלך עכשיו Pro',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
+              [תצוגת בדיקה] המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי Pro בתוכנה <strong>ניהול הורדות פלוס</strong>.
+            </p>
+            <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
+              <div style="display:flex;justify-content:space-between;font-size:13px;line-height:1.8;color:#C9BFA8;">
+                <div>
+                  <div style="color:#8B8170;font-size:11px;margin-bottom:4px;">מפתח</div>
+                  <div dir="ltr" style="font-family:ui-monospace,'SF Mono',monospace;color:#D4A574;font-size:14px;font-weight:600;">…${mockKey.slice(-8)}</div>
+                </div>
+                <div style="text-align:left;">
+                  <div style="color:#8B8170;font-size:11px;margin-bottom:4px;">בתוקף עד</div>
+                  <div style="color:#F5EFE6;font-size:14px;font-weight:600;">${mockExpiry}</div>
+                </div>
+              </div>
+            </div>
+            <h3 style="font-size:14px;margin:24px 0 8px;color:#F5EFE6;font-weight:600;">מה אפשר עכשיו</h3>
+            <div style="font-size:13px;line-height:1.9;color:#C9BFA8;">
+              <div>• מיון אוטומטי + חוקי ניתוב מותאמים אישית</div>
+              <div>• הורדה מסרטוני וידאו ב-MP3 / 1080p / 4K</div>
+              <div>• המרת קבצים בין כל הפורמטים</div>
+              <div>• דחיסת וידאו לגודל יעד</div>
+              <div>• הצעות מחיר עם יועץ AI ופלט PDF</div>
+              <div>• ניהול תשלומים והכנסות</div>
+              <div>• עדכונים אוטומטיים ותמיכה מועדפת</div>
+            </div>
+          `,
+        }),
+      }
+    case 'cancellation':
+      return {
+        subject: '[בדיקה] אישור ביטול מנוי — ניהול הורדות פלוס',
+        html: renderEmail({
+          heading: 'המנוי שלך בוטל',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
+              [תצוגת בדיקה] קיבלנו את בקשת הביטול שלך למנוי <strong>ניהול הורדות פלוס Pro</strong>. הביטול בוצע מתוך דף החשבון באתר. לא תחויב שוב.
+            </p>
+            <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
+              <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה ל-Pro תפעל עד</div>
+              <div style="font-size:18px;color:#F5EFE6;font-weight:600;">${mockExpiry}</div>
+              <div style="margin-top:10px;font-size:11px;line-height:1.6;color:#8B8170;">
+                קיבלת את התקופה ששילמת עליה במלואה. לאחר מכן החשבון יחזור לחינם.
+              </div>
+            </div>
+            <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
+              <strong>אין החזר על תקופות ששולמו</strong> — מאחר שמדובר במוצר דיגיטלי שניתן לשימוש מיידי, אין מדיניות החזרים על תקופות שכבר חויבו ושולמו.
+            </p>
+            <p style="font-size:12px;line-height:1.7;margin:18px 0 0;color:#C9BFA8;">
+              משנים את דעתכם? אפשר להירשם מחדש בכל עת ב-
+              <a href="${WEBSITE_BASE}/buy" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/buy</a>.
             </p>
           `,
         }),
@@ -2908,6 +3093,8 @@ async function handleAdminSendTestEmail(req: VercelRequest, res: VercelResponse)
   }
   const allowed: TestEmailKind[] = [
     'welcome-subscription',
+    'pro-activated',
+    'cancellation',
     'verify-signup',
     'verify-existing',
     'reset-password',
