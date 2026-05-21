@@ -518,82 +518,28 @@ async function sendLicenseEmail(
   // unreliable; <dir="rtl"> + <text-align:right> + <direction:rtl>
   // are all set on every block so different clients can honour
   // whichever one they respect.
-  const html = `<!doctype html>
-<html lang="he" dir="rtl">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="only dark" />
-    <meta name="supported-color-schemes" content="only dark" />
-    <title>מפתח Pro</title>
-    <style>
-      :root { color-scheme: only dark; supported-color-schemes: only dark; }
-      body, table, td { background-color:#0b0b14 !important; }
-      .email-bg { background-color:#0b0b14 !important; }
-      .email-card { background-color:#14141f !important; }
-      .key-box { background-color:#0b0b14 !important; }
-      .text-default { color:#e5e7eb !important; }
-      .text-amber { color:#fbbf24 !important; }
-      .text-muted { color:#9ca3af !important; }
-      .text-faint { color:#6b7280 !important; }
-      .text-list { color:#d1d5db !important; }
-      [data-ogsc] .email-bg { background-color:#0b0b14 !important; }
-      [data-ogsc] .email-card { background-color:#14141f !important; }
-      [data-ogsc] .key-box { background-color:#0b0b14 !important; }
-      [data-ogsc] .text-default { color:#e5e7eb !important; }
-      [data-ogsc] .text-amber { color:#fbbf24 !important; }
-      [data-ogsc] .text-muted { color:#9ca3af !important; }
-      [data-ogsc] .text-faint { color:#6b7280 !important; }
-      [data-ogsc] .text-list { color:#d1d5db !important; }
-      @media (prefers-color-scheme: light) {
-        .email-bg { background-color:#0b0b14 !important; }
-        .email-card { background-color:#14141f !important; }
-        .key-box { background-color:#0b0b14 !important; }
-        .text-default { color:#e5e7eb !important; }
-        .text-amber { color:#fbbf24 !important; }
-        .text-muted { color:#9ca3af !important; }
-        .text-faint { color:#6b7280 !important; }
-        .text-list { color:#d1d5db !important; }
-      }
-    </style>
-  </head>
-  <body class="email-bg" bgcolor="#0b0b14" dir="rtl" style="margin:0;padding:0;background-color:#0b0b14;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;">
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" bgcolor="#0b0b14" class="email-bg" style="background-color:#0b0b14;">
-      <tr>
-        <td align="center" bgcolor="#0b0b14" class="email-bg" style="padding:32px 16px;background-color:#0b0b14;">
-          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" bgcolor="#14141f" class="email-card" style="max-width:560px;width:100%;background-color:#14141f;border-radius:16px;border:1px solid #2a2a3a;">
-            <tr>
-              <td dir="rtl" bgcolor="#14141f" class="email-card" style="padding:32px;text-align:right;direction:rtl;background-color:#14141f;">
-                <h1 dir="rtl" class="text-amber" style="margin:0 0 16px;font-size:22px;color:#fbbf24;text-align:right;direction:rtl;font-weight:700;">תודה על הרכישה 🎉</h1>
-                <p dir="rtl" class="text-default" style="margin:0 0 12px;font-size:14px;line-height:1.7;color:#e5e7eb;text-align:right;direction:rtl;">
-                  מצורף מפתח <span class="text-amber" style="color:#fbbf24;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${durationLabel} מהיום <span class="text-muted" style="color:#9ca3af;">(תוקף עד ${expiryDate})</span>.
-                </p>
-                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:20px 0;">
-                  <tr>
-                    <td align="center" bgcolor="#0b0b14" class="key-box" style="background-color:#0b0b14;border:1px solid #6b4f0c;border-radius:12px;padding:16px;">
-                      <div class="text-muted" style="font-size:11px;color:#9ca3af;margin-bottom:6px;">מפתח המוצר</div>
-                      <div dir="ltr" class="text-amber" style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:18px;color:#fbbf24;letter-spacing:0.05em;direction:ltr;font-weight:600;">${key}</div>
-                    </td>
-                  </tr>
-                </table>
-                <h2 dir="rtl" class="text-default" style="font-size:15px;margin:20px 0 8px;color:#e5e7eb;text-align:right;direction:rtl;font-weight:600;">איך מממשים?</h2>
-                <div dir="rtl" class="text-list" style="font-size:13px;line-height:1.85;color:#d1d5db;text-align:right;direction:rtl;">
-                  <div dir="rtl" class="text-list" style="margin:0 0 4px;text-align:right;direction:rtl;color:#d1d5db;">1. פותחים את התוכנה ונכנסים לחשבון.</div>
-                  <div dir="rtl" class="text-list" style="margin:0 0 4px;text-align:right;direction:rtl;color:#d1d5db;">2. לוחצים על השם בצד שמאל למטה ← <strong>מימוש מפתח מוצר</strong>.</div>
-                  <div dir="rtl" class="text-list" style="margin:0 0 4px;text-align:right;direction:rtl;color:#d1d5db;">3. מדביקים את המפתח ולוחצים <strong>אישור</strong>.</div>
-                  <div dir="rtl" class="text-list" style="margin:0;text-align:right;direction:rtl;color:#d1d5db;">4. זהו, יש לך Pro! 🚀</div>
-                </div>
-                <p dir="rtl" class="text-faint" style="margin:28px 0 0;font-size:11px;color:#6b7280;text-align:right;direction:rtl;">
-                  המפתח שמור לחשבון שלך. בכל בעיה — תשובה ישירה למייל הזה.
-                </p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>`
+  const html = renderEmail({
+    heading: 'תודה על הרכישה 🎉',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#d1d5db;">
+        מצורף מפתח <span style="color:#fbbf24;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${durationLabel} מהיום <span style="color:#9ca3af;">(תוקף עד ${expiryDate})</span>.
+      </p>
+      <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:11px;color:#9ca3af;margin-bottom:8px;">מפתח המוצר</div>
+        <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#fbbf24;letter-spacing:0.08em;font-weight:700;">${key}</div>
+      </div>
+      <h3 style="font-size:14px;margin:24px 0 8px;color:#e5e7eb;font-weight:600;">איך מממשים?</h3>
+      <div style="font-size:13px;line-height:1.9;color:#d1d5db;">
+        <div>1. פותחים את התוכנה ונכנסים לחשבון.</div>
+        <div>2. לוחצים על השם בצד שמאל למטה ← <strong>מימוש מפתח מוצר</strong>.</div>
+        <div>3. מדביקים את המפתח ולוחצים <strong>אישור</strong>.</div>
+        <div>4. זהו, יש לך Pro! 🚀</div>
+      </div>
+      <p style="font-size:11px;margin:24px 0 0;color:#6b7280;">
+        המפתח שמור לחשבון שלך. בכל בעיה — תשובה ישירה למייל הזה.
+      </p>
+    `,
+  })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to,
@@ -627,70 +573,23 @@ async function sendRenewalEmail(
   })
   const previousDate = formatExpiryHebrew(previousExpiresAt)
   const newDate = formatExpiryHebrew(newExpiresAt)
-  const html = `<!doctype html>
-<html lang="he" dir="rtl">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="only dark" />
-    <meta name="supported-color-schemes" content="only dark" />
-    <title>חידוש מנוי</title>
-    <style>
-      :root { color-scheme: only dark; supported-color-schemes: only dark; }
-      body, table, td { background-color:#0b0b14 !important; }
-      .email-bg { background-color:#0b0b14 !important; }
-      .email-card { background-color:#14141f !important; }
-      .stat-box { background-color:#0b0b14 !important; }
-      .text-default { color:#e5e7eb !important; }
-      .text-amber { color:#fbbf24 !important; }
-      .text-muted { color:#9ca3af !important; }
-      .text-faint { color:#6b7280 !important; }
-      .text-strike { color:#6b7280 !important; text-decoration:line-through; }
-      .text-success { color:#34d399 !important; }
-      @media (prefers-color-scheme: light) {
-        .email-bg { background-color:#0b0b14 !important; }
-        .email-card { background-color:#14141f !important; }
-        .stat-box { background-color:#0b0b14 !important; }
-        .text-default { color:#e5e7eb !important; }
-        .text-amber { color:#fbbf24 !important; }
-        .text-muted { color:#9ca3af !important; }
-        .text-faint { color:#6b7280 !important; }
-        .text-success { color:#34d399 !important; }
-      }
-    </style>
-  </head>
-  <body class="email-bg" bgcolor="#0b0b14" dir="rtl" style="margin:0;padding:0;background-color:#0b0b14;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;">
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" bgcolor="#0b0b14" class="email-bg" style="background-color:#0b0b14;">
-      <tr>
-        <td align="center" bgcolor="#0b0b14" class="email-bg" style="padding:32px 16px;background-color:#0b0b14;">
-          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" bgcolor="#14141f" class="email-card" style="max-width:560px;width:100%;background-color:#14141f;border-radius:16px;border:1px solid #2a2a3a;">
-            <tr>
-              <td dir="rtl" bgcolor="#14141f" class="email-card" style="padding:32px;text-align:right;direction:rtl;background-color:#14141f;">
-                <h1 dir="rtl" class="text-amber" style="margin:0 0 16px;font-size:22px;color:#fbbf24;text-align:right;direction:rtl;font-weight:700;">המנוי שלך הוארך ✓</h1>
-                <p dir="rtl" class="text-default" style="margin:0 0 16px;font-size:14px;line-height:1.7;color:#e5e7eb;text-align:right;direction:rtl;">
-                  הוספנו <strong>${durationLabel}</strong> נוסף למפתח Pro שלך לתוכנה <strong>ניהול הורדות פלוס</strong>. המפתח עצמו נשאר זהה — אין מה לעדכן באפליקציה.
-                </p>
-                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:20px 0;">
-                  <tr>
-                    <td align="center" bgcolor="#0b0b14" class="stat-box" style="background-color:#0b0b14;border:1px solid #2a2a3a;border-radius:12px;padding:16px;">
-                      <div class="text-muted" style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף קודם</div>
-                      <div class="text-strike" style="font-size:14px;color:#6b7280;text-decoration:line-through;margin-bottom:10px;">${previousDate}</div>
-                      <div class="text-muted" style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף חדש</div>
-                      <div class="text-success" style="font-size:18px;color:#34d399;font-weight:700;">${newDate}</div>
-                    </td>
-                  </tr>
-                </table>
-                <p dir="rtl" class="text-faint" style="margin:24px 0 0;font-size:11px;color:#6b7280;text-align:right;direction:rtl;">
-                  תודה שאתם איתנו. בכל בעיה — תשובה ישירה למייל הזה.
-                </p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>`
+  const html = renderEmail({
+    heading: 'המנוי שלך הוארך ✓',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 20px;color:#d1d5db;">
+        הוספנו <strong>${durationLabel}</strong> נוסף למפתח Pro שלך לתוכנה <strong>ניהול הורדות פלוס</strong>. המפתח עצמו נשאר זהה — אין מה לעדכן באפליקציה.
+      </p>
+      <div style="background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;padding:18px;margin:0 0 24px;text-align:center;">
+        <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף קודם</div>
+        <div style="font-size:14px;color:#6b7280;text-decoration:line-through;margin-bottom:14px;">${previousDate}</div>
+        <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">תוקף חדש</div>
+        <div style="font-size:20px;color:#34d399;font-weight:700;">${newDate}</div>
+      </div>
+      <p style="font-size:11px;margin:24px 0 0;color:#6b7280;">
+        תודה שאתם איתנו. בכל בעיה — תשובה ישירה למייל הזה.
+      </p>
+    `,
+  })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to,
@@ -833,4 +732,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error('capture handler failed', err)
     return res.status(500).json({ ok: false, error: message })
   }
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Email-template helper. Mirror of the same function in
+ *  api/paypal.ts, api/reset-password.ts, api/cron/expiry-
+ *  reminders.ts. Kept duplicated (not shared) because Vercel's
+ *  per-function bundler is unreliable with helper-only modules
+ *  out of api/. Keep them in sync if you change the chrome.
+ * ───────────────────────────────────────────────────────────── */
+function renderEmail(args: { heading: string; contentHtml: string }): string {
+  return `<!doctype html>
+<html dir="rtl" lang="he">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="color-scheme" content="only dark"/>
+  <meta name="supported-color-schemes" content="only dark"/>
+</head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e5e7eb;direction:rtl;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0a0a0a;padding:40px 20px;">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;">
+<tr><td style="padding:32px;text-align:right;direction:rtl;">
+  <h1 style="font-size:18px;margin:0 0 16px;color:#fbbf24;font-weight:600;direction:rtl;text-align:right;">ניהול הורדות פלוס</h1>
+  <h2 style="font-size:24px;margin:0 0 12px;color:#e5e7eb;font-weight:700;direction:rtl;text-align:right;">${args.heading}</h2>
+  ${args.contentHtml}
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`
 }

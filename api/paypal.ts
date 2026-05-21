@@ -1680,40 +1680,28 @@ async function sendSubscriptionWelcomeEmail(args: {
     year: 'numeric',
     timeZone: 'Asia/Jerusalem',
   })
-  const html = `<!doctype html>
-<html lang="he" dir="rtl">
-  <head><meta charset="utf-8"/><meta name="color-scheme" content="only dark"/></head>
-  <body style="margin:0;padding:0;background-color:#0b0b14;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;">
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#0b0b14;">
-      <tr><td align="center" style="padding:32px 16px;">
-        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width:560px;width:100%;background-color:#14141f;border-radius:16px;border:1px solid #2a2a3a;">
-          <tr><td style="padding:32px;text-align:right;direction:rtl;">
-            <h1 style="margin:0 0 16px;font-size:22px;color:#fbbf24;font-weight:700;">ברוך הבא ל-Pro 🎉</h1>
-            <p style="margin:0 0 12px;font-size:14px;line-height:1.7;color:#e5e7eb;">
-              המנוי שלך פעיל! מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong>.
-            </p>
-            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:20px 0;">
-              <tr><td align="center" style="background-color:#0b0b14;border:1px solid #6b4f0c;border-radius:12px;padding:16px;">
-                <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">מפתח המוצר</div>
-                <div dir="ltr" style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:18px;color:#fbbf24;letter-spacing:0.05em;font-weight:600;">${args.key}</div>
-              </td></tr>
-            </table>
-            <h2 style="font-size:15px;margin:20px 0 8px;color:#e5e7eb;font-weight:600;">פרטי המנוי</h2>
-            <div style="font-size:13px;line-height:1.85;color:#d1d5db;">
-              <div>• תוכנית: ${args.planLabel} (${args.price} ${symbol})</div>
-              <div>• חיוב הבא: ${nextDate}</div>
-              <div>• מתחדש אוטומטית עד שתבטל</div>
-              <div>• ניהול / ביטול: <a href="${WEBSITE_BASE}/account" style="color:#fbbf24;">${WEBSITE_BASE}/account</a></div>
-            </div>
-            <p style="margin:28px 0 0;font-size:11px;color:#6b7280;">
-              מנוי ID: <span dir="ltr">${args.subscriptionId}</span>
-            </p>
-          </td></tr>
-        </table>
-      </td></tr>
-    </table>
-  </body>
-</html>`
+  const html = renderEmail({
+    heading: 'ברוך הבא ל-Pro 🎉',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#d1d5db;">
+        המנוי שלך פעיל! מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong>.
+      </p>
+      <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:11px;color:#9ca3af;margin-bottom:8px;">מפתח המוצר</div>
+        <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:22px;color:#fbbf24;letter-spacing:0.08em;font-weight:700;">${args.key}</div>
+      </div>
+      <h3 style="font-size:14px;margin:24px 0 8px;color:#e5e7eb;font-weight:600;">פרטי המנוי</h3>
+      <div style="font-size:13px;line-height:1.9;color:#d1d5db;">
+        <div>• תוכנית: ${args.planLabel} (${args.price} ${symbol})</div>
+        <div>• חיוב הבא: ${nextDate}</div>
+        <div>• מתחדש אוטומטית עד שתבטל</div>
+        <div>• ניהול / ביטול: <a href="${WEBSITE_BASE}/account" style="color:#fbbf24;text-decoration:underline;">${WEBSITE_BASE}/account</a></div>
+      </div>
+      <p style="margin:24px 0 0;font-size:11px;color:#6b7280;">
+        מנוי ID: <span dir="ltr">${args.subscriptionId}</span>
+      </p>
+    `,
+  })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
@@ -1850,33 +1838,23 @@ async function handleSignupRequestCode(req: VercelRequest, res: VercelResponse) 
     secure: true,
     auth: { user, pass },
   })
-  const html = `<!doctype html>
-<html dir="rtl" lang="he">
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,'Segoe UI',sans-serif;color:#e5e7eb;">
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0a0a0a;padding:40px 20px;">
-<tr><td align="center">
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;">
-<tr><td style="padding:32px;">
-  <h1 style="font-size:18px;margin:0 0 16px;color:#fbbf24;font-weight:600;">ניהול הורדות פלוס</h1>
-  <h2 style="font-size:24px;margin:0 0 12px;color:#e5e7eb;font-weight:700;">קוד האימות שלך</h2>
-  <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
-    הזן את הקוד הזה בתוכנה כדי לסיים את ההרשמה:
-  </p>
-  <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
-    <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">${code}</div>
-  </div>
-  <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
-    הקוד תקף ל-15 דקות. אם לא ביקשת אותו, אפשר להתעלם מהמייל הזה.
-  </p>
-  <p style="font-size:11px;margin:0;color:#6b7280;">
-    אל תשתף את הקוד הזה עם אף אחד.
-  </p>
-</td></tr>
-</table>
-</td></tr>
-</table>
-</body>
-</html>`
+  const html = renderEmail({
+    heading: 'קוד האימות שלך',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+        הזן את הקוד הזה בתוכנה כדי לסיים את ההרשמה:
+      </p>
+      <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">${code}</div>
+      </div>
+      <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
+        הקוד תקף ל-15 דקות. אם לא ביקשת אותו, אפשר להתעלם מהמייל הזה.
+      </p>
+      <p style="font-size:11px;margin:0;color:#6b7280;">
+        אל תשתף את הקוד הזה עם אף אחד.
+      </p>
+    `,
+  })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: email,
@@ -2075,30 +2053,20 @@ async function handleVerifyExistingRequestCode(
     secure: true,
     auth: { user, pass },
   })
-  const html = `<!doctype html>
-<html dir="rtl" lang="he">
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,'Segoe UI',sans-serif;color:#e5e7eb;">
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0a0a0a;padding:40px 20px;">
-<tr><td align="center">
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;">
-<tr><td style="padding:32px;">
-  <h1 style="font-size:18px;margin:0 0 16px;color:#fbbf24;font-weight:600;">ניהול הורדות פלוס</h1>
-  <h2 style="font-size:24px;margin:0 0 12px;color:#e5e7eb;font-weight:700;">אימות כתובת המייל</h2>
-  <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
-    הוספנו דרישה לאמת את כתובת המייל לכל המשתמשים. הזן את הקוד הבא בתוכנה כדי להמשיך:
-  </p>
-  <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
-    <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">${code}</div>
-  </div>
-  <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
-    הקוד תקף ל-15 דקות. אם לא ביקשת אותו, יש לפנות לתמיכה — ייתכן שמישהו מנסה להיכנס לחשבון שלך.
-  </p>
-</td></tr>
-</table>
-</td></tr>
-</table>
-</body>
-</html>`
+  const html = renderEmail({
+    heading: 'אימות כתובת המייל',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+        הוספנו דרישה לאמת את כתובת המייל לכל המשתמשים. הזן את הקוד הבא בתוכנה כדי להמשיך:
+      </p>
+      <div style="text-align:center;background:#0a0a0a;border:2px solid #fbbf24;border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#fbbf24;">${code}</div>
+      </div>
+      <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#9ca3af;">
+        הקוד תקף ל-15 דקות. אם לא ביקשת אותו, יש לפנות לתמיכה — ייתכן שמישהו מנסה להיכנס לחשבון שלך.
+      </p>
+    `,
+  })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: email,
@@ -2263,4 +2231,42 @@ async function handleAdminMigrateEmailVerified(
       .json({ ok: false, error: err instanceof Error ? err.message : 'failed', updated })
   }
   return res.status(200).json({ ok: true, updated })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Unified email-template helper. Inlined per file (NOT shared
+ *  from one module) because Vercel's per-function bundler has
+ *  proven flaky with helper-only imports out of api/. Every file
+ *  that sends mail keeps its own copy — keep them in sync if you
+ *  change the chrome.
+ *
+ *  Style: dark-mode-only with gold accents, matches the desktop
+ *  app's UI palette. Body content goes between the brand wordmark
+ *  and the closing card border. Each caller writes only its
+ *  variable content (heading text + body HTML) and gets the
+ *  consistent dark frame for free.
+ * ───────────────────────────────────────────────────────────── */
+function renderEmail(args: { heading: string; contentHtml: string }): string {
+  return `<!doctype html>
+<html dir="rtl" lang="he">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="color-scheme" content="only dark"/>
+  <meta name="supported-color-schemes" content="only dark"/>
+</head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e5e7eb;direction:rtl;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0a0a0a;padding:40px 20px;">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;">
+<tr><td style="padding:32px;text-align:right;direction:rtl;">
+  <h1 style="font-size:18px;margin:0 0 16px;color:#fbbf24;font-weight:600;direction:rtl;text-align:right;">ניהול הורדות פלוס</h1>
+  <h2 style="font-size:24px;margin:0 0 12px;color:#e5e7eb;font-weight:700;direction:rtl;text-align:right;">${args.heading}</h2>
+  ${args.contentHtml}
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`
 }

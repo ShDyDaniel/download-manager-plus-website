@@ -198,74 +198,31 @@ async function sendReminderEmail(
   const dateStr = formatExpiryHebrew(expiresAt)
   const days = daysUntil(expiresAt)
   const daysWord = days === 1 ? 'יום אחד' : `${days} ימים`
-  const html = `<!doctype html>
-<html lang="he" dir="rtl">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="only dark" />
-    <meta name="supported-color-schemes" content="only dark" />
-    <title>חידוש מנוי</title>
-    <style>
-      :root { color-scheme: only dark; supported-color-schemes: only dark; }
-      body, table, td { background-color:#0b0b14 !important; }
-      .email-bg { background-color:#0b0b14 !important; }
-      .email-card { background-color:#14141f !important; }
-      .text-default { color:#e5e7eb !important; }
-      .text-amber { color:#fbbf24 !important; }
-      .text-muted { color:#9ca3af !important; }
-      .text-faint { color:#6b7280 !important; }
-      .cta-btn { background:linear-gradient(to left,#f59e0b,#f97316) !important; color:#0b0b14 !important; }
-      @media (prefers-color-scheme: light) {
-        .email-bg { background-color:#0b0b14 !important; }
-        .email-card { background-color:#14141f !important; }
-        .text-default { color:#e5e7eb !important; }
-        .text-amber { color:#fbbf24 !important; }
-        .text-muted { color:#9ca3af !important; }
-        .text-faint { color:#6b7280 !important; }
-      }
-    </style>
-  </head>
-  <body class="email-bg" bgcolor="#0b0b14" dir="rtl" style="margin:0;padding:0;background-color:#0b0b14;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;">
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" bgcolor="#0b0b14" class="email-bg" style="background-color:#0b0b14;">
-      <tr>
-        <td align="center" bgcolor="#0b0b14" class="email-bg" style="padding:32px 16px;background-color:#0b0b14;">
-          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" bgcolor="#14141f" class="email-card" style="max-width:560px;width:100%;background-color:#14141f;border-radius:16px;border:1px solid #2a2a3a;">
-            <tr>
-              <td dir="rtl" bgcolor="#14141f" class="email-card" style="padding:32px;text-align:right;direction:rtl;background-color:#14141f;">
-                <h1 dir="rtl" class="text-amber" style="margin:0 0 16px;font-size:22px;color:#fbbf24;text-align:right;direction:rtl;font-weight:700;">⏳ המנוי שלך עומד להסתיים</h1>
-                <p dir="rtl" class="text-default" style="margin:0 0 14px;font-size:14px;line-height:1.7;color:#e5e7eb;text-align:right;direction:rtl;">
-                  המפתח שלך לתוכנה <strong>ניהול הורדות פלוס</strong> פג בעוד <strong>${daysWord}</strong> (${dateStr}).
-                </p>
-                <p dir="rtl" class="text-default" style="margin:0 0 22px;font-size:14px;line-height:1.7;color:#e5e7eb;text-align:right;direction:rtl;">
-                  לחיצה על הכפתור למטה תעביר אותך לעמוד החידוש. המפתח שלך נשאר אותו דבר — אין מה לעדכן באפליקציה, פשוט מאריכים את התוקף.
-                </p>
-                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 22px;">
-                  <tr>
-                    <td align="center">
-                      <a href="${renewUrl}" target="_blank" class="cta-btn" style="display:inline-block;padding:14px 36px;border-radius:12px;background:linear-gradient(to left,#f59e0b,#f97316);color:#0b0b14;text-decoration:none;font-weight:700;font-size:15px;">
-                        חידוש המנוי 👑
-                      </a>
-                    </td>
-                  </tr>
-                </table>
-                <p dir="rtl" class="text-muted" style="margin:0 0 6px;font-size:12px;color:#9ca3af;text-align:right;direction:rtl;">
-                  או העתיקו את הקישור הבא:
-                </p>
-                <p dir="ltr" class="text-faint" style="margin:0;font-size:11px;line-height:1.5;color:#6b7280;word-break:break-all;text-align:left;direction:ltr;font-family:'SF Mono',Menlo,Consolas,monospace;">
-                  ${renewUrl}
-                </p>
-                <p dir="rtl" class="text-faint" style="margin:22px 0 0;font-size:11px;color:#6b7280;text-align:right;direction:rtl;">
-                  הקישור תקף ל-${REMINDER_TOKEN_TTL_DAYS} ימים. לא רוצים להמשיך? אל תעשו כלום — המנוי פג מעצמו.
-                </p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>`
+  const html = renderEmail({
+    heading: '⏳ המנוי שלך עומד להסתיים',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#d1d5db;">
+        המפתח שלך לתוכנה <strong>ניהול הורדות פלוס</strong> פג בעוד <strong>${daysWord}</strong> (${dateStr}).
+      </p>
+      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#d1d5db;">
+        לחיצה על הכפתור למטה תעביר אותך לעמוד החידוש. המפתח שלך נשאר אותו דבר — אין מה לעדכן באפליקציה, פשוט מאריכים את התוקף.
+      </p>
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
+        <tr><td align="center">
+          <a href="${renewUrl}" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#fbbf24;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">חידוש המנוי 👑</a>
+        </td></tr>
+      </table>
+      <p style="font-size:12px;margin:0 0 6px;color:#9ca3af;">
+        או העתיקו את הקישור הבא:
+      </p>
+      <p dir="ltr" style="font-size:11px;line-height:1.5;margin:0;color:#6b7280;word-break:break-all;text-align:left;direction:ltr;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;">
+        ${renewUrl}
+      </p>
+      <p style="font-size:11px;margin:22px 0 0;color:#6b7280;">
+        הקישור תקף ל-${REMINDER_TOKEN_TTL_DAYS} ימים. לא רוצים להמשיך? אל תעשו כלום — המנוי פג מעצמו.
+      </p>
+    `,
+  })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to,
@@ -569,47 +526,68 @@ async function sendAnnualReportEmail(args: {
       return `<strong style="color:#fbbf24;">${amt} ${sym}</strong>`
     })
     .join(' / ')
-  const html = `<!doctype html>
-<html lang="he" dir="rtl">
-  <head><meta charset="utf-8"/><meta name="color-scheme" content="only dark"/></head>
-  <body style="margin:0;padding:0;background-color:#0b0b14;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;">
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color:#0b0b14;">
-      <tr><td align="center" style="padding:32px 16px;">
-        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width:560px;width:100%;background-color:#14141f;border-radius:16px;border:1px solid #2a2a3a;">
-          <tr><td style="padding:32px;text-align:right;direction:rtl;">
-            <h1 style="margin:0 0 16px;font-size:22px;color:#fbbf24;font-weight:700;">סיכום חיובים שנתי — ${args.year}</h1>
-            <p style="margin:0 0 14px;font-size:14px;line-height:1.7;color:#e5e7eb;">
-              ריכוז כל החיובים שבוצעו על המנוי שלך ל-<strong>ניהול הורדות פלוס</strong> במהלך ${args.year}.
-              מסמך זה נשלח אליך אחת לשנה לפי דרישת חוק הגנת הצרכן.
-            </p>
-            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:18px 0;border:1px solid #2a2a3a;border-radius:8px;overflow:hidden;">
-              <thead>
-                <tr style="background:#0b0b14;">
-                  <th style="padding:8px 12px;text-align:right;color:#9ca3af;font-weight:500;font-size:12px;">תאריך</th>
-                  <th style="padding:8px 12px;text-align:left;color:#9ca3af;font-weight:500;font-size:12px;direction:ltr;">סכום</th>
-                </tr>
-              </thead>
-              <tbody style="font-size:13px;">${rows}</tbody>
-            </table>
-            <p style="margin:14px 0;font-size:14px;color:#e5e7eb;text-align:right;">
-              <strong>סה״כ ${args.year}:</strong> ${totalsHtml}
-            </p>
-            <p style="margin:24px 0 0;font-size:11px;color:#6b7280;">
-              שאלות? תשובה ישירה למייל הזה תגיע לתמיכה.
-            </p>
-            <p style="margin:8px 0 0;font-size:11px;color:#6b7280;">
-              לניהול או ביטול המנוי: <a href="https://dm-plus.vercel.app/account" style="color:#fbbf24;">החשבון שלי</a>
-            </p>
-          </td></tr>
-        </table>
-      </td></tr>
-    </table>
-  </body>
-</html>`
+  const html = renderEmail({
+    heading: `סיכום חיובים שנתי — ${args.year}`,
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#d1d5db;">
+        ריכוז כל החיובים שבוצעו על המנוי שלך ל-<strong>ניהול הורדות פלוס</strong> במהלך ${args.year}.
+        מסמך זה נשלח אליך אחת לשנה לפי דרישת חוק הגנת הצרכן.
+      </p>
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 18px;border:1px solid #2a2a2a;border-radius:8px;overflow:hidden;">
+        <thead>
+          <tr style="background:#0a0a0a;">
+            <th style="padding:10px 12px;text-align:right;color:#9ca3af;font-weight:500;font-size:12px;">תאריך</th>
+            <th style="padding:10px 12px;text-align:left;color:#9ca3af;font-weight:500;font-size:12px;direction:ltr;">סכום</th>
+          </tr>
+        </thead>
+        <tbody style="font-size:13px;">${rows}</tbody>
+      </table>
+      <p style="margin:14px 0;font-size:14px;color:#e5e7eb;">
+        <strong>סה״כ ${args.year}:</strong> ${totalsHtml}
+      </p>
+      <p style="margin:24px 0 0;font-size:11px;color:#6b7280;">
+        שאלות? תשובה ישירה למייל הזה תגיע לתמיכה.
+      </p>
+      <p style="margin:8px 0 0;font-size:11px;color:#6b7280;">
+        לניהול או ביטול המנוי: <a href="https://dm-plus.vercel.app/account" style="color:#fbbf24;text-decoration:underline;">החשבון שלי</a>
+      </p>
+    `,
+  })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
     subject: `סיכום חיובים שנתי — ${args.year}`,
     html,
   })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Email template helper. Mirror of the same function in
+ *  api/paypal.ts, api/capture.ts, api/reset-password.ts.
+ *  Duplicated (not shared) because Vercel's per-function bundler
+ *  is unreliable with helper-only modules out of api/.
+ * ───────────────────────────────────────────────────────────── */
+function renderEmail(args: { heading: string; contentHtml: string }): string {
+  return `<!doctype html>
+<html dir="rtl" lang="he">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="color-scheme" content="only dark"/>
+  <meta name="supported-color-schemes" content="only dark"/>
+</head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#e5e7eb;direction:rtl;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0a0a0a;padding:40px 20px;">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;">
+<tr><td style="padding:32px;text-align:right;direction:rtl;">
+  <h1 style="font-size:18px;margin:0 0 16px;color:#fbbf24;font-weight:600;direction:rtl;text-align:right;">ניהול הורדות פלוס</h1>
+  <h2 style="font-size:24px;margin:0 0 12px;color:#e5e7eb;font-weight:700;direction:rtl;text-align:right;">${args.heading}</h2>
+  ${args.contentHtml}
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`
 }
