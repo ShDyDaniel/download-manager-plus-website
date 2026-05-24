@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   LogIn,
   KeyRound,
+  Lock,
   X,
 } from 'lucide-react'
 import {
@@ -234,6 +235,17 @@ export function BuyPage() {
   const [renewableKeys, setRenewableKeys] = useState<RenewableKey[] | null>(
     null,
   )
+  // Forgot-password state inside the renewal sign-in modal. Same
+  // pattern as the /account login form — clicking "שכחתי סיסמה"
+  // toggles the modal contents from a signin form to a reset-
+  // password form so users don't have to leave /buy to recover
+  // their password. The email state (signinEmail) is shared
+  // across both modes so an address typed in one pre-fills the
+  // other on toggle.
+  const [forgotPasswordMode, setForgotPasswordMode] = useState(false)
+  const [resetSending, setResetSending] = useState(false)
+  const [resetSent, setResetSent] = useState(false)
+  const [resetError, setResetError] = useState<string | null>(null)
   // Live pricing — fetched from /api/pricing on mount and refreshed
   // on focus. `null` while loading; once loaded, falls back to
   // DEFAULT_PRICING if the request fails so the page never breaks.
@@ -839,6 +851,42 @@ export function BuyPage() {
     setSigninPassword('')
     setSigninError(null)
     setRenewableKeys(null)
+    // Reset the forgot-password sub-state so opening the modal
+    // again starts on the signin form, not on a stale reset view.
+    setForgotPasswordMode(false)
+    setResetSent(false)
+    setResetError(null)
+  }
+
+  /** Send a password reset email from the in-modal forgot flow.
+   *  Wires to the same /api/reset-password endpoint /account uses.
+   *  Backend deliberately returns 200 even for unknown emails to
+   *  prevent account enumeration, so the success copy is hedged
+   *  ("if the account exists"). */
+  async function handleResetPasswordFromModal() {
+    const trimmedEmail = signinEmail.trim().toLowerCase()
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setResetError('הזינו כתובת מייל תקינה')
+      return
+    }
+    setResetError(null)
+    setResetSending(true)
+    try {
+      const r = await fetch('/api/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: trimmedEmail }),
+      })
+      if (!r.ok) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string }
+        throw new Error(j.error || `HTTP ${r.status}`)
+      }
+      setResetSent(true)
+    } catch (err) {
+      setResetError(err instanceof Error ? err.message : 'שגיאת רשת')
+    } finally {
+      setResetSending(false)
+    }
   }
 
   // Close the renewal modal on Escape — standard modal affordance,
@@ -1389,6 +1437,100 @@ export function BuyPage() {
                     </button>
                   ))}
                 </div>
+              ) : forgotPasswordMode ? (
+                /* ── Forgot-password sub-mode ──
+                 *
+                 * Replaces the signin form when the user clicks
+                 * "שכחתי סיסמה" below. Shares the same signinEmail
+                 * state so an address typed in the signin form is
+                 * pre-filled here on toggle. Mirrors the /account
+                 * forgot-password block so users get the same
+                 * experience whether they recover from /account or
+                 * from inside this renewal modal. */
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    void handleResetPasswordFromModal()
+                  }}
+                  className="space-y-3"
+                >
+                  {resetSent ? (
+                    <>
+                      <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2.5 text-xs text-success">
+                        ✓ אם החשבון קיים, נשלח אליו מייל איפוס סיסמה
+                        {signinEmail.trim() && (
+                          <>
+                            {' '}לכתובת <strong>{signinEmail.trim()}</strong>
+                          </>
+                        )}
+                        . בדקו את תיבת הדואר (כולל ספאם).
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setForgotPasswordMode(false)
+                          setResetSent(false)
+                          setResetError(null)
+                        }}
+                        className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-bg-faint"
+                      >
+                        <ArrowRight className="h-4 w-4" />
+                        חזרה להתחברות
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-xs text-fg-muted">
+                        הזינו את האימייל שאיתו נרשמתם — נשלח אליו קישור
+                        לאיפוס הסיסמה.
+                      </p>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] text-fg-muted">
+                          אימייל
+                        </span>
+                        <input
+                          type="email"
+                          required
+                          autoComplete="email"
+                          value={signinEmail}
+                          onChange={(e) => setSigninEmail(e.target.value)}
+                          placeholder="you@example.com"
+                          disabled={resetSending}
+                          autoFocus
+                          className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
+                        />
+                      </label>
+                      {resetError && (
+                        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                          {resetError}
+                        </div>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={resetSending}
+                        className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {resetSending ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Lock className="h-4 w-4" />
+                        )}
+                        שלח לי קישור איפוס
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setForgotPasswordMode(false)
+                          setResetError(null)
+                        }}
+                        className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-transparent px-4 py-2 text-xs text-fg-muted transition-colors hover:bg-bg-elevated hover:text-fg"
+                      >
+                        <ArrowRight className="h-3.5 w-3.5" />
+                        חזרה להתחברות
+                      </button>
+                    </>
+                  )}
+                </form>
               ) : (
                 <form onSubmit={submitSignin} className="space-y-3">
                   <p className="text-xs text-fg-muted">
@@ -1453,10 +1595,24 @@ export function BuyPage() {
                       </>
                     )}
                   </button>
-                  <p className="text-center text-[10px] text-fg-faint">
-                    שכחתם סיסמה? פתחו את התוכנה ולחצו &quot;שכחתי סיסמה&quot;
-                    בחלון ההתחברות.
-                  </p>
+                  {/* "שכחתי סיסמה" — toggle to the inline reset form
+                      above. Stays inside the same modal so the user
+                      never has to leave /buy to recover access. */}
+                  <div className="pt-1 text-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSigninError(null)
+                        setResetError(null)
+                        setResetSent(false)
+                        setForgotPasswordMode(true)
+                      }}
+                      disabled={signinSubmitting}
+                      className="text-[11px] text-fg-muted underline-offset-4 transition-colors hover:text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      שכחתי סיסמה
+                    </button>
+                  </div>
                 </form>
               )}
             </motion.div>
