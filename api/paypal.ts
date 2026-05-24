@@ -329,17 +329,39 @@ async function createPaypalPlan(args: {
   // anyway (some PayPal accounts ignore the status field on create),
   // try to activate it. 422 here = already ACTIVE = we're done.
   if (created.status !== 'ACTIVE') {
-    try {
-      await paypalCall('POST', `/v1/billing/plans/${created.id}/activate`, {})
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (!msg.includes('422')) throw err
-      console.warn(
-        `[paypal] activate ${created.id} returned 422 — assuming already ACTIVE`,
-      )
-    }
+    await activatePaypalPlan(created.id)
   }
   return created.id
+}
+
+/**
+ * Flip a plan to ACTIVE. Idempotent — a 422 from PayPal means the
+ * plan is already active, which is success from our perspective.
+ *
+ * Used in two places:
+ *   1. As a belt-and-suspenders step after createPaypalPlan, for
+ *      accounts where the create-with-status=ACTIVE field is
+ *      silently ignored.
+ *   2. When reusing a previously-deactivated plan from the catalog
+ *      (e.g. price oscillated back to a value we already minted a
+ *      plan for in the past). The plan still exists on PayPal in
+ *      INACTIVE state; we just toggle it back on.
+ *
+ * Any error other than 422 propagates — including 404 / RESOURCE_NOT_FOUND
+ * when the plan was deleted from PayPal manually. The catalog-reuse
+ * code uses that signal to drop a stale entry and recreate.
+ */
+async function activatePaypalPlan(planId: string): Promise<void> {
+  try {
+    await paypalCall('POST', `/v1/billing/plans/${planId}/activate`, {})
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('422')) {
+      // Already ACTIVE — that's the desired state, so success.
+      return
+    }
+    throw err
+  }
 }
 
 async function deactivatePaypalPlan(planId: string): Promise<void> {
@@ -390,6 +412,43 @@ interface PlanSetForPricing {
   yearlySalePlanId: string | null
 }
 
+/**
+ *  Sync the four pricing "slots" (monthly regular/sale, yearly
+ *  regular/sale) to PayPal Plans.
+ *
+ *  Two-layer storage in `appConfig/pricing`:
+ *
+ *    - `paypalPlans`: which planId is currently bound to each slot.
+ *      The fast-path lookup the admin save flow + buy flow consult.
+ *
+ *    - `paypalPlansCatalog`: a price index — every plan we've ever
+ *      created, keyed by `"interval:amount:currency"` (e.g.
+ *      "monthly:9.00:ILS"). On a price change, instead of always
+ *      minting a fresh plan, we check the catalog first. If we've
+ *      previously created a plan at that exact (interval, amount,
+ *      currency) combo we re-activate it (PayPal allows toggling)
+ *      and reuse — avoiding the case where oscillating 9 → 5 → 9
+ *      leaves three plans on PayPal when two would suffice.
+ *
+ *  Why a catalog and not a query against PayPal's list-plans:
+ *    list-plans is paginated and rate-limited; the catalog is a
+ *    single Firestore read. PayPal stays source-of-truth for plan
+ *    *status* — if a catalog entry points to a plan PayPal no
+ *    longer knows about (manually deleted from the dashboard), the
+ *    activate call returns 404 and we drop the stale entry and
+ *    recreate.
+ */
+type CatalogEntry = {
+  planId: string
+  amount: number
+  interval: 'monthly' | 'yearly'
+  currency: string
+}
+
+function catalogKey(interval: 'monthly' | 'yearly', amount: number, currency: string): string {
+  return `${interval}:${amount.toFixed(2)}:${currency}`
+}
+
 async function syncPlansForPricing(pricing: {
   monthly: { regular: number; sale: number | null }
   yearly: { regular: number; sale: number | null }
@@ -407,16 +466,92 @@ async function syncPlansForPricing(pricing: {
     yearlyRegular?: { planId: string; amount: number }
     yearlySale?: { planId: string; amount: number } | null
   }
+
+  // Mutable working copy of the catalog. Backfilled below from the
+  // current slot state so legacy data (deployed before the catalog
+  // existed) gets indexed on its next sync.
+  const catalog: Record<string, CatalogEntry> =
+    ((existing.paypalPlansCatalog as Record<string, CatalogEntry> | undefined) ?? {})
+
+  function backfillCatalogFromSlot(
+    slot: { planId: string; amount: number } | null | undefined,
+    interval: 'monthly' | 'yearly',
+  ) {
+    if (!slot) return
+    const k = catalogKey(interval, slot.amount, pricing.currency)
+    if (!catalog[k]) {
+      catalog[k] = {
+        planId: slot.planId,
+        amount: slot.amount,
+        interval,
+        currency: pricing.currency,
+      }
+    }
+  }
+  backfillCatalogFromSlot(existingPlans.monthlyRegular, 'monthly')
+  backfillCatalogFromSlot(existingPlans.monthlySale, 'monthly')
+  backfillCatalogFromSlot(existingPlans.yearlyRegular, 'yearly')
+  backfillCatalogFromSlot(existingPlans.yearlySale, 'yearly')
+
   const productId = await getOrCreateProduct()
+
   async function reuseOrCreate(
     slot: 'monthlyRegular' | 'monthlySale' | 'yearlyRegular' | 'yearlySale',
     amount: number | null,
     interval: 'monthly' | 'yearly',
     label: string,
   ): Promise<{ planId: string; amount: number } | null> {
-    if (amount === null) return null
     const persisted = existingPlans[slot]
+
+    // Slot now empty (e.g. sale removed). Deactivate the old plan
+    // for tidiness, but KEEP its catalog entry — we may want to
+    // resurrect it if the price comes back.
+    if (amount === null) {
+      if (persisted) await deactivatePaypalPlan(persisted.planId)
+      return null
+    }
+
+    // Fast path: slot already at this price → nothing to do.
     if (persisted && persisted.amount === amount) return persisted
+
+    // The slot's plan needs to change. Check the catalog first —
+    // if we've ever minted a plan at this exact (interval, amount,
+    // currency) combo, reuse it.
+    const k = catalogKey(interval, amount, pricing.currency)
+    const catalogHit = catalog[k]
+    if (catalogHit) {
+      try {
+        // Re-activate in case the plan was deactivated in a prior
+        // swap. activatePaypalPlan handles the "already active" 422
+        // as success.
+        await activatePaypalPlan(catalogHit.planId)
+        // Deactivate the slot's previous plan (different plan_id)
+        // so PayPal's plan list isn't littered with stale ACTIVE
+        // entries that nobody is subscribing to.
+        if (persisted && persisted.planId !== catalogHit.planId) {
+          await deactivatePaypalPlan(persisted.planId)
+        }
+        return { planId: catalogHit.planId, amount }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        // Only treat "plan no longer exists" (404 / RESOURCE_NOT_FOUND)
+        // as catalog-stale. Transient errors (auth, rate-limit,
+        // network) propagate so we don't silently mint duplicates
+        // on a flake.
+        const stale =
+          msg.includes('404') || msg.includes('RESOURCE_NOT_FOUND')
+        if (!stale) throw err
+        console.warn(
+          `[paypal] catalog entry ${k} (${catalogHit.planId}) no longer exists on PayPal, recreating:`,
+          msg,
+        )
+        delete catalog[k]
+        // Fall through to create branch below.
+      }
+    }
+
+    // Catalog miss (or stale hit) — deactivate the slot's old plan,
+    // create a new one, and add it to the catalog for next time.
     if (persisted) await deactivatePaypalPlan(persisted.planId)
     const newId = await createPaypalPlan({
       productId,
@@ -425,8 +560,15 @@ async function syncPlansForPricing(pricing: {
       currency: pricing.currency,
       interval,
     })
+    catalog[k] = {
+      planId: newId,
+      amount,
+      interval,
+      currency: pricing.currency,
+    }
     return { planId: newId, amount }
   }
+
   const monthlyRegular = await reuseOrCreate(
     'monthlyRegular',
     pricing.monthly.regular,
@@ -462,6 +604,7 @@ async function syncPlansForPricing(pricing: {
         yearlyRegular,
         yearlySale,
       },
+      paypalPlansCatalog: catalog,
     },
     { merge: true },
   )
