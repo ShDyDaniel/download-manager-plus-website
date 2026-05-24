@@ -515,6 +515,51 @@ const SESSION_TTL_SECONDS = 60 * 60 // 1 hour
 const MAX_REASON_LENGTH = 500
 const WEBSITE_BASE = 'https://dm-plus.vercel.app'
 
+/**
+ *  Email-provider whitelist for signup.
+ *
+ *  Mirror of src/lib/emailDomains.ts in the desktop repo — they
+ *  must stay in sync. The client enforces this for immediate UX
+ *  feedback; we enforce it again here because a hostile client
+ *  could bypass the JS check and call the API directly.
+ *
+ *  Why a whitelist: throwaway-mail providers spin up new domains
+ *  constantly; a blocklist would need constant maintenance. The
+ *  finite set of major consumer providers below covers ~95% of
+ *  real users and is stable for years.
+ */
+const ALLOWED_EMAIL_DOMAINS = new Set<string>([
+  // 1. Google
+  'gmail.com', 'googlemail.com',
+  // 2. Microsoft (Outlook / Hotmail / Live / MSN)
+  'outlook.com', 'outlook.co.il', 'hotmail.com', 'hotmail.co.il',
+  'live.com', 'live.co.il', 'msn.com',
+  // 3. Yahoo
+  'yahoo.com', 'yahoo.co.il', 'ymail.com', 'rocketmail.com',
+  // 4. Apple iCloud
+  'icloud.com', 'me.com', 'mac.com',
+  // 5. Proton
+  'proton.me', 'protonmail.com', 'pm.me',
+  // 6. AOL
+  'aol.com',
+  // 7. GMX
+  'gmx.com', 'gmx.net', 'gmx.de',
+  // 8. Yandex
+  'yandex.com', 'yandex.ru', 'ya.ru',
+  // + Walla (Israeli — primary audience)
+  'walla.co.il', 'walla.com',
+])
+
+function isAllowedEmailDomain(rawEmail: string): boolean {
+  const at = rawEmail.lastIndexOf('@')
+  if (at < 0 || at === rawEmail.length - 1) return false
+  const domain = rawEmail.slice(at + 1).trim().toLowerCase()
+  return ALLOWED_EMAIL_DOMAINS.has(domain)
+}
+
+const EMAIL_DOMAIN_REJECTION_MESSAGE =
+  'ניתן להירשם רק עם כתובת מייל מספק מוכר (Gmail, Outlook, Yahoo, iCloud וכו׳)'
+
 /** Feature flag — if set to "true" the SSO/session/trial/redeem
  *  endpoints enforce that the Firebase ID token's email_verified
  *  claim is true. Default OFF so the deploy doesn't lock out
@@ -2875,6 +2920,18 @@ async function handleSignupRequestCode(req: VercelRequest, res: VercelResponse) 
     return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
   }
 
+  // Provider whitelist (defense-in-depth — the desktop client
+  // checks this too, but a tampered client could bypass JS). Done
+  // before rate-limit so legitimate users who picked a non-allowed
+  // provider get the real reason instantly, instead of being
+  // throttled into a generic 429 after a few attempts.
+  if (!isAllowedEmailDomain(email)) {
+    return res.status(400).json({
+      ok: false,
+      error: EMAIL_DOMAIN_REJECTION_MESSAGE,
+    })
+  }
+
   // Rate limit so an attacker can't spam Gmail SMTP quota or use
   // us as a free email-blast service. 5 codes per hour per email
   // is more than enough for a legit user who keeps mistyping their
@@ -3002,6 +3059,16 @@ async function handleSignupVerifyCode(req: VercelRequest, res: VercelResponse) {
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
+  }
+  // Provider whitelist mirror — request-code already gates this,
+  // but if a hostile client somehow lands a code for a disallowed
+  // domain (e.g. the rule was added after the code was minted) we
+  // still refuse to materialize the Firebase user.
+  if (!isAllowedEmailDomain(email)) {
+    return res.status(400).json({
+      ok: false,
+      error: EMAIL_DOMAIN_REJECTION_MESSAGE,
+    })
   }
   if (!/^\d{6}$/.test(code)) {
     return res.status(400).json({ ok: false, error: 'קוד אימות לא תקין' })
