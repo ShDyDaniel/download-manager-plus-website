@@ -131,21 +131,21 @@ export function Hero() {
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.55, delay: 0.05 }}
-            className="font-display text-fg"
+            className="font-display text-fg [white-space:normal] md:[white-space:nowrap]"
             style={{
-              // Clamp min bumped from 30 → 36 after mobile feedback:
-              // at 30px on a 375px viewport the brand line read as
-              // a body-style heading next to the oversized stacked
-              // CTA cards below — visual hierarchy inverted. 36 is
-              // the largest size that still keeps the 17-char
-              // headline + nowrap inside a 360px content column.
-              // whiteSpace: nowrap is a belt-and-suspenders so a
-              // slightly narrower column doesn't sneak a break
-              // through.
-              fontSize: 'clamp(36px, 5.4vw, 64px)',
-              lineHeight: 1.0,
-              letterSpacing: '-0.02em',
-              whiteSpace: 'nowrap',
+              // Clamp evolved through several rounds of mobile
+              // feedback. Final: 48 → 64. At 48px on a 375px
+              // viewport the headline wraps to two lines, which
+              // turns out to LOOK BETTER on mobile than a tightly-
+              // packed single line — "ניהול הורדות" / "פלוס"
+              // reads like an editorial display headline rather
+              // than a cramped product wordmark. Single-line is
+              // restored at md:+ via the [white-space:nowrap]
+              // utility class (desktop has the horizontal room to
+              // keep all 17 chars on one line).
+              fontSize: 'clamp(48px, 11.5vw, 64px)',
+              lineHeight: 1.05,
+              letterSpacing: '-0.025em',
             }}
           >
             ניהול הורדות{' '}
@@ -167,10 +167,10 @@ export function Hero() {
             transition={{ duration: 0.5, delay: 0.1 }}
             className="mt-3 font-display text-fg md:mt-4"
             style={{
-              // ~72% of H1 to stay clearly supporting while still
-              // reading as a hero element. Mobile min (26) tracks
-              // the H1 min (36) bump in lockstep.
-              fontSize: 'clamp(26px, 3.8vw, 44px)',
+              // ~70% of H1 to stay clearly supporting while still
+              // reading as a hero element. Mobile min (34) tracks
+              // the H1 min (48) bump in lockstep.
+              fontSize: 'clamp(34px, 7vw, 44px)',
               lineHeight: 1.1,
               letterSpacing: '-0.015em',
             }}
@@ -208,7 +208,7 @@ export function Hero() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.25 }}
-            className="mt-6 flex w-full max-w-md flex-col items-stretch gap-3 md:mt-10 md:gap-4"
+            className="mt-7 flex w-full max-w-md flex-col items-stretch gap-2 md:mt-10 md:gap-4"
           >
             {/* Download row — two equal-weight buttons that each
                 open an OS picker on click. `grid-cols-2` (not flex)
@@ -221,14 +221,18 @@ export function Hero() {
             <div className="flex flex-col items-stretch gap-3 sm:grid sm:grid-cols-2">
               <DownloadPicker
                 label="הורדה חינם"
-                icon={<Download className="h-[18px] w-[18px]" />}
+                icon={
+                  <Download className="h-3.5 w-3.5 md:h-[18px] md:w-[18px]" />
+                }
                 macUrl={DOWNLOAD_MAC_GITHUB}
                 winUrl={DOWNLOAD_WIN_GITHUB}
                 variant="primary"
               />
               <DownloadPicker
                 label="דרך Google Drive"
-                icon={<Cloud className="h-[18px] w-[18px]" />}
+                icon={
+                  <Cloud className="h-3.5 w-3.5 md:h-[18px] md:w-[18px]" />
+                }
                 macUrl={DRIVE_DOWNLOAD_MAC}
                 winUrl={DRIVE_DOWNLOAD_WIN}
                 variant="secondary"
@@ -242,11 +246,11 @@ export function Hero() {
                 + gradient still differentiate the action. */}
             <Link
               to="/buy"
-              className="group relative mt-1 flex min-h-[44px] items-center justify-center gap-2 overflow-hidden rounded-2xl border border-primary/60 bg-gradient-to-l from-primary/15 to-primary/5 px-4 py-3 text-sm font-semibold text-fg shadow-lg shadow-primary/10 transition-all hover:border-primary hover:from-primary/25 hover:to-primary/10 hover:shadow-xl hover:shadow-primary/20 md:mt-2 md:gap-3 md:px-6 md:py-4 md:text-base"
+              className="group relative mt-1 flex min-h-[40px] items-center justify-center gap-1.5 overflow-hidden rounded-xl border border-primary/60 bg-gradient-to-l from-primary/15 to-primary/5 px-3 py-2 text-xs font-semibold text-fg shadow-lg shadow-primary/10 transition-all hover:border-primary hover:from-primary/25 hover:to-primary/10 hover:shadow-xl hover:shadow-primary/20 md:mt-2 md:min-h-[44px] md:gap-3 md:rounded-2xl md:px-6 md:py-4 md:text-base"
             >
-              <Crown className="h-4 w-4 text-primary md:h-5 md:w-5" />
+              <Crown className="h-3.5 w-3.5 text-primary md:h-5 md:w-5" />
               <span className="flex items-baseline gap-2">
-                <span className="text-sm md:text-lg">רכישת מנוי Pro</span>
+                <span className="text-xs md:text-lg">רכישת מנוי Pro</span>
                 {minPerMonth !== null && (
                   <span className="text-xs font-medium text-fg-muted">
                     · מ-{formatPrice(minPerMonth)} {sym}/חודש
@@ -463,15 +467,18 @@ function DownloadPicker({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        // !py-3 + !text-sm override the .btn-primary defaults
-        // (14px/15px) on mobile only. Without this the stacked
-        // CTAs on phone consume more vertical space than the
-        // headline above them, inverting visual hierarchy. md:
-        // restores the desktop sizing where the wider screen
-        // gives the buttons room to breathe at the larger size.
-        // min-h-[44px] guarantees we don't dip under the iOS
-        // touch-target floor even with the tighter padding.
-        className={`${triggerClass} w-full min-h-[44px] !py-3 !text-sm md:!py-[14px] md:!text-[15px]`}
+        // Aggressive mobile compaction after operator feedback
+        // ("much smaller buttons on phone"). Mobile defaults:
+        //   - !py-2 (8px) instead of .btn-primary's 14px
+        //   - !text-xs (12px) instead of 15px
+        //   - !gap-1.5 to keep icon/text from looking floaty
+        //   - min-h-[40px] floor (under Apple's 44pt rec, but
+        //     these CTAs are large enough horizontally that
+        //     accidental misfires are unlikely; the operator
+        //     explicitly prioritized visual size over comfort)
+        // All overrides revert at md:+ so desktop hierarchy is
+        // unchanged.
+        className={`${triggerClass} w-full min-h-[40px] !gap-1.5 !py-2 !text-xs md:min-h-[44px] md:!gap-2 md:!py-[14px] md:!text-[15px]`}
       >
         {icon}
         <span>{label}</span>
