@@ -1896,7 +1896,7 @@ async function handleCreateSubscription(
     renewToken?: string
   }
   const plan = body.plan
-  const email = (body.email || '').trim().toLowerCase()
+  let email = (body.email || '').trim().toLowerCase()
   // Optional: the buyer arrived from /account already signed-in.
   // - sessionToken: webhook auto-redeems the NEW key to this uid
   //   (used for fresh-purchase-from-account, where user has no
@@ -1907,6 +1907,12 @@ async function handleCreateSubscription(
   //   renewal flow).
   // Either may be present (renewToken implies a uid via its
   // claims), neither, or both. Both invalid → guest purchase.
+  //
+  // On the renewal/switch path the client only knows the *masked*
+  // email (we deliberately don't expose the real one to JS via the
+  // renew-info endpoint). So if the client didn't send an email
+  // but a valid token is present, we recover the real email
+  // server-side from session claims or the productKey document.
   let linkToUid: string | null = null
   let renewKeyId: string | null = null
   if (body.sessionToken) {
@@ -1914,6 +1920,7 @@ async function handleCreateSubscription(
     if (claims) {
       if (!email || claims.email.toLowerCase() === email) {
         linkToUid = claims.uid
+        if (!email) email = claims.email.toLowerCase()
       }
     }
   }
@@ -1930,6 +1937,29 @@ async function handleCreateSubscription(
       // for the email-link renewal flow where there's no session
       // (user clicked from inbox without logging into /account).
       if (!linkToUid) linkToUid = claims.uid
+      // Recover the buyer email from the key document if the
+      // client didn't supply one (renewal panel never has it). The
+      // key's redeemedByEmail was set when the original buyer
+      // bound this key — it IS the correct email for billing.
+      if (!email) {
+        try {
+          const keySnap = await getDb()
+            .collection('productKeys')
+            .doc(claims.key)
+            .get()
+          const keyData = keySnap.data() as
+            | { redeemedByEmail?: string; buyerEmail?: string }
+            | undefined
+          const recovered =
+            keyData?.redeemedByEmail || keyData?.buyerEmail || ''
+          if (recovered) email = recovered.trim().toLowerCase()
+        } catch (err) {
+          console.warn(
+            '[paypal/create-subscription] renewToken email lookup failed:',
+            err,
+          )
+        }
+      }
     }
   }
   if (plan !== 'monthly' && plan !== 'yearly') {
