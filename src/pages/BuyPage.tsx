@@ -175,6 +175,45 @@ declare global {
 }
 
 /**
+ *  Trust strip rendered directly under each card-payment button.
+ *
+ *  The old vertical-stack layout included PayPal's own yellow
+ *  branded button, which doubled as the "this is a PayPal flow"
+ *  trust signal — buyers visually understood who's handling their
+ *  card. After moving to fundingSource:'card' the dark button no
+ *  longer carries that branding, so without an explicit strip the
+ *  page looks like an un-attributed card form (which is exactly
+ *  the kind of UI that makes buyers nervous about typing their
+ *  card details into).
+ *
+ *  Two lines:
+ *    1. "תשלום מאובטח, מעובד על־ידי PayPal" — names the processor
+ *       + adds a lock icon for the universal "secure" affordance.
+ *    2. "פרטי הכרטיס מועברים ישירות ל-PayPal ולא נשמרים אצלנו"
+ *       — addresses the specific worry a security-aware buyer has
+ *       on a small Israeli site: "am I trusting a homemade
+ *       payment form?". Answer: no, you're trusting PayPal.
+ *
+ *  The PayPal wordmark uses #0070ba (PayPal's accessible
+ *  medium-blue). The darker brand blue (#003087) doesn't pass
+ *  contrast on the espresso background.
+ */
+function PaymentTrustStrip() {
+  return (
+    <div className="flex flex-col items-center gap-0.5 pt-2">
+      <p className="flex items-center justify-center gap-1.5 text-[11px] text-fg-muted">
+        <Lock className="h-3 w-3" aria-hidden />
+        <span>תשלום מאובטח, מעובד על־ידי</span>
+        <span className="font-semibold text-[#0070ba]">PayPal</span>
+      </p>
+      <p className="text-center text-[10px] text-fg-muted/70">
+        פרטי הכרטיס מועברים ישירות ל-PayPal ולא נשמרים אצלנו
+      </p>
+    </div>
+  )
+}
+
+/**
  *  Pick a user-facing error message for a PayPal flow failure.
  *
  *  The createSubscription callback re-throws errors as
@@ -1365,6 +1404,7 @@ export function BuyPage() {
                   </div>
                 ) : null}
                 <div id="paypal-button-container" ref={buttonContainer} />
+                <PaymentTrustStrip />
               </>
             )
           ) : (
@@ -2275,6 +2315,7 @@ function SubscriptionFlow({
             className="min-h-[48px]"
             aria-label="אפשרויות תשלום של PayPal"
           />
+          <PaymentTrustStrip />
           <p className="text-center text-[11px] text-fg-muted">
             {formatPrice(eff)} {sym} / {cycleLabel} · מתחדש אוטומטית · ביטול בכל
             עת
