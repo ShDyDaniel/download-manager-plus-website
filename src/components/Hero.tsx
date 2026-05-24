@@ -133,9 +133,19 @@ export function Hero() {
             transition={{ duration: 0.55, delay: 0.05 }}
             className="font-display text-fg"
             style={{
-              fontSize: 'clamp(44px, 7.5vw, 96px)',
+              // Smaller scale than the previous (44/7.5vw/96)
+              // because "ניהול הורדות פלוס" — 17 chars including
+              // spaces — overflowed onto a second line at the
+              // old max sizes on standard desktop widths. New
+              // clamp keeps the brand on ONE LINE from ~380px
+              // viewports upward while still reading as a hero
+              // headline. whiteSpace: nowrap is a belt-and-
+              // suspenders so a slightly narrower column doesn't
+              // sneak a break through.
+              fontSize: 'clamp(30px, 5.4vw, 64px)',
               lineHeight: 1.0,
               letterSpacing: '-0.02em',
+              whiteSpace: 'nowrap',
             }}
           >
             ניהול הורדות{' '}
@@ -157,7 +167,10 @@ export function Hero() {
             transition={{ duration: 0.5, delay: 0.1 }}
             className="mt-3 font-display text-fg md:mt-4"
             style={{
-              fontSize: 'clamp(26px, 4.5vw, 56px)',
+              // Scaled down in lockstep with the H1 reduction —
+              // keeps the ~65% ratio so the H2 reads as supporting
+              // rather than competing with the brand line above.
+              fontSize: 'clamp(22px, 3.8vw, 44px)',
               lineHeight: 1.1,
               letterSpacing: '-0.015em',
             }}
