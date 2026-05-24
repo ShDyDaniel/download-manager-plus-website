@@ -2037,7 +2037,18 @@ async function handleCreateSubscription(
       shipping_preference: 'NO_SHIPPING',
       user_action: 'SUBSCRIBE_NOW',
       payment_method: {
-        payer_selected: 'PAYPAL',
+        // Experiment: 'UNRESTRICTED' instead of 'PAYPAL'. PayPal's
+        // hosted checkout shows a "save info / create account"
+        // toggle to guest card buyers, and we want it to default
+        // OFF. None of the documented SDK / API knobs target that
+        // toggle directly, but PayPal's UX changes flavor based on
+        // payer_selected — UNRESTRICTED treats the buyer as "any
+        // funding source", which in some flows skips the account-
+        // creation upsell entirely. If this doesn't move the
+        // toggle's default, the safe fallback is to revert to
+        // 'PAYPAL' (no functional difference for users who DO log
+        // in with PayPal).
+        payer_selected: 'UNRESTRICTED',
         payee_preferred: 'IMMEDIATE_PAYMENT_REQUIRED',
       },
       return_url: `${WEBSITE_BASE}/buy?subscribed=1`,
