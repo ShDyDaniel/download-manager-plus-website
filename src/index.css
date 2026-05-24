@@ -103,6 +103,7 @@ html,
 body,
 #root {
   height: 100%;
+  background-color: var(--bg);
   color: var(--fg);
   /* Body default — Rubik for everything, with system stack as
    * fallback. Single typeface across Hebrew and Latin keeps the
@@ -114,41 +115,27 @@ body,
   text-rendering: optimizeLegibility;
 }
 
-/* Background layering strategy — explained because the previous
- * naïve setup ("just put bg-color on html/body/#root") created a
- * visible "two-layer" cut between the Hero's warm radial glow and
- * the raw espresso elsewhere on the page (including iOS rubber-band
- * overscroll area).
- *
- * Fix: put the warm ambient gradient on HTML (which iOS treats as
- * the canvas color and extends into the overscroll area), and keep
- * body + #root transparent so html's gradient shines through the
- * entire app stack from edge to edge. The Hero's own internal glow
- * then layers on TOP as a brighter accent without ever creating a
- * seam — the page is one continuous warm surface, with the Hero
- * lit a bit more.
- *
- * background-attachment is intentionally NOT 'fixed' — it's flaky
- * on iOS Safari and provides no visual benefit here since the
- * gradient already covers the viewport.
- */
-html {
+body {
   background-color: var(--bg);
-  background-image: radial-gradient(
-    ellipse 100% 60% at 50% 18%,
-    rgba(184, 121, 79, 0.07) 0%,
-    transparent 65%
-  );
-}
-
-body,
-#root {
-  background-color: transparent;
+  /* Ambient atmosphere — a SINGLE warm radial gradient instead of
+   * the usual two competing blobs. Subtle, off-center, and barely
+   * visible on top of the deep espresso. Adds depth without
+   * shouting "look I have a gradient". */
+  background-image:
+    radial-gradient(
+      ellipse 80% 60% at 70% 20%,
+      rgba(184, 121, 79, 0.08) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 60% 40% at 20% 80%,
+      rgba(212, 165, 116, 0.05) 0%,
+      transparent 60%
+    );
+  background-attachment: fixed;
   min-height: 100vh;
 }
 
-/* scroll-behavior on html (declared separately so it merges into
- * the rule block above without overwriting the bg props) */
 html {
   scroll-behavior: smooth;
 }

@@ -70,10 +70,7 @@ export function Hero() {
     <section className="relative overflow-hidden px-5 pt-10 pb-14 md:px-6 md:pt-20 md:pb-28">
       {/* Single warm ambient glow, top-left in RTL = top-right in
           the visual. Intentionally minimal — one glow, not two
-          competing blobs. The body's atmospheric gradient (set in
-          src/index.css) is intentionally subtle/wide so this Hero
-          glow can be the bright spot on top of it without creating
-          a visible seam at the Hero boundary. */}
+          competing blobs. */}
       <div
         aria-hidden
         className="pointer-events-none absolute -top-32 left-1/2 h-[480px] w-[680px] -translate-x-1/2 rounded-full"
