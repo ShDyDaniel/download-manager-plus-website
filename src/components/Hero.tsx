@@ -118,7 +118,7 @@ export function Hero() {
             transition={{ duration: 0.4, delay: 0.05 }}
             className="label mb-6"
           >
-            ליוצרי תוכן ועורכי וידאו —
+            — ליוצרי תוכן ועורכי וידאו
           </motion.div>
 
           {/* Display headline — Rubik, massive, with one accent
