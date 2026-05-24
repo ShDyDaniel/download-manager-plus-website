@@ -1970,43 +1970,22 @@ async function handleCreateSubscription(
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
   }
-  // ── Rate limit ─────────────────────────────────────────────
+  // No rate-limit on this endpoint by design.
   //
-  // The /buy form is genuinely public — first-time visitors don't
-  // have a Firebase account yet, so we can't gate on an idToken
-  // without breaking the new-customer flow. Instead we throttle
-  // per-IP and per-email so an attacker can't spam subscription
-  // creation (which costs PayPal API quota + fills our
-  // pendingSubscriptions collection).
-  //
-  // Limits are intentionally generous so a legitimate user
-  // (browser back/refresh, accidental double-click) never trips
-  // them. Storage is a tiny Firestore doc per IP/email with a
-  // sliding 60-minute window.
-  const ip =
-    (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ||
-    (req.headers['x-real-ip'] as string | undefined) ||
-    'unknown'
-  const ipKey = ip.replace(/[^a-z0-9_-]/gi, '_').slice(0, 60)
-  const emailKey = email.replace(/[^a-z0-9_-]/gi, '_').slice(0, 60)
-  try {
-    const allowed = await Promise.all([
-      tryRateLimit(`create-sub_ip_${ipKey}`, 10, 60 * 60),
-      tryRateLimit(`create-sub_email_${emailKey}`, 5, 60 * 60),
-    ])
-    if (!allowed.every(Boolean)) {
-      return res.status(429).json({
-        ok: false,
-        error:
-          'יותר מדי ניסיונות רישום מהכתובת הזו בשעה האחרונה. נסה שוב מאוחר יותר.',
-      })
-    }
-  } catch (err) {
-    // Rate-limit infra failure (Firestore down?) shouldn't block
-    // legitimate buyers. Log and proceed — the per-PayPal-account
-    // limits will eventually kick in.
-    console.warn('[paypal/create-subscription] rate-limit check failed:', err)
-  }
+  // Earlier versions throttled per-IP (10/h) and per-email (5/h)
+  // to defend against subscription-spam attacks. In practice that
+  // protection blocked real customers more than it blocked
+  // attackers:
+  //   - A buyer who fat-fingers their card details + retries a
+  //     few times can trip the 5/h email cap and then be told to
+  //     "come back in an hour" mid-purchase — guaranteed lost sale.
+  //   - Real spam would still create real PayPal subscriptions
+  //     (we'd see them as billable activity and could refund),
+  //     while every legit buyer the throttle dropped is gone for
+  //     good.
+  // PayPal themselves throttle subscription creation at the
+  // account level and fraud-score risky cards, so the unbounded
+  // path here is fenced by their infrastructure too.
   const pricing = await loadCurrentPricing()
   const usingSale = pricing[plan].sale != null
   const lockedPrice = usingSale ? pricing[plan].sale! : pricing[plan].regular
