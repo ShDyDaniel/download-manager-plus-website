@@ -449,11 +449,195 @@ function catalogKey(interval: 'monthly' | 'yearly', amount: number, currency: st
   return `${interval}:${amount.toFixed(2)}:${currency}`
 }
 
-async function syncPlansForPricing(pricing: {
-  monthly: { regular: number; sale: number | null }
-  yearly: { regular: number; sale: number | null }
-  currency: string
-}): Promise<PlanSetForPricing> {
+/**
+ *  Crawl PayPal's billing-plans list for our product and merge any
+ *  plans we don't already track into the in-memory catalog.
+ *
+ *  Why this exists: when the catalog field was introduced, the
+ *  account already had a bunch of historical plans (deactivated
+ *  9 ILS, 5 ILS, etc.). Those plans don't appear in any current
+ *  `paypalPlans` slot, so the catalog backfill-from-slots step
+ *  misses them — and `reuseOrCreate` ends up minting a third 9 ILS
+ *  plan when the price oscillates back. This crawl plugs the gap
+ *  by asking PayPal "what do you actually have?" once per sync.
+ *
+ *  The crawl is bounded (5 pages × 20 = 100 plans max) so a runaway
+ *  account doesn't blow the 60 s function budget. For each candidate
+ *  we first try to extract price + interval from the plan's
+ *  description string (which createPaypalPlan writes in a known
+ *  format) — that avoids a GET per plan when our own plans
+ *  dominate. Only if description parsing fails do we GET the full
+ *  plan to read billing_cycles.
+ */
+function parsePlanFromDescription(
+  desc: string | undefined,
+  currency: string,
+): { interval: 'monthly' | 'yearly'; amount: number } | null {
+  if (!desc) return null
+  // Format we write in createPaypalPlan: "9 ILS per month" /
+  // "100 ILS per year" (with optional decimals).
+  const m = desc.match(/^(\d+(?:\.\d+)?)\s+([A-Z]{3})\s+per\s+(month|year)$/i)
+  if (!m) return null
+  if (m[2].toUpperCase() !== currency) return null
+  const amount = parseFloat(m[1])
+  if (!Number.isFinite(amount)) return null
+  return {
+    interval: m[3].toLowerCase() === 'month' ? 'monthly' : 'yearly',
+    amount,
+  }
+}
+
+async function backfillCatalogFromPayPal(
+  catalog: Record<string, CatalogEntry>,
+  productId: string,
+  currency: string,
+): Promise<void> {
+  // Discover every plan PayPal has for this product. We need the
+  // full set (not just first match) so we can identify duplicates
+  // and deactivate the extras.
+  type Discovered = {
+    id: string
+    interval: 'monthly' | 'yearly'
+    amount: number
+    status: string | undefined
+  }
+  const discovered: Discovered[] = []
+
+  for (let page = 1; page <= 5; page++) {
+    let listResp: {
+      plans?: Array<{
+        id: string
+        status?: string
+        description?: string
+      }>
+      total_pages?: number
+    } = {}
+    try {
+      listResp = await paypalCall<typeof listResp>(
+        'GET',
+        `/v1/billing/plans?product_id=${encodeURIComponent(productId)}&page_size=20&page=${page}&total_required=true`,
+      )
+    } catch (err) {
+      console.warn(`[paypal/backfill] list page ${page} failed (continuing):`, err)
+      return
+    }
+    const plans = listResp.plans ?? []
+    if (plans.length === 0) break
+
+    for (const plan of plans) {
+      // Fast path: parse from description.
+      let parsed = parsePlanFromDescription(plan.description, currency)
+
+      // Slow path: GET full plan for billing_cycles.
+      if (!parsed) {
+        let detail: {
+          billing_cycles?: Array<{
+            frequency?: { interval_unit?: string; interval_count?: number }
+            pricing_scheme?: {
+              fixed_price?: { value?: string; currency_code?: string }
+            }
+          }>
+        } = {}
+        try {
+          detail = await paypalCall<typeof detail>(
+            'GET',
+            `/v1/billing/plans/${plan.id}`,
+          )
+        } catch (err) {
+          console.warn(`[paypal/backfill] get plan ${plan.id} failed (skipping):`, err)
+          continue
+        }
+        const cycle = detail.billing_cycles?.[0]
+        if (!cycle) continue
+        const intervalUnit = cycle.frequency?.interval_unit
+        const intervalCount = cycle.frequency?.interval_count ?? 1
+        const priceValue = cycle.pricing_scheme?.fixed_price?.value
+        const priceCurrency = cycle.pricing_scheme?.fixed_price?.currency_code
+        if (intervalCount !== 1) continue
+        if (priceCurrency !== currency) continue
+        const interval: 'monthly' | 'yearly' | null =
+          intervalUnit === 'MONTH'
+            ? 'monthly'
+            : intervalUnit === 'YEAR'
+              ? 'yearly'
+              : null
+        if (!interval || !priceValue) continue
+        const amount = parseFloat(priceValue)
+        if (!Number.isFinite(amount)) continue
+        parsed = { interval, amount }
+      }
+
+      discovered.push({
+        id: plan.id,
+        interval: parsed.interval,
+        amount: parsed.amount,
+        status: plan.status,
+      })
+    }
+
+    if (plans.length < 20) break
+    if (listResp.total_pages && page >= listResp.total_pages) break
+  }
+
+  // Group by (interval, amount, currency). For each group:
+  //  - canonical = plan currently in catalog (stable references for
+  //    existing subscribers), else the first discovered.
+  //  - everyone else in the group is a duplicate → deactivate.
+  //  - update catalog to point to canonical.
+  const groups = new Map<string, Discovered[]>()
+  for (const p of discovered) {
+    const k = catalogKey(p.interval, p.amount, currency)
+    const arr = groups.get(k) ?? []
+    arr.push(p)
+    groups.set(k, arr)
+  }
+  for (const [k, members] of groups) {
+    const inCatalog = catalog[k]?.planId
+    const canonical =
+      (inCatalog && members.some((m) => m.id === inCatalog))
+        ? inCatalog
+        : members[0].id
+    // Always (re-)set catalog so the field reflects the canonical
+    // choice for this key, even if it was already there.
+    const first = members[0]
+    catalog[k] = {
+      planId: canonical,
+      amount: first.amount,
+      interval: first.interval,
+      currency,
+    }
+    if (members.length > 1) {
+      console.warn(
+        `[paypal/backfill] ${members.length} duplicate plans for ${k} — keeping ${canonical}, deactivating ${members.length - 1}`,
+      )
+    }
+    for (const m of members) {
+      if (m.id === canonical) continue
+      // Best-effort — already-INACTIVE returns an error PayPal-side
+      // but deactivatePaypalPlan swallows it.
+      await deactivatePaypalPlan(m.id)
+    }
+  }
+}
+
+async function syncPlansForPricing(
+  pricing: {
+    monthly: { regular: number; sale: number | null }
+    yearly: { regular: number; sale: number | null }
+    currency: string
+  },
+  opts: {
+    /**
+     * Force a full PayPal list+dedupe pass even when no slot
+     * appears to need a new plan. Set true from the admin "save
+     * prices" flow so each save also opportunistically cleans up
+     * any historical duplicates. Leave false from the buy flow so
+     * a customer click doesn't pay for a ~5s list crawl when
+     * prices are unchanged.
+     */
+    forceBackfill?: boolean
+  } = {},
+): Promise<PlanSetForPricing> {
   const db = getDb()
   const ref = db.collection('appConfig').doc('pricing')
   const snap = await ref.get()
@@ -494,6 +678,56 @@ async function syncPlansForPricing(pricing: {
   backfillCatalogFromSlot(existingPlans.yearlySale, 'yearly')
 
   const productId = await getOrCreateProduct()
+
+  // Decide whether we need to ask PayPal about its actual plan
+  // inventory. We only crawl when at least one slot is going to
+  // create or change its plan AND the target (interval, amount,
+  // currency) isn't already in our catalog. For an admin save that
+  // doesn't actually change anything, we stay in fast paths and
+  // never hit PayPal's list endpoint.
+  type SlotSpec = readonly [
+    'monthlyRegular' | 'monthlySale' | 'yearlyRegular' | 'yearlySale',
+    number | null,
+    'monthly' | 'yearly',
+  ]
+  const slotSpecs: readonly SlotSpec[] = [
+    ['monthlyRegular', pricing.monthly.regular, 'monthly'],
+    ['monthlySale', pricing.monthly.sale, 'monthly'],
+    ['yearlyRegular', pricing.yearly.regular, 'yearly'],
+    ['yearlySale', pricing.yearly.sale, 'yearly'],
+  ]
+  const needsPayPalBackfill =
+    opts.forceBackfill ||
+    slotSpecs.some(([slot, amount, interval]) => {
+      if (amount == null) return false
+      const persisted = existingPlans[slot]
+      if (persisted && persisted.amount === amount) return false  // fast path
+      const k = catalogKey(interval, amount, pricing.currency)
+      return !catalog[k]
+    })
+  if (needsPayPalBackfill) {
+    await backfillCatalogFromPayPal(catalog, productId, pricing.currency)
+    // After backfill + dedupe, a slot may still point to a planId
+    // we just deactivated (because it was a duplicate). Redirect
+    // each slot to the canonical plan for its (interval, amount,
+    // currency) so reuseOrCreate's fast path uses the live plan.
+    function redirectSlotToCanonical(
+      slot: 'monthlyRegular' | 'monthlySale' | 'yearlyRegular' | 'yearlySale',
+      interval: 'monthly' | 'yearly',
+    ) {
+      const persisted = existingPlans[slot]
+      if (!persisted) return
+      const k = catalogKey(interval, persisted.amount, pricing.currency)
+      const canonical = catalog[k]?.planId
+      if (canonical && canonical !== persisted.planId) {
+        existingPlans[slot] = { planId: canonical, amount: persisted.amount }
+      }
+    }
+    redirectSlotToCanonical('monthlyRegular', 'monthly')
+    redirectSlotToCanonical('monthlySale', 'monthly')
+    redirectSlotToCanonical('yearlyRegular', 'yearly')
+    redirectSlotToCanonical('yearlySale', 'yearly')
+  }
 
   async function reuseOrCreate(
     slot: 'monthlyRegular' | 'monthlySale' | 'yearlyRegular' | 'yearlySale',
@@ -2479,7 +2713,12 @@ async function handleSyncPlans(req: VercelRequest, res: VercelResponse) {
     return res.status(403).json({ ok: false, error: 'not an admin' })
   }
   const pricing = await loadCurrentPricing()
-  const plans = await syncPlansForPricing(pricing)
+  // Admin saves always force a backfill+dedupe pass — even when
+  // the prices are unchanged. This gives the operator a manual
+  // "clean up PayPal" lever: hit save in the admin panel and any
+  // duplicate plans (from earlier races, manual creation, etc.)
+  // get deactivated and the catalog is rebuilt to match reality.
+  const plans = await syncPlansForPricing(pricing, { forceBackfill: true })
   return res.status(200).json({ ok: true, plans })
 }
 
