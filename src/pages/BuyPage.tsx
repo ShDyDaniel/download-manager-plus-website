@@ -141,6 +141,12 @@ declare global {
   interface Window {
     paypal?: {
       Buttons: (opts: {
+        // 'card' renders ONLY the credit-card funding source; omit
+        // (default) to let PayPal stack every eligible funding source
+        // vertically (PayPal account + card + paylater + ...).
+        // We use 'card' to keep the checkout focused on direct card
+        // entry without the dominant yellow PayPal upsell button.
+        fundingSource?: string
         style?: {
           layout?: string
           color?: string
@@ -166,6 +172,27 @@ declare global {
       }) => PayPalButton
     }
   }
+}
+
+/**
+ *  Pick a user-facing error message for a PayPal flow failure.
+ *
+ *  The createSubscription callback re-throws errors as
+ *  `new Error(json.error)`, so when our backend rejects (rate
+ *  limit, invalid plan, invalid email, etc.) the actual Hebrew
+ *  reason rides in err.message. PayPal's SDK also calls onError
+ *  for client-side problems (popup blocked, network blip in the
+ *  PayPal-hosted iframe, etc.) — those messages are English /
+ *  technical and we replace them with the generic Hebrew copy.
+ *
+ *  Heuristic: if err.message contains any Hebrew character we
+ *  trust it as already-localized text and show it as-is.
+ */
+function pickPayPalErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message && /[֐-׿]/.test(err.message)) {
+    return err.message
+  }
+  return fallback
 }
 
 /** sessionStorage key AccountPage uses to hand off the "I'm a
@@ -653,11 +680,12 @@ export function BuyPage() {
     buttonContainer.current.innerHTML = ''
     window.paypal
       .Buttons({
+        // Card-only — see the comment on Window.paypal.Buttons.
+        fundingSource: 'card',
         style: {
-          layout: 'vertical',
-          color: 'gold',
           shape: 'rect',
-          label: 'subscribe',
+          color: 'black',
+          label: 'pay',
           height: 48,
         },
         createSubscription: async () => {
@@ -691,7 +719,10 @@ export function BuyPage() {
           console.error('PayPal subscribe error', err)
           setStatus({
             kind: 'error',
-            message: 'התרחשה שגיאה בתהליך התשלום. נסה שוב.',
+            message: pickPayPalErrorMessage(
+              err,
+              'התרחשה שגיאה בתהליך התשלום. נסה שוב.',
+            ),
           })
         },
         onCancel: () => setStatus({ kind: 'idle' }),
@@ -1973,11 +2004,12 @@ function SubscriptionFlow({
     container.innerHTML = ''
     window.paypal
       .Buttons({
+        // Card-only — see the comment on Window.paypal.Buttons.
+        fundingSource: 'card',
         style: {
-          layout: 'vertical',
-          color: 'gold',
           shape: 'rect',
-          label: 'subscribe',
+          color: 'black',
+          label: 'pay',
           height: 48,
         },
         createSubscription: async () => {
@@ -2029,7 +2061,12 @@ function SubscriptionFlow({
         },
         onError: (err) => {
           console.error('PayPal subscription error', err)
-          setError('התרחשה שגיאה בתהליך התשלום. נסה שוב.')
+          setError(
+            pickPayPalErrorMessage(
+              err,
+              'התרחשה שגיאה בתהליך התשלום. נסה שוב.',
+            ),
+          )
         },
         onCancel: () => {
           // User closed the popup. Don't error — they explicitly
