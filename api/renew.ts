@@ -105,6 +105,14 @@ async function handleInfo(req: VercelRequest, res: VercelResponse) {
     redeemedByEmail?: string
     expiresAt?: string
     tier?: string
+    // Read the subscription metadata so the BuyPage can decide
+    // whether to lock the buyer's current plan card with a
+    // "המנוי הנוכחי" badge — without these the page can't know
+    // if the buyer is mid-cycle on monthly vs yearly, so it would
+    // either show no lock or have to guess.
+    planDays?: number
+    subscriptionPlanDays?: number
+    subscriptionStatus?: string
   }
   const expiresAt = data.expiresAt ? new Date(data.expiresAt) : null
   if (!expiresAt || !Number.isFinite(expiresAt.getTime())) {
@@ -122,6 +130,12 @@ async function handleInfo(req: VercelRequest, res: VercelResponse) {
     tier: data.tier || 'pro',
     expiresAt: expiresAt.toISOString(),
     isExpired: expiresAt.getTime() < Date.now(),
+    // planDays falls back through both schemas: the newer
+    // `planDays` is the canonical field; older keys may have
+    // only `subscriptionPlanDays` from before the field was
+    // renamed. Either way the client gets a number or null.
+    planDays: data.planDays || data.subscriptionPlanDays || null,
+    subscriptionStatus: data.subscriptionStatus || null,
   })
 }
 
@@ -179,6 +193,14 @@ async function handleSignin(req: VercelRequest, res: VercelResponse) {
         expiresAt?: string
         tier?: string
         blocked?: boolean
+        // Subscription metadata needed by BuyPage to lock the
+        // buyer's current plan card when they sign in through the
+        // /buy "כבר יש לי מנוי" flow. Same fields the info handler
+        // returns above — kept symmetric so the client can treat
+        // both response shapes identically.
+        planDays?: number
+        subscriptionPlanDays?: number
+        subscriptionStatus?: string
       }
       if (data.blocked) return null
       if (!data.expiresAt) return null
@@ -193,6 +215,8 @@ async function handleSignin(req: VercelRequest, res: VercelResponse) {
         expiresAt: new Date(expiresMs).toISOString(),
         isExpired: expiresMs < now,
         renewToken: signRenewToken(uid, key),
+        planDays: data.planDays || data.subscriptionPlanDays || null,
+        subscriptionStatus: data.subscriptionStatus || null,
       }
     })
     .filter((k): k is NonNullable<typeof k> => k !== null)

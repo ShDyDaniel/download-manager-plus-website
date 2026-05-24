@@ -72,6 +72,16 @@ interface RenewInfo {
   tier: string
   expiresAt: string
   isExpired: boolean
+  /** The current plan's cycle length (30 for monthly, 365 for
+   *  yearly). Null only for legacy keys created before the field
+   *  was added — those will skip the auto-lock logic and let the
+   *  buyer pick any plan. */
+  planDays: number | null
+  /** PayPal lifecycle state ('active' | 'cancelled' | 'past_due' |
+   *  'suspended' | 'expired' | null). Used together with
+   *  isExpired to decide if the current plan should be auto-
+   *  locked: only locked when status is 'active' AND not expired. */
+  subscriptionStatus: string | null
 }
 
 /** One entry in the response from POST /api/renew/signin — the
@@ -84,6 +94,8 @@ interface RenewableKey {
   expiresAt: string
   isExpired: boolean
   renewToken: string
+  planDays: number | null
+  subscriptionStatus: string | null
 }
 
 function formatExpiry(iso: string): string {
@@ -491,6 +503,22 @@ export function BuyPage() {
           return
         }
         setRenewInfo(json)
+        // Auto-lock current plan when the buyer arrived via an
+        // email-link renewal AND still has an active sub. Same
+        // logic as pickRenewableKey above — the explicit URL
+        // ?switchTo= already short-circuited this earlier in the
+        // effect, so we only apply auto-lock if the URL didn't
+        // supply one.
+        if (
+          !switchToParam &&
+          !json.isExpired &&
+          json.subscriptionStatus === 'active' &&
+          (json.planDays === 30 || json.planDays === 365)
+        ) {
+          const opp: Plan = json.planDays === 30 ? 'yearly' : 'monthly'
+          setSwitchTo(opp)
+          setPlan(opp)
+        }
       })
       .catch(() => {
         setRenewError('לא הצלחנו לטעון את פרטי החידוש. רענן ונסה שוב.')
@@ -685,7 +713,27 @@ export function BuyPage() {
       tier: item.tier,
       expiresAt: item.expiresAt,
       isExpired: item.isExpired,
+      planDays: item.planDays,
+      subscriptionStatus: item.subscriptionStatus,
     })
+    // Auto-lock: if the user signed in to a still-active
+    // subscription, treat it as a plan-switch (lock current plan,
+    // pre-select the other). Same UX as the /account "שינוי
+    // תוכנית" link — there's no logical reason for someone with
+    // an active monthly to "renew" to monthly again from /buy
+    // (PayPal already auto-charges them); the only useful action
+    // is switching. Expired / cancelled / past-due subs still
+    // show both plans freely because they really might want the
+    // same plan to restart.
+    if (
+      !item.isExpired &&
+      item.subscriptionStatus === 'active' &&
+      (item.planDays === 30 || item.planDays === 365)
+    ) {
+      const opp: Plan = item.planDays === 30 ? 'yearly' : 'monthly'
+      setSwitchTo(opp)
+      setPlan(opp)
+    }
     setRenewableKeys(null)
     setSigninOpen(false)
     setSigninPassword('')
