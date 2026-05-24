@@ -83,17 +83,19 @@ export function Hero() {
       <div className="relative mx-auto grid max-w-6xl items-center gap-10 md:grid-cols-[1.1fr,0.9fr] md:gap-16">
         {/* TEXT COLUMN — sits on the right in RTL (DOM first). */}
         <div>
-          {/* Brand row — the product icon + wordmark, sitting at
-              the top of the hero. This is the "face" of the
-              software showing up before anything else; without it
-              the page reads as "some app" instead of "this app".
-              Kept compact (40px icon) so it anchors identity but
-              doesn't compete with the headline below. */}
+          {/* Brand icon — anchors visual identity in the top
+              corner. The wordmark text used to live next to it but
+              moved into the main headline below (so the brand name
+              is the H1, not a side label), which left the icon
+              alone here. Kept it because the icon serves as a
+              persistent visual mark — same shape the user sees in
+              their dock once they install — without competing with
+              the headline that now reads the brand name in full. */}
           <motion.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4 }}
-            className="mb-8 inline-flex items-center gap-3"
+            className="mb-8 inline-flex items-center"
           >
             <img
               src="./icon.png"
@@ -104,9 +106,6 @@ export function Hero() {
                   '0 1px 0 rgba(255,255,255,0.06) inset, 0 12px 28px rgba(13,8,4,0.5)',
               }}
             />
-            <span className="text-[15px] font-medium text-fg">
-              ניהול הורדות פלוס
-            </span>
           </motion.div>
 
           {/* Editorial label — uppercase, with em-dash. The dash is
@@ -121,11 +120,13 @@ export function Hero() {
             — ליוצרי תוכן ועורכי וידאו
           </motion.div>
 
-          {/* Display headline — Rubik, massive, with one accent
-              word in heavier weight + warm color. clamp() keeps it
-              readable from 375px to 2560px without breakpoint
-              babysitting. Line-height is tight (1.05) — at this
-              size the standard 1.5 reads as airy and amateur. */}
+          {/* Display headline — Rubik, massive. Brand-led: the
+              product NAME is the headline (with "פלוס" carrying
+              the copper accent because that's the differentiator).
+              clamp() keeps it readable from 375px to 2560px
+              without breakpoint babysitting; line-height tight
+              (1.0) — at this size the standard 1.5 reads as airy
+              and amateur. */}
           <motion.h1
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -137,13 +138,32 @@ export function Hero() {
               letterSpacing: '-0.02em',
             }}
           >
-            ניהול הורדות,
-            <br />
-            <span className="accent-word">
-              סוף־סוף
-            </span>{' '}
-            מסודר.
+            ניהול הורדות{' '}
+            <span className="accent-word">פלוס</span>
           </motion.h1>
+
+          {/* Secondary headline — the value-prop line that the
+              brand-led H1 needs as its emotional follow-through.
+              "הכל מסודר" (vs. the old "מסודר") is deliberate: it
+              implies the order applies across EVERYTHING the app
+              does (downloads, quotes, payments, projects), not
+              just the file-routing feature. About 60% of the H1's
+              font size so it reads as supporting rather than
+              competing. "סוף סוף" gets the accent — same emotional
+              hook the old headline used, kept because it lands. */}
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.1 }}
+            className="mt-3 font-display text-fg md:mt-4"
+            style={{
+              fontSize: 'clamp(26px, 4.5vw, 56px)',
+              lineHeight: 1.1,
+              letterSpacing: '-0.015em',
+            }}
+          >
+            <span className="accent-word">סוף סוף</span> הכל מסודר
+          </motion.div>
 
           {/* Subhead — one sentence. The previous three-paragraph
               version asked the reader to commit too early; this
