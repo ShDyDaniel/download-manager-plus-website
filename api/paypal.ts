@@ -124,6 +124,91 @@ async function paypalCall<T = unknown>(
   return parsed as T
 }
 
+/* ─────────────────────────────────────────────────────────────
+ *  Subscription expiry math — calendar-aware
+ *
+ *  Earlier the code used `+ planDays * 86_400_000` (i.e. 30 or 365
+ *  literal days) to compute the next expiry. PayPal, however, bills
+ *  by CALENDAR month — same day next month — which is 30 OR 31
+ *  days depending on the month (and 28/29 for February). The day-
+ *  count math drifted: a subscription that started May 21 would
+ *  expire June 20 in our system but PayPal would only charge it on
+ *  June 21. That 1-day gap is when the user has no Pro access even
+ *  though their subscription is still active in PayPal — a real
+ *  bug.
+ *
+ *  These helpers do the calendar-correct addition:
+ *    - planDays === 30  → addMonths(date, 1)
+ *    - planDays === 365 → addMonths(date, 12)
+ *    - any other value  → fall back to literal days (admin-grant
+ *                         path uses arbitrary day counts and
+ *                         genuinely means "X calendar days").
+ *
+ *  Native Date.setMonth wraps month overflow safely (Aug 31 +
+ *  1 month → Oct 1, not "Sep 31"), which matches PayPal's edge-
+ *  case behaviour for subscriptions started on the 31st.
+ * ───────────────────────────────────────────────────────────── */
+function addCalendarSubscriptionPeriod(from: Date, planDays: number): Date {
+  const result = new Date(from)
+  if (planDays === 30) {
+    result.setMonth(result.getMonth() + 1)
+    return result
+  }
+  if (planDays === 365) {
+    result.setMonth(result.getMonth() + 12)
+    return result
+  }
+  // Fallback for non-subscription day counts (e.g. 7-day admin grant,
+  // 14-day trial): use literal day arithmetic, which is what the
+  // caller actually means in those cases.
+  result.setTime(result.getTime() + planDays * 86_400_000)
+  return result
+}
+
+/** Grace window for the "is this key still valid right now" check.
+ *  Lets a key remain functional for this many hours past its
+ *  expiresAt — but ONLY when subscriptionStatus is 'active' (so
+ *  PayPal still believes the subscription is live and intends to
+ *  charge or retry).
+ *
+ *  Covers two real-world scenarios:
+ *    1. Webhook delay — PayPal charged on time but their webhook
+ *       hasn't reached us yet (usually seconds, but can be hours
+ *       under load on PayPal's side).
+ *    2. PayPal retry window — initial recurring charge failed, but
+ *       PayPal will retry over the next 1-3 days. Subscription
+ *       status stays 'active' during retries; we don't want to
+ *       lock the buyer out while they have a real chance of the
+ *       charge succeeding.
+ *
+ *  24h is generous enough to cover both without being so long it
+ *  hides a genuinely-cancelled subscription (a CANCELLED webhook
+ *  flips status to 'cancelled' and the grace stops applying
+ *  immediately). */
+const SUBSCRIPTION_GRACE_HOURS = 24
+const SUBSCRIPTION_GRACE_MS = SUBSCRIPTION_GRACE_HOURS * 3_600_000
+
+/** True when this key represents a still-usable Pro entitlement,
+ *  accounting for the grace window described above. Centralises
+ *  the "is the user Pro right now" decision so frontends + cron
+ *  jobs + the AccountPage all agree on the answer. */
+function isProEntitlementActive(args: {
+  expiresAt: string | undefined | null
+  subscriptionStatus: string | undefined | null
+}): boolean {
+  if (!args.expiresAt) return false
+  const expMs = Date.parse(args.expiresAt)
+  if (!Number.isFinite(expMs)) return false
+  const now = Date.now()
+  if (expMs > now) return true
+  // Past expiry: only still valid if PayPal still considers the
+  // subscription active AND we're within the grace window.
+  if (args.subscriptionStatus === 'active') {
+    return now - expMs <= SUBSCRIPTION_GRACE_MS
+  }
+  return false
+}
+
 const PRICING_DEFAULTS_LOCAL = {
   monthly: { regular: 9, sale: null as number | null },
   yearly: { regular: 60, sale: null as number | null },
@@ -777,7 +862,10 @@ async function handleSaleCompleted(
     key.expiresAt ? new Date(key.expiresAt).getTime() : 0,
     Date.now(),
   )
-  const newExpiresAt = new Date(baseTime + days * 86_400_000)
+  // Calendar-aware extension — matches PayPal's same-day-next-month
+  // billing rhythm. See addCalendarSubscriptionPeriod for the
+  // rationale.
+  const newExpiresAt = addCalendarSubscriptionPeriod(new Date(baseTime), days)
   await keyDoc.ref.update({
     expiresAt: newExpiresAt.toISOString(),
     lastRenewalAt: new Date().toISOString(),
@@ -851,7 +939,12 @@ async function ensureKeyForSubscription(
   const planCurrency = cycle.pricing_scheme.fixed_price.currency_code
   const buyerEmail = sub.subscriber.email_address
   const key = generateKeyString()
-  const initialExpiresAt = new Date(Date.now() + planDays * 86_400_000)
+  // Calendar-aware initial expiry — first cycle ends on the same
+  // calendar day next month/year, matching PayPal's next-charge
+  // date. Using literal planDays (30/365) would put us 1 day off
+  // in 31-day months, leaving the buyer expired while PayPal still
+  // hasn't billed them again.
+  const initialExpiresAt = addCalendarSubscriptionPeriod(new Date(), planDays)
 
   // Read the pendingSubscriptions context for this subscription
   // — linkToUid (auto-redeem hint) and renewKeyId (extend-existing
@@ -929,7 +1022,13 @@ async function ensureKeyForSubscription(
         ? Date.parse(existing.expiresAt)
         : 0
       const anchorMs = Math.max(currentExpMs, Date.now())
-      const newExpiresAt = new Date(anchorMs + planDays * 86_400_000)
+      // Calendar-aware extension. The anchor is still MAX(current,
+      // now) so an early renewal preserves remaining days, but the
+      // delta is now a calendar month/year not a 30/365-day literal.
+      const newExpiresAt = addCalendarSubscriptionPeriod(
+        new Date(anchorMs),
+        planDays,
+      )
       const billingHistory = Array.isArray(existing.billingHistory)
         ? existing.billingHistory.slice()
         : []
@@ -1820,7 +1919,6 @@ async function respondWithSession(
     // created if no active keys (so user sees their last key, e.g.
     // expired).
     let primaryKey: KeyDoc | null = null
-    const now = Date.now()
     for (const k of ownedKeyDocs) {
       const expMs = typeof k.expiresAt === 'string' ? Date.parse(k.expiresAt) : 0
       if (!primaryKey) {
@@ -1837,9 +1935,19 @@ async function respondWithSession(
       primaryKey && typeof primaryKey.expiresAt === 'string'
         ? primaryKey.expiresAt
         : null
-    const primaryIsActive = primaryExpiresAt
-      ? Date.parse(primaryExpiresAt) > now
-      : false
+    // Use the grace-aware entitlement check rather than a raw
+    // expiresAt > now comparison. This means a buyer whose key
+    // expired in the last 24h but whose subscriptionStatus is
+    // still 'active' (PayPal in retry, or webhook delayed) keeps
+    // their Pro badge here — matches what the desktop app and
+    // routing engine will see too.
+    const primaryIsActive = isProEntitlementActive({
+      expiresAt: primaryExpiresAt,
+      subscriptionStatus:
+        typeof primaryKey?.subscriptionStatus === 'string'
+          ? primaryKey.subscriptionStatus
+          : null,
+    })
     const hasActiveSub = subs.some(
       (s) => s.status === 'ACTIVE' || s.status === 'APPROVAL_PENDING',
     )
