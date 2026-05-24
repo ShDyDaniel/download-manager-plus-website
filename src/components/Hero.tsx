@@ -178,7 +178,7 @@ export function Hero() {
             style={{ lineHeight: 1.55 }}
           >
             קובץ שיורד — וידאו, סאונד, תמונה — נכנס מיד לפרויקט הנכון.
-            ועוד כלים שמסדרים לכם את העבודה היומית.
+            ועוד הרבה כלים שיחסכו לכם הרבה מאוד זמן.
           </motion.p>
 
           {/* CTA block — three actions, in priority order from top:
