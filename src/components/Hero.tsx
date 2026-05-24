@@ -35,9 +35,9 @@ import {
 // the release was still in draft. Hardcoding keeps the site working
 // the moment a version is published, with no surprises.
 const DOWNLOAD_MAC_GITHUB =
-  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.6/Download.Manager.Plus-1.7.6-arm64.dmg'
+  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.7/Download.Manager.Plus-1.7.7-arm64.dmg'
 const DOWNLOAD_WIN_GITHUB =
-  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.6/Download.Manager.Plus-1.7.6-x64.exe'
+  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.7/Download.Manager.Plus-1.7.7-x64.exe'
 
 // Google Drive fallback links — for users on networks where GitHub
 // Releases is blocked (some corporate / school / region-restricted
@@ -45,9 +45,9 @@ const DOWNLOAD_WIN_GITHUB =
 // platforms now get a Drive link surfaced via the dropdown CTA so
 // blocked Windows users aren't stranded.
 const DRIVE_DOWNLOAD_MAC =
-  'https://drive.google.com/file/d/1RhTDO7sQbmuGsFeMQkgoBUsKU0MT9ScQ/view?usp=drive_link'
+  'https://drive.google.com/file/d/18YIOAW8hqkAkCBwKQHFibJFijmV5TXhi/view?usp=drive_link'
 const DRIVE_DOWNLOAD_WIN =
-  'https://drive.google.com/file/d/1s0BON0ohxi5dP5NMLkQVpDmgEDVhLzvS/view?usp=drive_link'
+  'https://drive.google.com/file/d/10i5U42SZ5QdhHDbdW3XoPLmHcdPLVcmW/view?usp=drive_link'
 
 export function Hero() {
   // Live pricing for the Pro CTA's "starting from X ₪/month" line.
