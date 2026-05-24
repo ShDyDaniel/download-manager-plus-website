@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="./icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- theme-color tints the mobile browser chrome (Safari URL
+         bar, Chrome status bar) so it blends with the page's
+         espresso background instead of staying its default
+         off-white / system-dark. Without this the URL bar reads
+         as a foreign panel hovering on top of the site. Value
+         matches CSS --bg in src/index.css. -->
+    <meta name="theme-color" content="#16110D" />
     <title>ניהול הורדות פלוס</title>
     <meta
       name="description"
@@ -35,7 +42,16 @@
       rel="stylesheet"
     />
   </head>
-  <body class="bg-[#0b0b14] text-white antialiased">
+  <!--
+    body bg matches CSS --bg (espresso #16110D). The previous value
+    #0b0b14 was a dark-blue-black leftover from an earlier template
+    and was visible on iOS in the rubber-band overscroll area — the
+    page looked like it had a second "blue" layer beneath the
+    espresso content, which read as broken/unprofessional. Inline
+    style keeps the right color visible even before the React app
+    + main stylesheet boot.
+  -->
+  <body style="background-color: #16110D; color: #F5EFE6" class="antialiased">
     <div id="root"></div>
     <!--
       The PayPal Smart Buttons SDK used to be loaded here with a
