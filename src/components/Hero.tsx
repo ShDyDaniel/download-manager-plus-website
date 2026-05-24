@@ -294,7 +294,7 @@ function HeroProductVisual() {
         />
         <span className="h-3 w-3 rounded-full bg-success opacity-70" />
         <div className="flex-1 text-center text-xs text-fg-muted" dir="rtl">
-          ניהול הורדות פלוס — טריילר_סרט_הקיץ.proj
+          ניהול הורדות פלוס — טריילר_סרט_קיץ.proj
         </div>
         <span className="w-12" aria-hidden />
       </div>

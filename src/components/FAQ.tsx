@@ -46,9 +46,12 @@ const QA: { q: string; a: string }[] = [
 ]
 
 export function FAQ() {
-  // First question open by default — gives the section visual
-  // density on first render so it doesn't read as "nothing here".
-  const [openIdx, setOpenIdx] = useState<number | null>(0)
+  // All questions collapsed by default. Earlier this defaulted to
+  // openIdx=0 so the first row would expand on render for visual
+  // density, but the user found the auto-open distracting on a
+  // page that already has a lot going on above the fold. Starting
+  // closed lets the user pick what they want to read.
+  const [openIdx, setOpenIdx] = useState<number | null>(null)
 
   return (
     <section className="relative border-t border-border px-5 py-16 md:px-6 md:py-32">
