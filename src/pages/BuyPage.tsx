@@ -172,6 +172,13 @@ declare global {
  *  AccountPage — keep both in sync if you rename. */
 const PURCHASE_CONTEXT_KEY = 'dmplus.purchaseContext.v1'
 
+/** Cross-page session token key. Mirrors AccountPage's constant of
+ *  the same name. After the buyer logs in via the "כבר יש לי מנוי"
+ *  signin modal here, we mint a /account session and stash the
+ *  token here so navigating to /account doesn't re-prompt for a
+ *  password. Must stay in sync with AccountPage. */
+const SESSION_TOKEN_KEY = 'dmplus.session.v1'
+
 interface PurchaseContext {
   sessionToken: string
   email: string
@@ -774,6 +781,45 @@ export function BuyPage() {
         )
         return
       }
+      // The buyer just proved they know the password. Mint a
+      // /account session in parallel and persist it in
+      // sessionStorage so when they navigate away from /buy (e.g.
+      // click "החשבון שלי" in the top corner) the next page
+      // restores the session via /api/paypal?action=restore-session
+      // instead of asking for the password again.
+      //
+      // This is a second Firebase Auth call but it's cheap (Auth
+      // REST is fast and we just verified the same credentials
+      // succeed). Errors are swallowed — the renewal flow itself
+      // still works even if the session-token mint fails.
+      try {
+        const sessR = await fetch('/api/paypal?action=session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: trimmedEmail,
+            password: signinPassword,
+          }),
+        })
+        const sessJson = (await sessR.json()) as {
+          ok?: boolean
+          token?: string
+        }
+        if (sessR.ok && sessJson.ok && sessJson.token) {
+          try {
+            window.sessionStorage.setItem(
+              SESSION_TOKEN_KEY,
+              sessJson.token,
+            )
+          } catch {
+            // sessionStorage disabled — degrade gracefully.
+          }
+        }
+      } catch {
+        // Don't break the renew flow if the session call has a
+        // network blip. The user will just need to log in again
+        // if they navigate to /account.
+      }
       // Most buyers have exactly one key — skip the picker for them.
       if (json.keys.length === 1) {
         pickRenewableKey(json.keys[0])
@@ -1359,9 +1405,15 @@ export function BuyPage() {
                       value={signinEmail}
                       onChange={(e) => setSigninEmail(e.target.value)}
                       placeholder="you@example.com"
-                      dir="ltr"
                       disabled={signinSubmitting}
                       autoFocus
+                      // No explicit dir — inherits dir="rtl" from
+                      // <html lang="he"> so the placeholder and
+                      // typed content align right under the
+                      // right-aligned "אימייל" label, matching the
+                      // /account login form. The latin email
+                      // characters still render LTR via Unicode
+                      // bidi.
                       className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
                     />
                   </label>
@@ -1375,7 +1427,6 @@ export function BuyPage() {
                       autoComplete="current-password"
                       value={signinPassword}
                       onChange={(e) => setSigninPassword(e.target.value)}
-                      dir="ltr"
                       disabled={signinSubmitting}
                       className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
                     />

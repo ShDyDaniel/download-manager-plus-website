@@ -560,6 +560,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleCreateSubscription(req, res)
       case 'session':
         return await handleSession(req, res)
+      case 'restore-session':
+        return await handleRestoreSession(req, res)
       case 'sso':
         return await handleSso(req, res)
       case 'status':
@@ -1588,6 +1590,55 @@ async function handleSession(req: VercelRequest, res: VercelResponse) {
     }
   }
   return await respondWithSession(res, { uid, email })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Restore-session (action=restore-session) — sessionStorage rehydrate
+ *
+ *  After a buyer signs in on /account OR on /buy ("כבר יש לי
+ *  מנוי"), the frontend stashes the session token in
+ *  sessionStorage so subsequent page loads within the same tab
+ *  don't have to re-prompt for a password. On mount, the page
+ *  calls THIS endpoint with the stored token: we verify the JWT
+ *  (HMAC + exp claim), and if it's still valid we replay the
+ *  same {profile, subscriptions, token} response that handleSession
+ *  produces. If the token is expired or signature-invalid, we
+ *  401 — the frontend clears its sessionStorage and falls through
+ *  to the login form.
+ *
+ *  Why a separate endpoint (vs reusing handleSession): handleSession
+ *  requires email+password and re-authenticates against Firebase.
+ *  We don't have the password here (deliberately — we never store
+ *  it client-side), only the previously-issued session token. And
+ *  there's no reason to re-hit Firebase Auth — the token alone
+ *  proves the user authenticated successfully within the last
+ *  SESSION_TTL_SECONDS, which is all the trust we need.
+ *
+ *  Response: identical shape to action=session for client symmetry
+ *  (the AccountPage uses the same setToken/setProfile/setSubs
+ *  setters whether the session came from a fresh login or a
+ *  restore).
+ * ───────────────────────────────────────────────────────────── */
+async function handleRestoreSession(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { token?: string }
+  const token = (body.token || '').trim()
+  if (!token) {
+    return res.status(400).json({ ok: false, error: 'missing token' })
+  }
+  const claims = verifySessionToken(token)
+  if (!claims) {
+    // Expired or tampered. Frontend interprets 401 as "clear
+    // sessionStorage and show login form" — no error message
+    // needed because the user didn't actively do anything.
+    return res.status(401).json({ ok: false, error: 'session expired' })
+  }
+  return await respondWithSession(res, {
+    uid: claims.uid,
+    email: claims.email,
+  })
 }
 
 /* ─────────────────────────────────────────────────────────────

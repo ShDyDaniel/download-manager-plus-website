@@ -136,6 +136,17 @@ function formatDateTime(iso: string): string {
  *  / history / screenshots. */
 const PURCHASE_CONTEXT_KEY = 'dmplus.purchaseContext.v1'
 
+/** sessionStorage key for the cross-page session token. Set after
+ *  a successful login/SSO on /account OR a successful sign-in on
+ *  /buy ("כבר יש לי מנוי"), so the user stays signed in across
+ *  the whole site for the duration of the tab. sessionStorage
+ *  (not localStorage) is the right choice — closing the tab
+ *  invalidates everything, matching the "stay signed in until I
+ *  close the tab" UX the user asked for. The token itself also
+ *  has a server-side TTL (SESSION_TTL_SECONDS = 1h) so an
+ *  abandoned-but-not-closed tab can't keep the session forever. */
+const SESSION_TOKEN_KEY = 'dmplus.session.v1'
+
 export default function AccountPage() {
   const navigate = useNavigate()
   // SSO-bootstrap state. `ssoState` distinguishes:
@@ -212,12 +223,66 @@ export default function AccountPage() {
   const [billingError, setBillingError] = useState<string | null>(null)
   const [transactions, setTransactions] = useState<BillingTransaction[] | null>(null)
 
-  /** On mount: try SSO bootstrap if `#t=...` is present in URL. */
+  /** On mount: bootstrap a session from one of three sources, in
+   *  priority order:
+   *    1. URL fragment `#t=<idToken>` — SSO handoff from the
+   *       desktop app. Highest priority because a fresh Firebase
+   *       ID token in the URL signals "the desktop user JUST asked
+   *       to be logged in on the web."
+   *    2. sessionStorage `dmplus.session.v1` — a session token
+   *       saved from a previous login (on /account or /buy) in
+   *       this tab. Lets users navigate the site without
+   *       re-authenticating on every page.
+   *    3. Neither → set ssoState 'none' so the login form renders.
+   */
   useEffect(() => {
     if (typeof window === 'undefined') return
     const fragment = window.location.hash
     const match = fragment.match(/[#&]t=([^&]+)/)
+
+    // ── Path 1: SSO from desktop (#t=... fragment) ──
     if (!match) {
+      // Path 2: sessionStorage-restored session. Tried only when
+      // there's no fresh ID token in the URL — the desktop
+      // handoff should always win because it carries newer auth
+      // intent (user JUST clicked "go to website" inside the app).
+      const stored = window.sessionStorage.getItem(SESSION_TOKEN_KEY)
+      if (stored) {
+        setSsoState('exchanging')
+        void (async () => {
+          try {
+            const r = await fetch('/api/paypal?action=restore-session', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token: stored }),
+            })
+            const json = (await r.json()) as SessionResponse
+            if (!r.ok || !json.ok || !json.token) {
+              // Token is expired / tampered / server rejected it.
+              // Clear it and fall through to login form. We don't
+              // show an error — the user didn't actively do
+              // anything, they just opened the page.
+              window.sessionStorage.removeItem(SESSION_TOKEN_KEY)
+              setSsoState('none')
+              return
+            }
+            setToken(json.token)
+            setSessionEmail(json.email || null)
+            setProfile(json.profile || null)
+            setSubs(json.subscriptions ?? [])
+            // Refresh the stored token in case the server rotated
+            // it (e.g. extended expiry on use). Right now restore
+            // returns the same token but this future-proofs.
+            window.sessionStorage.setItem(SESSION_TOKEN_KEY, json.token)
+            setSsoState('success')
+          } catch {
+            // Network blip — fall through to login form, leave
+            // the stored token alone so a retry can use it.
+            setSsoState('none')
+          }
+        })()
+        return
+      }
       setSsoState('none')
       return
     }
@@ -255,6 +320,15 @@ export default function AccountPage() {
         setToken(json.token)
         setSessionEmail(json.email || null)
         setProfile(json.profile || null)
+        // Persist for cross-page sharing within the tab — same
+        // treatment as the password-login and BuyPage signin
+        // paths below.
+        try {
+          window.sessionStorage.setItem(SESSION_TOKEN_KEY, json.token)
+        } catch {
+          // sessionStorage disabled — session still works for this
+          // page load, just won't carry across navigation.
+        }
         setSubs(json.subscriptions ?? [])
         setSsoState('success')
       } catch (err) {
@@ -290,6 +364,15 @@ export default function AccountPage() {
       setProfile(json.profile || null)
       setSubs(json.subscriptions ?? [])
       setPassword('')
+      // Persist for cross-page sharing within the tab. The next
+      // navigation (e.g. clicking "החשבון שלי" from another page)
+      // will rehydrate via restore-session instead of asking for
+      // the password again.
+      try {
+        window.sessionStorage.setItem(SESSION_TOKEN_KEY, json.token)
+      } catch {
+        // sessionStorage disabled — degrade gracefully.
+      }
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : 'שגיאת רשת. נסה שוב.')
     } finally {
@@ -553,6 +636,15 @@ export default function AccountPage() {
     setTransactions(null)
     setBillingOpen(false)
     setSsoState('none')
+    // Clear the cross-page persisted token so other pages (and a
+    // future revisit to /account in this tab) don't auto-restore
+    // the session. Belt-and-suspenders try/catch in case
+    // sessionStorage is disabled — failure here is harmless.
+    try {
+      window.sessionStorage.removeItem(SESSION_TOKEN_KEY)
+    } catch {
+      // ignored
+    }
   }
 
   return (
