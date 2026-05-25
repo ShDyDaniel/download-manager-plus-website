@@ -1272,8 +1272,10 @@ async function handleStreamVideo(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-/* Kept for clients that still call it; returns just the metadata
- * needed to render the player chrome (no token any more). */
+/* Returns a stream URL the <video> tag can use directly. The URL
+ * points at the Cloudflare Worker if CLOUDFLARE_STREAM_BASE is
+ * configured (zero-bandwidth path), otherwise falls back to the
+ * Vercel proxy. */
 async function handleGetStreamToken(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { shareToken?: string; passwordToken?: string }
   const shareToken = String(body.shareToken || '').trim()
@@ -1304,15 +1306,101 @@ async function handleGetStreamToken(req: VercelRequest, res: VercelResponse) {
       return res.status(403).json({ ok: false, error: 'password required' })
     }
   }
-  const url = `/api/revisions?action=stream-video&token=${encodeURIComponent(shareToken)}${
-    body.passwordToken ? `&t=${encodeURIComponent(String(body.passwordToken))}` : ''
-  }`
+  // Prefer the Cloudflare Worker base URL when set — Cloudflare has
+  // unlimited free egress, so all video bandwidth becomes free.
+  // Fall back to the Vercel proxy (metered against the 100 GB free
+  // tier) when the env var isn't configured yet.
+  const cfBase = (process.env.CLOUDFLARE_STREAM_BASE || '').trim()
+  const passwordSuffix = body.passwordToken
+    ? `&t=${encodeURIComponent(String(body.passwordToken))}`
+    : ''
+  const url = cfBase
+    ? `${cfBase.replace(/\/$/, '')}/?token=${encodeURIComponent(shareToken)}${passwordSuffix}`
+    : `/api/revisions?action=stream-video&token=${encodeURIComponent(shareToken)}${passwordSuffix}`
   return res.status(200).json({
     ok: true,
     streamUrl: url,
     videoMime: project.videoMime,
     title: project.title,
   })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: auth-stream  (Cloudflare Worker ↔ Vercel handshake)
+ *
+ *  POST /api/revisions?action=auth-stream
+ *  Header: X-Worker-Secret: <shared secret>
+ *  Body:   { shareToken, passwordToken? }
+ *  Returns: { ok, accessToken, driveFileId }
+ *
+ *  Authenticates the Cloudflare Worker that proxies video bytes.
+ *  The Worker calls this once per HTTP request from the browser
+ *  (could be cached for a short window) to:
+ *    1. Verify the share token + password.
+ *    2. Get a Drive access token for the project's owner.
+ *  Then the Worker uses the access token to fetch Drive directly.
+ *
+ *  The shared secret lives in Vercel env (WORKER_SHARED_SECRET)
+ *  AND in the Worker env (WORKER_SECRET) — same value, two homes.
+ *  Without it the access token would leak to any browser that asks,
+ *  letting an attacker access OTHER projects the same Drive owns.
+ * ────────────────────────────────────────────────────────────── */
+async function handleAuthStream(req: VercelRequest, res: VercelResponse) {
+  const expected = (process.env.WORKER_SHARED_SECRET || '').trim()
+  if (!expected) {
+    return res.status(500).json({ ok: false, error: 'WORKER_SHARED_SECRET not set' })
+  }
+  const got = req.headers['x-worker-secret']
+  if (typeof got !== 'string' || got !== expected) {
+    return res.status(403).json({ ok: false, error: 'invalid worker secret' })
+  }
+
+  const body = (req.body || {}) as { shareToken?: string; passwordToken?: string }
+  const shareToken = String(body.shareToken || '').trim()
+  if (!shareToken) {
+    return res.status(400).json({ ok: false, error: 'shareToken required' })
+  }
+  const snap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) {
+    return res.status(404).json({ ok: false, error: 'not found' })
+  }
+  const project = snap.docs[0].data() as {
+    id: string
+    ownerUid: string
+    driveFileId: string
+    status: string
+    passwordHash: string | null
+  }
+  if (project.status !== 'active') {
+    return res.status(410).json({ ok: false, error: 'archived' })
+  }
+  if (project.passwordHash) {
+    const passwordToken = String(body.passwordToken || '').trim()
+    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
+      return res.status(403).json({ ok: false, error: 'password required' })
+    }
+  }
+  const integrationSnap = await integrationDocRef(project.ownerUid).get()
+  if (!integrationSnap.exists) {
+    return res.status(500).json({ ok: false, error: 'drive not connected' })
+  }
+  const integration = integrationSnap.data() as IntegrationDoc
+  const refreshToken = decryptToken(integration.refreshTokenEnc)
+  try {
+    const r = await refreshAccessToken(refreshToken)
+    res.setHeader('Cache-Control', 'no-store')
+    return res.status(200).json({
+      ok: true,
+      accessToken: r.accessToken,
+      driveFileId: project.driveFileId,
+    })
+  } catch {
+    return res.status(401).json({ ok: false, error: 'drive auth expired' })
+  }
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -1536,6 +1624,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleGetStreamToken(req, res)
       case 'stream-video':
         return await handleStreamVideo(req, res)
+      case 'auth-stream':
+        return await handleAuthStream(req, res)
       default:
         return res
           .status(400)
