@@ -1,10 +1,16 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// `base` matters when deploying under a sub-path on GitHub Pages
-// (e.g. https://shdydaniel.github.io/download-manager-plus-website/).
-// If you switch to a custom domain or root deployment, change to '/'.
+// `base: '/'` is required for nested-path routes like /review/<token>
+// to resolve /assets/* correctly. With the old relative base ('./'),
+// the browser resolves './assets/index-xxx.js' against the current
+// URL — so /review/abc looked for /review/assets/index-xxx.js, which
+// 404s and triggers Vercel's SPA fallback returning index.html. The
+// <script type="module"> tag then receives HTML for a JS module and
+// the page renders blank with the MIME-type console error. Absolute
+// base avoids that entirely. Deploys on Vercel always live at the
+// domain root, never a sub-path.
 export default defineConfig({
   plugins: [react()],
-  base: './',
+  base: '/',
 })

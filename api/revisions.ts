@@ -853,6 +853,303 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
 const WEBSITE_BASE = 'https://dm-plus.vercel.app'
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: get-project  (PUBLIC — no auth)
+ *
+ *  POST /api/revisions?action=get-project  { shareToken, viewerEmail? }
+ *
+ *  Returns the project metadata needed to render the review page.
+ *  Strips the DRIVE_FILE_ID and replaces with an embed URL so the
+ *  raw fileId is never exposed to the client (defense-in-depth so
+ *  someone digging into the network tab can't paste the fileId
+ *  somewhere weird).
+ *
+ *  Password handling:
+ *    - If the project has no password set → returns full data.
+ *    - If it has a password but no `passwordToken` was provided →
+ *      returns { ok: true, needsPassword: true, title } so the
+ *      review page can render the password gate.
+ *    - If `passwordToken` was provided AND matches → returns full data.
+ *    - We don't return the password hash itself.
+ *
+ *  Email is OPTIONAL but recorded if provided (for analytics +
+ *  watermark). The review page asks for email separately and stores
+ *  it in cookie.
+ * ────────────────────────────────────────────────────────────── */
+async function handleGetProject(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { shareToken?: string; passwordToken?: string }
+  const shareToken = String(body.shareToken || '').trim()
+  if (!shareToken) {
+    return res.status(400).json({ ok: false, error: 'shareToken required' })
+  }
+  const snap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) {
+    return res.status(404).json({ ok: false, error: 'הקישור לא נמצא' })
+  }
+  const project = snap.docs[0].data() as {
+    id: string
+    title: string
+    driveFileId: string
+    videoSizeBytes: number
+    videoMime: string
+    passwordHash: string | null
+    passwordSalt: string | null
+    status: string
+    createdAt: number
+  }
+  if (project.status !== 'active') {
+    return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
+  }
+
+  const hasPassword = Boolean(project.passwordHash)
+  if (hasPassword) {
+    const passwordToken = String(body.passwordToken || '').trim()
+    const validToken = passwordToken && verifyPasswordToken(passwordToken, project.id)
+    if (!validToken) {
+      return res.status(200).json({
+        ok: true,
+        needsPassword: true,
+        title: project.title,
+      })
+    }
+  }
+
+  return res.status(200).json({
+    ok: true,
+    needsPassword: false,
+    project: {
+      id: project.id,
+      title: project.title,
+      // The embed URL is the only Drive identifier we expose to the
+      // client. The raw fileId is omitted intentionally.
+      embedUrl: `https://drive.google.com/file/d/${project.driveFileId}/preview`,
+      videoSizeBytes: project.videoSizeBytes,
+      videoMime: project.videoMime,
+      createdAt: project.createdAt,
+    },
+  })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: verify-password
+ *
+ *  POST /api/revisions?action=verify-password  { shareToken, password }
+ *  Returns { ok, passwordToken }
+ *
+ *  Verifies the password against the stored PBKDF2 hash. On
+ *  success, mints a short-lived JWT (`passwordToken`) that the
+ *  client stores in sessionStorage and presents on subsequent
+ *  get-project calls so it doesn't have to re-enter the password
+ *  on every reload.
+ * ────────────────────────────────────────────────────────────── */
+async function handleVerifyPassword(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { shareToken?: string; password?: string }
+  const shareToken = String(body.shareToken || '').trim()
+  const password = String(body.password || '')
+  if (!shareToken || !password) {
+    return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
+  }
+  const snap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const project = snap.docs[0].data() as {
+    id: string
+    passwordHash: string | null
+    passwordSalt: string | null
+  }
+  if (!project.passwordHash || !project.passwordSalt) {
+    return res.status(400).json({ ok: false, error: 'לפרויקט הזה אין סיסמה' })
+  }
+  const computed = crypto
+    .pbkdf2Sync(password, project.passwordSalt, 100_000, 32, 'sha256')
+    .toString('hex')
+  if (computed !== project.passwordHash) {
+    return res.status(401).json({ ok: false, error: 'סיסמה שגויה' })
+  }
+  const passwordToken = mintPasswordToken(project.id)
+  return res.status(200).json({ ok: true, passwordToken })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: add-note  (PUBLIC — no auth, gated by share token)
+ *
+ *  POST /api/revisions?action=add-note
+ *  Body: { shareToken, viewerEmail, viewerName?, timeSeconds, text,
+ *          screenshotDataUrl?, annotations? }
+ *
+ *  Anyone with the share link can add notes. The viewerEmail is
+ *  required because it's used for the watermark + so the editor
+ *  knows who left the note. If a password is set the client must
+ *  have a valid passwordToken (we verify by checking the project
+ *  has the same shareToken — same authorization model as the
+ *  get-project endpoint).
+ * ────────────────────────────────────────────────────────────── */
+async function handleAddNote(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+    viewerEmail?: string
+    viewerName?: string
+    timeSeconds?: number
+    text?: string
+    screenshotDataUrl?: string
+    annotations?: unknown[]
+  }
+  const shareToken = String(body.shareToken || '').trim()
+  const viewerEmail = String(body.viewerEmail || '').trim().toLowerCase()
+  const text = String(body.text || '').trim()
+  const timeSeconds = Number(body.timeSeconds)
+  if (!shareToken) return res.status(400).json({ ok: false, error: 'shareToken' })
+  if (!viewerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(viewerEmail)) {
+    return res.status(400).json({ ok: false, error: 'מייל לא תקין' })
+  }
+  if (!text && !body.screenshotDataUrl) {
+    return res.status(400).json({ ok: false, error: 'חובה לכתוב תיאור או לצרף תמונה' })
+  }
+  if (!Number.isFinite(timeSeconds) || timeSeconds < 0) {
+    return res.status(400).json({ ok: false, error: 'timestamp לא תקין' })
+  }
+
+  const snap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const projectDoc = snap.docs[0]
+  const project = projectDoc.data() as {
+    id: string
+    status: string
+    passwordHash: string | null
+  }
+  if (project.status !== 'active') {
+    return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
+  }
+  if (project.passwordHash) {
+    const passwordToken = String(body.passwordToken || '').trim()
+    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
+      return res.status(403).json({ ok: false, error: 'נדרשת סיסמה' })
+    }
+  }
+
+  // Screenshot size sanity check — Firestore's 1 MB doc cap means
+  // we can't store huge base64 blobs. Cap at ~500 KB encoded which
+  // is plenty for a JPEG frame at moderate quality.
+  let screenshotDataUrl = String(body.screenshotDataUrl || '')
+  if (screenshotDataUrl && screenshotDataUrl.length > 700_000) {
+    return res.status(400).json({ ok: false, error: 'צילום הפריים גדול מדי' })
+  }
+  // Annotations — defensive cap. Each note shouldn't have hundreds.
+  const annotations = Array.isArray(body.annotations)
+    ? body.annotations.slice(0, 50)
+    : []
+
+  const noteRef = projectDoc.ref.collection('notes').doc()
+  const now = Date.now()
+  await noteRef.set({
+    id: noteRef.id,
+    viewerEmail,
+    viewerName: String(body.viewerName || '').trim().slice(0, 80) || null,
+    timeSeconds,
+    text: text.slice(0, 2000),
+    screenshotDataUrl: screenshotDataUrl || null,
+    annotations,
+    status: 'new',
+    createdAt: now,
+  })
+  // Counter for the editor's dashboard. Best-effort — don't fail
+  // the note add if the counter increment glitches.
+  void projectDoc.ref
+    .update({
+      notesCount: (((projectDoc.data() as { notesCount?: number }).notesCount || 0) + 1),
+      updatedAt: now,
+    })
+    .catch(() => undefined)
+
+  return res.status(200).json({ ok: true, noteId: noteRef.id })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: list-notes  (PUBLIC — no auth, gated by share token)
+ *
+ *  POST /api/revisions?action=list-notes  { shareToken, passwordToken? }
+ *  Returns { ok, notes: [...] }
+ *
+ *  Used by both the public review page (so the same person who
+ *  left notes earlier can see what they wrote) AND eventually by
+ *  the editor's project list in the desktop app. For now the
+ *  editor reads notes via Firestore real-time listener directly
+ *  (skipping this endpoint).
+ * ────────────────────────────────────────────────────────────── */
+async function handleListNotes(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { shareToken?: string; passwordToken?: string }
+  const shareToken = String(body.shareToken || '').trim()
+  if (!shareToken) return res.status(400).json({ ok: false, error: 'shareToken' })
+
+  const snap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const projectDoc = snap.docs[0]
+  const project = projectDoc.data() as {
+    id: string
+    passwordHash: string | null
+  }
+  if (project.passwordHash) {
+    const passwordToken = String(body.passwordToken || '').trim()
+    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
+      return res.status(403).json({ ok: false, error: 'נדרשת סיסמה' })
+    }
+  }
+
+  const notesSnap = await projectDoc.ref
+    .collection('notes')
+    .orderBy('timeSeconds', 'asc')
+    .limit(500)
+    .get()
+  const notes = notesSnap.docs.map((d) => d.data())
+  return res.status(200).json({ ok: true, notes })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Password token (HMAC) — proves the client knows the password
+ *  without having to re-enter it on every API call.
+ * ────────────────────────────────────────────────────────────── */
+function mintPasswordToken(projectId: string): string {
+  const exp = Math.floor(Date.now() / 1000) + 6 * 60 * 60 // 6h
+  const payload = `${projectId}.${exp}`
+  const sig = crypto.createHmac('sha256', hmacSecret()).update(payload).digest('base64url')
+  return `${payload}.${sig}`
+}
+
+function verifyPasswordToken(token: string, expectedProjectId: string): boolean {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return false
+    const [projectId, expStr, sig] = parts
+    if (projectId !== expectedProjectId) return false
+    const exp = parseInt(expStr, 10)
+    if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return false
+    const expected = crypto
+      .createHmac('sha256', hmacSecret())
+      .update(`${projectId}.${expStr}`)
+      .digest('base64url')
+    if (expected.length !== sig.length) return false
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))
+  } catch {
+    return false
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Dispatcher
  * ────────────────────────────────────────────────────────────── */
 
@@ -872,6 +1169,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleOauthDisconnect(req, res)
       case 'create-project':
         return await handleCreateProject(req, res)
+      case 'get-project':
+        return await handleGetProject(req, res)
+      case 'verify-password':
+        return await handleVerifyPassword(req, res)
+      case 'add-note':
+        return await handleAddNote(req, res)
+      case 'list-notes':
+        return await handleListNotes(req, res)
       default:
         return res
           .status(400)

@@ -9,6 +9,7 @@ import { SiteHeader } from './components/SiteHeader'
 import { BuyPage } from './pages/BuyPage'
 import AccountPage from './pages/AccountPage'
 import AuthActionPage from './pages/AuthActionPage'
+import { ReviewPage } from './pages/ReviewPage'
 
 // Top-level layout. The marketing site is the default route (`/`);
 // the purchase flow lives at `/buy` so the URL is shareable, deep-
@@ -49,6 +50,12 @@ function App() {
             via Firebase Console → Authentication → Templates →
             Customize action URL. */}
         <Route path="/auth-action" element={<AuthActionPage />} />
+        {/* Public revision-review page — link sent to client by the
+            editor. /review/:token resolves the share token to a
+            project, gates by optional password + required email
+            (used for watermark), then renders the Drive embed
+            player + notes sidebar. See pages/ReviewPage.tsx. */}
+        <Route path="/review/:token" element={<ReviewPage />} />
         {/* /manage was the original subscription-management page
             before /account absorbed all its functionality. Keep a
             permanent redirect so old emails, footers, the desktop
