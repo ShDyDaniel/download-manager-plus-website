@@ -856,6 +856,12 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
     videoStatus: 'ready',
     notesCount: 0,
     roundNumber,
+    // locked=true blocks the public review page from accepting
+    // new notes (add-note returns 423). The editor toggles this
+    // from the project detail view when a round is "closed" —
+    // useful when the editor wants the client's feedback freeze
+    // before incorporating the changes into the next cut.
+    locked: false,
     createdAt: now,
     updatedAt: now,
   })
@@ -918,6 +924,7 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
     status: string
     createdAt: number
     roundNumber?: number
+    locked?: boolean
   }
   if (project.status !== 'active') {
     return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
@@ -927,6 +934,7 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
     typeof project.roundNumber === 'number' && project.roundNumber > 0
       ? project.roundNumber
       : 1
+  const locked = project.locked === true
 
   const hasPassword = Boolean(project.passwordHash)
   if (hasPassword) {
@@ -938,6 +946,7 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
         needsPassword: true,
         title: project.title,
         roundNumber,
+        locked,
       })
     }
   }
@@ -955,6 +964,7 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
       videoSizeBytes: project.videoSizeBytes,
       videoMime: project.videoMime,
       createdAt: project.createdAt,
+      locked,
     },
   })
 }
@@ -1053,9 +1063,19 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
     id: string
     status: string
     passwordHash: string | null
+    locked?: boolean
   }
   if (project.status !== 'active') {
     return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
+  }
+  // Locked projects: existing notes stay readable but no new ones
+  // accepted. 423 Locked is the right HTTP semantic; the client
+  // surfaces the friendly Hebrew message.
+  if (project.locked === true) {
+    return res.status(423).json({
+      ok: false,
+      error: 'הסבב נסגר לתיקונים. תוכלו לראות את הסרטון ואת התיקונים הקודמים אבל אי אפשר להוסיף חדשים.',
+    })
   }
   if (project.passwordHash) {
     const passwordToken = String(body.passwordToken || '').trim()
@@ -1727,6 +1747,7 @@ async function handleUpdateProject(req: VercelRequest, res: VercelResponse) {
     idToken?: string
     projectId?: string
     password?: string
+    locked?: boolean
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -1742,9 +1763,10 @@ async function handleUpdateProject(req: VercelRequest, res: VercelResponse) {
   }
 
   // Build the partial update. We only touch fields the client
-  // explicitly asked about; missing fields stay as-is. Today this
-  // is just `password` but the structure leaves room for adding
-  // title / roundNumber later without changing the dispatch path.
+  // explicitly asked about; missing fields stay as-is. This pattern
+  // lets the same endpoint serve both "change password only" and
+  // "toggle lock only" calls without needing the client to round-
+  // trip the full project doc.
   const update: Record<string, unknown> = { updatedAt: Date.now() }
 
   if (typeof body.password === 'string') {
@@ -1769,7 +1791,98 @@ async function handleUpdateProject(req: VercelRequest, res: VercelResponse) {
     }
   }
 
+  if (typeof body.locked === 'boolean') {
+    update.locked = body.locked
+  }
+
   await docRef.update(update)
+  return res.status(200).json({ ok: true })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: list-notes-owner  (auth required — owner only)
+ *
+ *  POST /api/revisions?action=list-notes-owner  { idToken, projectId }
+ *  Returns { ok, notes: [...] }
+ *
+ *  Same shape as list-notes but skips the password gate (owners
+ *  shouldn't need to know their own password to read replies) and
+ *  works by projectId instead of shareToken (the editor's natural
+ *  identifier). Lets the desktop project-detail view fetch the
+ *  full thread without polling Firestore directly — which would
+ *  need client-SDK security rules we'd rather not maintain.
+ * ────────────────────────────────────────────────────────────── */
+async function handleListNotesOwner(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { idToken?: string; projectId?: string }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const projectId = String(body.projectId || '').trim()
+  if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
+
+  const docRef = getDb().collection('revisionProjects').doc(projectId)
+  const snap = await docRef.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const project = snap.data() as { ownerUid: string }
+  if (project.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+
+  const notesSnap = await docRef
+    .collection('notes')
+    .orderBy('timeSeconds', 'asc')
+    .limit(500)
+    .get()
+  const notes = notesSnap.docs.map((d) => d.data())
+  return res.status(200).json({ ok: true, notes })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: update-note-status  (auth required — owner only)
+ *
+ *  POST /api/revisions?action=update-note-status
+ *  Body: { idToken, projectId, noteId, status: 'new' | 'resolved' }
+ *
+ *  Owner-only because "did I deal with this feedback yet" is a
+ *  workflow signal that belongs to the editor, not the client who
+ *  left the note. We don't expose a public mutation for status
+ *  (clients can't mark their own notes resolved on the editor's
+ *  behalf).
+ * ────────────────────────────────────────────────────────────── */
+async function handleUpdateNoteStatus(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    projectId?: string
+    noteId?: string
+    status?: 'new' | 'resolved'
+  }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const projectId = String(body.projectId || '').trim()
+  const noteId = String(body.noteId || '').trim()
+  const status = body.status
+  if (!projectId || !noteId) {
+    return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
+  }
+  if (status !== 'new' && status !== 'resolved') {
+    return res.status(400).json({ ok: false, error: 'סטטוס לא תקין' })
+  }
+
+  const projectRef = getDb().collection('revisionProjects').doc(projectId)
+  const projectSnap = await projectRef.get()
+  if (!projectSnap.exists) {
+    return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  }
+  const project = projectSnap.data() as { ownerUid: string }
+  if (project.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+
+  const noteRef = projectRef.collection('notes').doc(noteId)
+  const noteSnap = await noteRef.get()
+  if (!noteSnap.exists) {
+    return res.status(404).json({ ok: false, error: 'התיקון לא נמצא' })
+  }
+  await noteRef.update({ status, updatedAt: Date.now() })
   return res.status(200).json({ ok: true })
 }
 
@@ -1839,6 +1952,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleDeleteNote(req, res)
       case 'update-project':
         return await handleUpdateProject(req, res)
+      case 'list-notes-owner':
+        return await handleListNotesOwner(req, res)
+      case 'update-note-status':
+        return await handleUpdateNoteStatus(req, res)
       case 'get-stream-token':
         return await handleGetStreamToken(req, res)
       case 'stream-video':

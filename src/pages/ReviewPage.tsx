@@ -50,6 +50,10 @@ interface ProjectInfo {
   streamUrl: string
   videoMime: string
   roundNumber: number
+  /** True when the editor closed the round to new feedback. The
+   *  video + existing notes stay visible; the add-note buttons
+   *  disappear and a friendly banner explains why. */
+  locked: boolean
 }
 
 interface Note {
@@ -93,11 +97,21 @@ export function ReviewPage() {
           body: JSON.stringify({ shareToken: token, passwordToken }),
         })
         const json = (await r.json()) as
-          | { ok: true; needsPassword: true; title: string; roundNumber?: number }
+          | {
+              ok: true
+              needsPassword: true
+              title: string
+              roundNumber?: number
+              locked?: boolean
+            }
           | {
               ok: true
               needsPassword: false
-              project: { title: string; roundNumber?: number }
+              project: {
+                title: string
+                roundNumber?: number
+                locked?: boolean
+              }
             }
           | { ok: false; error: string }
 
@@ -114,11 +128,16 @@ export function ReviewPage() {
           return
         }
         const round = json.project.roundNumber ?? 1
+        const locked = json.project.locked === true
         const storedEmail = localStorage.getItem(EMAIL_KEY_PREFIX + token)
         if (storedEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(storedEmail)) {
-          await loadStream(storedEmail, json.project.title, round)
+          await loadStream(storedEmail, json.project.title, round, locked)
         } else {
-          setState({ kind: 'needs-email', title: json.project.title, roundNumber: round })
+          setState({
+            kind: 'needs-email',
+            title: json.project.title,
+            roundNumber: round,
+          })
         }
       } catch (err) {
         console.error('[review] load failed:', err)
@@ -129,7 +148,12 @@ export function ReviewPage() {
       }
     }
 
-    async function loadStream(viewerEmail: string, title: string, roundNumber: number) {
+    async function loadStream(
+      viewerEmail: string,
+      title: string,
+      roundNumber: number,
+      locked: boolean,
+    ) {
       const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
       const r = await fetch(`${API}?action=get-stream-token`, {
         method: 'POST',
@@ -150,6 +174,7 @@ export function ReviewPage() {
           streamUrl: json.streamUrl,
           videoMime: json.videoMime,
           roundNumber,
+          locked,
         },
         viewerEmail,
       })
@@ -714,29 +739,42 @@ function ReviewWorkspace({
           </div>
 
           {/* Action strip — placed UNDER the video, not floating in
-              the header. Clear visual grouping with the player. */}
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={openNoteWithCurrentTime}
-              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-bg shadow-md shadow-primary/20 transition-all hover:bg-primary/90"
-            >
-              <Plus className="h-4 w-4" strokeWidth={2.5} />
-              תיקון חדש
-            </button>
-            <button
-              type="button"
-              onClick={openNoteWithScreenshot}
-              title="צלם פריים והוסף תיקון"
-              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-medium text-fg transition-colors hover:bg-white/[0.06]"
-            >
-              <Camera className="h-4 w-4" />
-              צלם + תיקון
-            </button>
-            <p className="ml-auto text-[11px] text-fg-muted/80">
-              לחיצה על שעון בהערה קופצת לאותה נקודה בסרטון
-            </p>
-          </div>
+              the header. When the editor locks the round we hide
+              the add buttons and show a friendly banner instead, so
+              the client knows the silence is intentional (editor is
+              working on the changes) rather than a bug. */}
+          {project.locked ? (
+            <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-relaxed text-amber-200">
+              <Lock className="h-4 w-4 shrink-0" />
+              <span>
+                <strong className="font-semibold">הסבב נסגר לתיקונים.</strong>{' '}
+                אתם עדיין יכולים לצפות בסרטון ובתיקונים הקודמים, אבל לא להוסיף חדשים.
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={openNoteWithCurrentTime}
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-bg shadow-md shadow-primary/20 transition-all hover:bg-primary/90"
+              >
+                <Plus className="h-4 w-4" strokeWidth={2.5} />
+                תיקון חדש
+              </button>
+              <button
+                type="button"
+                onClick={openNoteWithScreenshot}
+                title="צלם פריים והוסף תיקון"
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-medium text-fg transition-colors hover:bg-white/[0.06]"
+              >
+                <Camera className="h-4 w-4" />
+                צלם + תיקון
+              </button>
+              <p className="ml-auto text-[11px] text-fg-muted/80">
+                לחיצה על שעון בהערה קופצת לאותה נקודה בסרטון
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Notes sidebar */}
