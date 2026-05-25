@@ -1128,25 +1128,152 @@ async function handleListNotes(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
- *  Action: get-stream-token  (PUBLIC — gated by share token + password)
+ *  Action: stream-video  (PUBLIC — gated by share token + password)
  *
- *  POST /api/revisions?action=get-stream-token { shareToken, passwordToken? }
- *  Returns: { ok, accessToken, expiresIn, driveFileId, videoMime, title }
+ *  GET /api/revisions?action=stream-video&token=<shareToken>&t=<pwdToken?>
  *
- *  Mints a short-lived (1h) Drive access token scoped to the OWNER's
- *  account. The client uses it to build a Drive direct-stream URL:
+ *  HISTORY OF THIS ENDPOINT: tried two simpler approaches first,
+ *  both rejected by Google in 2024–2025:
+ *    1. drive.google.com/uc?export=view&id=...  — returns an HTML
+ *       virus-warning page for any file >100 MB.
+ *    2. googleapis.com/drive/v3/files/{id}?alt=media&access_token=X
+ *       — was the legacy way; Google now returns 403 + no CORS
+ *       headers, so <video src=...> fails outright (the screenshot
+ *       you see with "ERR_FAILED 403" is exactly this).
  *
- *    https://www.googleapis.com/drive/v3/files/{id}?alt=media&access_token={token}
+ *  Only the proxy works. The FILE STILL LIVES ONLY ON DRIVE — this
+ *  endpoint just pipes bytes through in real time and forgets them
+ *  the instant the response stream closes. Nothing is cached or
+ *  persisted on our side.
  *
- *  Set that URL as <video src> and the browser streams DIRECTLY from
- *  Google's CDN to the viewer — zero bandwidth through our server,
- *  full Range/seek support, full HTML5 video event API. The token
- *  has only the drive.file scope (= only files our app created), so
- *  even if it leaks from the browser the blast radius is limited.
+ *  Range-aware: forwards the browser's Range header to Drive and
+ *  echoes Content-Range/Content-Length back so seek+scrub work
+ *  natively in the <video> element.
  *
- *  When the 1h token expires mid-playback the client refetches.
- *  Most review sessions are <1h so this is rarely hit.
+ *  Cost: bandwidth runs through Vercel. Each per-Range chunk is
+ *  small (browser fetches 1–4 MB at a time) so individual function
+ *  invocations stay well under the 10s Hobby timeout. Total
+ *  monthly bandwidth = Σ(video size × viewers per video). At
+ *  100 GB/month free tier you can absorb hundreds of small-project
+ *  views before paying anything.
  * ────────────────────────────────────────────────────────────── */
+async function handleStreamVideo(req: VercelRequest, res: VercelResponse) {
+  const shareToken = String(req.query.token || '').trim()
+  const passwordToken = String(req.query.t || '').trim()
+  if (!shareToken) {
+    res.status(400).send('shareToken required')
+    return
+  }
+  const snap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) {
+    res.status(404).send('not found')
+    return
+  }
+  const project = snap.docs[0].data() as {
+    id: string
+    ownerUid: string
+    driveFileId: string
+    status: string
+    passwordHash: string | null
+    videoMime: string
+  }
+  if (project.status !== 'active') {
+    res.status(410).send('archived')
+    return
+  }
+  if (project.passwordHash) {
+    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
+      res.status(403).send('password required')
+      return
+    }
+  }
+
+  // Owner's Drive token.
+  const integrationSnap = await integrationDocRef(project.ownerUid).get()
+  if (!integrationSnap.exists) {
+    res.status(500).send('drive not connected')
+    return
+  }
+  const integration = integrationSnap.data() as IntegrationDoc
+  const refreshToken = decryptToken(integration.refreshTokenEnc)
+  let accessToken: string
+  try {
+    const r = await refreshAccessToken(refreshToken)
+    accessToken = r.accessToken
+  } catch {
+    res.status(401).send('drive auth expired')
+    return
+  }
+
+  // Forward Range header so seek/scrub works.
+  const range = req.headers.range
+  const driveUrl = `https://www.googleapis.com/drive/v3/files/${project.driveFileId}?alt=media`
+  const driveResp = await fetch(driveUrl, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      ...(range ? { Range: range } : {}),
+    },
+  })
+
+  if (!driveResp.ok && driveResp.status !== 206) {
+    res.status(driveResp.status).send('drive error')
+    return
+  }
+
+  res.status(driveResp.status)
+  const forwardHeaders = [
+    'content-type',
+    'content-length',
+    'content-range',
+    'accept-ranges',
+    'last-modified',
+    'etag',
+  ]
+  for (const header of forwardHeaders) {
+    const value = driveResp.headers.get(header)
+    if (value) res.setHeader(header, value)
+  }
+  if (!driveResp.headers.get('accept-ranges')) {
+    res.setHeader('Accept-Ranges', 'bytes')
+  }
+  // 60s tight cache — file content is immutable but we want to be
+  // able to revoke access fast when a project is archived.
+  res.setHeader('Cache-Control', 'private, max-age=60')
+  // Allow the <video crossOrigin="anonymous"> attribute to work so
+  // canvas frame capture stays CORS-clean.
+  res.setHeader('Access-Control-Allow-Origin', '*')
+
+  if (!driveResp.body) {
+    res.end()
+    return
+  }
+  const reader = driveResp.body.getReader()
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const ok = res.write(value)
+      if (!ok) {
+        await new Promise<void>((resolve) => res.once('drain', resolve))
+      }
+    }
+  } catch (err) {
+    // ERR_STREAM_PREMATURE_CLOSE is the browser aborting (e.g.
+    // seek interrupted the previous Range fetch). Not a real bug.
+    if ((err as { code?: string }).code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+      console.error('[stream-video] pipe error:', err)
+    }
+  } finally {
+    res.end()
+  }
+}
+
+/* Kept for clients that still call it; returns just the metadata
+ * needed to render the player chrome (no token any more). */
 async function handleGetStreamToken(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { shareToken?: string; passwordToken?: string }
   const shareToken = String(body.shareToken || '').trim()
@@ -1163,8 +1290,6 @@ async function handleGetStreamToken(req: VercelRequest, res: VercelResponse) {
   }
   const project = snap.docs[0].data() as {
     id: string
-    ownerUid: string
-    driveFileId: string
     status: string
     passwordHash: string | null
     videoMime: string
@@ -1179,31 +1304,12 @@ async function handleGetStreamToken(req: VercelRequest, res: VercelResponse) {
       return res.status(403).json({ ok: false, error: 'password required' })
     }
   }
-
-  // Owner's Drive token.
-  const integrationSnap = await integrationDocRef(project.ownerUid).get()
-  if (!integrationSnap.exists) {
-    return res.status(500).json({ ok: false, error: 'drive not connected' })
-  }
-  const integration = integrationSnap.data() as IntegrationDoc
-  const refreshToken = decryptToken(integration.refreshTokenEnc)
-  let fresh: { accessToken: string; expiresIn: number }
-  try {
-    fresh = await refreshAccessToken(refreshToken)
-  } catch {
-    return res.status(401).json({ ok: false, error: 'drive auth expired' })
-  }
-
-  // No cache — we don't want CDNs/browsers caching access tokens.
-  res.setHeader('Cache-Control', 'no-store')
+  const url = `/api/revisions?action=stream-video&token=${encodeURIComponent(shareToken)}${
+    body.passwordToken ? `&t=${encodeURIComponent(String(body.passwordToken))}` : ''
+  }`
   return res.status(200).json({
     ok: true,
-    accessToken: fresh.accessToken,
-    // Lie slightly: tell the client the token expires 5 min earlier
-    // than Google says, so the client refetches before it actually
-    // expires mid-Range-request (which would interrupt playback).
-    expiresIn: Math.max(60, fresh.expiresIn - 300),
-    driveFileId: project.driveFileId,
+    streamUrl: url,
     videoMime: project.videoMime,
     title: project.title,
   })
@@ -1428,6 +1534,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleDeleteProject(req, res)
       case 'get-stream-token':
         return await handleGetStreamToken(req, res)
+      case 'stream-video':
+        return await handleStreamVideo(req, res)
       default:
         return res
           .status(400)

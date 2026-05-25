@@ -38,7 +38,7 @@ const API = '/api/revisions'
 
 interface ProjectInfo {
   title: string
-  driveFileId: string
+  streamUrl: string
   videoMime: string
 }
 
@@ -124,7 +124,7 @@ export function ReviewPage() {
         body: JSON.stringify({ shareToken: token, passwordToken }),
       })
       const json = (await r.json()) as
-        | { ok: true; accessToken: string; expiresIn: number; driveFileId: string; videoMime: string; title: string }
+        | { ok: true; streamUrl: string; videoMime: string; title: string }
         | { ok: false; error: string }
       if (!json.ok) {
         setState({ kind: 'not-found', message: json.error || 'שגיאה בקבלת הסרטון' })
@@ -134,7 +134,7 @@ export function ReviewPage() {
         kind: 'ready',
         project: {
           title,
-          driveFileId: json.driveFileId,
+          streamUrl: json.streamUrl,
           videoMime: json.videoMime,
         },
         viewerEmail,
@@ -374,48 +374,11 @@ function ReviewWorkspace({
   project: ProjectInfo
   viewerEmail: string
 }) {
-  // Stream token refreshing — token expires in ~55 min (we lied to
-  // the client by 5 min vs Google's actual 60 min to avoid mid-Range
-  // expiry). We refresh once at ~50 min and rebuild the video src.
-  const [streamUrl, setStreamUrl] = useState<string | null>(null)
-  const [streamLoading, setStreamLoading] = useState(true)
-
-  useEffect(() => {
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout>
-
-    const refresh = async () => {
-      try {
-        const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
-        const r = await fetch(`${API}?action=get-stream-token`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shareToken: token, passwordToken }),
-        })
-        const json = (await r.json()) as
-          | { ok: true; accessToken: string; expiresIn: number; driveFileId: string }
-          | { ok: false; error: string }
-        if (cancelled) return
-        if (!json.ok) {
-          setStreamLoading(false)
-          return
-        }
-        const url = `https://www.googleapis.com/drive/v3/files/${json.driveFileId}?alt=media&access_token=${encodeURIComponent(json.accessToken)}`
-        setStreamUrl(url)
-        setStreamLoading(false)
-        // Refresh slightly before the token expires.
-        timer = setTimeout(refresh, Math.max(60, json.expiresIn - 60) * 1000)
-      } catch {
-        setStreamLoading(false)
-      }
-    }
-
-    void refresh()
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [token])
+  // The streamUrl is a same-origin /api/revisions?action=stream-video
+  // URL — the proxy handles auth + Range forwarding on every byte
+  // the browser requests. No token-refresh dance needed because the
+  // auth happens server-side per-request.
+  const streamUrl = project.streamUrl
 
   const [notes, setNotes] = useState<Note[]>([])
   const [notesLoading, setNotesLoading] = useState(true)
@@ -573,26 +536,16 @@ function ReviewWorkspace({
         {/* Player */}
         <div className="relative overflow-hidden rounded-2xl border border-white/5 bg-black">
           <div className="aspect-video w-full">
-            {streamLoading ? (
-              <div className="flex h-full items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-fg-muted" />
-              </div>
-            ) : streamUrl ? (
-              <video
-                ref={videoRef}
-                src={streamUrl}
-                controls
-                crossOrigin="anonymous"
-                playsInline
-                controlsList="nodownload"
-                onContextMenu={(e) => e.preventDefault()}
-                className="block h-full w-full"
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center px-6 text-center text-sm text-fg-muted">
-                לא הצלחנו לטעון את הסרטון.
-              </div>
-            )}
+            <video
+              ref={videoRef}
+              src={streamUrl}
+              controls
+              crossOrigin="anonymous"
+              playsInline
+              controlsList="nodownload"
+              onContextMenu={(e) => e.preventDefault()}
+              className="block h-full w-full"
+            />
           </div>
           <Watermark email={viewerEmail} />
         </div>
