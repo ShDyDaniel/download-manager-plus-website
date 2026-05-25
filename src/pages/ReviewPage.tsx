@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
+import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import {
   Loader2,
   Lock,
@@ -12,6 +13,7 @@ import {
   X,
   Camera,
   ArrowUpLeft,
+  Hash,
 } from 'lucide-react'
 
 /**
@@ -46,6 +48,7 @@ interface ProjectInfo {
   title: string
   streamUrl: string
   videoMime: string
+  roundNumber: number
 }
 
 interface Note {
@@ -62,8 +65,8 @@ interface Note {
 type State =
   | { kind: 'loading' }
   | { kind: 'not-found'; message: string }
-  | { kind: 'needs-password'; title?: string }
-  | { kind: 'needs-email'; title: string }
+  | { kind: 'needs-password'; title?: string; roundNumber?: number }
+  | { kind: 'needs-email'; title: string; roundNumber: number }
   | { kind: 'ready'; project: ProjectInfo; viewerEmail: string }
 
 const EMAIL_KEY_PREFIX = 'dmplus.review.email.'
@@ -89,8 +92,12 @@ export function ReviewPage() {
           body: JSON.stringify({ shareToken: token, passwordToken }),
         })
         const json = (await r.json()) as
-          | { ok: true; needsPassword: true; title: string }
-          | { ok: true; needsPassword: false; project: { title: string } }
+          | { ok: true; needsPassword: true; title: string; roundNumber?: number }
+          | {
+              ok: true
+              needsPassword: false
+              project: { title: string; roundNumber?: number }
+            }
           | { ok: false; error: string }
 
         if (!json.ok) {
@@ -98,14 +105,19 @@ export function ReviewPage() {
           return
         }
         if (json.needsPassword) {
-          setState({ kind: 'needs-password', title: json.title })
+          setState({
+            kind: 'needs-password',
+            title: json.title,
+            roundNumber: json.roundNumber ?? 1,
+          })
           return
         }
+        const round = json.project.roundNumber ?? 1
         const storedEmail = localStorage.getItem(EMAIL_KEY_PREFIX + token)
         if (storedEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(storedEmail)) {
-          await loadStream(storedEmail, json.project.title)
+          await loadStream(storedEmail, json.project.title, round)
         } else {
-          setState({ kind: 'needs-email', title: json.project.title })
+          setState({ kind: 'needs-email', title: json.project.title, roundNumber: round })
         }
       } catch (err) {
         console.error('[review] load failed:', err)
@@ -116,7 +128,7 @@ export function ReviewPage() {
       }
     }
 
-    async function loadStream(viewerEmail: string, title: string) {
+    async function loadStream(viewerEmail: string, title: string, roundNumber: number) {
       const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
       const r = await fetch(`${API}?action=get-stream-token`, {
         method: 'POST',
@@ -136,6 +148,7 @@ export function ReviewPage() {
           title,
           streamUrl: json.streamUrl,
           videoMime: json.videoMime,
+          roundNumber,
         },
         viewerEmail,
       })
@@ -562,8 +575,13 @@ function ReviewWorkspace({
     setSubmitError(null)
   }
 
-  async function submitNote() {
+  /** Submit a new note. The composer can supply an annotated version
+   *  of the screenshot — drawn-on with the pen/arrow/rectangle tools
+   *  — which we prefer over the original capture. Passing null means
+   *  the viewer didn't add annotations, so we send the raw frame. */
+  async function submitNote(finalScreenshotDataUrl: string | null) {
     if (!composer || !noteText.trim() || submitting) return
+    const screenshotToSave = finalScreenshotDataUrl ?? composer.screenshotDataUrl
     setSubmitting(true)
     setSubmitError(null)
     try {
@@ -577,7 +595,7 @@ function ReviewWorkspace({
           viewerEmail,
           timeSeconds: composer.timeSeconds,
           text: noteText.trim(),
-          screenshotDataUrl: composer.screenshotDataUrl,
+          screenshotDataUrl: screenshotToSave,
         }),
       })
       const json = (await r.json()) as
@@ -595,7 +613,7 @@ function ReviewWorkspace({
           viewerEmail,
           timeSeconds: composer.timeSeconds,
           text: noteText.trim(),
-          screenshotDataUrl: composer.screenshotDataUrl,
+          screenshotDataUrl: screenshotToSave,
           status: 'new',
           createdAt: Date.now(),
         },
@@ -617,8 +635,18 @@ function ReviewWorkspace({
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6 sm:py-6">
-      {/* Title row */}
-      <div className="mb-4 sm:mb-5">
+      {/* Title row — round badge + project name. Badge first so the
+          eye lands on "סבב N" before the title (the round is what
+          tells the client whether they're looking at the latest
+          version of the cut). */}
+      <div className="mb-4 flex items-center gap-2.5 sm:mb-5">
+        <span
+          title={`סבב מספר ${project.roundNumber}`}
+          className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-primary/15 px-2 py-1 text-xs font-mono font-semibold text-primary"
+        >
+          <Hash className="h-3 w-3" />
+          {project.roundNumber}
+        </span>
         <h1 className="truncate text-lg font-medium text-fg sm:text-xl">
           {project.title}
         </h1>
@@ -922,7 +950,10 @@ function NoteComposer({
   setText: (s: string) => void
   submitting: boolean
   error: string | null
-  onSubmit: () => void
+  /** Receives the FINAL screenshot to save: the annotated version
+   *  if the viewer drew anything, otherwise null (meaning "use the
+   *  original capture"). Composer never modifies the original. */
+  onSubmit: (finalScreenshotDataUrl: string | null) => void
   onClose: () => void
 }) {
   const minutes = useMemo(() => Math.floor(timeSeconds / 60), [timeSeconds])
@@ -931,12 +962,27 @@ function NoteComposer({
     [timeSeconds],
   )
 
+  // The annotation canvas reports its baked dataURL up to here on
+  // each stroke commit. We stash it and forward it when the viewer
+  // hits Send. null = no annotations drawn yet (or all undone) →
+  // parent will fall back to the original screenshot.
+  const [annotatedDataUrl, setAnnotatedDataUrl] = useState<string | null>(null)
+  const handleAnnotationChange = useCallback(
+    (url: string | null) => setAnnotatedDataUrl(url),
+    [],
+  )
+
+  // Wider modal when there's a screenshot — the annotation canvas
+  // needs room to breathe. Text-only stays narrow (max-w-lg) so
+  // the composer feels lightweight.
+  const widthClass = screenshotDataUrl ? 'max-w-2xl' : 'max-w-lg'
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4 py-6 overflow-y-auto"
       onClick={onClose}
     >
       <motion.div
@@ -944,7 +990,7 @@ function NoteComposer({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 8 }}
         transition={{ duration: 0.18 }}
-        className="w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-bg shadow-2xl"
+        className={`w-full ${widthClass} overflow-hidden rounded-2xl border border-white/10 bg-bg shadow-2xl my-auto`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
@@ -952,6 +998,11 @@ function NoteComposer({
             <h3 className="text-sm font-medium text-fg">תיקון חדש</h3>
             <p className="mt-0.5 text-[11px] text-fg-muted">
               בנקודה <span dir="ltr" className="font-mono">{minutes}:{seconds}</span>
+              {screenshotDataUrl && (
+                <span className="ms-2 text-fg-muted/70">
+                  · ניתן לסמן על התמונה למטה
+                </span>
+              )}
             </p>
           </div>
           <button
@@ -965,10 +1016,9 @@ function NoteComposer({
         </div>
         <div className="space-y-4 p-5">
           {screenshotDataUrl && (
-            <img
-              src={screenshotDataUrl}
-              alt="צילום פריים"
-              className="max-h-64 w-full rounded-lg border border-white/10 object-contain bg-black/40"
+            <AnnotationCanvas
+              imageUrl={screenshotDataUrl}
+              onChange={handleAnnotationChange}
             />
           )}
           <div>
@@ -978,7 +1028,7 @@ function NoteComposer({
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
-              autoFocus
+              autoFocus={!screenshotDataUrl}
               rows={4}
               placeholder="לדוגמה: צבע הירק לא מתאים, להוריד את הווליום של המוזיקה ברקע..."
               className="block w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5 text-sm text-fg placeholder:text-fg-muted/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
@@ -1000,7 +1050,7 @@ function NoteComposer({
           </button>
           <button
             type="button"
-            onClick={onSubmit}
+            onClick={() => onSubmit(annotatedDataUrl)}
             disabled={!text.trim() || submitting}
             className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-bg transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-primary/40"
           >

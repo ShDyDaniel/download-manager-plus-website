@@ -787,6 +787,7 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
     videoSizeBytes?: number
     videoMime?: string
     password?: string
+    roundNumber?: number
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -798,6 +799,14 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
   const videoSizeBytes = Number(body.videoSizeBytes) || 0
   const videoMime = String(body.videoMime || '').trim().slice(0, 100)
   const password = String(body.password || '')
+  // Round number — clamp to a sensible range. NaN / missing / <1
+  // all default to round 1, matching the client behaviour. The
+  // upper cap of 99 keeps the badge two-digit; nobody actually
+  // runs 100+ rounds of revisions in practice.
+  const roundNumber = Math.max(
+    1,
+    Math.min(99, Math.floor(Number(body.roundNumber) || 1)),
+  )
 
   if (!driveFileId) return res.status(400).json({ ok: false, error: 'driveFileId required' })
   if (!title) return res.status(400).json({ ok: false, error: 'title required' })
@@ -846,6 +855,7 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
     // shows the badge so they know not to share the link yet.
     videoStatus: 'processing',
     notesCount: 0,
+    roundNumber,
     createdAt: now,
     updatedAt: now,
   })
@@ -907,10 +917,16 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
     passwordSalt: string | null
     status: string
     createdAt: number
+    roundNumber?: number
   }
   if (project.status !== 'active') {
     return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
   }
+
+  const roundNumber =
+    typeof project.roundNumber === 'number' && project.roundNumber > 0
+      ? project.roundNumber
+      : 1
 
   const hasPassword = Boolean(project.passwordHash)
   if (hasPassword) {
@@ -921,6 +937,7 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
         ok: true,
         needsPassword: true,
         title: project.title,
+        roundNumber,
       })
     }
   }
@@ -931,6 +948,7 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
     project: {
       id: project.id,
       title: project.title,
+      roundNumber,
       // The embed URL is the only Drive identifier we expose to the
       // client. The raw fileId is omitted intentionally.
       embedUrl: `https://drive.google.com/file/d/${project.driveFileId}/preview`,
