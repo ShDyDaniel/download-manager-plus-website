@@ -413,16 +413,24 @@ async function handleOauthStart(req: VercelRequest, res: VercelResponse) {
     // 1-hour access token and would have to prompt the user again
     // every hour — unusable.
     access_type: 'offline',
-    // `consent` forces Google to show the consent screen even if
-    // the user previously approved this app — which guarantees we
-    // get a fresh refresh_token. Without this, Google sometimes
-    // skips the consent and returns NO refresh_token on subsequent
-    // grants, leaving us stuck.
-    prompt: 'consent',
+    // Two prompts, space-separated:
+    //   select_account — force the multi-account picker EVERY TIME,
+    //     even if the user is logged in to only one Google account.
+    //     Critical because the email a user signed up to OUR app
+    //     with often differs from the Drive they want to use for
+    //     client review (personal vs. work account). Without this,
+    //     Google silently picks "the default account" and there's
+    //     no way to switch.
+    //   consent — force the consent screen even if the user
+    //     previously approved this app, so we get a FRESH
+    //     refresh_token on every connect. Without consent, Google
+    //     sometimes skips the screen and returns NO refresh_token
+    //     on subsequent grants, leaving us stuck.
+    prompt: 'select_account consent',
     state,
-    // Hint the user's email so they pick the right Google account
-    // in the multi-account picker.
-    login_hint: verified.email,
+    // No login_hint — the user explicitly should be able to pick
+    // ANY of their Google accounts. We don't want to nudge them
+    // toward the email they happen to be using in our desktop app.
   })
   res.setHeader('Cache-Control', 'no-store')
   return res.redirect(302, `${GOOGLE_AUTH_URI}?${params.toString()}`)
