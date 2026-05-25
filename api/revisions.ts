@@ -1688,9 +1688,21 @@ async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
     id: string
     status: string
     passwordHash: string | null
+    locked?: boolean
   }
   if (project.status !== 'active') {
     return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
+  }
+  // Locked projects are FROZEN: no add-note (handled elsewhere) AND
+  // no delete-note (here). The intent is that once the editor
+  // closes the round, the thread is preserved as-is for their
+  // workflow. If the viewer mis-deletes a note we'd rather they
+  // ask the editor to re-open the round than silently lose data.
+  if (project.locked === true) {
+    return res.status(423).json({
+      ok: false,
+      error: 'הסבב סגור — אי אפשר למחוק תיקונים בשלב זה.',
+    })
   }
   if (project.passwordHash) {
     const passwordToken = String(body.passwordToken || '').trim()

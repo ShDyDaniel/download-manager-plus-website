@@ -15,6 +15,7 @@ import {
   ArrowUpLeft,
   Hash,
   Trash2,
+  CheckCircle2,
 } from 'lucide-react'
 
 /**
@@ -800,9 +801,15 @@ function ReviewWorkspace({
                   <NoteItem
                     key={note.id}
                     note={note}
+                    // Hide the trash icon entirely when the project
+                    // is locked — the server enforces the same rule
+                    // but showing a button that always errors makes
+                    // the UI feel broken. The "טופל" badge stays
+                    // visible read-only.
                     isOwn={
+                      !project.locked &&
                       (note.viewerEmail || '').toLowerCase() ===
-                      viewerEmail.toLowerCase()
+                        viewerEmail.toLowerCase()
                     }
                     onSeek={seekTo}
                     onExpandImage={(url) => setLightbox(url)}
@@ -928,8 +935,16 @@ function NoteItem({
   // click commits. Same pattern as the desktop ProjectCard. Inline
   // is a better fit than a modal for a sidebar full of small cards.
   const [confirming, setConfirming] = useState(false)
+  const resolved = note.status === 'resolved'
   return (
-    <li className="group rounded-lg border border-white/5 bg-white/[0.02] p-2.5 transition-colors hover:bg-white/[0.04]">
+    <li
+      className={
+        'group rounded-lg border p-2.5 transition-colors ' +
+        (resolved
+          ? 'border-success/20 bg-success/[0.04] hover:bg-success/[0.06]'
+          : 'border-white/5 bg-white/[0.02] hover:bg-white/[0.04]')
+      }
+    >
       <div className="flex gap-2.5">
         {note.screenshotDataUrl ? (
           <button
@@ -941,7 +956,9 @@ function NoteItem({
             <img
               src={note.screenshotDataUrl}
               alt=""
-              className="h-14 w-14 object-cover"
+              className={
+                'h-14 w-14 object-cover ' + (resolved ? 'opacity-60' : '')
+              }
             />
             <div className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover/thumb:bg-black/20" />
           </button>
@@ -955,14 +972,34 @@ function NoteItem({
         )}
         <div className="min-w-0 flex-1">
           <div className="mb-0.5 flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => onSeek(note.timeSeconds)}
-              title="קפיצה לזמן בסרטון"
-              className="font-mono rounded px-1.5 py-0.5 text-[11px] font-semibold text-primary transition-colors hover:bg-primary/10"
-            >
-              {mm}:{ss}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => onSeek(note.timeSeconds)}
+                title="קפיצה לזמן בסרטון"
+                className={
+                  'font-mono rounded px-1.5 py-0.5 text-[11px] font-semibold transition-colors ' +
+                  (resolved
+                    ? 'text-success/70 hover:bg-success/10'
+                    : 'text-primary hover:bg-primary/10')
+                }
+              >
+                {mm}:{ss}
+              </button>
+              {/* Resolved badge — server-side status mirrors the
+                  editor's "סמן כטופל" toggle. Shown to the viewer
+                  read-only so they can see which of their notes
+                  the editor has already worked on. */}
+              {resolved && (
+                <span
+                  title="הסטודיו סימן את התיקון כטופל"
+                  className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-1.5 py-0.5 text-[9px] font-medium text-success"
+                >
+                  <CheckCircle2 className="h-2.5 w-2.5" />
+                  טופל
+                </span>
+              )}
+            </div>
             <div className="flex items-center gap-1">
               <span
                 dir="ltr"
@@ -987,7 +1024,12 @@ function NoteItem({
               )}
             </div>
           </div>
-          <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-fg">
+          <p
+            className={
+              'whitespace-pre-wrap break-words text-xs leading-relaxed ' +
+              (resolved ? 'text-fg/60 line-through decoration-fg/30' : 'text-fg')
+            }
+          >
             {note.text}
           </p>
           {/* Confirm strip — appears below the text only when the
