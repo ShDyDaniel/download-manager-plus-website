@@ -47,6 +47,11 @@ export function SiteHeader() {
   // account" link there would be distracting).
   if (location.pathname.startsWith('/account')) return null
   if (location.pathname.startsWith('/auth-action')) return null
+  // /review/:token is a standalone client-review tool with its own
+  // header (logo + project title + branding). The global "החשבון
+  // שלי" link belongs to the operator's flow, not the end-client
+  // who clicked a share link — surfacing it would just confuse them.
+  if (location.pathname.startsWith('/review')) return null
 
   // Per-route alignment. If we add more pages later (e.g. /pricing,
   // /docs), extend this conditional with their max-width and top

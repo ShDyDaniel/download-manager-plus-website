@@ -11,6 +11,7 @@ import {
   Send,
   X,
   Camera,
+  ArrowUpLeft,
 } from 'lucide-react'
 
 /**
@@ -18,20 +19,25 @@ import {
  *
  * URL: /review/:token
  *
- * Architecture (zero-cost streaming via Drive direct URL):
- *   1. Page mounts → POST get-stream-token to our backend.
- *   2. Backend authenticates (share token + password) and returns
- *      a short-lived Drive access token + the Drive fileId.
- *   3. Page builds a direct URL:
- *      https://www.googleapis.com/drive/v3/files/{id}?alt=media&access_token={token}
- *   4. <video src={driveUrl}> — the browser streams DIRECTLY from
- *      Google's CDN. Zero bandwidth through our server, full
- *      Range/seek support, full HTML5 event API.
- *   5. When token expires (1h), we refetch transparently.
+ * This page is the END CLIENT'S touchpoint with the system — the
+ * person who got a share link from a video editor. They are NOT a
+ * paying user, may never have heard of ניהול הורדות פלוס, and
+ * shouldn't have to figure out the rest of the marketing site. So:
  *
- * That direct-URL trick is what unblocks all the features Drive's
- * iframe blocks: currentTime access, auto-pause detection, frame
- * screenshot capture, custom controls — everything.
+ *   - The global SiteHeader is hidden on /review (handled in
+ *     SiteHeader.tsx) — no "החשבון שלי" link confusing the viewer.
+ *   - Local ReviewChrome header + footer ARE shown — they introduce
+ *     the brand subtly ("מופעל על ידי ניהול הורדות פלוס") without
+ *     pushing the viewer to convert mid-task.
+ *   - The video player intentionally does NOT force 16:9. Drive-hosted
+ *     content is often portrait (TikTok / Reels exports) and forcing
+ *     wide aspect leaves huge black bars on the sides.
+ *
+ * Streaming architecture (zero-cost via Cloudflare Worker):
+ *   browser → CF Worker → Vercel auth-stream (validates share token +
+ *   password, returns Drive access token) → Drive direct fetch.
+ *   All video bytes flow through Cloudflare (unlimited free egress);
+ *   Vercel only authenticates. See /cloudflare-worker/stream-proxy.js.
  */
 
 const API = '/api/revisions'
@@ -68,7 +74,6 @@ export function ReviewPage() {
   const token = (rawToken || '').trim()
   const [state, setState] = useState<State>({ kind: 'loading' })
 
-  // Initial decision tree — figure out which gate (if any) to show.
   useEffect(() => {
     if (!token) {
       setState({ kind: 'not-found', message: 'הקישור לא תקין.' })
@@ -76,9 +81,6 @@ export function ReviewPage() {
     }
     void load()
     async function load() {
-      // Step 1 — fetch project metadata (lightweight) to know if it
-      // exists + whether a password is required. We can't request a
-      // stream token until we know the password situation.
       try {
         const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
         const r = await fetch(`${API}?action=get-project`, {
@@ -99,10 +101,8 @@ export function ReviewPage() {
           setState({ kind: 'needs-password', title: json.title })
           return
         }
-        // Need viewer email next (for watermark + note attribution).
         const storedEmail = localStorage.getItem(EMAIL_KEY_PREFIX + token)
         if (storedEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(storedEmail)) {
-          // We have everything; load the stream token.
           await loadStream(storedEmail, json.project.title)
         } else {
           setState({ kind: 'needs-email', title: json.project.title })
@@ -142,58 +142,167 @@ export function ReviewPage() {
     }
   }, [token])
 
-  if (state.kind === 'loading') return <CenterCard><LoadingState /></CenterCard>
+  if (state.kind === 'loading')
+    return (
+      <ReviewShell>
+        <CenterCard>
+          <LoadingState />
+        </CenterCard>
+      </ReviewShell>
+    )
   if (state.kind === 'not-found')
     return (
-      <CenterCard>
-        <NotFoundState message={state.message} />
-      </CenterCard>
+      <ReviewShell>
+        <CenterCard>
+          <NotFoundState message={state.message} />
+        </CenterCard>
+      </ReviewShell>
     )
   if (state.kind === 'needs-password')
     return (
-      <CenterCard>
-        <PasswordGate
-          token={token}
-          title={state.title || 'סבב מוגן'}
-          onVerified={() => {
-            // Simplest: reload, the effect will pick up the password
-            // token from localStorage and proceed past the gate.
-            window.location.reload()
-          }}
-        />
-      </CenterCard>
+      <ReviewShell>
+        <CenterCard>
+          <PasswordGate
+            token={token}
+            title={state.title || 'סבב מוגן'}
+            onVerified={() => window.location.reload()}
+          />
+        </CenterCard>
+      </ReviewShell>
     )
   if (state.kind === 'needs-email')
     return (
-      <CenterCard>
-        <EmailGate
-          title={state.title}
-          onEntered={(email) => {
-            localStorage.setItem(EMAIL_KEY_PREFIX + token, email)
-            // Same pattern: reload so the effect re-runs and lands
-            // on the ready state with the new email.
-            window.location.reload()
-          }}
-        />
-      </CenterCard>
+      <ReviewShell>
+        <CenterCard>
+          <EmailGate
+            title={state.title}
+            onEntered={(email) => {
+              localStorage.setItem(EMAIL_KEY_PREFIX + token, email)
+              window.location.reload()
+            }}
+          />
+        </CenterCard>
+      </ReviewShell>
     )
 
   return (
-    <ReviewWorkspace
-      token={token}
-      project={state.project}
-      viewerEmail={state.viewerEmail}
-    />
+    <ReviewShell viewerEmail={state.viewerEmail}>
+      <ReviewWorkspace
+        token={token}
+        project={state.project}
+        viewerEmail={state.viewerEmail}
+      />
+    </ReviewShell>
   )
 }
 
 /* ─────────────────────────────────────────────────────────────
- *  Shared shells
+ *  Page shell: ReviewHeader + content + ReviewFooter
+ *
+ *  Used on every state (loading / gates / workspace) so the
+ *  branding is consistent and the page never looks like a stray
+ *  fragment. flex-col + min-h-screen pins the footer to the
+ *  bottom even when content is short.
  * ───────────────────────────────────────────────────────────── */
+function ReviewShell({
+  children,
+  viewerEmail,
+}: {
+  children: React.ReactNode
+  viewerEmail?: string
+}) {
+  return (
+    <div className="flex min-h-screen flex-col bg-bg text-fg" dir="rtl">
+      <ReviewHeader viewerEmail={viewerEmail} />
+      <main className="flex-1">{children}</main>
+      <ReviewFooter />
+    </div>
+  )
+}
 
+function ReviewHeader({ viewerEmail }: { viewerEmail?: string }) {
+  return (
+    <header className="border-b border-white/5 bg-white/[0.015]">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+        {/* Brand — links to the marketing site so a curious viewer
+            can find the tool. Opens in a new tab so it doesn't
+            disrupt the review flow. */}
+        <a
+          href="/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group flex items-center gap-2.5 transition-opacity"
+          aria-label="ניהול הורדות פלוס — דף הבית"
+        >
+          <img
+            src="/icon.png"
+            alt=""
+            aria-hidden
+            className="h-8 w-8 rounded-lg ring-1 ring-white/5"
+          />
+          <div className="flex flex-col leading-tight">
+            <span className="text-sm font-semibold text-fg group-hover:text-primary transition-colors">
+              ניהול הורדות פלוס
+            </span>
+            <span className="text-[10px] uppercase tracking-[0.18em] text-fg-muted">
+              סבב תיקונים
+            </span>
+          </div>
+        </a>
+
+        {/* Viewer email pill — shown only when a viewer is signed in.
+            On mobile we collapse to just the icon to save space. */}
+        {viewerEmail && (
+          <div
+            className="inline-flex items-center gap-1.5 rounded-full border border-white/5 bg-white/[0.02] px-2.5 py-1 text-[11px] text-fg-muted"
+            title={viewerEmail}
+          >
+            <Mail className="h-3 w-3 shrink-0" />
+            <span dir="ltr" className="hidden font-mono sm:inline">
+              {viewerEmail}
+            </span>
+          </div>
+        )}
+      </div>
+    </header>
+  )
+}
+
+function ReviewFooter() {
+  return (
+    <footer className="border-t border-white/5 bg-white/[0.01]">
+      <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6">
+        <a
+          href="/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-fg-muted transition-colors hover:text-fg"
+        >
+          <span>מופעל על ידי</span>
+          <img
+            src="/icon.png"
+            alt=""
+            aria-hidden
+            className="h-4 w-4 rounded ring-1 ring-white/5"
+          />
+          <span className="font-semibold text-fg/85 group-hover:text-primary transition-colors">
+            ניהול הורדות פלוס
+          </span>
+          <span className="text-fg-muted/50">—</span>
+          <span>תוכנה לעורכי וידאו ויוצרי תוכן</span>
+          <ArrowUpLeft className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
+        </a>
+      </div>
+    </footer>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Shared shells for the gate states
+ * ───────────────────────────────────────────────────────────── */
 function CenterCard({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-bg text-fg flex items-center justify-center px-4 py-8" dir="rtl">
+    <div className="flex items-center justify-center px-4 py-12 sm:py-20">
       <div className="w-full max-w-md">{children}</div>
     </div>
   )
@@ -333,9 +442,9 @@ function EmailGate({
       </div>
       <div className="text-center">
         <h1 className="text-lg font-medium text-fg">{title}</h1>
-        <p className="mt-1 text-xs text-fg-muted">
+        <p className="mt-1 text-xs leading-relaxed text-fg-muted">
           הזינו את כתובת המייל שלכם כדי לצפות בסרטון.
-          המייל יוצג כ-watermark על הוידאו ויצורף לכל תיקון שתוסיפו.
+          המייל יוצג כסימן מים על הוידאו ויצורף לכל תיקון שתוסיפו.
         </p>
       </div>
       <input
@@ -364,6 +473,22 @@ function EmailGate({
 
 /* ─────────────────────────────────────────────────────────────
  *  Workspace — the actual review experience
+ *
+ *  Layout (RTL — visually the player is on the RIGHT, notes on
+ *  the LEFT on desktop because the second grid column lands on
+ *  the visual left in RTL flow):
+ *
+ *  ┌────────────────────────────┐ ┌────────────────┐
+ *  │     [project title]        │ │  תיקונים (N)   │
+ *  │  ┌──────────────────────┐  │ │  ┌──────────┐  │
+ *  │  │                      │  │ │  │ 0:06     │  │
+ *  │  │   VIDEO PLAYER       │  │ │  │ [📷] note│  │
+ *  │  │   (own aspect)       │  │ │  └──────────┘  │
+ *  │  └──────────────────────┘  │ │                │
+ *  │  [+ תיקון] [📷 צלם+תיקון] │ │                │
+ *  └────────────────────────────┘ └────────────────┘
+ *
+ *  Mobile: single column, sidebar below the player.
  * ───────────────────────────────────────────────────────────── */
 function ReviewWorkspace({
   token,
@@ -374,10 +499,6 @@ function ReviewWorkspace({
   project: ProjectInfo
   viewerEmail: string
 }) {
-  // The streamUrl is a same-origin /api/revisions?action=stream-video
-  // URL — the proxy handles auth + Range forwarding on every byte
-  // the browser requests. No token-refresh dance needed because the
-  // auth happens server-side per-request.
   const streamUrl = project.streamUrl
 
   const [notes, setNotes] = useState<Note[]>([])
@@ -404,9 +525,6 @@ function ReviewWorkspace({
 
   const videoRef = useRef<HTMLVideoElement>(null)
 
-  // Composer state — opened by either "add note" button (no
-  // screenshot) or "snapshot + note" button (screenshot captured
-  // at click time from the video element).
   const [composer, setComposer] = useState<
     | null
     | {
@@ -417,11 +535,11 @@ function ReviewWorkspace({
   const [noteText, setNoteText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [lightbox, setLightbox] = useState<string | null>(null)
 
   function openNoteWithCurrentTime() {
     const v = videoRef.current
     if (!v) return
-    // Pause first so the user has a static frame to think about.
     if (!v.paused) v.pause()
     setComposer({
       timeSeconds: Math.max(0, Math.floor(v.currentTime)),
@@ -498,19 +616,50 @@ function ReviewWorkspace({
   }
 
   return (
-    <div className="min-h-screen bg-bg text-fg" dir="rtl">
-      {/* Header */}
-      <header className="border-b border-white/5 px-6 py-4">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
-          <div className="min-w-0">
-            <div className="text-[11px] uppercase tracking-[0.16em] text-fg-muted">
-              — סבב תיקונים
+    <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6 sm:py-6">
+      {/* Title row */}
+      <div className="mb-4 sm:mb-5">
+        <h1 className="truncate text-lg font-medium text-fg sm:text-xl">
+          {project.title}
+        </h1>
+      </div>
+
+      <div className="grid gap-4 sm:gap-5 md:grid-cols-[1fr_340px]">
+        {/* Player column */}
+        <div className="space-y-3">
+          {/* Player surface — black bg + centered video. We do NOT
+              force aspect-video; instead we cap height and let the
+              video define its own width/height via object-contain.
+              This means portrait videos look natural (small centered
+              rectangle on a black backdrop) instead of huge wasted
+              side-bars. */}
+          <div className="relative overflow-hidden rounded-2xl border border-white/5 bg-black">
+            <div className="flex max-h-[72vh] items-center justify-center">
+              <video
+                ref={videoRef}
+                src={streamUrl}
+                controls
+                crossOrigin="anonymous"
+                playsInline
+                controlsList="nodownload"
+                onContextMenu={(e) => e.preventDefault()}
+                className="block max-h-[72vh] w-auto max-w-full"
+              />
             </div>
-            <h1 className="mt-1 truncate text-lg font-medium text-fg">
-              {project.title}
-            </h1>
+            <Watermark email={viewerEmail} />
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+
+          {/* Action strip — placed UNDER the video, not floating in
+              the header. Clear visual grouping with the player. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={openNoteWithCurrentTime}
+              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-bg shadow-md shadow-primary/20 transition-all hover:bg-primary/90"
+            >
+              <Plus className="h-4 w-4" strokeWidth={2.5} />
+              תיקון חדש
+            </button>
             <button
               type="button"
               onClick={openNoteWithScreenshot}
@@ -520,39 +669,15 @@ function ReviewWorkspace({
               <Camera className="h-4 w-4" />
               צלם + תיקון
             </button>
-            <button
-              type="button"
-              onClick={openNoteWithCurrentTime}
-              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-bg shadow-md shadow-primary/20 transition-all hover:bg-primary/90"
-            >
-              <Plus className="h-4 w-4" strokeWidth={2.5} />
-              תיקון חדש
-            </button>
+            <p className="ml-auto text-[11px] text-fg-muted/80">
+              לחיצה על שעון בהערה קופצת לאותה נקודה בסרטון
+            </p>
           </div>
-        </div>
-      </header>
-
-      <div className="mx-auto grid max-w-7xl gap-6 px-6 py-6 md:grid-cols-[1fr_320px]">
-        {/* Player */}
-        <div className="relative overflow-hidden rounded-2xl border border-white/5 bg-black">
-          <div className="aspect-video w-full">
-            <video
-              ref={videoRef}
-              src={streamUrl}
-              controls
-              crossOrigin="anonymous"
-              playsInline
-              controlsList="nodownload"
-              onContextMenu={(e) => e.preventDefault()}
-              className="block h-full w-full"
-            />
-          </div>
-          <Watermark email={viewerEmail} />
         </div>
 
         {/* Notes sidebar */}
         <aside className="rounded-2xl border border-white/5 bg-white/[0.02] p-4">
-          <div className="mb-3 flex items-center gap-2">
+          <div className="mb-3 flex items-center gap-2 border-b border-white/5 pb-3">
             <MessageSquare className="h-4 w-4 text-fg-muted" />
             <h2 className="text-sm font-medium text-fg">תיקונים</h2>
             <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-fg-muted">
@@ -560,22 +685,28 @@ function ReviewWorkspace({
             </span>
           </div>
           {notesLoading ? (
-            <div className="flex items-center justify-center py-8">
+            <div className="flex items-center justify-center py-10">
               <Loader2 className="h-4 w-4 animate-spin text-fg-muted" />
             </div>
           ) : notes.length === 0 ? (
             <EmptyNotesState />
           ) : (
-            <ul className="space-y-2.5 max-h-[60vh] overflow-y-auto">
-              {notes.map((note) => (
-                <NoteItem key={note.id} note={note} onSeek={seekTo} />
-              ))}
+            <ul className="max-h-[calc(72vh-3rem)] space-y-2 overflow-y-auto pr-1">
+              {[...notes]
+                .sort((a, b) => a.timeSeconds - b.timeSeconds)
+                .map((note) => (
+                  <NoteItem
+                    key={note.id}
+                    note={note}
+                    onSeek={seekTo}
+                    onExpandImage={(url) => setLightbox(url)}
+                  />
+                ))}
             </ul>
           )}
         </aside>
       </div>
 
-      {/* Composer overlay */}
       <AnimatePresence>
         {composer && (
           <NoteComposer
@@ -589,6 +720,9 @@ function ReviewWorkspace({
             onClose={() => setComposer(null)}
           />
         )}
+        {lightbox && (
+          <ImageLightbox url={lightbox} onClose={() => setLightbox(null)} />
+        )}
       </AnimatePresence>
     </div>
   )
@@ -600,9 +734,6 @@ function ReviewWorkspace({
 function captureFrame(video: HTMLVideoElement): string | null {
   try {
     const canvas = document.createElement('canvas')
-    // Cap to 1280×720 — bigger screenshots blow past Firestore's
-    // doc size limit (~700KB after base64 + JSON overhead). 720p
-    // is plenty to convey "the green color here is off".
     const targetW = Math.min(1280, video.videoWidth)
     const scale = targetW / video.videoWidth
     canvas.width = targetW
@@ -612,9 +743,6 @@ function captureFrame(video: HTMLVideoElement): string | null {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     return canvas.toDataURL('image/jpeg', 0.75)
   } catch (err) {
-    // The canvas can get "tainted" if CORS isn't right on the
-    // video source. Returning null lets the caller fall back to
-    // a text-only note instead of crashing.
     console.warn('[review] captureFrame failed (CORS?):', err)
     return null
   }
@@ -654,43 +782,127 @@ function Watermark({ email }: { email: string }) {
 
 function EmptyNotesState() {
   return (
-    <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-6 text-center">
+    <div className="rounded-lg border border-dashed border-white/10 bg-white/[0.01] px-3 py-8 text-center">
+      <MessageSquare className="mx-auto mb-2 h-5 w-5 text-fg-muted/60" />
       <p className="text-[11px] leading-relaxed text-fg-muted">
-        עצרו את הסרטון ולחצו על
+        עדיין אין תיקונים. עצרו את הסרטון ולחצו על
         <strong className="font-semibold text-fg/80"> "תיקון חדש" </strong>
-        כדי להוסיף הערה — הזמן ייכנס אוטומטית.
+        — הזמן ייכנס אוטומטית.
       </p>
     </div>
   )
 }
 
-function NoteItem({ note, onSeek }: { note: Note; onSeek: (t: number) => void }) {
+/* ─────────────────────────────────────────────────────────────
+ *  Note item — compact card with small thumbnail. Clicking the
+ *  thumb opens a lightbox; clicking the timestamp seeks the
+ *  video. Layout uses a fixed 56px-wide thumb on the right (RTL)
+ *  + flexible content area on the left.
+ * ───────────────────────────────────────────────────────────── */
+function NoteItem({
+  note,
+  onSeek,
+  onExpandImage,
+}: {
+  note: Note
+  onSeek: (t: number) => void
+  onExpandImage: (url: string) => void
+}) {
   const mm = Math.floor(note.timeSeconds / 60)
   const ss = Math.floor(note.timeSeconds % 60).toString().padStart(2, '0')
   return (
-    <li className="rounded-lg border border-white/5 bg-white/[0.02] p-3">
-      <div className="mb-1 flex items-center justify-between text-[10px] text-fg-muted">
-        <button
-          type="button"
-          onClick={() => onSeek(note.timeSeconds)}
-          title="קפיצה לזמן בסרטון"
-          className="font-mono rounded px-1.5 py-0.5 text-primary transition-colors hover:bg-primary/10"
-        >
-          {mm}:{ss}
-        </button>
-        <span dir="ltr" className="truncate">{note.viewerEmail}</span>
+    <li className="rounded-lg border border-white/5 bg-white/[0.02] p-2.5 transition-colors hover:bg-white/[0.04]">
+      <div className="flex gap-2.5">
+        {note.screenshotDataUrl ? (
+          <button
+            type="button"
+            onClick={() => onExpandImage(note.screenshotDataUrl!)}
+            title="הגדלת התמונה"
+            className="group/thumb relative shrink-0 overflow-hidden rounded-md border border-white/10 transition-transform hover:scale-[1.03]"
+          >
+            <img
+              src={note.screenshotDataUrl}
+              alt=""
+              className="h-14 w-14 object-cover"
+            />
+            <div className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover/thumb:bg-black/20" />
+          </button>
+        ) : (
+          <div
+            aria-hidden
+            className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-dashed border-white/10 bg-white/[0.02] text-fg-muted/50"
+          >
+            <MessageSquare className="h-4 w-4" />
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="mb-0.5 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => onSeek(note.timeSeconds)}
+              title="קפיצה לזמן בסרטון"
+              className="font-mono rounded px-1.5 py-0.5 text-[11px] font-semibold text-primary transition-colors hover:bg-primary/10"
+            >
+              {mm}:{ss}
+            </button>
+            <span
+              dir="ltr"
+              className="truncate text-[10px] text-fg-muted/80"
+              title={note.viewerEmail}
+            >
+              {note.viewerEmail}
+            </span>
+          </div>
+          <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-fg">
+            {note.text}
+          </p>
+        </div>
       </div>
-      {note.screenshotDataUrl && (
-        <img
-          src={note.screenshotDataUrl}
-          alt="צילום פריים"
-          className="mb-2 w-full rounded border border-white/10"
-        />
-      )}
-      <p className="text-xs leading-relaxed text-fg whitespace-pre-wrap">
-        {note.text}
-      </p>
     </li>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Image lightbox — click-to-expand for note screenshots. Click
+ *  outside the image or hit X to close. Esc support handled by
+ *  the focus on the close button.
+ * ───────────────────────────────────────────────────────────── */
+function ImageLightbox({ url, onClose }: { url: string; onClose: () => void }) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[110] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="סגירה"
+        className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+      >
+        <X className="h-5 w-5" />
+      </button>
+      <motion.img
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.96 }}
+        transition={{ duration: 0.18 }}
+        src={url}
+        alt="צילום פריים מוגדל"
+        className="max-h-[88vh] max-w-[92vw] rounded-lg border border-white/10 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </motion.div>
   )
 }
 
@@ -756,7 +968,7 @@ function NoteComposer({
             <img
               src={screenshotDataUrl}
               alt="צילום פריים"
-              className="w-full rounded-lg border border-white/10"
+              className="max-h-64 w-full rounded-lg border border-white/10 object-contain bg-black/40"
             />
           )}
           <div>
