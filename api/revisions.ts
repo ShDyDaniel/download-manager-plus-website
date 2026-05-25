@@ -837,6 +837,14 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
     passwordHash,
     passwordSalt,
     status: 'active',
+    // videoStatus tracks Drive's own transcoding pipeline. Newly
+    // uploaded files are unplayable for the first 1–60 minutes while
+    // Drive generates adaptive-bitrate variants. We mark 'processing'
+    // on create and flip to 'ready' once check-video-status sees
+    // videoMediaMetadata on the file (Drive only populates that
+    // field after transcoding completes). The editor's project list
+    // shows the badge so they know not to share the link yet.
+    videoStatus: 'processing',
     notesCount: 0,
     createdAt: now,
     updatedAt: now,
@@ -1120,6 +1128,161 @@ async function handleListNotes(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: check-video-status
+ *
+ *  POST /api/revisions?action=check-video-status  { idToken, projectId }
+ *  Returns { ok, status: 'processing' | 'ready' | 'failed', durationSec? }
+ *
+ *  Drive doesn't push notifications when transcoding completes —
+ *  the editor's client polls this endpoint every ~30s while
+ *  videoStatus is 'processing'. We hit Drive's files.get with
+ *  fields=videoMediaMetadata; the field is populated only after
+ *  transcoding succeeds. When we see it we flip the Firestore
+ *  videoStatus to 'ready' so the editor's UI updates immediately
+ *  (via real-time listener) and future polls short-circuit.
+ * ────────────────────────────────────────────────────────────── */
+async function handleCheckVideoStatus(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { idToken?: string; projectId?: string }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+
+  const projectId = String(body.projectId || '').trim()
+  if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
+
+  const docRef = getDb().collection('revisionProjects').doc(projectId)
+  const snap = await docRef.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const project = snap.data() as {
+    ownerUid: string
+    driveFileId: string
+    videoStatus?: string
+  }
+  // Authorization — only the owner can poll their own project.
+  if (project.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  // Short-circuit if we already know it's ready.
+  if (project.videoStatus === 'ready') {
+    return res.status(200).json({ ok: true, status: 'ready' })
+  }
+
+  // Need a Drive access token for the editor's account.
+  const integrationSnap = await integrationDocRef(verified.uid).get()
+  if (!integrationSnap.exists) {
+    return res.status(400).json({ ok: false, error: 'Drive לא מחובר' })
+  }
+  const integration = integrationSnap.data() as IntegrationDoc
+  const refreshToken = decryptToken(integration.refreshTokenEnc)
+  let accessToken: string
+  try {
+    const r = await refreshAccessToken(refreshToken)
+    accessToken = r.accessToken
+  } catch (err) {
+    console.warn('[revisions/check-video-status] refresh failed:', err)
+    return res.status(401).json({ ok: false, error: 'הזדהות Drive פגה' })
+  }
+
+  // Query Drive for the videoMediaMetadata field. Its presence is
+  // the signal that transcoding completed.
+  const driveUrl = `https://www.googleapis.com/drive/v3/files/${project.driveFileId}?fields=id,videoMediaMetadata`
+  const driveResp = await fetch(driveUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!driveResp.ok) {
+    // 404 / 410 = the editor deleted the file from Drive manually.
+    // Surface this so the UI can show "missing" instead of polling
+    // forever.
+    if (driveResp.status === 404 || driveResp.status === 410) {
+      return res.status(200).json({ ok: true, status: 'failed' })
+    }
+    return res.status(502).json({ ok: false, error: 'Drive שגיאה' })
+  }
+  const driveJson = (await driveResp.json()) as {
+    videoMediaMetadata?: { durationMillis?: string; width?: number; height?: number }
+  }
+  const meta = driveJson.videoMediaMetadata
+  if (!meta) {
+    // Still processing — leave videoStatus alone, return current.
+    return res.status(200).json({ ok: true, status: 'processing' })
+  }
+
+  // Ready! Persist the flip + duration to Firestore so future
+  // listeners see it without another round-trip.
+  const durationSec = meta.durationMillis ? Math.round(parseInt(meta.durationMillis, 10) / 1000) : 0
+  await docRef.update({
+    videoStatus: 'ready',
+    videoDurationSec: durationSec,
+    videoWidth: meta.width || 0,
+    videoHeight: meta.height || 0,
+    updatedAt: Date.now(),
+  })
+  return res.status(200).json({ ok: true, status: 'ready', durationSec })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: delete-project
+ *
+ *  Soft delete (sets status='archived'). Also revokes the file's
+ *  "anyone with link" permission on Drive so existing share links
+ *  start returning "this file is not available" for anyone who
+ *  tries to view it. The Drive file itself stays in the editor's
+ *  Drive — we don't delete their data.
+ * ────────────────────────────────────────────────────────────── */
+async function handleDeleteProject(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { idToken?: string; projectId?: string }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const projectId = String(body.projectId || '').trim()
+  if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
+
+  const docRef = getDb().collection('revisionProjects').doc(projectId)
+  const snap = await docRef.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const project = snap.data() as { ownerUid: string; driveFileId: string }
+  if (project.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+
+  // Best-effort: revoke the "anyone" permission on Drive so the
+  // share link stops working immediately. If this fails (Drive
+  // API hiccup, file already deleted), continue — the Firestore
+  // archive flip is enough to block the review page client-side.
+  try {
+    const integrationSnap = await integrationDocRef(verified.uid).get()
+    if (integrationSnap.exists) {
+      const integration = integrationSnap.data() as IntegrationDoc
+      const refreshToken = decryptToken(integration.refreshTokenEnc)
+      const tokenResp = await refreshAccessToken(refreshToken)
+      // List permissions and remove the type='anyone' one.
+      const permsResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${project.driveFileId}/permissions?fields=permissions(id,type)`,
+        { headers: { Authorization: `Bearer ${tokenResp.accessToken}` } },
+      )
+      if (permsResp.ok) {
+        const perms = (await permsResp.json()) as {
+          permissions?: Array<{ id: string; type: string }>
+        }
+        const anyonePerm = perms.permissions?.find((p) => p.type === 'anyone')
+        if (anyonePerm) {
+          await fetch(
+            `https://www.googleapis.com/drive/v3/files/${project.driveFileId}/permissions/${anyonePerm.id}`,
+            {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
+            },
+          )
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[revisions/delete] Drive permission revoke failed (ignoring):', err)
+  }
+
+  await docRef.update({ status: 'archived', updatedAt: Date.now() })
+  return res.status(200).json({ ok: true })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Password token (HMAC) — proves the client knows the password
  *  without having to re-enter it on every API call.
  * ────────────────────────────────────────────────────────────── */
@@ -1177,6 +1340,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAddNote(req, res)
       case 'list-notes':
         return await handleListNotes(req, res)
+      case 'check-video-status':
+        return await handleCheckVideoStatus(req, res)
+      case 'delete-project':
+        return await handleDeleteProject(req, res)
       default:
         return res
           .status(400)
