@@ -99,13 +99,14 @@ const STATE_TTL_SECONDS = 10 * 60 // 10 min
 
 function getFirebase(): App {
   if (getApps().length > 0) return getApps()[0]!
-  const projectId = process.env.FIREBASE_PROJECT_ID
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL
-  const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n')
-  if (!projectId || !clientEmail || !privateKey) {
-    throw new Error('FIREBASE_* env vars not set')
-  }
-  return initializeApp({ credential: cert({ projectId, clientEmail, privateKey }) })
+  // The rest of the codebase (paypal.ts, capture.ts) stores the
+  // service account as ONE single-line JSON blob in
+  // FIREBASE_SERVICE_ACCOUNT — not as three separate env vars.
+  // Keep the same shape here so the operator doesn't need to add
+  // anything new in Vercel; we read what's already there.
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT
+  if (!raw) throw new Error('FIREBASE_SERVICE_ACCOUNT env var not set')
+  return initializeApp({ credential: cert(JSON.parse(raw)) })
 }
 
 function getDb(): Firestore {
