@@ -86,7 +86,14 @@ const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 // Where Google sends users after consent. Must match EXACTLY the
 // URI registered in Google Cloud Console → Credentials → OAuth
 // client → Authorized redirect URIs.
-const REDIRECT_URI = 'https://dm-plus.vercel.app/api/revisions?action=oauth-callback'
+//
+// We deliberately use a CLEAN path (no ?action=... query string)
+// and rely on a vercel.json rewrite to route it to this dispatcher.
+// Reason: Google's OAuth redirect_uri validation is exact-match,
+// and query strings have historically been a source of subtle
+// "redirect_uri_mismatch" failures (different encoding of `?`/`&`,
+// different ordering, etc.). A plain path always works.
+const REDIRECT_URI = 'https://dm-plus.vercel.app/oauth/drive/callback'
 
 // State JWT lifetime — long enough for a slow user to complete the
 // Google consent flow, short enough that a stale state can't be
