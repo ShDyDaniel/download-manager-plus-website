@@ -1101,6 +1101,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleMintRenewToken(req, res)
       case 'admin-grant-pro':
         return await handleAdminGrantPro(req, res)
+      case 'get-pricing':
+        return await handleGetPricing(req, res)
       default:
         return res
           .status(400)
@@ -4626,6 +4628,28 @@ async function handleMintRenewToken(req: VercelRequest, res: VercelResponse) {
  *  Admin-EMAIL-allowlist gated (NOT just any session) — this
  *  bypasses payment, so it must be locked to operator hands only.
  * ───────────────────────────────────────────────────────────── */
+
+/* ─────────────────────────────────────────────────────────────
+ *  Pricing read (action=get-pricing)
+ *
+ *  Pure read of the current live pricing — folded into this
+ *  dispatcher so the Vercel Hobby plan's 12-function cap has room
+ *  for the new revisions.ts. The standalone /api/pricing endpoint
+ *  used to live in api/pricing.ts; this action is its replacement.
+ *
+ *  Public, no auth — anyone can read pricing (it's shown on the
+ *  marketing site Hero + BuyPage). 60s edge cache via Cache-Control
+ *  so admin price changes propagate within a minute.
+ * ───────────────────────────────────────────────────────────── */
+async function handleGetPricing(_req: VercelRequest, res: VercelResponse) {
+  const pricing = await loadCurrentPricing()
+  res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=3600')
+  // Shape matches the legacy /api/pricing response (with `ok` flag)
+  // so fetchLivePricing on the client doesn't need any branching
+  // between old and new URLs.
+  return res.status(200).json({ ok: true, ...pricing })
+}
+
 async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {
   const body = req.body as {
     idToken?: string

@@ -70,12 +70,16 @@ export function minPricePerMonth(p: LivePricing): number {
   return Math.round(min * 100) / 100
 }
 
-/** Fetch the live pricing from /api/pricing. Never throws — on
- *  any failure (network down, server 500, bad JSON) returns
- *  DEFAULT_PRICING so the page still renders something sensible. */
+/** Fetch the live pricing from the consolidated PayPal dispatcher.
+ *  Used to be a dedicated /api/pricing endpoint; folded into
+ *  /api/paypal?action=get-pricing when revisions.ts was added so
+ *  the Vercel Hobby 12-function cap had room. Response shape is
+ *  unchanged. Never throws — on any failure (network down, server
+ *  500, bad JSON) returns DEFAULT_PRICING so the page still
+ *  renders something sensible. */
 export async function fetchLivePricing(): Promise<LivePricing> {
   try {
-    const r = await fetch('/api/pricing', { cache: 'no-store' })
+    const r = await fetch('/api/paypal?action=get-pricing', { cache: 'no-store' })
     if (!r.ok) return DEFAULT_PRICING
     const json = (await r.json()) as
       | ({ ok: true } & LivePricing)
