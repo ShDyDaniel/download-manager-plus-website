@@ -846,14 +846,14 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
     passwordHash,
     passwordSalt,
     status: 'active',
-    // videoStatus tracks Drive's own transcoding pipeline. Newly
-    // uploaded files are unplayable for the first 1–60 minutes while
-    // Drive generates adaptive-bitrate variants. We mark 'processing'
-    // on create and flip to 'ready' once check-video-status sees
-    // videoMediaMetadata on the file (Drive only populates that
-    // field after transcoding completes). The editor's project list
-    // shows the badge so they know not to share the link yet.
-    videoStatus: 'processing',
+    // videoStatus is a holdover from when we relied on Drive's embed
+    // player, which only worked AFTER Drive finished transcoding
+    // (1–60 min wait). The Cloudflare Worker proxy streams the raw
+    // file via Range requests, which works the moment the upload
+    // completes — no transcoding wait. So new projects start as
+    // 'ready' directly, and the field is kept on the doc only for
+    // backward compatibility with old data already in Firestore.
+    videoStatus: 'ready',
     notesCount: 0,
     roundNumber,
     createdAt: now,
@@ -1516,18 +1516,34 @@ async function handleCheckVideoStatus(req: VercelRequest, res: VercelResponse) {
 /* ──────────────────────────────────────────────────────────────
  *  Action: delete-project
  *
- *  Soft delete (sets status='archived'). Also revokes the file's
- *  "anyone with link" permission on Drive so existing share links
- *  start returning "this file is not available" for anyone who
- *  tries to view it. The Drive file itself stays in the editor's
- *  Drive — we don't delete their data.
+ *  Two modes:
+ *    deleteDriveFile=false (default) → SOFT delete. Flips the
+ *      Firestore status to 'archived' and revokes the file's
+ *      "anyone with link" permission on Drive (so old share links
+ *      stop working immediately). The Drive file itself stays
+ *      where it is — useful when the editor wants to keep the raw
+ *      footage but stop the client from accessing it.
+ *    deleteDriveFile=true → also DELETE THE DRIVE FILE itself
+ *      (files.delete). Frees up the user's Drive quota. Irrevers-
+ *      ible: the file goes to the Drive trash and will eventually
+ *      be permanently deleted. Used when the round was a working
+ *      copy the editor no longer needs.
+ *
+ *  Either way the Firestore doc is archived and the share link
+ *  stops resolving — the difference is only what happens to the
+ *  underlying bytes in Drive.
  * ────────────────────────────────────────────────────────────── */
 async function handleDeleteProject(req: VercelRequest, res: VercelResponse) {
-  const body = (req.body || {}) as { idToken?: string; projectId?: string }
+  const body = (req.body || {}) as {
+    idToken?: string
+    projectId?: string
+    deleteDriveFile?: boolean
+  }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   const projectId = String(body.projectId || '').trim()
   if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
+  const deleteDriveFile = body.deleteDriveFile === true
 
   const docRef = getDb().collection('revisionProjects').doc(projectId)
   const snap = await docRef.get()
@@ -1537,42 +1553,223 @@ async function handleDeleteProject(req: VercelRequest, res: VercelResponse) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
 
-  // Best-effort: revoke the "anyone" permission on Drive so the
-  // share link stops working immediately. If this fails (Drive
-  // API hiccup, file already deleted), continue — the Firestore
-  // archive flip is enough to block the review page client-side.
+  // Drive cleanup — share-link revoke (always) + optional file
+  // delete. Best-effort: if Drive hiccups we still archive the
+  // Firestore doc, because the public review page checks
+  // status='active' before serving anything.
+  let driveDeleted = false
   try {
     const integrationSnap = await integrationDocRef(verified.uid).get()
     if (integrationSnap.exists) {
       const integration = integrationSnap.data() as IntegrationDoc
       const refreshToken = decryptToken(integration.refreshTokenEnc)
       const tokenResp = await refreshAccessToken(refreshToken)
-      // List permissions and remove the type='anyone' one.
-      const permsResp = await fetch(
-        `https://www.googleapis.com/drive/v3/files/${project.driveFileId}/permissions?fields=permissions(id,type)`,
-        { headers: { Authorization: `Bearer ${tokenResp.accessToken}` } },
-      )
-      if (permsResp.ok) {
-        const perms = (await permsResp.json()) as {
-          permissions?: Array<{ id: string; type: string }>
-        }
-        const anyonePerm = perms.permissions?.find((p) => p.type === 'anyone')
-        if (anyonePerm) {
-          await fetch(
-            `https://www.googleapis.com/drive/v3/files/${project.driveFileId}/permissions/${anyonePerm.id}`,
-            {
-              method: 'DELETE',
-              headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
+
+      if (deleteDriveFile) {
+        // Move the file to Drive's trash. We use trash rather than
+        // permanent delete so the editor can recover if they
+        // misclicked — Drive empties trash after 30 days on its
+        // own, which is plenty of time to notice the mistake.
+        const trashResp = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${project.driveFileId}`,
+          {
+            method: 'PATCH',
+            headers: {
+              Authorization: `Bearer ${tokenResp.accessToken}`,
+              'Content-Type': 'application/json',
             },
+            body: JSON.stringify({ trashed: true }),
+          },
+        )
+        if (trashResp.ok) {
+          driveDeleted = true
+        } else {
+          console.warn(
+            '[revisions/delete] Drive trash failed:',
+            trashResp.status,
           )
+        }
+      } else {
+        // Soft delete only — revoke the "anyone" permission so the
+        // share link stops working. The file itself stays in Drive.
+        const permsResp = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${project.driveFileId}/permissions?fields=permissions(id,type)`,
+          { headers: { Authorization: `Bearer ${tokenResp.accessToken}` } },
+        )
+        if (permsResp.ok) {
+          const perms = (await permsResp.json()) as {
+            permissions?: Array<{ id: string; type: string }>
+          }
+          const anyonePerm = perms.permissions?.find((p) => p.type === 'anyone')
+          if (anyonePerm) {
+            await fetch(
+              `https://www.googleapis.com/drive/v3/files/${project.driveFileId}/permissions/${anyonePerm.id}`,
+              {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
+              },
+            )
+          }
         }
       }
     }
   } catch (err) {
-    console.warn('[revisions/delete] Drive permission revoke failed (ignoring):', err)
+    console.warn('[revisions/delete] Drive cleanup failed (ignoring):', err)
   }
 
-  await docRef.update({ status: 'archived', updatedAt: Date.now() })
+  await docRef.update({
+    status: 'archived',
+    driveDeleted,
+    updatedAt: Date.now(),
+  })
+  return res.status(200).json({ ok: true, driveDeleted })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: delete-note  (PUBLIC — soft auth by viewer email match)
+ *
+ *  POST /api/revisions?action=delete-note
+ *  Body: { shareToken, passwordToken?, noteId, viewerEmail }
+ *
+ *  Authorisation model: the viewer claims an email (used for the
+ *  watermark + note attribution). We allow them to delete only
+ *  notes whose stored viewerEmail matches the claimed one. There's
+ *  no real authentication on /review — anyone with the share link
+ *  + correct password gets in — so an attacker could spoof an
+ *  email and delete someone else's notes. We accept that for now:
+ *  the alternative (require viewer accounts) would block the
+ *  "send link to a non-technical client" use case entirely. The
+ *  notes never leave the editor's project, so even worst-case the
+ *  editor still has the original Drive file + can read deletion
+ *  attempts in Firestore audit logs.
+ * ────────────────────────────────────────────────────────────── */
+async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+    noteId?: string
+    viewerEmail?: string
+  }
+  const shareToken = String(body.shareToken || '').trim()
+  const noteId = String(body.noteId || '').trim()
+  const viewerEmail = String(body.viewerEmail || '').trim().toLowerCase()
+  if (!shareToken || !noteId || !viewerEmail) {
+    return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
+  }
+
+  const projSnap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (projSnap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const projectDoc = projSnap.docs[0]
+  const project = projectDoc.data() as {
+    id: string
+    status: string
+    passwordHash: string | null
+  }
+  if (project.status !== 'active') {
+    return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
+  }
+  if (project.passwordHash) {
+    const passwordToken = String(body.passwordToken || '').trim()
+    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
+      return res.status(403).json({ ok: false, error: 'נדרשת סיסמה' })
+    }
+  }
+
+  const noteRef = projectDoc.ref.collection('notes').doc(noteId)
+  const noteSnap = await noteRef.get()
+  if (!noteSnap.exists) {
+    return res.status(404).json({ ok: false, error: 'התיקון לא נמצא' })
+  }
+  const note = noteSnap.data() as { viewerEmail: string }
+  if ((note.viewerEmail || '').toLowerCase() !== viewerEmail) {
+    return res.status(403).json({
+      ok: false,
+      error: 'ניתן למחוק רק תיקונים שאתם הוספתם',
+    })
+  }
+
+  await noteRef.delete()
+  // Decrement the counter on the project doc. Best-effort, like
+  // the increment on add-note — we clamp at 0 to handle the case
+  // where the counter and actual note count drifted.
+  void projectDoc.ref
+    .update({
+      notesCount: Math.max(
+        0,
+        ((projectDoc.data() as { notesCount?: number }).notesCount || 1) - 1,
+      ),
+      updatedAt: Date.now(),
+    })
+    .catch(() => undefined)
+  return res.status(200).json({ ok: true })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: update-project  (auth required — owner only)
+ *
+ *  POST /api/revisions?action=update-project
+ *  Body: { idToken, projectId, password? }
+ *
+ *  Currently supports password mutations only. password === ""
+ *  clears any existing password; a non-empty string sets a new
+ *  one (re-hashed with a fresh salt). Owner check via Firebase
+ *  ID token — only the editor who created the project can update
+ *  it. Existing password tokens already issued stay valid for
+ *  their 6h TTL (acceptable trade-off, simpler than tracking a
+ *  per-project revocation epoch).
+ * ────────────────────────────────────────────────────────────── */
+async function handleUpdateProject(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    projectId?: string
+    password?: string
+  }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const projectId = String(body.projectId || '').trim()
+  if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
+
+  const docRef = getDb().collection('revisionProjects').doc(projectId)
+  const snap = await docRef.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const project = snap.data() as { ownerUid: string }
+  if (project.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+
+  // Build the partial update. We only touch fields the client
+  // explicitly asked about; missing fields stay as-is. Today this
+  // is just `password` but the structure leaves room for adding
+  // title / roundNumber later without changing the dispatch path.
+  const update: Record<string, unknown> = { updatedAt: Date.now() }
+
+  if (typeof body.password === 'string') {
+    const newPassword = body.password
+    if (newPassword === '') {
+      // Explicit clear → drop both fields.
+      update.passwordHash = null
+      update.passwordSalt = null
+    } else {
+      if (newPassword.length < 4) {
+        return res.status(400).json({
+          ok: false,
+          error: 'הסיסמה קצרה מדי (4 תווים מינימום)',
+        })
+      }
+      const salt = crypto.randomBytes(16).toString('hex')
+      const hash = crypto
+        .pbkdf2Sync(newPassword, salt, 100_000, 32, 'sha256')
+        .toString('hex')
+      update.passwordHash = hash
+      update.passwordSalt = salt
+    }
+  }
+
+  await docRef.update(update)
   return res.status(200).json({ ok: true })
 }
 
@@ -1638,6 +1835,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleCheckVideoStatus(req, res)
       case 'delete-project':
         return await handleDeleteProject(req, res)
+      case 'delete-note':
+        return await handleDeleteNote(req, res)
+      case 'update-project':
+        return await handleUpdateProject(req, res)
       case 'get-stream-token':
         return await handleGetStreamToken(req, res)
       case 'stream-video':

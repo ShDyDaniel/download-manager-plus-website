@@ -14,6 +14,7 @@ import {
   Camera,
   ArrowUpLeft,
   Hash,
+  Trash2,
 } from 'lucide-react'
 
 /**
@@ -633,6 +634,41 @@ function ReviewWorkspace({
     v.currentTime = timeSeconds
   }
 
+  /** Delete a note the current viewer authored. Server-side check
+   *  enforces viewerEmail match — we don't trust the client to
+   *  decide on its own (a stale localStorage could let someone
+   *  click "מחיקה" on a stranger's note); we just hide the icon
+   *  to make the surface obvious. Optimistic update: drop the
+   *  note from local state immediately and roll back if the
+   *  server complains. */
+  async function deleteNote(noteId: string) {
+    const previous = notes
+    setNotes((prev) => prev.filter((n) => n.id !== noteId))
+    try {
+      const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
+      const r = await fetch(`${API}?action=delete-note`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shareToken: token,
+          passwordToken,
+          noteId,
+          viewerEmail,
+        }),
+      })
+      const json = (await r.json()) as { ok: boolean; error?: string }
+      if (!json.ok) {
+        // Roll back — show the note again so the viewer can see
+        // their attempt didn't take.
+        setNotes(previous)
+        console.warn('[review] delete-note failed:', json.error)
+      }
+    } catch (err) {
+      setNotes(previous)
+      console.warn('[review] delete-note network failure:', err)
+    }
+  }
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6 sm:py-6">
       {/* Title row — round badge + project name. Badge first so the
@@ -726,8 +762,13 @@ function ReviewWorkspace({
                   <NoteItem
                     key={note.id}
                     note={note}
+                    isOwn={
+                      (note.viewerEmail || '').toLowerCase() ===
+                      viewerEmail.toLowerCase()
+                    }
                     onSeek={seekTo}
                     onExpandImage={(url) => setLightbox(url)}
+                    onDelete={() => deleteNote(note.id)}
                   />
                 ))}
             </ul>
@@ -829,17 +870,28 @@ function EmptyNotesState() {
  * ───────────────────────────────────────────────────────────── */
 function NoteItem({
   note,
+  isOwn,
   onSeek,
   onExpandImage,
+  onDelete,
 }: {
   note: Note
+  /** True when the current viewer's email matches the note's
+   *  stored viewerEmail — controls whether the trash icon shows.
+   *  Server still enforces the same check on delete-note. */
+  isOwn: boolean
   onSeek: (t: number) => void
   onExpandImage: (url: string) => void
+  onDelete: () => void
 }) {
   const mm = Math.floor(note.timeSeconds / 60)
   const ss = Math.floor(note.timeSeconds % 60).toString().padStart(2, '0')
+  // Two-step confirm — first click reveals "אישור / ביטול", second
+  // click commits. Same pattern as the desktop ProjectCard. Inline
+  // is a better fit than a modal for a sidebar full of small cards.
+  const [confirming, setConfirming] = useState(false)
   return (
-    <li className="rounded-lg border border-white/5 bg-white/[0.02] p-2.5 transition-colors hover:bg-white/[0.04]">
+    <li className="group rounded-lg border border-white/5 bg-white/[0.02] p-2.5 transition-colors hover:bg-white/[0.04]">
       <div className="flex gap-2.5">
         {note.screenshotDataUrl ? (
           <button
@@ -873,17 +925,62 @@ function NoteItem({
             >
               {mm}:{ss}
             </button>
-            <span
-              dir="ltr"
-              className="truncate text-[10px] text-fg-muted/80"
-              title={note.viewerEmail}
-            >
-              {note.viewerEmail}
-            </span>
+            <div className="flex items-center gap-1">
+              <span
+                dir="ltr"
+                className="truncate text-[10px] text-fg-muted/80"
+                title={note.viewerEmail}
+              >
+                {note.viewerEmail}
+              </span>
+              {/* Trash icon — visible only on the viewer's own notes.
+                  Opacity transition on hover keeps the panel quiet
+                  by default and surfaces the action when needed. */}
+              {isOwn && !confirming && (
+                <button
+                  type="button"
+                  onClick={() => setConfirming(true)}
+                  aria-label="מחיקת התיקון"
+                  title="מחיקת התיקון"
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-muted/40 opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              )}
+            </div>
           </div>
           <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-fg">
             {note.text}
           </p>
+          {/* Confirm strip — appears below the text only when the
+              viewer clicked the trash. Keeps the destructive flow
+              from triggering on a single accidental click. */}
+          {confirming && (
+            <div className="mt-2 flex items-center justify-between gap-2 rounded border border-destructive/30 bg-destructive/10 px-2 py-1.5">
+              <span className="text-[10px] text-destructive">
+                למחוק את התיקון?
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirming(false)
+                    onDelete()
+                  }}
+                  className="rounded bg-destructive/20 px-1.5 py-0.5 text-[10px] font-semibold text-destructive hover:bg-destructive/30"
+                >
+                  כן, מחק
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirming(false)}
+                  className="rounded px-1.5 py-0.5 text-[10px] text-fg-muted hover:bg-white/5"
+                >
+                  ביטול
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </li>
