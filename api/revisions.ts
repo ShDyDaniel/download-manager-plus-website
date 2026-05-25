@@ -757,6 +757,102 @@ function escapeHtml(s: string): string {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: create-project
+ *
+ *  POST /api/revisions?action=create-project
+ *  Body: {
+ *    idToken,
+ *    driveFileId,           // ID of the file already uploaded to Drive
+ *    driveFolderId,         // ID of the parent "ניהול הורדות פלוס" folder
+ *    title,
+ *    videoFileName,
+ *    videoSizeBytes,
+ *    videoMime,
+ *    password?              // plain — server hashes with PBKDF2
+ *  }
+ *  Returns: { ok, projectId, shareToken, shareUrl }
+ *
+ *  The upload itself happens in the Electron client (using a short
+ *  access token from the access-token action) so the bytes never
+ *  touch our server. This endpoint only registers the metadata in
+ *  Firestore and mints the share token.
+ * ────────────────────────────────────────────────────────────── */
+async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    driveFileId?: string
+    driveFolderId?: string
+    title?: string
+    videoFileName?: string
+    videoSizeBytes?: number
+    videoMime?: string
+    password?: string
+  }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+
+  const driveFileId = String(body.driveFileId || '').trim()
+  const driveFolderId = String(body.driveFolderId || '').trim()
+  const title = String(body.title || '').trim().slice(0, 200)
+  const videoFileName = String(body.videoFileName || '').trim().slice(0, 300)
+  const videoSizeBytes = Number(body.videoSizeBytes) || 0
+  const videoMime = String(body.videoMime || '').trim().slice(0, 100)
+  const password = String(body.password || '')
+
+  if (!driveFileId) return res.status(400).json({ ok: false, error: 'driveFileId required' })
+  if (!title) return res.status(400).json({ ok: false, error: 'title required' })
+
+  // Hash the password if one was provided. PBKDF2-SHA256 with a
+  // fresh random salt — same primitive the payments lock uses
+  // server-side. Empty password = no password protection.
+  let passwordHash: string | null = null
+  let passwordSalt: string | null = null
+  if (password) {
+    if (password.length < 4) {
+      return res.status(400).json({ ok: false, error: 'הסיסמה קצרה מדי (4 תווים מינימום)' })
+    }
+    passwordSalt = crypto.randomBytes(16).toString('hex')
+    passwordHash = crypto
+      .pbkdf2Sync(password, passwordSalt, 100_000, 32, 'sha256')
+      .toString('hex')
+  }
+
+  // Share token — URL-safe random, 22 chars (132 bits of entropy)
+  // is plenty for "unguessable per-project link".
+  const shareToken = crypto.randomBytes(16).toString('base64url')
+
+  const projectRef = getDb().collection('revisionProjects').doc()
+  const now = Date.now()
+  await projectRef.set({
+    id: projectRef.id,
+    ownerUid: verified.uid,
+    ownerEmail: verified.email,
+    driveFileId,
+    driveFolderId,
+    title,
+    videoFileName,
+    videoSizeBytes,
+    videoMime,
+    shareToken,
+    passwordHash,
+    passwordSalt,
+    status: 'active',
+    notesCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  return res.status(200).json({
+    ok: true,
+    projectId: projectRef.id,
+    shareToken,
+    shareUrl: `${WEBSITE_BASE}/review/${shareToken}`,
+  })
+}
+
+const WEBSITE_BASE = 'https://dm-plus.vercel.app'
+
+/* ──────────────────────────────────────────────────────────────
  *  Dispatcher
  * ────────────────────────────────────────────────────────────── */
 
@@ -774,6 +870,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleOauthStatus(req, res)
       case 'oauth-disconnect':
         return await handleOauthDisconnect(req, res)
+      case 'create-project':
+        return await handleCreateProject(req, res)
       default:
         return res
           .status(400)
