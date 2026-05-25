@@ -42,6 +42,12 @@ function corsHeaders(extra) {
     'access-control-allow-headers': 'range, content-type',
     'access-control-expose-headers':
       'accept-ranges, content-length, content-range, content-type',
+    // Force the browser to play the response inline instead of
+    // treating it as a download. Without this header Chrome triggers
+    // a Downloads-tray entry for video/quicktime (and some other
+    // formats) the moment <video> starts streaming — the file ends
+    // up on disk even though it's also playing in the page.
+    'content-disposition': 'inline',
     ...(extra || {}),
   }
 }
