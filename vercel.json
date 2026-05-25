@@ -5,7 +5,6 @@
       "destination": "/api/$1"
     },
     {
-      "//": "Clean URL for the Google Drive OAuth callback. Google's OAuth validation is finicky about query strings in redirect_uri — easier and safer to register a plain path and rewrite it internally to the action-dispatched serverless function. Keep the destination's action name in sync with api/revisions.ts.",
       "source": "/oauth/drive/callback",
       "destination": "/api/revisions?action=oauth-callback"
     },
