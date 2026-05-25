@@ -1128,6 +1128,88 @@ async function handleListNotes(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: get-stream-token  (PUBLIC — gated by share token + password)
+ *
+ *  POST /api/revisions?action=get-stream-token { shareToken, passwordToken? }
+ *  Returns: { ok, accessToken, expiresIn, driveFileId, videoMime, title }
+ *
+ *  Mints a short-lived (1h) Drive access token scoped to the OWNER's
+ *  account. The client uses it to build a Drive direct-stream URL:
+ *
+ *    https://www.googleapis.com/drive/v3/files/{id}?alt=media&access_token={token}
+ *
+ *  Set that URL as <video src> and the browser streams DIRECTLY from
+ *  Google's CDN to the viewer — zero bandwidth through our server,
+ *  full Range/seek support, full HTML5 video event API. The token
+ *  has only the drive.file scope (= only files our app created), so
+ *  even if it leaks from the browser the blast radius is limited.
+ *
+ *  When the 1h token expires mid-playback the client refetches.
+ *  Most review sessions are <1h so this is rarely hit.
+ * ────────────────────────────────────────────────────────────── */
+async function handleGetStreamToken(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { shareToken?: string; passwordToken?: string }
+  const shareToken = String(body.shareToken || '').trim()
+  if (!shareToken) {
+    return res.status(400).json({ ok: false, error: 'shareToken required' })
+  }
+  const snap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) {
+    return res.status(404).json({ ok: false, error: 'not found' })
+  }
+  const project = snap.docs[0].data() as {
+    id: string
+    ownerUid: string
+    driveFileId: string
+    status: string
+    passwordHash: string | null
+    videoMime: string
+    title: string
+  }
+  if (project.status !== 'active') {
+    return res.status(410).json({ ok: false, error: 'archived' })
+  }
+  if (project.passwordHash) {
+    const passwordToken = String(body.passwordToken || '').trim()
+    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
+      return res.status(403).json({ ok: false, error: 'password required' })
+    }
+  }
+
+  // Owner's Drive token.
+  const integrationSnap = await integrationDocRef(project.ownerUid).get()
+  if (!integrationSnap.exists) {
+    return res.status(500).json({ ok: false, error: 'drive not connected' })
+  }
+  const integration = integrationSnap.data() as IntegrationDoc
+  const refreshToken = decryptToken(integration.refreshTokenEnc)
+  let fresh: { accessToken: string; expiresIn: number }
+  try {
+    fresh = await refreshAccessToken(refreshToken)
+  } catch {
+    return res.status(401).json({ ok: false, error: 'drive auth expired' })
+  }
+
+  // No cache — we don't want CDNs/browsers caching access tokens.
+  res.setHeader('Cache-Control', 'no-store')
+  return res.status(200).json({
+    ok: true,
+    accessToken: fresh.accessToken,
+    // Lie slightly: tell the client the token expires 5 min earlier
+    // than Google says, so the client refetches before it actually
+    // expires mid-Range-request (which would interrupt playback).
+    expiresIn: Math.max(60, fresh.expiresIn - 300),
+    driveFileId: project.driveFileId,
+    videoMime: project.videoMime,
+    title: project.title,
+  })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Action: check-video-status
  *
  *  POST /api/revisions?action=check-video-status  { idToken, projectId }
@@ -1344,6 +1426,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleCheckVideoStatus(req, res)
       case 'delete-project':
         return await handleDeleteProject(req, res)
+      case 'get-stream-token':
+        return await handleGetStreamToken(req, res)
       default:
         return res
           .status(400)

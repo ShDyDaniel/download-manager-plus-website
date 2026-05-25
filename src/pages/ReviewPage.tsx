@@ -8,9 +8,9 @@ import {
   AlertTriangle,
   Plus,
   MessageSquare,
-  Pause,
   Send,
   X,
+  Camera,
 } from 'lucide-react'
 
 /**
@@ -18,40 +18,28 @@ import {
  *
  * URL: /review/:token
  *
- * Three gates in order before the player renders:
- *   1. Loading — initial fetch of the project metadata.
- *   2. Password — if the project has a password set. Token cached
- *      in sessionStorage so we don't ask again on every reload.
- *   3. Email — required for the watermark + so the editor knows
- *      who left each note. Cached in localStorage per-token so
- *      returning viewers skip this step.
+ * Architecture (zero-cost streaming via Drive direct URL):
+ *   1. Page mounts → POST get-stream-token to our backend.
+ *   2. Backend authenticates (share token + password) and returns
+ *      a short-lived Drive access token + the Drive fileId.
+ *   3. Page builds a direct URL:
+ *      https://www.googleapis.com/drive/v3/files/{id}?alt=media&access_token={token}
+ *   4. <video src={driveUrl}> — the browser streams DIRECTLY from
+ *      Google's CDN. Zero bandwidth through our server, full
+ *      Range/seek support, full HTML5 event API.
+ *   5. When token expires (1h), we refetch transparently.
  *
- * Player:
- *   - Drive's hosted iframe preview at /file/d/<id>/preview.
- *   - Email watermark overlaid via CSS (Drive's iframe can't be
- *     reached into for true overlay; we sit our watermark in a
- *     pointer-events:none div on top of the iframe).
- *
- * Notes:
- *   - Phase 5 (this commit): timestamp + text + frame screenshot
- *     submission. No canvas annotation yet.
- *   - Phase 6: arrow / rectangle / circle drawing on the screenshot.
- *
- * The editor sees the notes via a Firestore real-time listener in
- * the desktop app (Phase 6 wires that up). Server-side we already
- * write notes into /revisionProjects/{id}/notes — the desktop just
- * needs to subscribe.
+ * That direct-URL trick is what unblocks all the features Drive's
+ * iframe blocks: currentTime access, auto-pause detection, frame
+ * screenshot capture, custom controls — everything.
  */
 
 const API = '/api/revisions'
 
 interface ProjectInfo {
-  id: string
   title: string
-  embedUrl: string
-  videoSizeBytes: number
+  driveFileId: string
   videoMime: string
-  createdAt: number
 }
 
 interface Note {
@@ -60,6 +48,7 @@ interface Note {
   viewerName?: string | null
   timeSeconds: number
   text: string
+  screenshotDataUrl?: string | null
   status: 'new' | 'resolved'
   createdAt: number
 }
@@ -67,8 +56,8 @@ interface Note {
 type State =
   | { kind: 'loading' }
   | { kind: 'not-found'; message: string }
-  | { kind: 'needs-password'; title: string }
-  | { kind: 'needs-email'; project: ProjectInfo }
+  | { kind: 'needs-password'; title?: string }
+  | { kind: 'needs-email'; title: string }
   | { kind: 'ready'; project: ProjectInfo; viewerEmail: string }
 
 const EMAIL_KEY_PREFIX = 'dmplus.review.email.'
@@ -79,19 +68,19 @@ export function ReviewPage() {
   const token = (rawToken || '').trim()
   const [state, setState] = useState<State>({ kind: 'loading' })
 
-  // Load project + decide which gate (if any) to show.
+  // Initial decision tree — figure out which gate (if any) to show.
   useEffect(() => {
     if (!token) {
       setState({ kind: 'not-found', message: 'הקישור לא תקין.' })
       return
     }
-    void loadProject()
-    async function loadProject() {
+    void load()
+    async function load() {
+      // Step 1 — fetch project metadata (lightweight) to know if it
+      // exists + whether a password is required. We can't request a
+      // stream token until we know the password situation.
       try {
-        const passwordToken =
-          typeof window !== 'undefined'
-            ? localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
-            : null
+        const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
         const r = await fetch(`${API}?action=get-project`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -99,7 +88,7 @@ export function ReviewPage() {
         })
         const json = (await r.json()) as
           | { ok: true; needsPassword: true; title: string }
-          | { ok: true; needsPassword: false; project: ProjectInfo }
+          | { ok: true; needsPassword: false; project: { title: string } }
           | { ok: false; error: string }
 
         if (!json.ok) {
@@ -110,17 +99,13 @@ export function ReviewPage() {
           setState({ kind: 'needs-password', title: json.title })
           return
         }
-        // Project loaded. Check if we already have the viewer's
-        // email from a previous visit (per-token, not global —
-        // different reviewers might share the same browser).
-        const storedEmail =
-          typeof window !== 'undefined'
-            ? localStorage.getItem(EMAIL_KEY_PREFIX + token)
-            : null
+        // Need viewer email next (for watermark + note attribution).
+        const storedEmail = localStorage.getItem(EMAIL_KEY_PREFIX + token)
         if (storedEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(storedEmail)) {
-          setState({ kind: 'ready', project: json.project, viewerEmail: storedEmail })
+          // We have everything; load the stream token.
+          await loadStream(storedEmail, json.project.title)
         } else {
-          setState({ kind: 'needs-email', project: json.project })
+          setState({ kind: 'needs-email', title: json.project.title })
         }
       } catch (err) {
         console.error('[review] load failed:', err)
@@ -130,21 +115,32 @@ export function ReviewPage() {
         })
       }
     }
+
+    async function loadStream(viewerEmail: string, title: string) {
+      const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
+      const r = await fetch(`${API}?action=get-stream-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shareToken: token, passwordToken }),
+      })
+      const json = (await r.json()) as
+        | { ok: true; accessToken: string; expiresIn: number; driveFileId: string; videoMime: string; title: string }
+        | { ok: false; error: string }
+      if (!json.ok) {
+        setState({ kind: 'not-found', message: json.error || 'שגיאה בקבלת הסרטון' })
+        return
+      }
+      setState({
+        kind: 'ready',
+        project: {
+          title,
+          driveFileId: json.driveFileId,
+          videoMime: json.videoMime,
+        },
+        viewerEmail,
+      })
+    }
   }, [token])
-
-  function handlePasswordVerified() {
-    // After password OK we re-trigger the loader by calling fetch
-    // again — easiest way is to flip state to loading and let the
-    // effect re-run via a token key change. Simpler: just reload.
-    setState({ kind: 'loading' })
-    setTimeout(() => window.location.reload(), 100)
-  }
-
-  function handleEmailEntered(email: string) {
-    if (state.kind !== 'needs-email') return
-    localStorage.setItem(EMAIL_KEY_PREFIX + token, email)
-    setState({ kind: 'ready', project: state.project, viewerEmail: email })
-  }
 
   if (state.kind === 'loading') return <CenterCard><LoadingState /></CenterCard>
   if (state.kind === 'not-found')
@@ -158,8 +154,12 @@ export function ReviewPage() {
       <CenterCard>
         <PasswordGate
           token={token}
-          title={state.title}
-          onVerified={handlePasswordVerified}
+          title={state.title || 'סבב מוגן'}
+          onVerified={() => {
+            // Simplest: reload, the effect will pick up the password
+            // token from localStorage and proceed past the gate.
+            window.location.reload()
+          }}
         />
       </CenterCard>
     )
@@ -167,8 +167,13 @@ export function ReviewPage() {
     return (
       <CenterCard>
         <EmailGate
-          title={state.project.title}
-          onEntered={handleEmailEntered}
+          title={state.title}
+          onEntered={(email) => {
+            localStorage.setItem(EMAIL_KEY_PREFIX + token, email)
+            // Same pattern: reload so the effect re-runs and lands
+            // on the ready state with the new email.
+            window.location.reload()
+          }}
         />
       </CenterCard>
     )
@@ -369,17 +374,51 @@ function ReviewWorkspace({
   project: ProjectInfo
   viewerEmail: string
 }) {
+  // Stream token refreshing — token expires in ~55 min (we lied to
+  // the client by 5 min vs Google's actual 60 min to avoid mid-Range
+  // expiry). We refresh once at ~50 min and rebuild the video src.
+  const [streamUrl, setStreamUrl] = useState<string | null>(null)
+  const [streamLoading, setStreamLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+
+    const refresh = async () => {
+      try {
+        const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
+        const r = await fetch(`${API}?action=get-stream-token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shareToken: token, passwordToken }),
+        })
+        const json = (await r.json()) as
+          | { ok: true; accessToken: string; expiresIn: number; driveFileId: string }
+          | { ok: false; error: string }
+        if (cancelled) return
+        if (!json.ok) {
+          setStreamLoading(false)
+          return
+        }
+        const url = `https://www.googleapis.com/drive/v3/files/${json.driveFileId}?alt=media&access_token=${encodeURIComponent(json.accessToken)}`
+        setStreamUrl(url)
+        setStreamLoading(false)
+        // Refresh slightly before the token expires.
+        timer = setTimeout(refresh, Math.max(60, json.expiresIn - 60) * 1000)
+      } catch {
+        setStreamLoading(false)
+      }
+    }
+
+    void refresh()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [token])
+
   const [notes, setNotes] = useState<Note[]>([])
   const [notesLoading, setNotesLoading] = useState(true)
-  const [composerOpen, setComposerOpen] = useState(false)
-  const [composerTime, setComposerTime] = useState(0)
-  const [noteText, setNoteText] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState<string | null>(null)
-
-  const iframeRef = useRef<HTMLIFrameElement>(null)
-
-  // Initial load of notes.
   useEffect(() => {
     void loadNotes()
     async function loadNotes() {
@@ -400,18 +439,50 @@ function ReviewWorkspace({
     }
   }, [token])
 
-  function openComposer() {
-    // Drive's iframe doesn't let us read the currentTime of the
-    // playing video due to cross-origin. The user is responsible
-    // for noting the time themselves (we pre-fill 0 and they edit).
-    // Phase 6 explores custom player to capture this automatically.
-    setComposerOpen(true)
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  // Composer state — opened by either "add note" button (no
+  // screenshot) or "snapshot + note" button (screenshot captured
+  // at click time from the video element).
+  const [composer, setComposer] = useState<
+    | null
+    | {
+        timeSeconds: number
+        screenshotDataUrl: string | null
+      }
+  >(null)
+  const [noteText, setNoteText] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+
+  function openNoteWithCurrentTime() {
+    const v = videoRef.current
+    if (!v) return
+    // Pause first so the user has a static frame to think about.
+    if (!v.paused) v.pause()
+    setComposer({
+      timeSeconds: Math.max(0, Math.floor(v.currentTime)),
+      screenshotDataUrl: null,
+    })
+    setNoteText('')
+    setSubmitError(null)
+  }
+
+  function openNoteWithScreenshot() {
+    const v = videoRef.current
+    if (!v) return
+    if (!v.paused) v.pause()
+    const data = captureFrame(v)
+    setComposer({
+      timeSeconds: Math.max(0, Math.floor(v.currentTime)),
+      screenshotDataUrl: data,
+    })
     setNoteText('')
     setSubmitError(null)
   }
 
   async function submitNote() {
-    if (!noteText.trim() || submitting) return
+    if (!composer || !noteText.trim() || submitting) return
     setSubmitting(true)
     setSubmitError(null)
     try {
@@ -423,8 +494,9 @@ function ReviewWorkspace({
           shareToken: token,
           passwordToken,
           viewerEmail,
-          timeSeconds: composerTime,
+          timeSeconds: composer.timeSeconds,
           text: noteText.trim(),
+          screenshotDataUrl: composer.screenshotDataUrl,
         }),
       })
       const json = (await r.json()) as
@@ -435,25 +507,31 @@ function ReviewWorkspace({
         setSubmitting(false)
         return
       }
-      // Optimistic insert + re-fetch to be safe.
       setNotes((prev) => [
         ...prev,
         {
           id: json.noteId,
           viewerEmail,
-          timeSeconds: composerTime,
+          timeSeconds: composer.timeSeconds,
           text: noteText.trim(),
+          screenshotDataUrl: composer.screenshotDataUrl,
           status: 'new',
           createdAt: Date.now(),
         },
       ])
-      setComposerOpen(false)
+      setComposer(null)
       setNoteText('')
       setSubmitting(false)
     } catch {
       setSubmitError('שגיאת רשת')
       setSubmitting(false)
     }
+  }
+
+  function seekTo(timeSeconds: number) {
+    const v = videoRef.current
+    if (!v) return
+    v.currentTime = timeSeconds
   }
 
   return (
@@ -469,14 +547,25 @@ function ReviewWorkspace({
               {project.title}
             </h1>
           </div>
-          <button
-            type="button"
-            onClick={openComposer}
-            className="inline-flex min-h-[40px] shrink-0 items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-bg shadow-md shadow-primary/20 transition-all hover:bg-primary/90"
-          >
-            <Plus className="h-4 w-4" strokeWidth={2.5} />
-            תיקון חדש
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={openNoteWithScreenshot}
+              title="צלם פריים והוסף תיקון"
+              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-medium text-fg transition-colors hover:bg-white/[0.06]"
+            >
+              <Camera className="h-4 w-4" />
+              צלם + תיקון
+            </button>
+            <button
+              type="button"
+              onClick={openNoteWithCurrentTime}
+              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-bg shadow-md shadow-primary/20 transition-all hover:bg-primary/90"
+            >
+              <Plus className="h-4 w-4" strokeWidth={2.5} />
+              תיקון חדש
+            </button>
+          </div>
         </div>
       </header>
 
@@ -484,19 +573,27 @@ function ReviewWorkspace({
         {/* Player */}
         <div className="relative overflow-hidden rounded-2xl border border-white/5 bg-black">
           <div className="aspect-video w-full">
-            <iframe
-              ref={iframeRef}
-              src={project.embedUrl}
-              title={project.title}
-              allow="autoplay"
-              allowFullScreen
-              className="block h-full w-full"
-            />
+            {streamLoading ? (
+              <div className="flex h-full items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-fg-muted" />
+              </div>
+            ) : streamUrl ? (
+              <video
+                ref={videoRef}
+                src={streamUrl}
+                controls
+                crossOrigin="anonymous"
+                playsInline
+                controlsList="nodownload"
+                onContextMenu={(e) => e.preventDefault()}
+                className="block h-full w-full"
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center px-6 text-center text-sm text-fg-muted">
+                לא הצלחנו לטעון את הסרטון.
+              </div>
+            )}
           </div>
-          {/* Watermark — pointer-events:none so it doesn't block
-              the iframe controls. Two repeated rows so a user
-              recording the screen captures the email regardless
-              of where they crop. */}
           <Watermark email={viewerEmail} />
         </div>
 
@@ -518,7 +615,7 @@ function ReviewWorkspace({
           ) : (
             <ul className="space-y-2.5 max-h-[60vh] overflow-y-auto">
               {notes.map((note) => (
-                <NoteItem key={note.id} note={note} />
+                <NoteItem key={note.id} note={note} onSeek={seekTo} />
               ))}
             </ul>
           )}
@@ -527,16 +624,16 @@ function ReviewWorkspace({
 
       {/* Composer overlay */}
       <AnimatePresence>
-        {composerOpen && (
+        {composer && (
           <NoteComposer
-            time={composerTime}
-            setTime={setComposerTime}
+            timeSeconds={composer.timeSeconds}
+            screenshotDataUrl={composer.screenshotDataUrl}
             text={noteText}
             setText={setNoteText}
             submitting={submitting}
             error={submitError}
             onSubmit={submitNote}
-            onClose={() => setComposerOpen(false)}
+            onClose={() => setComposer(null)}
           />
         )}
       </AnimatePresence>
@@ -544,10 +641,33 @@ function ReviewWorkspace({
   )
 }
 
+/** Capture the current video frame to a JPEG data URL. Quality 0.75
+ *  is a good balance: under 200KB for 1080p frames, plenty of detail
+ *  for the editor to see what the viewer is pointing at. */
+function captureFrame(video: HTMLVideoElement): string | null {
+  try {
+    const canvas = document.createElement('canvas')
+    // Cap to 1280×720 — bigger screenshots blow past Firestore's
+    // doc size limit (~700KB after base64 + JSON overhead). 720p
+    // is plenty to convey "the green color here is off".
+    const targetW = Math.min(1280, video.videoWidth)
+    const scale = targetW / video.videoWidth
+    canvas.width = targetW
+    canvas.height = Math.round(video.videoHeight * scale)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    return canvas.toDataURL('image/jpeg', 0.75)
+  } catch (err) {
+    // The canvas can get "tainted" if CORS isn't right on the
+    // video source. Returning null lets the caller fall back to
+    // a text-only note instead of crashing.
+    console.warn('[review] captureFrame failed (CORS?):', err)
+    return null
+  }
+}
+
 function Watermark({ email }: { email: string }) {
-  // Random-ish position so a user can't reliably crop out the
-  // watermark on every recording. We animate it slowly so even a
-  // screen recording carries it through multiple positions.
   return (
     <div
       aria-hidden
@@ -582,25 +702,38 @@ function Watermark({ email }: { email: string }) {
 function EmptyNotesState() {
   return (
     <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-6 text-center">
-      <Pause className="mx-auto mb-2 h-5 w-5 text-fg-muted" />
       <p className="text-[11px] leading-relaxed text-fg-muted">
-        עצרו את הסרטון איפה שיש בעיה ולחצו על
+        עצרו את הסרטון ולחצו על
         <strong className="font-semibold text-fg/80"> "תיקון חדש" </strong>
-        כדי להוסיף הערה.
+        כדי להוסיף הערה — הזמן ייכנס אוטומטית.
       </p>
     </div>
   )
 }
 
-function NoteItem({ note }: { note: Note }) {
+function NoteItem({ note, onSeek }: { note: Note; onSeek: (t: number) => void }) {
   const mm = Math.floor(note.timeSeconds / 60)
   const ss = Math.floor(note.timeSeconds % 60).toString().padStart(2, '0')
   return (
     <li className="rounded-lg border border-white/5 bg-white/[0.02] p-3">
       <div className="mb-1 flex items-center justify-between text-[10px] text-fg-muted">
-        <span className="font-mono">{mm}:{ss}</span>
+        <button
+          type="button"
+          onClick={() => onSeek(note.timeSeconds)}
+          title="קפיצה לזמן בסרטון"
+          className="font-mono rounded px-1.5 py-0.5 text-primary transition-colors hover:bg-primary/10"
+        >
+          {mm}:{ss}
+        </button>
         <span dir="ltr" className="truncate">{note.viewerEmail}</span>
       </div>
+      {note.screenshotDataUrl && (
+        <img
+          src={note.screenshotDataUrl}
+          alt="צילום פריים"
+          className="mb-2 w-full rounded border border-white/10"
+        />
+      )}
       <p className="text-xs leading-relaxed text-fg whitespace-pre-wrap">
         {note.text}
       </p>
@@ -609,8 +742,8 @@ function NoteItem({ note }: { note: Note }) {
 }
 
 function NoteComposer({
-  time,
-  setTime,
+  timeSeconds,
+  screenshotDataUrl,
   text,
   setText,
   submitting,
@@ -618,8 +751,8 @@ function NoteComposer({
   onSubmit,
   onClose,
 }: {
-  time: number
-  setTime: (n: number) => void
+  timeSeconds: number
+  screenshotDataUrl: string | null
   text: string
   setText: (s: string) => void
   submitting: boolean
@@ -627,12 +760,11 @@ function NoteComposer({
   onSubmit: () => void
   onClose: () => void
 }) {
-  const minutes = useMemo(() => Math.floor(time / 60), [time])
-  const seconds = useMemo(() => Math.floor(time % 60), [time])
-
-  function setTimeFromFields(mm: number, ss: number) {
-    setTime(Math.max(0, mm * 60 + ss))
-  }
+  const minutes = useMemo(() => Math.floor(timeSeconds / 60), [timeSeconds])
+  const seconds = useMemo(
+    () => Math.floor(timeSeconds % 60).toString().padStart(2, '0'),
+    [timeSeconds],
+  )
 
   return (
     <motion.div
@@ -647,11 +779,16 @@ function NoteComposer({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 8 }}
         transition={{ duration: 0.18 }}
-        className="w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-bg shadow-2xl"
+        className="w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-bg shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
-          <h3 className="text-sm font-medium text-fg">תיקון חדש</h3>
+          <div>
+            <h3 className="text-sm font-medium text-fg">תיקון חדש</h3>
+            <p className="mt-0.5 text-[11px] text-fg-muted">
+              בנקודה <span dir="ltr" className="font-mono">{minutes}:{seconds}</span>
+            </p>
+          </div>
           <button
             type="button"
             onClick={onClose}
@@ -662,30 +799,13 @@ function NoteComposer({
           </button>
         </div>
         <div className="space-y-4 p-5">
-          <div>
-            <label className="mb-1.5 block text-[11px] text-fg-muted">
-              זמן בסרטון (Drive לא מאפשר לנו לדעת אוטומטית — עצרו ורשמו)
-            </label>
-            <div className="flex items-center gap-2" dir="ltr">
-              <input
-                type="number"
-                min={0}
-                value={minutes}
-                onChange={(e) => setTimeFromFields(Number(e.target.value) || 0, seconds)}
-                className="w-16 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-center text-sm text-fg focus:border-primary/40 focus:outline-none"
-              />
-              <span className="text-fg-muted">:</span>
-              <input
-                type="number"
-                min={0}
-                max={59}
-                value={seconds}
-                onChange={(e) => setTimeFromFields(minutes, Number(e.target.value) || 0)}
-                className="w-16 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-center text-sm text-fg focus:border-primary/40 focus:outline-none"
-              />
-              <span className="text-[11px] text-fg-muted">דקות : שניות</span>
-            </div>
-          </div>
+          {screenshotDataUrl && (
+            <img
+              src={screenshotDataUrl}
+              alt="צילום פריים"
+              className="w-full rounded-lg border border-white/10"
+            />
+          )}
           <div>
             <label className="mb-1.5 block text-[11px] text-fg-muted">
               מה צריך לתקן?
