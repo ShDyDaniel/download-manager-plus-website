@@ -2448,6 +2448,159 @@ async function handleReplaceProjectVideo(
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: owner-signin  (PUBLIC — exchanges email+password for
+ *                         a Firebase ID token, gated by share)
+ *
+ *  POST /api/revisions?action=owner-signin
+ *  Body: { shareToken, email, password }
+ *  Returns: { ok: true, idToken, expiresInSec } on success
+ *           { ok: false, error } on bad creds / not-owner
+ *
+ *  Lets the editor authenticate from the /review page without
+ *  needing the desktop app, so they can mark notes as resolved /
+ *  question / not-possible directly. We:
+ *    1. Validate the share token + that this email is the owner.
+ *    2. Call identitytoolkit signInWithPassword with the supplied
+ *       credentials.
+ *    3. Cross-check that the returned uid matches project.ownerUid
+ *       — a successful signin only matters if it's for THIS
+ *       project's owner.
+ *    4. Hand the idToken to the browser. Client stores it in
+ *       sessionStorage and forwards it on update-note-status.
+ *
+ *  Done server-side rather than via the Firebase JS SDK in the
+ *  browser so we don't add the (~80KB minified) Auth SDK to the
+ *  review page's bundle. The website already uses this pattern in
+ *  renew.ts for the BuyPage signin flow.
+ * ────────────────────────────────────────────────────────────── */
+async function handleOwnerSignin(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    shareToken?: string
+    email?: string
+    password?: string
+  }
+  const shareToken = String(body.shareToken || '').trim()
+  const email = String(body.email || '').trim().toLowerCase()
+  const password = String(body.password || '')
+  if (!shareToken || !email || !password) {
+    return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
+  }
+
+  // Find the project + remember its ownerUid for cross-check.
+  const snap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) {
+    return res.status(404).json({ ok: false, error: 'הסבב לא נמצא' })
+  }
+  const project = snap.docs[0].data() as {
+    ownerUid: string
+    ownerEmail?: string
+  }
+  if ((project.ownerEmail || '').toLowerCase() !== email) {
+    return res.status(403).json({
+      ok: false,
+      error: 'המייל אינו של בעל הסבב — לא ניתן להתחבר כעורך',
+    })
+  }
+
+  const apiKey = process.env.FIREBASE_WEB_API_KEY
+  if (!apiKey) {
+    return res
+      .status(500)
+      .json({ ok: false, error: 'FIREBASE_WEB_API_KEY לא מוגדר' })
+  }
+  try {
+    const r = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          password,
+          returnSecureToken: true,
+        }),
+      },
+    )
+    const json = (await r.json()) as
+      | { idToken: string; localId: string; expiresIn: string }
+      | { error?: { message?: string } }
+    if (!r.ok || !('idToken' in json)) {
+      // Firebase error codes we want to surface readably:
+      const msg =
+        (json as { error?: { message?: string } }).error?.message || ''
+      const friendly = /INVALID_PASSWORD|EMAIL_NOT_FOUND|INVALID_LOGIN_CREDENTIALS/.test(
+        msg,
+      )
+        ? 'סיסמה שגויה'
+        : 'ההתחברות נכשלה'
+      return res.status(401).json({ ok: false, error: friendly })
+    }
+    if (json.localId !== project.ownerUid) {
+      // The credentials are valid but for a DIFFERENT account than
+      // the project owner. Defensive — shouldn't normally happen
+      // because we filtered by email above, but a stale ownerEmail
+      // field (renamed Google account?) could open this gap.
+      return res.status(403).json({
+        ok: false,
+        error: 'החשבון אינו של בעל הסבב',
+      })
+    }
+    return res.status(200).json({
+      ok: true,
+      idToken: json.idToken,
+      expiresInSec: parseInt(json.expiresIn, 10) || 3600,
+    })
+  } catch (err) {
+    console.error('[owner-signin] failed:', err)
+    return res.status(502).json({ ok: false, error: 'תקלת רשת — נסו שוב' })
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: check-owner-email  (PUBLIC — gated by share token)
+ *
+ *  POST /api/revisions?action=check-owner-email
+ *  Body: { shareToken, email }
+ *  Returns: { ok: true, isOwner: boolean }
+ *
+ *  Used by the public review page to decide whether to prompt for
+ *  a password when the reviewer enters their email. If isOwner=true
+ *  the page shows a "log in as editor" prompt; signing in unlocks
+ *  the status menu so the editor can mark notes as resolved /
+ *  question / not-possible without switching to the desktop app.
+ *
+ *  No auth required because the response leaks essentially nothing
+ *  — anyone with the share token can already see project metadata.
+ *  Confirming whether a specific email is the owner is information
+ *  the editor would readily volunteer on a phone call.
+ * ────────────────────────────────────────────────────────────── */
+async function handleCheckOwnerEmail(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as { shareToken?: string; email?: string }
+  const shareToken = String(body.shareToken || '').trim()
+  const email = String(body.email || '').trim().toLowerCase()
+  if (!shareToken || !email) {
+    return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
+  }
+  const snap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const project = snap.docs[0].data() as { ownerEmail?: string }
+  const isOwner =
+    (project.ownerEmail || '').toLowerCase() === email
+  return res.status(200).json({ ok: true, isOwner })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Action: list-notes-owner  (auth required — owner only)
  *
  *  POST /api/revisions?action=list-notes-owner  { idToken, projectId }
@@ -2649,6 +2802,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleReplaceProjectVideo(req, res)
       case 'list-notes-owner':
         return await handleListNotesOwner(req, res)
+      case 'check-owner-email':
+        return await handleCheckOwnerEmail(req, res)
+      case 'owner-signin':
+        return await handleOwnerSignin(req, res)
       case 'update-note-status':
         return await handleUpdateNoteStatus(req, res)
       case 'upload-note-media':

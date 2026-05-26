@@ -15,6 +15,7 @@ import {
   ArrowUpLeft,
   Hash,
   Trash2,
+  Check,
   CheckCircle2,
   Mic,
   Square,
@@ -49,6 +50,9 @@ import {
 const API = '/api/revisions'
 
 interface ProjectInfo {
+  /** Firestore document ID. Needed by owner-side actions like
+   *  update-note-status which target a specific project. */
+  projectId: string
   title: string
   streamUrl: string
   videoMime: string
@@ -172,6 +176,58 @@ function noteMediaUrl(
  *  reviewers (sharing the same browser) each get the explainer once
  *  on their first project. */
 const ONBOARDED_KEY_PREFIX = 'dmplus.review.onboarded.'
+/** sessionStorage entry holding the project owner's Firebase ID
+ *  token after they sign in from the review page. Lets the editor
+ *  jump back into a tab and still be able to mark notes without
+ *  re-typing the password. TTL pinned to the token's actual exp
+ *  (~1h) since Firebase invalidates past that anyway. Stored in
+ *  sessionStorage rather than localStorage so the token doesn't
+ *  persist past closing the tab — small but meaningful security
+ *  win against a shared device. */
+const OWNER_TOKEN_KEY_PREFIX = 'dmplus.review.ownerToken.'
+
+interface OwnerSession {
+  idToken: string
+  expiresAt: number
+}
+
+function readOwnerSession(token: string): OwnerSession | null {
+  try {
+    const raw = sessionStorage.getItem(OWNER_TOKEN_KEY_PREFIX + token)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as OwnerSession
+    if (
+      typeof parsed?.idToken !== 'string' ||
+      typeof parsed?.expiresAt !== 'number' ||
+      parsed.expiresAt < Date.now()
+    ) {
+      sessionStorage.removeItem(OWNER_TOKEN_KEY_PREFIX + token)
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeOwnerSession(token: string, session: OwnerSession): void {
+  try {
+    sessionStorage.setItem(
+      OWNER_TOKEN_KEY_PREFIX + token,
+      JSON.stringify(session),
+    )
+  } catch {
+    /* quota / private browsing — caller continues to work, just no caching */
+  }
+}
+
+function clearOwnerSession(token: string): void {
+  try {
+    sessionStorage.removeItem(OWNER_TOKEN_KEY_PREFIX + token)
+  } catch {
+    /* ignore */
+  }
+}
 
 export function ReviewPage() {
   const { token: rawToken } = useParams<{ token: string }>()
@@ -204,6 +260,7 @@ export function ReviewPage() {
               ok: true
               needsPassword: false
               project: {
+                id: string
                 title: string
                 roundNumber?: number
                 locked?: boolean
@@ -225,9 +282,10 @@ export function ReviewPage() {
         }
         const round = json.project.roundNumber ?? 1
         const locked = json.project.locked === true
+        const projectId = json.project.id
         const storedEmail = localStorage.getItem(EMAIL_KEY_PREFIX + token)
         if (storedEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(storedEmail)) {
-          await loadStream(storedEmail, json.project.title, round, locked)
+          await loadStream(storedEmail, json.project.title, round, locked, projectId)
         } else {
           setState({
             kind: 'needs-email',
@@ -249,6 +307,7 @@ export function ReviewPage() {
       title: string,
       roundNumber: number,
       locked: boolean,
+      projectId: string,
     ) {
       const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
       const r = await fetch(`${API}?action=get-stream-token`, {
@@ -266,6 +325,7 @@ export function ReviewPage() {
       setState({
         kind: 'ready',
         project: {
+          projectId,
           title,
           streamUrl: json.streamUrl,
           videoMime: json.videoMime,
@@ -358,6 +418,48 @@ function ReadyOrOnboarding({
     }
   })
 
+  // Owner detection — runs once per (token, email) pair. If this
+  // viewer's email matches the project owner's, we surface a "log
+  // in as editor" overlay so they can mark notes from the website
+  // instead of having to switch to the desktop app. Reviewers who
+  // share the same browser as the editor (or are not the editor)
+  // skip the overlay entirely.
+  const [ownerCheck, setOwnerCheck] = useState<
+    'idle' | 'is-owner-unauth' | 'authed' | 'not-owner'
+  >('idle')
+  const [ownerSession, setOwnerSession] = useState<OwnerSession | null>(
+    () => readOwnerSession(token),
+  )
+
+  useEffect(() => {
+    // Already have a valid cached token? Skip the prompt entirely.
+    if (ownerSession && ownerSession.expiresAt > Date.now()) {
+      setOwnerCheck('authed')
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const r = await fetch(`${API}?action=check-owner-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shareToken: token, email: viewerEmail }),
+        })
+        const json = (await r.json()) as
+          | { ok: true; isOwner: boolean }
+          | { ok: false; error: string }
+        if (cancelled) return
+        if (json.ok && json.isOwner) setOwnerCheck('is-owner-unauth')
+        else setOwnerCheck('not-owner')
+      } catch {
+        if (!cancelled) setOwnerCheck('not-owner')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [token, viewerEmail, ownerSession])
+
   if (!onboarded) {
     return (
       <OnboardingScreen
@@ -376,12 +478,171 @@ function ReadyOrOnboarding({
     )
   }
 
+  // Owner detected but hasn't signed in yet — show the prompt
+  // overlay. Editor can sign in OR continue as a regular viewer.
+  if (ownerCheck === 'is-owner-unauth') {
+    return (
+      <OwnerSignInPrompt
+        shareToken={token}
+        email={viewerEmail}
+        projectTitle={project.title}
+        onSignedIn={(session) => {
+          writeOwnerSession(token, session)
+          setOwnerSession(session)
+          setOwnerCheck('authed')
+        }}
+        onSkip={() => setOwnerCheck('not-owner')}
+      />
+    )
+  }
+
   return (
     <ReviewWorkspace
       token={token}
       project={project}
       viewerEmail={viewerEmail}
+      ownerIdToken={
+        ownerCheck === 'authed' && ownerSession ? ownerSession.idToken : null
+      }
+      onOwnerSessionInvalid={() => {
+        clearOwnerSession(token)
+        setOwnerSession(null)
+        setOwnerCheck('is-owner-unauth')
+      }}
     />
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  OwnerSignInPrompt — full-screen "sign in as editor" form,
+ *  shown when the email entered at the gate matches the project
+ *  owner. Editor enters their account password; we exchange it
+ *  for a Firebase idToken via the server's owner-signin action
+ *  and unlock the status-menu UI in NoteItem.
+ *
+ *  "המשך כצופה רגיל" lets them skip the sign-in if they're not
+ *  going to be marking notes this session — useful when an
+ *  editor opens their own share link to preview what the client
+ *  sees.
+ * ───────────────────────────────────────────────────────────── */
+function OwnerSignInPrompt({
+  shareToken,
+  email,
+  projectTitle,
+  onSignedIn,
+  onSkip,
+}: {
+  shareToken: string
+  email: string
+  projectTitle: string
+  onSignedIn: (session: OwnerSession) => void
+  onSkip: () => void
+}) {
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!password || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await fetch(`${API}?action=owner-signin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shareToken, email, password }),
+      })
+      const json = (await r.json()) as
+        | { ok: true; idToken: string; expiresInSec: number }
+        | { ok: false; error: string }
+      if (!json.ok) {
+        setError(json.error || 'ההתחברות נכשלה')
+        setBusy(false)
+        return
+      }
+      onSignedIn({
+        idToken: json.idToken,
+        // Subtract 60s safety margin so we don't try to use a token
+        // that's about to expire mid-request.
+        expiresAt: Date.now() + (json.expiresInSec - 60) * 1000,
+      })
+    } catch {
+      setError('שגיאת רשת. נסו שוב.')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center justify-center px-4 py-12 sm:py-20">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-md space-y-5 rounded-2xl border border-primary/20 bg-primary/[0.04] p-7"
+      >
+        <div className="text-center">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary">
+            <Lock className="h-5 w-5" />
+          </div>
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.16em] text-primary">
+            זוהיתם כעורך הסבב
+          </div>
+          <h1 className="text-lg font-medium text-fg">
+            התחברו עם סיסמת החשבון
+          </h1>
+          <p className="mt-1 text-xs leading-relaxed text-fg-muted">
+            אחרי ההתחברות תוכלו לסמן תיקונים כטופלו, לפתוח שאלות ולסמן
+            תיקונים שאי אפשר לבצע — הכל ישירות מהאתר, בלי לפתוח את התוכנה.
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-[11px] text-fg-muted" htmlFor="owner-pwd">
+            סיסמה
+          </label>
+          <input
+            id="owner-pwd"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoFocus
+            autoComplete="current-password"
+            className="block w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5 text-sm text-fg placeholder:text-fg-muted/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
+          />
+          <p
+            className="text-[11px] text-fg-muted/70"
+            dir="ltr"
+          >
+            {email}
+          </p>
+        </div>
+        {error && (
+          <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {error}
+          </p>
+        )}
+        <div className="flex flex-col gap-2">
+          <button
+            type="submit"
+            disabled={!password || busy}
+            className="flex w-full min-h-[44px] items-center justify-center rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-primary/40"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : 'התחבר כעורך'}
+          </button>
+          <button
+            type="button"
+            onClick={onSkip}
+            className="text-center text-[11px] text-fg-muted transition-colors hover:text-fg"
+          >
+            דלגו והמשיכו כצופה רגיל
+          </button>
+        </div>
+        <p
+          className="truncate text-center text-[10px] text-fg-muted/60"
+          title={projectTitle}
+        >
+          {projectTitle}
+        </p>
+      </form>
+    </div>
   )
 }
 
@@ -838,10 +1099,20 @@ function ReviewWorkspace({
   token,
   project,
   viewerEmail,
+  ownerIdToken,
+  onOwnerSessionInvalid,
 }: {
   token: string
   project: ProjectInfo
   viewerEmail: string
+  /** When non-null, the viewer signed in as the project owner.
+   *  NoteItem renders the status menu and we forward this token
+   *  to update-note-status calls. */
+  ownerIdToken: string | null
+  /** Called when an owner-side API call fails with 401, meaning
+   *  the cached idToken expired or was revoked. Bubbles up so the
+   *  parent can clear the cache and re-prompt for sign-in. */
+  onOwnerSessionInvalid: () => void
 }) {
   const streamUrl = project.streamUrl
 
@@ -1094,6 +1365,59 @@ function ReviewWorkspace({
     }
   }
 
+  /** Owner-side: change a note's workflow status. Optimistic
+   *  update with rollback on error. When the server returns 401
+   *  the cached idToken is stale — bubble that up so the parent
+   *  can re-prompt for sign-in. */
+  async function applyOwnerStatus(
+    noteId: string,
+    newStatus: 'new' | 'resolved' | 'question' | 'not-possible',
+    editorResponse?: string,
+  ) {
+    if (!ownerIdToken) return
+    const previous = notes
+    setNotes((prev) =>
+      prev.map((n) =>
+        n.id === noteId
+          ? {
+              ...n,
+              status: newStatus,
+              editorResponse:
+                newStatus === 'question' || newStatus === 'not-possible'
+                  ? editorResponse ?? null
+                  : null,
+            }
+          : n,
+      ),
+    )
+    try {
+      const r = await fetch(`${API}?action=update-note-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idToken: ownerIdToken,
+          projectId: project.projectId,
+          noteId,
+          status: newStatus,
+          editorResponse,
+        }),
+      })
+      if (r.status === 401) {
+        setNotes(previous)
+        onOwnerSessionInvalid()
+        return
+      }
+      const json = (await r.json()) as { ok: boolean; error?: string }
+      if (!json.ok) {
+        setNotes(previous)
+        console.warn('[review] update-note-status failed:', json.error)
+      }
+    } catch (err) {
+      setNotes(previous)
+      console.warn('[review] update-note-status network failure:', err)
+    }
+  }
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6 sm:py-6">
       {/* Title row — round badge + project name. Badge first so the
@@ -1246,9 +1570,13 @@ function ReviewWorkspace({
                       (note.viewerEmail || '').toLowerCase() ===
                         viewerEmail.toLowerCase()
                     }
+                    isOwnerMode={ownerIdToken !== null}
                     onSeek={seekTo}
                     onExpandImage={(url) => setLightbox(url)}
                     onDelete={() => deleteNote(note.id)}
+                    onApplyStatus={(status, response) =>
+                      void applyOwnerStatus(note.id, status, response)
+                    }
                   />
                 ))}
             </ul>
@@ -1355,21 +1683,31 @@ function EmptyNotesState() {
 function NoteItem({
   note,
   isOwn,
+  isOwnerMode,
   shareToken,
   onSeek,
   onExpandImage,
   onDelete,
+  onApplyStatus,
 }: {
   note: Note
   /** True when the current viewer's email matches the note's
    *  stored viewerEmail — controls whether the trash icon shows.
    *  Server still enforces the same check on delete-note. */
   isOwn: boolean
+  /** True when the viewer has signed in as the project owner.
+   *  Swaps the read-only status badge for an interactive menu. */
+  isOwnerMode: boolean
   /** Needed to build Drive-media URLs for screenshot + audio. */
   shareToken: string
   onSeek: (t: number) => void
   onExpandImage: (url: string) => void
   onDelete: () => void
+  /** Owner-side status change handler. No-op in viewer mode. */
+  onApplyStatus: (
+    status: 'new' | 'resolved' | 'question' | 'not-possible',
+    editorResponse?: string,
+  ) => void
 }) {
   const isGeneral = note.timeSeconds === null || note.timeSeconds === undefined
   const mm = isGeneral ? 0 : Math.floor((note.timeSeconds as number) / 60)
@@ -1482,34 +1820,46 @@ function NoteItem({
                 </button>
               )}
               {/* Status badge — three colours for three editor
-                  responses. Shown read-only; viewers can't change
-                  status (that's the editor's workflow). */}
-              {resolved && (
-                <span
-                  title="העורך סימן את התיקון כטופל"
-                  className="inline-flex items-center gap-1 rounded-full border border-yellow-500/40 bg-yellow-500/15 px-1.5 py-0.5 text-[9px] font-medium text-yellow-400 whitespace-nowrap"
-                >
-                  <CheckCircle2 className="h-2.5 w-2.5" />
-                  טופל
-                </span>
-              )}
-              {isQuestion && (
-                <span
-                  title="העורך מבקש הבהרה — ראו את הטקסט בתוך התיקון"
-                  className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-400 whitespace-nowrap"
-                >
-                  <MessageSquare className="h-2.5 w-2.5" />
-                  שאלה
-                </span>
-              )}
-              {isNotPossible && (
-                <span
-                  title="העורך הסביר למה לא ניתן לבצע — ראו את הטקסט בתוך התיקון"
-                  className="inline-flex items-center gap-1 rounded-full border border-red-500/40 bg-red-500/15 px-1.5 py-0.5 text-[9px] font-medium text-red-400 whitespace-nowrap"
-                >
-                  <AlertTriangle className="h-2.5 w-2.5" />
-                  לא אפשרי
-                </span>
+                  responses. In owner mode it becomes an interactive
+                  dropdown so the editor can change status from the
+                  website without opening the desktop app; in viewer
+                  mode it stays read-only. */}
+              {isOwnerMode ? (
+                <OwnerStatusMenu
+                  status={note.status}
+                  currentResponse={note.editorResponse || ''}
+                  onApply={onApplyStatus}
+                />
+              ) : (
+                <>
+                  {resolved && (
+                    <span
+                      title="העורך סימן את התיקון כטופל"
+                      className="inline-flex items-center gap-1 rounded-full border border-yellow-500/40 bg-yellow-500/15 px-1.5 py-0.5 text-[9px] font-medium text-yellow-400 whitespace-nowrap"
+                    >
+                      <CheckCircle2 className="h-2.5 w-2.5" />
+                      טופל
+                    </span>
+                  )}
+                  {isQuestion && (
+                    <span
+                      title="העורך מבקש הבהרה — ראו את הטקסט בתוך התיקון"
+                      className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-400 whitespace-nowrap"
+                    >
+                      <MessageSquare className="h-2.5 w-2.5" />
+                      שאלה
+                    </span>
+                  )}
+                  {isNotPossible && (
+                    <span
+                      title="העורך הסביר למה לא ניתן לבצע — ראו את הטקסט בתוך התיקון"
+                      className="inline-flex items-center gap-1 rounded-full border border-red-500/40 bg-red-500/15 px-1.5 py-0.5 text-[9px] font-medium text-red-400 whitespace-nowrap"
+                    >
+                      <AlertTriangle className="h-2.5 w-2.5" />
+                      לא אפשרי
+                    </span>
+                  )}
+                </>
               )}
             </div>
             <div className="flex items-center gap-1">
@@ -2023,5 +2373,276 @@ function AudioRecorder({
         <p className="px-1 text-[11px] text-destructive">{errMsg}</p>
       )}
     </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  OwnerStatusMenu — interactive pill + popover that the signed-
+ *  in editor uses to change a note's workflow status from the
+ *  review page (mirrors the desktop's StatusPill UX). Selecting
+ *  question / not-possible opens a small modal for the response
+ *  text since those states carry user-visible payload.
+ * ───────────────────────────────────────────────────────────── */
+type NoteStatusValue = 'new' | 'resolved' | 'question' | 'not-possible'
+
+function OwnerStatusMenu({
+  status,
+  currentResponse,
+  onApply,
+}: {
+  status: NoteStatusValue
+  currentResponse: string
+  onApply: (status: NoteStatusValue, response?: string) => void
+}) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [responseModal, setResponseModal] = useState<
+    null | { kind: 'question' | 'not-possible' }
+  >(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    function onClick(e: MouseEvent) {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false)
+    }
+    window.addEventListener('mousedown', onClick)
+    return () => window.removeEventListener('mousedown', onClick)
+  }, [menuOpen])
+
+  function pick(s: NoteStatusValue) {
+    setMenuOpen(false)
+    if (s === 'question' || s === 'not-possible') {
+      setResponseModal({ kind: s })
+    } else {
+      onApply(s)
+    }
+  }
+
+  const pillClass =
+    status === 'resolved'
+      ? 'border-yellow-500/40 bg-yellow-500/15 text-yellow-400 hover:bg-yellow-500/20'
+      : status === 'question'
+        ? 'border-sky-500/40 bg-sky-500/10 text-sky-400 hover:bg-sky-500/15'
+        : status === 'not-possible'
+          ? 'border-red-500/40 bg-red-500/15 text-red-400 hover:bg-red-500/20'
+          : 'border-white/10 bg-white/[0.02] text-fg-muted hover:border-white/20 hover:text-fg'
+  const label =
+    status === 'resolved'
+      ? 'טופל'
+      : status === 'question'
+        ? 'שאלה'
+        : status === 'not-possible'
+          ? 'לא אפשרי'
+          : 'חדש'
+  const Icon =
+    status === 'resolved'
+      ? CheckCircle2
+      : status === 'question'
+        ? MessageSquare
+        : status === 'not-possible'
+          ? AlertTriangle
+          : Plus
+
+  return (
+    <>
+      <div className="relative" ref={menuRef}>
+        <button
+          type="button"
+          onClick={() => setMenuOpen((v) => !v)}
+          title="שינוי סטטוס תיקון"
+          className={
+            'inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-medium whitespace-nowrap transition-colors ' +
+            pillClass
+          }
+        >
+          <Icon className="h-2.5 w-2.5" />
+          {label}
+          <span aria-hidden className="opacity-60">▾</span>
+        </button>
+        {menuOpen && (
+          <div className="absolute left-0 top-full z-30 mt-1 w-40 overflow-hidden rounded-lg border border-white/10 bg-bg shadow-2xl">
+            <OwnerMenuItem
+              label="חדש"
+              icon={Plus}
+              active={status === 'new'}
+              tone="muted"
+              onClick={() => pick('new')}
+            />
+            <OwnerMenuItem
+              label="טופל"
+              icon={CheckCircle2}
+              active={status === 'resolved'}
+              tone="yellow"
+              onClick={() => pick('resolved')}
+            />
+            <OwnerMenuItem
+              label="שאלה ללקוח"
+              icon={MessageSquare}
+              active={status === 'question'}
+              tone="sky"
+              onClick={() => pick('question')}
+            />
+            <OwnerMenuItem
+              label="לא אפשרי"
+              icon={AlertTriangle}
+              active={status === 'not-possible'}
+              tone="red"
+              onClick={() => pick('not-possible')}
+            />
+          </div>
+        )}
+      </div>
+      <AnimatePresence>
+        {responseModal && (
+          <OwnerResponseModal
+            kind={responseModal.kind}
+            initial={currentResponse}
+            onCancel={() => setResponseModal(null)}
+            onSave={(text) => {
+              setResponseModal(null)
+              onApply(responseModal.kind, text)
+            }}
+          />
+        )}
+      </AnimatePresence>
+    </>
+  )
+}
+
+function OwnerMenuItem({
+  label,
+  icon: Icon,
+  active,
+  tone,
+  onClick,
+}: {
+  label: string
+  icon: typeof CheckCircle2
+  active: boolean
+  tone: 'muted' | 'yellow' | 'sky' | 'red'
+  onClick: () => void
+}) {
+  const toneClass =
+    tone === 'yellow'
+      ? 'text-yellow-400'
+      : tone === 'sky'
+        ? 'text-sky-400'
+        : tone === 'red'
+          ? 'text-red-400'
+          : 'text-fg-muted'
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        'flex w-full items-center gap-2 px-3 py-2 text-right text-[11px] transition-colors hover:bg-white/[0.05] ' +
+        (active ? 'bg-white/[0.04]' : '')
+      }
+    >
+      <Icon className={'h-3 w-3 shrink-0 ' + toneClass} />
+      <span className="flex-1 text-fg">{label}</span>
+      {active && <Check className="h-3 w-3 text-fg-muted/70" />}
+    </button>
+  )
+}
+
+function OwnerResponseModal({
+  kind,
+  initial,
+  onCancel,
+  onSave,
+}: {
+  kind: 'question' | 'not-possible'
+  initial: string
+  onCancel: () => void
+  onSave: (text: string) => void
+}) {
+  const [text, setText] = useState(initial)
+  const isQuestion = kind === 'question'
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 px-4 py-6 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 8 }}
+        transition={{ duration: 0.18 }}
+        className="w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-bg shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-white/5 px-5 py-4">
+          <div className="min-w-0 flex-1">
+            <div
+              className={
+                'text-[10px] font-medium uppercase tracking-[0.16em] ' +
+                (isQuestion ? 'text-sky-400' : 'text-red-400')
+              }
+            >
+              {isQuestion ? 'שאלה ללקוח' : 'תיקון לא אפשרי'}
+            </div>
+            <div className="mt-1 text-sm font-medium text-fg">
+              {isQuestion
+                ? 'מה תרצו לשאול את הלקוח?'
+                : 'הסבירו למה לא ניתן לבצע'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label="סגירה"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-muted hover:bg-white/5 hover:text-fg"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="space-y-3 p-5">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            autoFocus
+            rows={4}
+            placeholder={
+              isQuestion
+                ? 'לדוגמה: באיזה גוון בדיוק להחליף את הצבע?'
+                : 'לדוגמה: הפריים המבוקש לא קיים בחומר הגולמי.'
+            }
+            className="block w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5 text-sm text-fg placeholder:text-fg-muted/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
+          />
+          <p className="text-[11px] leading-relaxed text-fg-muted">
+            הטקסט הזה יוצג ללקוח מתחת לתיקון.
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-white/5 bg-white/[0.015] px-5 py-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg px-3 py-2 text-sm text-fg-muted transition-colors hover:bg-white/5 hover:text-fg"
+          >
+            ביטול
+          </button>
+          <button
+            type="button"
+            onClick={() => onSave(text.trim())}
+            disabled={!text.trim()}
+            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-bg transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-primary/40"
+          >
+            <Check className="h-4 w-4" />
+            שמירה
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
   )
 }
