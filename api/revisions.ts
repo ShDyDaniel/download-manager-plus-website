@@ -609,6 +609,77 @@ async function handleOauthDisconnect(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: drive-storage  (auth required)
+ *
+ *  POST /api/revisions?action=drive-storage  { idToken }
+ *  Returns: { ok, usageBytes, limitBytes, usageInDriveBytes?,
+ *             usageInTrashBytes? }
+ *
+ *  Reads the user's Drive storage quota via Drive's `/about`
+ *  endpoint. Surfaced in the desktop footer so the editor knows
+ *  how much room they still have before uploads start failing.
+ *  Cheap call — Drive returns the numbers from a cached counter,
+ *  no scan. limitBytes is missing for accounts on the "unlimited"
+ *  Google Workspace plans, in which case the desktop just hides
+ *  the usage bar and shows the absolute usage.
+ * ────────────────────────────────────────────────────────────── */
+async function handleDriveStorage(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { idToken?: string }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+
+  const integrationSnap = await integrationDocRef(verified.uid).get()
+  if (!integrationSnap.exists) {
+    return res.status(404).json({ ok: false, error: 'Drive לא מחובר' })
+  }
+  const integration = integrationSnap.data() as IntegrationDoc
+  let accessToken: string
+  try {
+    const refreshToken = decryptToken(integration.refreshTokenEnc)
+    const tokenResp = await refreshAccessToken(refreshToken)
+    accessToken = tokenResp.accessToken
+  } catch {
+    return res.status(401).json({ ok: false, error: 'Drive auth פג תוקף' })
+  }
+
+  // storageQuota fields:
+  //   - limit       : total storage in bytes (string in JSON;
+  //                   absent for unlimited Workspace plans)
+  //   - usage       : total bytes used (Drive + Gmail + Photos)
+  //   - usageInDrive: bytes used by Drive specifically
+  //   - usageInDriveTrash: bytes in the Drive trash
+  // We coerce to numbers ourselves — Drive returns strings to
+  // avoid 53-bit precision loss on huge accounts, but for the
+  // sizes the desktop displays (up to a few hundred GB) the
+  // safe-integer range is fine.
+  const aboutResp = await fetch(
+    'https://www.googleapis.com/drive/v3/about?fields=storageQuota',
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  )
+  if (!aboutResp.ok) {
+    const txt = await aboutResp.text().catch(() => '')
+    console.warn('[revisions/drive-storage] about failed:', aboutResp.status, txt.slice(0, 200))
+    return res.status(502).json({ ok: false, error: 'שגיאה בקריאת מצב הדרייב' })
+  }
+  const json = (await aboutResp.json()) as {
+    storageQuota?: {
+      limit?: string
+      usage?: string
+      usageInDrive?: string
+      usageInDriveTrash?: string
+    }
+  }
+  const q = json.storageQuota || {}
+  return res.status(200).json({
+    ok: true,
+    usageBytes: Number(q.usage || 0),
+    limitBytes: q.limit ? Number(q.limit) : null,
+    usageInDriveBytes: q.usageInDrive ? Number(q.usageInDrive) : null,
+    usageInTrashBytes: q.usageInDriveTrash ? Number(q.usageInDriveTrash) : null,
+  })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  HTML responses for the OAuth callback flow
  *
  *  These pages live INSIDE the response body of the callback
@@ -3720,6 +3791,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleOauthStatus(req, res)
       case 'oauth-disconnect':
         return await handleOauthDisconnect(req, res)
+      case 'drive-storage':
+        return await handleDriveStorage(req, res)
       case 'create-project':
         return await handleCreateProject(req, res)
       case 'create-project-group':
