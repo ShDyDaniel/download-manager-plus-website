@@ -1020,7 +1020,13 @@ async function handleCreateProjectGroup(
   )
 
   if (!title) return res.status(400).json({ ok: false, error: 'title required' })
-  if (!driveFileId) return res.status(400).json({ ok: false, error: 'driveFileId required' })
+  // driveFileId is OPTIONAL — when omitted we create an "empty"
+  // project (group only, no rounds). The editor's typical flow is:
+  //   1. "+ פרויקט"   → name + optional password → empty group
+  //   2. "+ סבב חדש"  → upload first video → first round
+  // This separation lets editors plan projects ahead of having the
+  // video ready, and matches the user's expectation that "creating
+  // a project" is a lightweight naming step distinct from uploading.
 
   let pw: { passwordHash: string; passwordSalt: string } | null = null
   if (password) {
@@ -1033,9 +1039,11 @@ async function handleCreateProjectGroup(
   const shareToken = crypto.randomBytes(16).toString('base64url')
   const db = getDb()
   const groupRef = db.collection('revisionGroups').doc()
-  const roundRef = db.collection('revisionProjects').doc()
   const now = Date.now()
 
+  // Group doc — always written. If we also got a video this call
+  // creates the first round in the same batch (atomically so the
+  // share link is never half-baked).
   const batch = db.batch()
   batch.set(groupRef, {
     id: groupRef.id,
@@ -1051,35 +1059,41 @@ async function handleCreateProjectGroup(
     createdAt: now,
     updatedAt: now,
   })
-  batch.set(roundRef, {
-    id: roundRef.id,
-    // Linkage — distinguishes new-style rounds from legacy ones.
-    groupId: groupRef.id,
-    // Owner is mirrored onto the round for query convenience (so
-    // a single where('ownerUid','==',uid) over revisionProjects
-    // still returns the editor's rounds without needing a parent
-    // lookup).
-    ownerUid: verified.uid,
-    ownerEmail: verified.email,
-    driveFileId,
-    driveFolderId,
-    videoFileName,
-    videoSizeBytes,
-    videoMime,
-    videoStatus: 'ready',
-    roundNumber,
-    locked: false,
-    notesCount: 0,
-    status: 'active',
-    createdAt: now,
-    updatedAt: now,
-  })
+
+  let roundIdOut: string | null = null
+  if (driveFileId) {
+    const roundRef = db.collection('revisionProjects').doc()
+    roundIdOut = roundRef.id
+    batch.set(roundRef, {
+      id: roundRef.id,
+      // Linkage — distinguishes new-style rounds from legacy ones.
+      groupId: groupRef.id,
+      // Owner is mirrored onto the round for query convenience (so
+      // a single where('ownerUid','==',uid) over revisionProjects
+      // still returns the editor's rounds without needing a parent
+      // lookup).
+      ownerUid: verified.uid,
+      ownerEmail: verified.email,
+      driveFileId,
+      driveFolderId,
+      videoFileName,
+      videoSizeBytes,
+      videoMime,
+      videoStatus: 'ready',
+      roundNumber,
+      locked: false,
+      notesCount: 0,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
   await batch.commit()
 
   return res.status(200).json({
     ok: true,
     groupId: groupRef.id,
-    roundId: roundRef.id,
+    roundId: roundIdOut,
     shareToken,
     shareUrl: `${WEBSITE_BASE}/review/${shareToken}`,
   })
