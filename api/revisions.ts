@@ -1183,6 +1183,52 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
  * ────────────────────────────────────────────────────────────── */
 const NOTE_MEDIA_MAX_BASE64 = 5 * 1024 * 1024 // 5 MB encoded
 
+/** Find-or-create the "קבצי תיקונים" subfolder inside the project's
+ *  root Drive folder. Mirrors the desktop's ensureFolder helper but
+ *  lives here because the server is the one writing notes media —
+ *  the desktop never touches that subfolder. */
+const NOTES_SUBFOLDER_NAME = 'קבצי תיקונים'
+const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder'
+
+async function ensureNotesSubfolder(
+  accessToken: string,
+  rootFolderId: string,
+): Promise<string> {
+  const escaped = NOTES_SUBFOLDER_NAME.replace(/'/g, "\\'")
+  const q = `name='${escaped}' and mimeType='${DRIVE_FOLDER_MIME}' and trashed=false and '${rootFolderId}' in parents`
+  const searchUrl = new URL('https://www.googleapis.com/drive/v3/files')
+  searchUrl.searchParams.set('q', q)
+  searchUrl.searchParams.set('fields', 'files(id)')
+  searchUrl.searchParams.set('pageSize', '1')
+
+  const searchResp = await fetch(searchUrl.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!searchResp.ok) throw new Error(`drive search ${searchResp.status}`)
+  const searchJson = (await searchResp.json()) as {
+    files?: Array<{ id: string }>
+  }
+  if (searchJson.files && searchJson.files.length > 0) {
+    return searchJson.files[0].id
+  }
+
+  const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: NOTES_SUBFOLDER_NAME,
+      mimeType: DRIVE_FOLDER_MIME,
+      parents: [rootFolderId],
+    }),
+  })
+  if (!createResp.ok) throw new Error(`drive create ${createResp.status}`)
+  const folder = (await createResp.json()) as { id: string }
+  return folder.id
+}
+
 async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as {
     shareToken?: string
@@ -1265,6 +1311,34 @@ async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
     return res.status(401).json({ ok: false, error: 'Drive auth פג תוקף' })
   }
 
+  // Resolve (or lazily create) the "קבצי תיקונים" subfolder where
+  // all reviewer-uploaded attachments live. Cached on the project
+  // doc as `notesFolderId` after the first call so subsequent
+  // uploads skip the round-trip.
+  let notesFolderId: string | undefined = (
+    projectDoc.data() as { notesFolderId?: string }
+  ).notesFolderId
+  if (!notesFolderId && project.driveFolderId) {
+    try {
+      notesFolderId = await ensureNotesSubfolder(
+        accessToken,
+        project.driveFolderId,
+      )
+      // Persist for next time — single write, fire-and-forget.
+      void projectDoc.ref
+        .update({ notesFolderId, updatedAt: Date.now() })
+        .catch(() => undefined)
+    } catch (err) {
+      console.warn(
+        '[revisions/upload-note-media] ensureNotesSubfolder failed:',
+        err,
+      )
+      // Fall back to the root project folder — upload still works,
+      // it just lands one level shallower than the user wanted.
+    }
+  }
+  const targetFolderId = notesFolderId || project.driveFolderId
+
   // Multipart upload to Drive — metadata + bytes in one request.
   const ext =
     kind === 'image'
@@ -1281,7 +1355,7 @@ async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
   const boundary = `dmp-${crypto.randomBytes(8).toString('hex')}`
   const metadata = {
     name: fileName,
-    parents: project.driveFolderId ? [project.driveFolderId] : undefined,
+    parents: targetFolderId ? [targetFolderId] : undefined,
     mimeType,
   }
   const multipart = Buffer.concat([
