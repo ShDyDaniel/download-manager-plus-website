@@ -2024,6 +2024,19 @@ async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
     name: fileName,
     parents: targetFolderId ? [targetFolderId] : undefined,
     mimeType,
+    // Tag the file so delete-round (and any future per-round
+    // cleanup) can find it later via files.list?q=...appProperties
+    // has {key='dmpRoundId' and value='<id>'}. appProperties are
+    // private to our OAuth app — invisible to the user in the
+    // Drive UI, and only readable when authenticated with the same
+    // client_id that wrote them. We tag both round + group ids so
+    // we can also purge by group if needed (delete-group currently
+    // trashes the entire shared notes folder so it doesn't query
+    // these, but it's cheap to record).
+    appProperties: {
+      dmpRoundId: String(roundRef.id),
+      dmpGroupId: group ? String(group.id) : '',
+    },
   }
   const multipart = Buffer.concat([
     Buffer.from(
@@ -2798,11 +2811,20 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
     })
   }
 
-  // Optional Drive cleanup — trash just the video file. The notes
-  // folder lives on the GROUP for new-style projects (it's shared
-  // across every round in the project), so we must NOT trash it
-  // here — that would orphan attachments in sibling rounds.
+  // Optional Drive cleanup — trash the round's video file PLUS
+  // every note attachment (screenshot / voice memo) tagged with
+  // this round's id via appProperties at upload time. The shared
+  // notes folder itself stays (sibling rounds still need it), we
+  // just delete this round's contents out of it.
+  //
+  // Files written before the appProperties tagging shipped won't
+  // be matched by the query — they stay orphaned. There's no safe
+  // way to identify them after the fact (they don't carry a
+  // roundId anywhere queryable), so legacy attachments survive a
+  // per-round delete. Whole-project delete still nukes them via
+  // the notes-folder trash in delete-group.
   let driveDeleted = false
+  let mediaTrashedCount = 0
   if (deleteDriveFile) {
     try {
       const integrationSnap = await integrationDocRef(verified.uid).get()
@@ -2810,16 +2832,16 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
         const integration = integrationSnap.data() as IntegrationDoc
         const refreshToken = decryptToken(integration.refreshTokenEnc)
         const tokenResp = await refreshAccessToken(refreshToken)
+        const trashHeaders = {
+          Authorization: `Bearer ${tokenResp.accessToken}`,
+          'Content-Type': 'application/json',
+        }
+        const trashBody = JSON.stringify({ trashed: true })
+
+        // 1. Trash the round's video file.
         const trashResp = await fetch(
           `https://www.googleapis.com/drive/v3/files/${round.driveFileId}`,
-          {
-            method: 'PATCH',
-            headers: {
-              Authorization: `Bearer ${tokenResp.accessToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ trashed: true }),
-          },
+          { method: 'PATCH', headers: trashHeaders, body: trashBody },
         )
         if (trashResp.ok) driveDeleted = true
         else
@@ -2827,6 +2849,51 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
             '[revisions/delete-round] Drive trash failed:',
             trashResp.status,
           )
+
+        // 2. Find every note attachment tagged with this round id
+        //    and trash them in parallel. The query uses Drive's
+        //    appProperties operator; we ask for non-trashed only
+        //    so retries on a partially-deleted round don't blow
+        //    up on already-trashed siblings. pageSize=1000 covers
+        //    all realistic round sizes (most rounds have <50
+        //    notes, each with ≤2 attachments).
+        try {
+          const listUrl = new URL('https://www.googleapis.com/drive/v3/files')
+          listUrl.searchParams.set(
+            'q',
+            `appProperties has { key='dmpRoundId' and value='${roundId}' } and trashed = false`,
+          )
+          listUrl.searchParams.set('fields', 'files(id)')
+          listUrl.searchParams.set('pageSize', '1000')
+          const listResp = await fetch(listUrl.toString(), {
+            headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
+          })
+          if (listResp.ok) {
+            const listJson = (await listResp.json()) as {
+              files?: Array<{ id: string }>
+            }
+            const ids = (listJson.files || []).map((f) => f.id).filter(Boolean)
+            const results = await Promise.all(
+              ids.map((id) =>
+                fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
+                  method: 'PATCH',
+                  headers: trashHeaders,
+                  body: trashBody,
+                })
+                  .then((r) => r.ok)
+                  .catch(() => false),
+              ),
+            )
+            mediaTrashedCount = results.filter(Boolean).length
+          } else {
+            console.warn(
+              '[revisions/delete-round] media list failed:',
+              listResp.status,
+            )
+          }
+        } catch (err) {
+          console.warn('[revisions/delete-round] media cleanup failed:', err)
+        }
       }
     } catch (err) {
       console.warn('[revisions/delete-round] Drive cleanup failed:', err)
@@ -2850,7 +2917,12 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
     return r.status === 'active' && d.id !== roundId
   }).length
 
-  return res.status(200).json({ ok: true, driveDeleted, lastRound: remaining === 0 })
+  return res.status(200).json({
+    ok: true,
+    driveDeleted,
+    mediaTrashedCount,
+    lastRound: remaining === 0,
+  })
 }
 
 /* ──────────────────────────────────────────────────────────────
