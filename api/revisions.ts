@@ -854,6 +854,107 @@ async function resolveByShareToken(
   return null
 }
 
+/** Single resolver for every public note-side action.
+ *
+ *  Given a shareToken (and, for new-style groups, a roundId hint),
+ *  returns the ROUND we should operate on. Handles both shapes
+ *  transparently:
+ *
+ *    Legacy: shareToken lives directly on the round doc; the round
+ *            IS the project. roundIdHint is ignored.
+ *    Group:  shareToken lives on a revisionGroups doc. The caller
+ *            must also pass roundId so we know which sibling round
+ *            inside the project they meant. We cross-check that the
+ *            round belongs to the group (rejects a token-A round-of-
+ *            group-B attack).
+ *
+ *  Validates password (using the matching entity's passwordHash)
+ *  and active-status before returning. Caller doesn't need to
+ *  re-check either — they get a ready-to-use round doc.
+ *
+ *  projectIdForPasswordToken is what the caller should pass when
+ *  it later calls verifyPasswordToken: the GROUP's id for new-style,
+ *  the ROUND's id for legacy. verify-password mints tokens against
+ *  the same id, so the symmetry stays consistent. */
+async function resolvePublicRound(
+  shareToken: string,
+  roundIdHint: string | undefined | null,
+  passwordToken: string | undefined | null,
+): Promise<
+  | {
+      ok: true
+      roundRef: FirebaseFirestore.DocumentReference
+      roundData: Record<string, unknown>
+      /** Non-null when the round belongs to a new-style group. */
+      group: RevisionGroupDoc | null
+      /** The id the matching passwordToken (if any) was minted for. */
+      projectIdForPasswordToken: string
+    }
+  | { ok: false; status: number; error: string }
+> {
+  const resolved = await resolveByShareToken(shareToken)
+  if (!resolved) return { ok: false, status: 404, error: 'הקישור לא נמצא' }
+
+  if (resolved.kind === 'group') {
+    const group = resolved.group
+    if (group.status !== 'active') {
+      return { ok: false, status: 410, error: 'הפרויקט כבר לא פעיל' }
+    }
+    if (group.passwordHash) {
+      const pt = String(passwordToken || '').trim()
+      if (!pt || !verifyPasswordToken(pt, group.id)) {
+        return { ok: false, status: 403, error: 'נדרשת סיסמה' }
+      }
+    }
+    const roundId = String(roundIdHint || '').trim()
+    if (!roundId) {
+      return { ok: false, status: 400, error: 'roundId required for group' }
+    }
+    const roundRef = getDb().collection('revisionProjects').doc(roundId)
+    const roundSnap = await roundRef.get()
+    if (!roundSnap.exists) {
+      return { ok: false, status: 404, error: 'הסבב לא נמצא' }
+    }
+    const roundData = roundSnap.data() as Record<string, unknown>
+    if (roundData.groupId !== group.id) {
+      // Cross-project lookup — security violation. Token A asked
+      // to operate on a round that lives in a different project.
+      return { ok: false, status: 403, error: 'forbidden' }
+    }
+    if (roundData.status && roundData.status !== 'active') {
+      return { ok: false, status: 410, error: 'הסבב כבר לא פעיל' }
+    }
+    return {
+      ok: true,
+      roundRef,
+      roundData,
+      group,
+      projectIdForPasswordToken: group.id,
+    }
+  }
+
+  // Legacy path — shareToken matched a round-as-project. The
+  // password (if any) was minted for the round's id.
+  const round = resolved.round
+  const roundId = String(round.id || '')
+  if (round.status && round.status !== 'active') {
+    return { ok: false, status: 410, error: 'הסבב כבר לא פעיל' }
+  }
+  if (round.passwordHash) {
+    const pt = String(passwordToken || '').trim()
+    if (!pt || !verifyPasswordToken(pt, roundId)) {
+      return { ok: false, status: 403, error: 'נדרשת סיסמה' }
+    }
+  }
+  return {
+    ok: true,
+    roundRef: resolved.ref,
+    roundData: round,
+    group: null,
+    projectIdForPasswordToken: roundId,
+  }
+}
+
 /** Hash a password with PBKDF2-SHA256. Returns null hash/salt for
  *  an empty password (= no password protection). Same primitive
  *  the rest of revisions.ts uses; centralised here so the new
@@ -1357,20 +1458,104 @@ const WEBSITE_BASE = 'https://dm-plus.vercel.app'
  *  it in cookie.
  * ────────────────────────────────────────────────────────────── */
 async function handleGetProject(req: VercelRequest, res: VercelResponse) {
-  const body = (req.body || {}) as { shareToken?: string; passwordToken?: string }
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+    roundId?: string
+  }
   const shareToken = String(body.shareToken || '').trim()
   if (!shareToken) {
     return res.status(400).json({ ok: false, error: 'shareToken required' })
   }
-  const snap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (snap.empty) {
-    return res.status(404).json({ ok: false, error: 'הקישור לא נמצא' })
+  const passwordToken = String(body.passwordToken || '').trim() || null
+  const roundIdHint = String(body.roundId || '').trim() || null
+
+  const resolved = await resolveByShareToken(shareToken)
+  if (!resolved) return res.status(404).json({ ok: false, error: 'הקישור לא נמצא' })
+
+  // ── New-style group ────────────────────────────────────────
+  if (resolved.kind === 'group') {
+    const group = resolved.group
+    if (group.status !== 'active') {
+      return res.status(410).json({ ok: false, error: 'הפרויקט כבר לא פעיל' })
+    }
+    // Password gate at the GROUP level (project-wide password).
+    if (group.passwordHash) {
+      if (!passwordToken || !verifyPasswordToken(passwordToken, group.id)) {
+        return res.status(200).json({
+          ok: true,
+          needsPassword: true,
+          title: group.title,
+          kind: 'group',
+        })
+      }
+    }
+    // Fetch all rounds in this group (so the client can render the
+    // picker without a second roundtrip).
+    const roundsSnap = await getDb()
+      .collection('revisionProjects')
+      .where('groupId', '==', group.id)
+      .get()
+    const rounds = roundsSnap.docs
+      .map((d) => d.data() as Record<string, unknown>)
+      .filter((r) => r.status === 'active')
+      .map((r) => ({
+        id: String(r.id || ''),
+        roundNumber: Number(r.roundNumber) || 1,
+        locked: r.locked === true,
+        notesCount: Number(r.notesCount) || 0,
+        videoFileName: String(r.videoFileName || ''),
+        createdAt: Number(r.createdAt) || 0,
+      }))
+      .sort((a, b) => a.roundNumber - b.roundNumber)
+
+    // Pick the round to drill into: explicit roundId from the
+    // client (after they tapped the picker), OR if there's only
+    // one round just auto-select it (skip the picker entirely for
+    // the most common case).
+    let selectedRound: (typeof rounds)[number] | null = null
+    let selectedRoundData: Record<string, unknown> | null = null
+    if (roundIdHint) {
+      const match = rounds.find((r) => r.id === roundIdHint)
+      if (match) {
+        selectedRound = match
+        const matchDoc = roundsSnap.docs.find((d) => d.id === roundIdHint)
+        if (matchDoc) selectedRoundData = matchDoc.data() as Record<string, unknown>
+      }
+    } else if (rounds.length === 1) {
+      selectedRound = rounds[0]
+      selectedRoundData = roundsSnap.docs[0].data() as Record<string, unknown>
+    }
+
+    return res.status(200).json({
+      ok: true,
+      needsPassword: false,
+      kind: 'group',
+      group: {
+        id: group.id,
+        title: group.title,
+        rounds,
+      },
+      // `project` is the SELECTED round (when known). Same shape
+      // as the legacy single-round response so the client can
+      // continue rendering the workspace with one code path.
+      project: selectedRound && selectedRoundData
+        ? {
+            id: selectedRound.id,
+            title: group.title,
+            roundNumber: selectedRound.roundNumber,
+            embedUrl: `https://drive.google.com/file/d/${selectedRoundData.driveFileId}/preview`,
+            videoSizeBytes: Number(selectedRoundData.videoSizeBytes) || 0,
+            videoMime: String(selectedRoundData.videoMime || ''),
+            createdAt: selectedRound.createdAt,
+            locked: selectedRound.locked,
+          }
+        : null,
+    })
   }
-  const project = snap.docs[0].data() as {
+
+  // ── Legacy single-round project ────────────────────────────
+  const project = resolved.round as {
     id: string
     title: string
     driveFileId: string
@@ -1386,37 +1571,31 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
   if (project.status !== 'active') {
     return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
   }
-
   const roundNumber =
     typeof project.roundNumber === 'number' && project.roundNumber > 0
       ? project.roundNumber
       : 1
   const locked = project.locked === true
-
-  const hasPassword = Boolean(project.passwordHash)
-  if (hasPassword) {
-    const passwordToken = String(body.passwordToken || '').trim()
-    const validToken = passwordToken && verifyPasswordToken(passwordToken, project.id)
-    if (!validToken) {
+  if (project.passwordHash) {
+    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
       return res.status(200).json({
         ok: true,
         needsPassword: true,
         title: project.title,
         roundNumber,
         locked,
+        kind: 'single',
       })
     }
   }
-
   return res.status(200).json({
     ok: true,
     needsPassword: false,
+    kind: 'single',
     project: {
       id: project.id,
       title: project.title,
       roundNumber,
-      // The embed URL is the only Drive identifier we expose to the
-      // client. The raw fileId is omitted intentionally.
       embedUrl: `https://drive.google.com/file/d/${project.driveFileId}/preview`,
       videoSizeBytes: project.videoSizeBytes,
       videoMime: project.videoMime,
@@ -1445,28 +1624,37 @@ async function handleVerifyPassword(req: VercelRequest, res: VercelResponse) {
   if (!shareToken || !password) {
     return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
   }
-  const snap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (snap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
-  const project = snap.docs[0].data() as {
-    id: string
-    passwordHash: string | null
-    passwordSalt: string | null
-  }
-  if (!project.passwordHash || !project.passwordSalt) {
+  const resolved = await resolveByShareToken(shareToken)
+  if (!resolved) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+
+  // Pull the password hash/salt + the id we'll mint the token
+  // against. For new-style groups the password is project-wide
+  // (lives on the group); for legacy rounds it's per-round.
+  const { passwordHash, passwordSalt, projectId } =
+    resolved.kind === 'group'
+      ? {
+          passwordHash: resolved.group.passwordHash,
+          passwordSalt: resolved.group.passwordSalt,
+          projectId: resolved.group.id,
+        }
+      : {
+          passwordHash: (resolved.round.passwordHash as string | null) ?? null,
+          passwordSalt: (resolved.round.passwordSalt as string | null) ?? null,
+          projectId: String(resolved.round.id || ''),
+        }
+  if (!passwordHash || !passwordSalt) {
     return res.status(400).json({ ok: false, error: 'לפרויקט הזה אין סיסמה' })
   }
   const computed = crypto
-    .pbkdf2Sync(password, project.passwordSalt, 100_000, 32, 'sha256')
+    .pbkdf2Sync(password, passwordSalt, 100_000, 32, 'sha256')
     .toString('hex')
-  if (computed !== project.passwordHash) {
+  if (computed !== passwordHash) {
     return res.status(401).json({ ok: false, error: 'סיסמה שגויה' })
   }
-  const passwordToken = mintPasswordToken(project.id)
-  return res.status(200).json({ ok: true, passwordToken })
+  return res.status(200).json({
+    ok: true,
+    passwordToken: mintPasswordToken(projectId),
+  })
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -1487,6 +1675,11 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as {
     shareToken?: string
     passwordToken?: string
+    /** Required when shareToken matches a new-style project group
+     *  (since the group has multiple rounds). Ignored for legacy
+     *  single-round projects — the share token already identifies
+     *  the round uniquely there. */
+    roundId?: string
     viewerEmail?: string
     viewerName?: string
     timeSeconds?: number
@@ -1540,36 +1733,23 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
       .json({ ok: false, error: 'חובה לכתוב תיאור, לצרף תמונה או להקליט' })
   }
 
-  const snap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (snap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
-  const projectDoc = snap.docs[0]
-  const project = projectDoc.data() as {
-    id: string
-    status: string
-    passwordHash: string | null
-    locked?: boolean
+  const resolved = await resolvePublicRound(
+    shareToken,
+    body.roundId,
+    body.passwordToken,
+  )
+  if (!resolved.ok) {
+    return res.status(resolved.status).json({ ok: false, error: resolved.error })
   }
-  if (project.status !== 'active') {
-    return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
-  }
-  // Locked projects: existing notes stay readable but no new ones
+  const { roundRef, roundData } = resolved
+  // Locked rounds: existing notes stay readable but no new ones
   // accepted. 423 Locked is the right HTTP semantic; the client
   // surfaces the friendly Hebrew message.
-  if (project.locked === true) {
+  if (roundData.locked === true) {
     return res.status(423).json({
       ok: false,
       error: 'הסבב נסגר לתיקונים. תוכלו לראות את הסרטון ואת התיקונים הקודמים אבל אי אפשר להוסיף חדשים.',
     })
-  }
-  if (project.passwordHash) {
-    const passwordToken = String(body.passwordToken || '').trim()
-    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
-      return res.status(403).json({ ok: false, error: 'נדרשת סיסמה' })
-    }
   }
 
   // Screenshot size sanity check — Firestore's 1 MB doc cap means
@@ -1584,7 +1764,7 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
     ? body.annotations.slice(0, 50)
     : []
 
-  const noteRef = projectDoc.ref.collection('notes').doc()
+  const noteRef = roundRef.collection('notes').doc()
   const now = Date.now()
   await noteRef.set({
     id: noteRef.id,
@@ -1604,9 +1784,9 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
   })
   // Counter for the editor's dashboard. Best-effort — don't fail
   // the note add if the counter increment glitches.
-  void projectDoc.ref
+  void roundRef
     .update({
-      notesCount: (((projectDoc.data() as { notesCount?: number }).notesCount || 0) + 1),
+      notesCount: ((roundData.notesCount as number | undefined) || 0) + 1,
       updatedAt: now,
     })
     .catch(() => undefined)
@@ -1703,6 +1883,7 @@ async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as {
     shareToken?: string
     passwordToken?: string
+    roundId?: string
     kind?: 'image' | 'audio'
     mimeType?: string
     dataBase64?: string
@@ -1734,40 +1915,36 @@ async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
     })
   }
 
-  // Project + auth check
-  const snap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (snap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
-  const projectDoc = snap.docs[0]
-  const project = projectDoc.data() as {
-    id: string
-    ownerUid: string
-    driveFolderId: string
-    status: string
-    passwordHash: string | null
-    locked?: boolean
+  // Resolve project + auth (group or legacy round).
+  const resolved = await resolvePublicRound(
+    shareToken,
+    body.roundId,
+    body.passwordToken,
+  )
+  if (!resolved.ok) {
+    return res.status(resolved.status).json({ ok: false, error: resolved.error })
   }
-  if (project.status !== 'active') {
-    return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
-  }
-  if (project.locked === true) {
+  const { roundRef, roundData, group } = resolved
+  if (roundData.locked === true) {
     return res.status(423).json({
       ok: false,
       error: 'הסבב סגור לתיקונים. אי אפשר להעלות מדיה חדשה.',
     })
   }
-  if (project.passwordHash) {
-    const passwordToken = String(body.passwordToken || '').trim()
-    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
-      return res.status(403).json({ ok: false, error: 'נדרשת סיסמה' })
-    }
-  }
+
+  // Owner uid + drive folder come from either the group (preferred
+  // when available) or the round (legacy). For new-style groups,
+  // notesFolderId is cached on the GROUP doc since it's shared
+  // across all rounds in the project.
+  const ownerUid = String(
+    group?.ownerUid || roundData.ownerUid || '',
+  )
+  const driveFolderId = String(
+    group?.driveFolderId || roundData.driveFolderId || '',
+  )
 
   // Drive access — refresh token belongs to the project owner.
-  const integrationSnap = await integrationDocRef(project.ownerUid).get()
+  const integrationSnap = await integrationDocRef(ownerUid).get()
   if (!integrationSnap.exists) {
     return res.status(500).json({ ok: false, error: 'Drive לא מחובר' })
   }
@@ -1782,20 +1959,26 @@ async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
   }
 
   // Resolve (or lazily create) the "קבצי תיקונים" subfolder where
-  // all reviewer-uploaded attachments live. Cached on the project
-  // doc as `notesFolderId` after the first call so subsequent
-  // uploads skip the round-trip.
-  let notesFolderId: string | undefined = (
-    projectDoc.data() as { notesFolderId?: string }
-  ).notesFolderId
-  if (!notesFolderId && project.driveFolderId) {
+  // all reviewer-uploaded attachments live. Cached on the group
+  // doc (new) or round doc (legacy) after the first call so
+  // subsequent uploads skip the round-trip.
+  const cachedNotesFolderId: string | null = group
+    ? group.notesFolderId
+    : (roundData.notesFolderId as string | undefined) || null
+  let notesFolderId: string | undefined = cachedNotesFolderId || undefined
+  if (!notesFolderId && driveFolderId) {
     try {
       notesFolderId = await ensureNotesSubfolder(
         accessToken,
-        project.driveFolderId,
+        driveFolderId,
       )
-      // Persist for next time — single write, fire-and-forget.
-      void projectDoc.ref
+      // Persist for next time — fire-and-forget. Cache on the
+      // GROUP for new-style projects (shared by all rounds) or
+      // on the round itself for legacy.
+      const cacheRef = group
+        ? getDb().collection('revisionGroups').doc(group.id)
+        : roundRef
+      void cacheRef
         .update({ notesFolderId, updatedAt: Date.now() })
         .catch(() => undefined)
     } catch (err) {
@@ -1807,7 +1990,7 @@ async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
       // it just lands one level shallower than the user wanted.
     }
   }
-  const targetFolderId = notesFolderId || project.driveFolderId
+  const targetFolderId = notesFolderId || driveFolderId
 
   // Multipart upload to Drive — metadata + bytes in one request.
   const ext =
@@ -1898,6 +2081,10 @@ async function handleNoteMedia(req: VercelRequest, res: VercelResponse) {
   const noteId = String(req.query.note || '').trim()
   const kind = String(req.query.kind || '').trim() as 'image' | 'audio'
   const passwordToken = String(req.query.t || '').trim()
+  // Note: roundId in the URL is `r` (kept short because this is a
+  // GET URL that ends up in <img src> + <audio src> and stays
+  // visible in dev-tools / referer headers).
+  const roundIdHint = String(req.query.r || '').trim() || null
   if (!shareToken || !noteId) {
     return res.status(400).end('token + note required')
   }
@@ -1905,27 +2092,18 @@ async function handleNoteMedia(req: VercelRequest, res: VercelResponse) {
     return res.status(400).end('kind must be image or audio')
   }
 
-  const snap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (snap.empty) return res.status(404).end('not found')
-  const projectDoc = snap.docs[0]
-  const project = projectDoc.data() as {
-    id: string
-    ownerUid: string
-    status: string
-    passwordHash: string | null
+  const resolved = await resolvePublicRound(
+    shareToken,
+    roundIdHint,
+    passwordToken,
+  )
+  if (!resolved.ok) {
+    return res.status(resolved.status).end(resolved.error)
   }
-  if (project.status !== 'active') return res.status(410).end('archived')
-  if (project.passwordHash) {
-    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
-      return res.status(403).end('password required')
-    }
-  }
+  const { roundRef, roundData, group } = resolved
+  const ownerUid = String(group?.ownerUid || roundData.ownerUid || '')
 
-  const noteSnap = await projectDoc.ref.collection('notes').doc(noteId).get()
+  const noteSnap = await roundRef.collection('notes').doc(noteId).get()
   if (!noteSnap.exists) return res.status(404).end('note not found')
   const note = noteSnap.data() as {
     screenshotDriveFileId?: string | null
@@ -1936,7 +2114,7 @@ async function handleNoteMedia(req: VercelRequest, res: VercelResponse) {
   if (!driveFileId) return res.status(404).end('media not attached')
 
   // Mint a Drive access token via the owner's refresh token.
-  const integrationSnap = await integrationDocRef(project.ownerUid).get()
+  const integrationSnap = await integrationDocRef(ownerUid).get()
   if (!integrationSnap.exists) return res.status(500).end('drive not connected')
   const integration = integrationSnap.data() as IntegrationDoc
   const refreshToken = decryptToken(integration.refreshTokenEnc)
@@ -2058,31 +2236,24 @@ async function handleNoteMediaOwner(
  *  (skipping this endpoint).
  * ────────────────────────────────────────────────────────────── */
 async function handleListNotes(req: VercelRequest, res: VercelResponse) {
-  const body = (req.body || {}) as { shareToken?: string; passwordToken?: string }
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+    roundId?: string
+  }
   const shareToken = String(body.shareToken || '').trim()
   if (!shareToken) return res.status(400).json({ ok: false, error: 'shareToken' })
 
-  const snap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (snap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
-  const projectDoc = snap.docs[0]
-  const project = projectDoc.data() as {
-    id: string
-    passwordHash: string | null
+  const resolved = await resolvePublicRound(
+    shareToken,
+    body.roundId,
+    body.passwordToken,
+  )
+  if (!resolved.ok) {
+    return res.status(resolved.status).json({ ok: false, error: resolved.error })
   }
-  if (project.passwordHash) {
-    const passwordToken = String(body.passwordToken || '').trim()
-    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
-      return res.status(403).json({ ok: false, error: 'נדרשת סיסמה' })
-    }
-  }
-
-  const notesSnap = await projectDoc.ref
+  const notesSnap = await resolved.roundRef
     .collection('notes')
-    .orderBy('timeSeconds', 'asc')
     .limit(500)
     .get()
   const notes = notesSnap.docs.map((d) => d.data())
@@ -2122,40 +2293,26 @@ async function handleListNotes(req: VercelRequest, res: VercelResponse) {
 async function handleStreamVideo(req: VercelRequest, res: VercelResponse) {
   const shareToken = String(req.query.token || '').trim()
   const passwordToken = String(req.query.t || '').trim()
+  const roundIdHint = String(req.query.r || '').trim() || null
   if (!shareToken) {
     res.status(400).send('shareToken required')
     return
   }
-  const snap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (snap.empty) {
-    res.status(404).send('not found')
+  const resolved = await resolvePublicRound(
+    shareToken,
+    roundIdHint,
+    passwordToken,
+  )
+  if (!resolved.ok) {
+    res.status(resolved.status).send(resolved.error)
     return
   }
-  const project = snap.docs[0].data() as {
-    id: string
-    ownerUid: string
-    driveFileId: string
-    status: string
-    passwordHash: string | null
-    videoMime: string
-  }
-  if (project.status !== 'active') {
-    res.status(410).send('archived')
-    return
-  }
-  if (project.passwordHash) {
-    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
-      res.status(403).send('password required')
-      return
-    }
-  }
+  const { roundData, group } = resolved
+  const ownerUid = String(group?.ownerUid || roundData.ownerUid || '')
+  const driveFileId = String(roundData.driveFileId || '')
 
   // Owner's Drive token.
-  const integrationSnap = await integrationDocRef(project.ownerUid).get()
+  const integrationSnap = await integrationDocRef(ownerUid).get()
   if (!integrationSnap.exists) {
     res.status(500).send('drive not connected')
     return
@@ -2173,7 +2330,7 @@ async function handleStreamVideo(req: VercelRequest, res: VercelResponse) {
 
   // Forward Range header so seek/scrub works.
   const range = req.headers.range
-  const driveUrl = `https://www.googleapis.com/drive/v3/files/${project.driveFileId}?alt=media`
+  const driveUrl = `https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`
   const driveResp = await fetch(driveUrl, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -2239,51 +2396,46 @@ async function handleStreamVideo(req: VercelRequest, res: VercelResponse) {
  * configured (zero-bandwidth path), otherwise falls back to the
  * Vercel proxy. */
 async function handleGetStreamToken(req: VercelRequest, res: VercelResponse) {
-  const body = (req.body || {}) as { shareToken?: string; passwordToken?: string }
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+    roundId?: string
+  }
   const shareToken = String(body.shareToken || '').trim()
   if (!shareToken) {
     return res.status(400).json({ ok: false, error: 'shareToken required' })
   }
-  const snap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (snap.empty) {
-    return res.status(404).json({ ok: false, error: 'not found' })
+  const resolved = await resolvePublicRound(
+    shareToken,
+    body.roundId,
+    body.passwordToken,
+  )
+  if (!resolved.ok) {
+    return res.status(resolved.status).json({ ok: false, error: resolved.error })
   }
-  const project = snap.docs[0].data() as {
-    id: string
-    status: string
-    passwordHash: string | null
-    videoMime: string
-    title: string
-  }
-  if (project.status !== 'active') {
-    return res.status(410).json({ ok: false, error: 'archived' })
-  }
-  if (project.passwordHash) {
-    const passwordToken = String(body.passwordToken || '').trim()
-    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
-      return res.status(403).json({ ok: false, error: 'password required' })
-    }
-  }
-  // Prefer the Cloudflare Worker base URL when set — Cloudflare has
-  // unlimited free egress, so all video bandwidth becomes free.
-  // Fall back to the Vercel proxy (metered against the 100 GB free
-  // tier) when the env var isn't configured yet.
+  const { roundData, group } = resolved
+  const title = String(group?.title || roundData.title || '')
+  const videoMime = String(roundData.videoMime || '')
+
+  // Stream URL includes the roundId hint (`&r=`) for new-style
+  // groups so the Worker → auth-stream → Drive flow can identify
+  // which round's file to fetch. Legacy single-round projects don't
+  // need it (shareToken already identifies the round).
   const cfBase = (process.env.CLOUDFLARE_STREAM_BASE || '').trim()
   const passwordSuffix = body.passwordToken
     ? `&t=${encodeURIComponent(String(body.passwordToken))}`
     : ''
+  const roundSuffix = group
+    ? `&r=${encodeURIComponent(String(roundData.id || ''))}`
+    : ''
   const url = cfBase
-    ? `${cfBase.replace(/\/$/, '')}/?token=${encodeURIComponent(shareToken)}${passwordSuffix}`
-    : `/api/revisions?action=stream-video&token=${encodeURIComponent(shareToken)}${passwordSuffix}`
+    ? `${cfBase.replace(/\/$/, '')}/?token=${encodeURIComponent(shareToken)}${passwordSuffix}${roundSuffix}`
+    : `/api/revisions?action=stream-video&token=${encodeURIComponent(shareToken)}${passwordSuffix}${roundSuffix}`
   return res.status(200).json({
     ok: true,
     streamUrl: url,
-    videoMime: project.videoMime,
-    title: project.title,
+    videoMime,
+    title,
   })
 }
 
@@ -2317,36 +2469,28 @@ async function handleAuthStream(req: VercelRequest, res: VercelResponse) {
     return res.status(403).json({ ok: false, error: 'invalid worker secret' })
   }
 
-  const body = (req.body || {}) as { shareToken?: string; passwordToken?: string }
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+    roundId?: string
+  }
   const shareToken = String(body.shareToken || '').trim()
   if (!shareToken) {
     return res.status(400).json({ ok: false, error: 'shareToken required' })
   }
-  const snap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (snap.empty) {
-    return res.status(404).json({ ok: false, error: 'not found' })
+  const resolved = await resolvePublicRound(
+    shareToken,
+    body.roundId,
+    body.passwordToken,
+  )
+  if (!resolved.ok) {
+    return res.status(resolved.status).json({ ok: false, error: resolved.error })
   }
-  const project = snap.docs[0].data() as {
-    id: string
-    ownerUid: string
-    driveFileId: string
-    status: string
-    passwordHash: string | null
-  }
-  if (project.status !== 'active') {
-    return res.status(410).json({ ok: false, error: 'archived' })
-  }
-  if (project.passwordHash) {
-    const passwordToken = String(body.passwordToken || '').trim()
-    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
-      return res.status(403).json({ ok: false, error: 'password required' })
-    }
-  }
-  const integrationSnap = await integrationDocRef(project.ownerUid).get()
+  const { roundData, group } = resolved
+  const ownerUid = String(group?.ownerUid || roundData.ownerUid || '')
+  const driveFileId = String(roundData.driveFileId || '')
+
+  const integrationSnap = await integrationDocRef(ownerUid).get()
   if (!integrationSnap.exists) {
     return res.status(500).json({ ok: false, error: 'drive not connected' })
   }
@@ -2358,7 +2502,7 @@ async function handleAuthStream(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       ok: true,
       accessToken: r.accessToken,
-      driveFileId: project.driveFileId,
+      driveFileId,
     })
   } catch {
     return res.status(401).json({ ok: false, error: 'drive auth expired' })
@@ -2589,6 +2733,222 @@ async function handleDeleteProject(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: delete-round  (auth required — owner only)
+ *
+ *  POST /api/revisions?action=delete-round
+ *  Body: { idToken, roundId, deleteDriveFile? }
+ *  Returns: { ok, driveDeleted, lastRound }
+ *
+ *  Archives a single round inside a project group. Used when the
+ *  editor wants to remove one cut from a multi-round project
+ *  without nuking the whole project. The notes folder is shared
+ *  across siblings, so we never trash it here — that only happens
+ *  in delete-group. If this was the last active round in the
+ *  group, we return lastRound=true so the desktop UI can prompt
+ *  "the project is now empty; delete it too?" — we intentionally
+ *  do NOT auto-delete the group, to keep delete semantics
+ *  predictable (one action, one Firestore mutation surface).
+ *
+ *  Refuses on legacy single-round projects (no groupId). The
+ *  caller should use delete-project for those.
+ * ────────────────────────────────────────────────────────────── */
+async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    roundId?: string
+    deleteDriveFile?: boolean
+  }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const roundId = String(body.roundId || '').trim()
+  if (!roundId) return res.status(400).json({ ok: false, error: 'roundId' })
+  const deleteDriveFile = body.deleteDriveFile === true
+
+  const roundRef = getDb().collection('revisionProjects').doc(roundId)
+  const snap = await roundRef.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'הסבב לא נמצא' })
+  const round = snap.data() as {
+    ownerUid: string
+    driveFileId: string
+    groupId?: string
+  }
+  if (round.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  if (!round.groupId) {
+    // Legacy project — refuse and point the caller at delete-project
+    // so it gets the original flow (with notes-folder cleanup etc.).
+    return res.status(400).json({
+      ok: false,
+      error: 'סבב ישן — השתמש ב-delete-project',
+    })
+  }
+
+  // Optional Drive cleanup — trash just the video file. The notes
+  // folder lives on the GROUP for new-style projects (it's shared
+  // across every round in the project), so we must NOT trash it
+  // here — that would orphan attachments in sibling rounds.
+  let driveDeleted = false
+  if (deleteDriveFile) {
+    try {
+      const integrationSnap = await integrationDocRef(verified.uid).get()
+      if (integrationSnap.exists) {
+        const integration = integrationSnap.data() as IntegrationDoc
+        const refreshToken = decryptToken(integration.refreshTokenEnc)
+        const tokenResp = await refreshAccessToken(refreshToken)
+        const trashResp = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${round.driveFileId}`,
+          {
+            method: 'PATCH',
+            headers: {
+              Authorization: `Bearer ${tokenResp.accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ trashed: true }),
+          },
+        )
+        if (trashResp.ok) driveDeleted = true
+        else
+          console.warn(
+            '[revisions/delete-round] Drive trash failed:',
+            trashResp.status,
+          )
+      }
+    } catch (err) {
+      console.warn('[revisions/delete-round] Drive cleanup failed:', err)
+    }
+  }
+
+  await roundRef.update({
+    status: 'archived',
+    driveDeleted,
+    updatedAt: Date.now(),
+  })
+
+  // Was this the last active sibling? The UI uses this to decide
+  // whether to surface the "delete the empty project too?" prompt.
+  const siblingsSnap = await getDb()
+    .collection('revisionProjects')
+    .where('groupId', '==', round.groupId)
+    .get()
+  const remaining = siblingsSnap.docs.filter((d) => {
+    const r = d.data() as { status?: string }
+    return r.status === 'active' && d.id !== roundId
+  }).length
+
+  return res.status(200).json({ ok: true, driveDeleted, lastRound: remaining === 0 })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: delete-group  (auth required — owner only)
+ *
+ *  POST /api/revisions?action=delete-group
+ *  Body: { idToken, groupId, deleteDriveFiles? }
+ *  Returns: { ok, driveDeleted, roundsArchived }
+ *
+ *  Archives an entire project (group + all its rounds). Drive
+ *  cleanup, when enabled, trashes every round's video file plus
+ *  the shared notes folder on the group. All Firestore writes
+ *  go through a single batch so the UI never observes a partial
+ *  state (group archived, rounds still active or vice versa).
+ * ────────────────────────────────────────────────────────────── */
+async function handleDeleteGroup(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    groupId?: string
+    deleteDriveFiles?: boolean
+  }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const groupId = String(body.groupId || '').trim()
+  if (!groupId) return res.status(400).json({ ok: false, error: 'groupId' })
+  const deleteDriveFiles = body.deleteDriveFiles === true
+
+  const db = getDb()
+  const groupRef = db.collection('revisionGroups').doc(groupId)
+  const groupSnap = await groupRef.get()
+  if (!groupSnap.exists) return res.status(404).json({ ok: false, error: 'הפרויקט לא נמצא' })
+  const group = groupSnap.data() as RevisionGroupDoc
+  if (group.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+
+  const roundsSnap = await db
+    .collection('revisionProjects')
+    .where('groupId', '==', groupId)
+    .get()
+  const activeRoundDocs = roundsSnap.docs.filter((d) => {
+    const r = d.data() as { status?: string }
+    return r.status === 'active'
+  })
+
+  // Optional Drive cleanup — trash every round's video file plus
+  // the project's shared notes folder. Each Drive call is best-effort
+  // and runs in parallel; partial failures don't block the Firestore
+  // archive (the public review page checks status='active', so an
+  // archived doc is unreachable regardless of Drive state).
+  let driveDeleted = false
+  if (deleteDriveFiles) {
+    try {
+      const integrationSnap = await integrationDocRef(verified.uid).get()
+      if (integrationSnap.exists) {
+        const integration = integrationSnap.data() as IntegrationDoc
+        const refreshToken = decryptToken(integration.refreshTokenEnc)
+        const tokenResp = await refreshAccessToken(refreshToken)
+        const trashOpts = {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${tokenResp.accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ trashed: true }),
+        }
+        const trashUrl = (id: string) =>
+          `https://www.googleapis.com/drive/v3/files/${id}`
+        const trashTargets: string[] = []
+        for (const d of activeRoundDocs) {
+          const r = d.data() as { driveFileId?: string }
+          if (r.driveFileId) trashTargets.push(r.driveFileId)
+        }
+        if (group.notesFolderId) trashTargets.push(group.notesFolderId)
+        const results = await Promise.all(
+          trashTargets.map((id) =>
+            fetch(trashUrl(id), trashOpts).catch(() => undefined),
+          ),
+        )
+        // Mark driveDeleted=true if at least one trash call succeeded —
+        // this is the signal the desktop UI uses to show "הקבצים נמחקו
+        // מהדרייב" vs "השיתוף בוטל". We don't track per-file success.
+        driveDeleted = results.some((r) => r && r.ok)
+      }
+    } catch (err) {
+      console.warn('[revisions/delete-group] Drive cleanup failed:', err)
+    }
+  }
+
+  const now = Date.now()
+  const batch = db.batch()
+  for (const d of activeRoundDocs) {
+    batch.update(d.ref, {
+      status: 'archived',
+      driveDeleted,
+      updatedAt: now,
+    })
+  }
+  batch.update(groupRef, {
+    status: 'archived',
+    updatedAt: now,
+  })
+  await batch.commit()
+
+  return res.status(200).json({
+    ok: true,
+    driveDeleted,
+    roundsArchived: activeRoundDocs.length,
+  })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Action: delete-note  (PUBLIC — soft auth by viewer email match)
  *
  *  POST /api/revisions?action=delete-note
@@ -2610,6 +2970,7 @@ async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as {
     shareToken?: string
     passwordToken?: string
+    roundId?: string
     noteId?: string
     viewerEmail?: string
   }
@@ -2620,41 +2981,28 @@ async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
   }
 
-  const projSnap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (projSnap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
-  const projectDoc = projSnap.docs[0]
-  const project = projectDoc.data() as {
-    id: string
-    status: string
-    passwordHash: string | null
-    locked?: boolean
+  const resolved = await resolvePublicRound(
+    shareToken,
+    body.roundId,
+    body.passwordToken,
+  )
+  if (!resolved.ok) {
+    return res.status(resolved.status).json({ ok: false, error: resolved.error })
   }
-  if (project.status !== 'active') {
-    return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
-  }
-  // Locked projects are FROZEN: no add-note (handled elsewhere) AND
+  const { roundRef, roundData, group } = resolved
+  // Locked rounds are FROZEN: no add-note (handled elsewhere) AND
   // no delete-note (here). The intent is that once the editor
   // closes the round, the thread is preserved as-is for their
   // workflow. If the viewer mis-deletes a note we'd rather they
   // ask the editor to re-open the round than silently lose data.
-  if (project.locked === true) {
+  if (roundData.locked === true) {
     return res.status(423).json({
       ok: false,
       error: 'הסבב סגור — אי אפשר למחוק תיקונים בשלב זה.',
     })
   }
-  if (project.passwordHash) {
-    const passwordToken = String(body.passwordToken || '').trim()
-    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
-      return res.status(403).json({ ok: false, error: 'נדרשת סיסמה' })
-    }
-  }
 
-  const noteRef = projectDoc.ref.collection('notes').doc(noteId)
+  const noteRef = roundRef.collection('notes').doc(noteId)
   const noteSnap = await noteRef.get()
   if (!noteSnap.exists) {
     return res.status(404).json({ ok: false, error: 'התיקון לא נמצא' })
@@ -2681,8 +3029,8 @@ async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
   )
   if (driveIds.length > 0) {
     try {
-      const projectData = projectDoc.data() as { ownerUid: string }
-      const integrationSnap = await integrationDocRef(projectData.ownerUid).get()
+      const ownerUid = String(group?.ownerUid || roundData.ownerUid || '')
+      const integrationSnap = await integrationDocRef(ownerUid).get()
       if (integrationSnap.exists) {
         const integration = integrationSnap.data() as IntegrationDoc
         const refreshToken = decryptToken(integration.refreshTokenEnc)
@@ -2712,15 +3060,12 @@ async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
   }
 
   await noteRef.delete()
-  // Decrement the counter on the project doc. Best-effort, like
+  // Decrement the counter on the round doc. Best-effort, like
   // the increment on add-note — we clamp at 0 to handle the case
   // where the counter and actual note count drifted.
-  void projectDoc.ref
+  void roundRef
     .update({
-      notesCount: Math.max(
-        0,
-        ((projectDoc.data() as { notesCount?: number }).notesCount || 1) - 1,
-      ),
+      notesCount: Math.max(0, ((roundData.notesCount as number) || 1) - 1),
       updatedAt: Date.now(),
     })
     .catch(() => undefined)
@@ -2944,19 +3289,20 @@ async function handleOwnerSignin(req: VercelRequest, res: VercelResponse) {
   }
 
   // Find the project + remember its ownerUid for cross-check.
-  const snap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (snap.empty) {
-    return res.status(404).json({ ok: false, error: 'הסבב לא נמצא' })
-  }
-  const project = snap.docs[0].data() as {
-    ownerUid: string
-    ownerEmail?: string
-  }
-  if ((project.ownerEmail || '').toLowerCase() !== email) {
+  // Owner email + uid come from either a new-style group or a
+  // legacy round-as-project. resolveByShareToken handles the
+  // choice so the rest of the function stays uniform.
+  const resolved = await resolveByShareToken(shareToken)
+  if (!resolved) return res.status(404).json({ ok: false, error: 'הסבב לא נמצא' })
+  const ownerEmail =
+    resolved.kind === 'group'
+      ? (resolved.group.ownerEmail || '').toLowerCase()
+      : String((resolved.round.ownerEmail as string) || '').toLowerCase()
+  const ownerUid =
+    resolved.kind === 'group'
+      ? resolved.group.ownerUid
+      : String((resolved.round.ownerUid as string) || '')
+  if (ownerEmail !== email) {
     return res.status(403).json({
       ok: false,
       error: 'המייל אינו של בעל הסבב — לא ניתן להתחבר כעורך',
@@ -2996,7 +3342,7 @@ async function handleOwnerSignin(req: VercelRequest, res: VercelResponse) {
         : 'ההתחברות נכשלה'
       return res.status(401).json({ ok: false, error: friendly })
     }
-    if (json.localId !== project.ownerUid) {
+    if (json.localId !== ownerUid) {
       // The credentials are valid but for a DIFFERENT account than
       // the project owner. Defensive — shouldn't normally happen
       // because we filtered by email above, but a stale ownerEmail
@@ -3045,16 +3391,13 @@ async function handleCheckOwnerEmail(
   if (!shareToken || !email) {
     return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
   }
-  const snap = await getDb()
-    .collection('revisionProjects')
-    .where('shareToken', '==', shareToken)
-    .limit(1)
-    .get()
-  if (snap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
-  const project = snap.docs[0].data() as { ownerEmail?: string }
-  const isOwner =
-    (project.ownerEmail || '').toLowerCase() === email
-  return res.status(200).json({ ok: true, isOwner })
+  const resolved = await resolveByShareToken(shareToken)
+  if (!resolved) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const ownerEmail =
+    resolved.kind === 'group'
+      ? (resolved.group.ownerEmail || '').toLowerCase()
+      : String((resolved.round.ownerEmail as string) || '').toLowerCase()
+  return res.status(200).json({ ok: true, isOwner: ownerEmail === email })
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -3259,6 +3602,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleCheckVideoStatus(req, res)
       case 'delete-project':
         return await handleDeleteProject(req, res)
+      case 'delete-round':
+        return await handleDeleteRound(req, res)
+      case 'delete-group':
+        return await handleDeleteGroup(req, res)
       case 'delete-note':
         return await handleDeleteNote(req, res)
       case 'update-project':

@@ -52,14 +52,17 @@ function corsHeaders(extra) {
   }
 }
 
-async function fetchAuth(env, shareToken, passwordToken) {
+async function fetchAuth(env, shareToken, passwordToken, roundId) {
   const r = await fetch(VERCEL_AUTH_URL, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       'x-worker-secret': env.WORKER_SECRET || '',
     },
-    body: JSON.stringify({ shareToken, passwordToken }),
+    // roundId is needed for new-style project-group share tokens
+    // (one token, many rounds). Legacy single-round tokens ignore
+    // it. Both pass through with the same JSON body shape.
+    body: JSON.stringify({ shareToken, passwordToken, roundId }),
   })
   if (!r.ok) {
     const text = await r.text().catch(() => '')
@@ -76,11 +79,14 @@ async function fetchAuth(env, shareToken, passwordToken) {
   }
 }
 
-async function getAuth(env, shareToken, passwordToken) {
-  const cacheKey = `${shareToken}|${passwordToken || ''}`
+async function getAuth(env, shareToken, passwordToken, roundId) {
+  // Cache key includes roundId so a project's different rounds
+  // don't accidentally collide. Without it, the first viewed round
+  // would shadow every later one for ~50 min.
+  const cacheKey = `${shareToken}|${passwordToken || ''}|${roundId || ''}`
   const hit = authCache.get(cacheKey)
   if (hit && hit.expiresAt > Date.now()) return hit
-  const fresh = await fetchAuth(env, shareToken, passwordToken)
+  const fresh = await fetchAuth(env, shareToken, passwordToken, roundId)
   authCache.set(cacheKey, fresh)
   return fresh
 }
@@ -114,6 +120,11 @@ export default {
     const url = new URL(request.url)
     const shareToken = url.searchParams.get('token')
     const passwordToken = url.searchParams.get('t') || ''
+    // roundId — required for new-style project-group share tokens
+    // (one token, many rounds). Legacy tokens that point at a single
+    // round ignore it. Forwarded to Vercel so the auth-stream action
+    // can resolve which round's video is being requested.
+    const roundId = url.searchParams.get('r') || ''
     if (!shareToken) {
       return new Response('token required', {
         status: 400,
@@ -126,7 +137,7 @@ export default {
     // cache check and Drive call.
     let auth
     try {
-      auth = await getAuth(env, shareToken, passwordToken)
+      auth = await getAuth(env, shareToken, passwordToken, roundId)
     } catch (err) {
       return new Response(`auth failed: ${err.message || err}`, {
         status: 403,
@@ -137,9 +148,9 @@ export default {
     let driveResp = await fetchDrive(auth, request)
     if (driveResp.status === 401 || driveResp.status === 403) {
       // Cached token might be stale — invalidate and retry once.
-      authCache.delete(`${shareToken}|${passwordToken}`)
+      authCache.delete(`${shareToken}|${passwordToken || ''}|${roundId || ''}`)
       try {
-        auth = await getAuth(env, shareToken, passwordToken)
+        auth = await getAuth(env, shareToken, passwordToken, roundId)
         driveResp = await fetchDrive(auth, request)
       } catch (_err) {
         // Fall through — return original error response.
