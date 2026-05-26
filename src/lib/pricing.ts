@@ -76,10 +76,23 @@ export function minPricePerMonth(p: LivePricing): number {
  *  the Vercel Hobby 12-function cap had room. Response shape is
  *  unchanged. Never throws — on any failure (network down, server
  *  500, bad JSON) returns DEFAULT_PRICING so the page still
- *  renders something sensible. */
+ *  renders something sensible.
+ *
+ *  Why POST: the api/paypal dispatcher rejects GET ("Method not
+ *  allowed") across the board, including for read-only actions
+ *  like get-pricing. The old standalone /api/pricing accepted GET,
+ *  and when the action was folded into paypal.ts the method
+ *  expectation flipped silently — visitors started getting
+ *  DEFAULT_PRICING (9 ₪ / 60 ₪) on every page load. Sending POST
+ *  with an empty body matches what the dispatcher expects. */
 export async function fetchLivePricing(): Promise<LivePricing> {
   try {
-    const r = await fetch('/api/paypal?action=get-pricing', { cache: 'no-store' })
+    const r = await fetch('/api/paypal?action=get-pricing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      cache: 'no-store',
+    })
     if (!r.ok) return DEFAULT_PRICING
     const json = (await r.json()) as
       | ({ ok: true } & LivePricing)
@@ -99,8 +112,14 @@ export async function fetchLivePricing(): Promise<LivePricing> {
 /** localStorage key for the cached pricing snapshot. Bumping the
  *  version forces a cache invalidation if the pricing shape ever
  *  changes — readers that get an unparseable / wrong-shape blob
- *  just ignore it and fall back to the network fetch. */
-const PRICING_CACHE_KEY = 'dmplus.pricing.v1'
+ *  just ignore it and fall back to the network fetch.
+ *
+ *  v2: bumped because v1 caches were polluted by the GET-vs-POST
+ *  bug above. Every visitor in that window had DEFAULT_PRICING
+ *  (9 ₪ / 60 ₪) written to their localStorage and would keep
+ *  seeing it on first paint until the cache aged out. Bumping the
+ *  key gives them a clean reset on next load. */
+const PRICING_CACHE_KEY = 'dmplus.pricing.v2'
 
 export function readPricingCache(): LivePricing | null {
   if (typeof window === 'undefined') return null
