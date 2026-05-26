@@ -5,6 +5,7 @@ import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import {
   Loader2,
   Lock,
+  LogOut,
   Mail,
   AlertTriangle,
   Plus,
@@ -381,7 +382,7 @@ export function ReviewPage() {
     )
 
   return (
-    <ReviewShell viewerEmail={state.viewerEmail}>
+    <ReviewShell viewerEmail={state.viewerEmail} token={token}>
       <ReadyOrOnboarding
         token={token}
         project={state.project}
@@ -812,20 +813,53 @@ function Step({
 function ReviewShell({
   children,
   viewerEmail,
+  token,
 }: {
   children: React.ReactNode
   viewerEmail?: string
+  /** The /review/:token path param — needed so the header's
+   *  logout button knows which (email, password, owner-session)
+   *  cache to clear. Absent on shells rendered before we know
+   *  the token (loading state), in which case the header just
+   *  doesn't show the logout affordance. */
+  token?: string
 }) {
   return (
     <div className="flex min-h-screen flex-col bg-bg text-fg" dir="rtl">
-      <ReviewHeader viewerEmail={viewerEmail} />
+      <ReviewHeader viewerEmail={viewerEmail} token={token} />
       <main className="flex-1">{children}</main>
       <ReviewFooter />
     </div>
   )
 }
 
-function ReviewHeader({ viewerEmail }: { viewerEmail?: string }) {
+function ReviewHeader({
+  viewerEmail,
+  token,
+}: {
+  viewerEmail?: string
+  token?: string
+}) {
+  /** Wipe every cached identity bit tied to this token + reload
+   *  so the viewer lands back on the email gate. We clear:
+   *    - the email   (so the gate prompts again)
+   *    - the password token (in case the project had one)
+   *    - the owner session (sessionStorage; for editor sign-in)
+   *  Onboarding state is intentionally LEFT in place — re-seeing
+   *  the 5-step explainer on every logout would be annoying for
+   *  a viewer who logged out by accident. */
+  function logout() {
+    if (!token) return
+    try {
+      localStorage.removeItem(EMAIL_KEY_PREFIX + token)
+      localStorage.removeItem(PWD_TOKEN_KEY_PREFIX + token)
+      sessionStorage.removeItem(OWNER_TOKEN_KEY_PREFIX + token)
+    } catch {
+      // ignore — quota / private browsing
+    }
+    window.location.reload()
+  }
+
   return (
     <header className="border-b border-white/5 bg-white/[0.015]">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
@@ -855,17 +889,33 @@ function ReviewHeader({ viewerEmail }: { viewerEmail?: string }) {
           </div>
         </a>
 
-        {/* Viewer email pill — shown only when a viewer is signed in.
-            On mobile we collapse to just the icon to save space. */}
+        {/* Viewer email pill + logout button. The pill collapses to
+            just the icon on mobile to save space; the logout button
+            stays the same size on every breakpoint because the
+            tap target shouldn't change. */}
         {viewerEmail && (
-          <div
-            className="inline-flex items-center gap-1.5 rounded-full border border-white/5 bg-white/[0.02] px-2.5 py-1 text-[11px] text-fg-muted"
-            title={viewerEmail}
-          >
-            <Mail className="h-3 w-3 shrink-0" />
-            <span dir="ltr" className="hidden font-mono sm:inline">
-              {viewerEmail}
-            </span>
+          <div className="flex items-center gap-1.5">
+            <div
+              className="inline-flex items-center gap-1.5 rounded-full border border-white/5 bg-white/[0.02] px-2.5 py-1 text-[11px] text-fg-muted"
+              title={viewerEmail}
+            >
+              <Mail className="h-3 w-3 shrink-0" />
+              <span dir="ltr" className="hidden font-mono sm:inline">
+                {viewerEmail}
+              </span>
+            </div>
+            {token && (
+              <button
+                type="button"
+                onClick={logout}
+                title="התנתקות — איפוס המייל והסיסמה השמורים"
+                aria-label="התנתקות"
+                className="inline-flex h-7 items-center gap-1 rounded-full border border-white/5 bg-white/[0.02] px-2.5 text-[11px] text-fg-muted transition-colors hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+              >
+                <LogOut className="h-3 w-3" />
+                <span className="hidden sm:inline">התנתק</span>
+              </button>
+            )}
           </div>
         )}
       </div>
