@@ -63,7 +63,10 @@ interface Note {
   id: string
   viewerEmail: string
   viewerName?: string | null
-  timeSeconds: number
+  /** Number = pinned to this moment in the video. null/undefined =
+   *  general note not tied to any specific timestamp. The "+ הערה
+   *  כללית" button creates one of these. */
+  timeSeconds: number | null
   text: string
   /** Legacy: base64 data URL stored directly in the note doc.
    *  Pre-Drive-migration notes still come down with this field set.
@@ -74,7 +77,11 @@ interface Note {
   screenshotDriveFileId?: string | null
   /** Drive file ID of the voice recording attached to this note. */
   audioDriveFileId?: string | null
-  status: 'new' | 'resolved'
+  status: 'new' | 'resolved' | 'question' | 'not-possible'
+  /** Editor's text response — populated when status is 'question'
+   *  (the clarifying question) or 'not-possible' (why it can't be
+   *  done). Cleared when status moves back to new/resolved. */
+  editorResponse?: string | null
   createdAt: number
 }
 
@@ -439,7 +446,7 @@ function OnboardingScreen({
                 <strong className="font-semibold text-fg/90">
                   • צלם + תיקון
                 </strong>{' '}
-                — צילום של הרגע + מקום לסמן עליו עם חצים, עיגולים ומלבנים.
+                — צילום של הקטע מהסרטון + אופציה לסמן על ידי ציור את התיקון.
                 <br />
                 בשני המקרים — הזמן בסרטון נשמר אוטומטית.
               </>
@@ -452,23 +459,31 @@ function OnboardingScreen({
           />
           <Step
             number="4"
-            title="הסטודיו רואה הכל בזמן אמת"
+            title="העורך רואה הכל בזמן אמת"
             body={
               <>
-                התיקונים שלכם מופיעים אצל הסטודיו ברגע ששולחים אותם.
-                כשהם מטפלים בתיקון מסויים תראו ליד התיקון תווית{' '}
-                <span className="inline-flex items-center gap-0.5 rounded bg-success/15 px-1 py-0 text-[10px] font-medium text-success">
+                התיקונים שלכם מופיעים אצל העורך באופן אוטומטי. כשהטיפול
+                בתיקון מסויים יסתיים תראו ליד התיקון אחת משלוש תוויות:
+                <br />
+                <span className="mt-1 inline-flex items-center gap-0.5 rounded bg-success/15 px-1 py-0 text-[10px] font-medium text-success">
                   <CheckCircle2 className="h-2.5 w-2.5" />
                   טופל
-                </span>
-                .
+                </span>{' '}
+                — התיקון נכנס לסרטון.
+                <br />
+                <span className="mt-1 inline-flex items-center gap-0.5 rounded bg-sky-500/15 px-1 py-0 text-[10px] font-medium text-sky-400">
+                  <MessageSquare className="h-2.5 w-2.5" />
+                  שאלה
+                </span>{' '}
+                — העורך לא בטוח מה התכוונתם, ויראה לכם שאלה ליד.
+                <br />
+                <span className="mt-1 inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1 py-0 text-[10px] font-medium text-amber-400">
+                  <AlertTriangle className="h-2.5 w-2.5" />
+                  לא אפשרי
+                </span>{' '}
+                — אי אפשר לבצע את התיקון, והעורך יסביר למה ליד.
               </>
             }
-          />
-          <Step
-            number="5"
-            title="אפשר למחוק תיקונים שלכם"
-            body="תיקונים שאתם הוספתם — תראו ליד המייל שלכם אייקון פח קטן. לחיצה תמחק. תיקונים של אחרים — לא נוגעים."
           />
         </div>
 
@@ -867,7 +882,9 @@ function ReviewWorkspace({
   const [composer, setComposer] = useState<
     | null
     | {
-        timeSeconds: number
+        /** null = general note not tied to a specific moment. Number
+         *  = pinned to that second in the video. */
+        timeSeconds: number | null
         /** Captured frame as a data URL — null if the viewer opened
          *  the composer via "תיקון חדש" (text-only) or "הקלט קול". */
         screenshotDataUrl: string | null
@@ -903,6 +920,22 @@ function ReviewWorkspace({
     setComposer({
       timeSeconds: Math.max(0, Math.floor(v.currentTime)),
       screenshotDataUrl: data,
+      audioBlob: null,
+    })
+    setNoteText('')
+    setSubmitError(null)
+  }
+
+  /** Open the composer for a "general" note — one that isn't pinned
+   *  to a specific moment in the video. Useful when the feedback is
+   *  about the cut overall ("the music is too loud throughout",
+   *  "could you add a brand logo at the end"), not a specific frame.
+   *  We don't pause the video here — the viewer isn't reacting to
+   *  what they're watching, so interrupting playback would be rude. */
+  function openGeneralNote() {
+    setComposer({
+      timeSeconds: null,
+      screenshotDataUrl: null,
       audioBlob: null,
     })
     setNoteText('')
@@ -1137,6 +1170,15 @@ function ReviewWorkspace({
                 <Camera className="h-4 w-4" />
                 צלם + תיקון
               </button>
+              <button
+                type="button"
+                onClick={openGeneralNote}
+                title="הערה לא קשורה לזמן ספציפי בסרטון"
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-medium text-fg transition-colors hover:bg-white/[0.06]"
+              >
+                <MessageSquare className="h-4 w-4" />
+                הערה כללית
+              </button>
               <p className="ml-auto text-[11px] text-fg-muted/80">
                 לחיצה על שעון בהערה קופצת לאותה נקודה בסרטון
               </p>
@@ -1177,7 +1219,18 @@ function ReviewWorkspace({
                          [&::-webkit-scrollbar-thumb:hover]:bg-white/25"
             >
               {[...notes]
-                .sort((a, b) => a.timeSeconds - b.timeSeconds)
+                // Sort general notes first (they apply to the cut
+                // as a whole, so they belong at the top of the list
+                // — viewers scanning notes will see "high-level
+                // feedback" before "this specific frame"). Within
+                // each group, ascending by timestamp.
+                .sort((a, b) => {
+                  const aGeneral = a.timeSeconds === null || a.timeSeconds === undefined
+                  const bGeneral = b.timeSeconds === null || b.timeSeconds === undefined
+                  if (aGeneral && !bGeneral) return -1
+                  if (!aGeneral && bGeneral) return 1
+                  return (a.timeSeconds ?? 0) - (b.timeSeconds ?? 0)
+                })
                 .map((note) => (
                   <NoteItem
                     key={note.id}
@@ -1318,13 +1371,18 @@ function NoteItem({
   onExpandImage: (url: string) => void
   onDelete: () => void
 }) {
-  const mm = Math.floor(note.timeSeconds / 60)
-  const ss = Math.floor(note.timeSeconds % 60).toString().padStart(2, '0')
+  const isGeneral = note.timeSeconds === null || note.timeSeconds === undefined
+  const mm = isGeneral ? 0 : Math.floor((note.timeSeconds as number) / 60)
+  const ss = isGeneral
+    ? '00'
+    : Math.floor((note.timeSeconds as number) % 60).toString().padStart(2, '0')
   // Two-step confirm — first click reveals "אישור / ביטול", second
   // click commits. Same pattern as the desktop ProjectCard. Inline
   // is a better fit than a modal for a sidebar full of small cards.
   const [confirming, setConfirming] = useState(false)
   const resolved = note.status === 'resolved'
+  const isQuestion = note.status === 'question'
+  const isNotPossible = note.status === 'not-possible'
 
   // Resolve the screenshot URL — prefer the Drive-backed proxy URL
   // for new notes; fall back to the inline data URL for legacy notes
@@ -1337,13 +1395,20 @@ function NoteItem({
     ? noteMediaUrl(shareToken, note.id, 'audio', passwordToken)
     : null
 
+  // Border + bg color per status — picked so the four states are
+  // distinguishable at a glance when scrolling a long list.
+  const containerClass = resolved
+    ? 'border-success/20 bg-success/[0.04] hover:bg-success/[0.06]'
+    : isQuestion
+      ? 'border-sky-500/20 bg-sky-500/[0.04] hover:bg-sky-500/[0.06]'
+      : isNotPossible
+        ? 'border-amber-500/20 bg-amber-500/[0.04] hover:bg-amber-500/[0.06]'
+        : 'border-white/5 bg-white/[0.02] hover:bg-white/[0.04]'
+
   return (
     <li
       className={
-        'group rounded-lg border p-2.5 transition-colors ' +
-        (resolved
-          ? 'border-success/20 bg-success/[0.04] hover:bg-success/[0.06]'
-          : 'border-white/5 bg-white/[0.02] hover:bg-white/[0.04]')
+        'group rounded-lg border p-2.5 transition-colors ' + containerClass
       }
     >
       <div className="flex gap-2.5">
@@ -1381,23 +1446,41 @@ function NoteItem({
         <div className="min-w-0 flex-1">
           <div className="mb-0.5 flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => onSeek(note.timeSeconds)}
-                title="קפיצה לזמן בסרטון"
-                className={
-                  'font-mono rounded px-1.5 py-0.5 text-[11px] font-semibold transition-colors ' +
-                  (resolved
-                    ? 'text-success/70 hover:bg-success/10'
-                    : 'text-primary hover:bg-primary/10')
-                }
-              >
-                {mm}:{ss}
-              </button>
-              {/* Resolved badge — server-side status mirrors the
-                  editor's "סמן כטופל" toggle. Shown to the viewer
-                  read-only so they can see which of their notes
-                  the editor has already worked on. */}
+              {isGeneral ? (
+                // General notes have no associated time — render a
+                // static "כללי" pill so the viewer knows the comment
+                // applies to the cut as a whole, not a specific
+                // moment. Not clickable because there's nowhere to
+                // seek to.
+                <span
+                  title="הערה כללית — לא מקושרת לזמן ספציפי בסרטון"
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-fg-muted/80"
+                >
+                  <MessageSquare className="h-2.5 w-2.5" />
+                  כללי
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onSeek(note.timeSeconds as number)}
+                  title="קפיצה לזמן בסרטון"
+                  className={
+                    'font-mono rounded px-1.5 py-0.5 text-[11px] font-semibold transition-colors ' +
+                    (resolved
+                      ? 'text-success/70 hover:bg-success/10'
+                      : isQuestion
+                        ? 'text-sky-400 hover:bg-sky-500/10'
+                        : isNotPossible
+                          ? 'text-amber-400 hover:bg-amber-500/10'
+                          : 'text-primary hover:bg-primary/10')
+                  }
+                >
+                  {mm}:{ss}
+                </button>
+              )}
+              {/* Status badge — three colours for three editor
+                  responses. Shown read-only; viewers can't change
+                  status (that's the editor's workflow). */}
               {resolved && (
                 <span
                   title="הסטודיו סימן את התיקון כטופל"
@@ -1405,6 +1488,24 @@ function NoteItem({
                 >
                   <CheckCircle2 className="h-2.5 w-2.5" />
                   טופל
+                </span>
+              )}
+              {isQuestion && (
+                <span
+                  title="העורך מבקש הבהרה — ראו את הטקסט בתוך התיקון"
+                  className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-400"
+                >
+                  <MessageSquare className="h-2.5 w-2.5" />
+                  שאלה
+                </span>
+              )}
+              {isNotPossible && (
+                <span
+                  title="העורך הסביר למה לא ניתן לבצע — ראו את הטקסט בתוך התיקון"
+                  className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-400"
+                >
+                  <AlertTriangle className="h-2.5 w-2.5" />
+                  לא אפשרי
                 </span>
               )}
             </div>
@@ -1452,6 +1553,27 @@ function NoteItem({
                 (resolved ? 'opacity-60' : '')
               }
             />
+          )}
+          {/* Editor response — the question or "can't do" reason.
+              Sits visually distinct from the original note text
+              (light border + label) so the viewer immediately sees
+              this is the editor talking back, not their own copy. */}
+          {note.editorResponse && (isQuestion || isNotPossible) && (
+            <div
+              className={
+                'mt-2 rounded-md border-r-2 px-2 py-1.5 text-[11px] leading-relaxed ' +
+                (isQuestion
+                  ? 'border-sky-500/60 bg-sky-500/[0.04] text-sky-100/90'
+                  : 'border-amber-500/60 bg-amber-500/[0.04] text-amber-100/90')
+              }
+            >
+              <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-wide opacity-70">
+                {isQuestion ? 'שאלה מהעורך' : 'תגובת העורך'}
+              </div>
+              <div className="whitespace-pre-wrap break-words">
+                {note.editorResponse}
+              </div>
+            </div>
           )}
           {/* Confirm strip — appears below the text only when the
               viewer clicked the trash. Keeps the destructive flow
@@ -1544,7 +1666,8 @@ function NoteComposer({
   onSubmit,
   onClose,
 }: {
-  timeSeconds: number
+  /** null = general note (not tied to a moment); number = pinned. */
+  timeSeconds: number | null
   screenshotDataUrl: string | null
   audioBlob: Blob | null
   setAudioBlob: (b: Blob | null) => void
@@ -1558,10 +1681,19 @@ function NoteComposer({
   onSubmit: (finalScreenshotDataUrl: string | null) => void
   onClose: () => void
 }) {
-  const minutes = useMemo(() => Math.floor(timeSeconds / 60), [timeSeconds])
+  const isGeneral = timeSeconds === null
+  const minutes = useMemo(
+    () => (isGeneral ? 0 : Math.floor(timeSeconds! / 60)),
+    [timeSeconds, isGeneral],
+  )
   const seconds = useMemo(
-    () => Math.floor(timeSeconds % 60).toString().padStart(2, '0'),
-    [timeSeconds],
+    () =>
+      isGeneral
+        ? '00'
+        : Math.floor(timeSeconds! % 60)
+            .toString()
+            .padStart(2, '0'),
+    [timeSeconds, isGeneral],
   )
 
   // The annotation canvas reports its baked dataURL up to here on
@@ -1597,13 +1729,24 @@ function NoteComposer({
       >
         <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
           <div>
-            <h3 className="text-sm font-medium text-fg">תיקון חדש</h3>
+            <h3 className="text-sm font-medium text-fg">
+              {isGeneral ? 'הערה כללית' : 'תיקון חדש'}
+            </h3>
             <p className="mt-0.5 text-[11px] text-fg-muted">
-              בנקודה <span dir="ltr" className="font-mono">{minutes}:{seconds}</span>
-              {screenshotDataUrl && (
-                <span className="ms-2 text-fg-muted/70">
-                  · ניתן לסמן על התמונה למטה
-                </span>
+              {isGeneral ? (
+                <>הערה לסבב כולו, לא לרגע ספציפי בסרטון</>
+              ) : (
+                <>
+                  בנקודה{' '}
+                  <span dir="ltr" className="font-mono">
+                    {minutes}:{seconds}
+                  </span>
+                  {screenshotDataUrl && (
+                    <span className="ms-2 text-fg-muted/70">
+                      · ניתן לסמן על התמונה למטה
+                    </span>
+                  )}
+                </>
               )}
             </p>
           </div>

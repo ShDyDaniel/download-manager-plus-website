@@ -1049,7 +1049,15 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
   const shareToken = String(body.shareToken || '').trim()
   const viewerEmail = String(body.viewerEmail || '').trim().toLowerCase()
   const text = String(body.text || '').trim()
-  const timeSeconds = Number(body.timeSeconds)
+  // timeSeconds is OPTIONAL now — a missing/negative value means the
+  // note is "general" (not tied to a specific moment in the video).
+  // General notes get a dedicated badge instead of a clickable
+  // timestamp on both the editor + reviewer side. Stored as null
+  // on the doc rather than 0 so we can distinguish "comment about
+  // the very first frame" from "no timestamp".
+  const rawTime = Number(body.timeSeconds)
+  const timeSeconds: number | null =
+    Number.isFinite(rawTime) && rawTime >= 0 ? rawTime : null
   const screenshotDriveFileId = String(body.screenshotDriveFileId || '').trim() || null
   const audioDriveFileId = String(body.audioDriveFileId || '').trim() || null
   if (!shareToken) return res.status(400).json({ ok: false, error: 'shareToken' })
@@ -1065,9 +1073,6 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
     return res
       .status(400)
       .json({ ok: false, error: 'חובה לכתוב תיאור, לצרף תמונה או להקליט' })
-  }
-  if (!Number.isFinite(timeSeconds) || timeSeconds < 0) {
-    return res.status(400).json({ ok: false, error: 'timestamp לא תקין' })
   }
 
   const snap = await getDb()
@@ -2350,20 +2355,43 @@ async function handleListNotesOwner(req: VercelRequest, res: VercelResponse) {
  *  Action: update-note-status  (auth required — owner only)
  *
  *  POST /api/revisions?action=update-note-status
- *  Body: { idToken, projectId, noteId, status: 'new' | 'resolved' }
+ *  Body: {
+ *    idToken,
+ *    projectId,
+ *    noteId,
+ *    status: 'new' | 'resolved' | 'question' | 'not-possible',
+ *    editorResponse?: string,
+ *  }
  *
- *  Owner-only because "did I deal with this feedback yet" is a
+ *  Owner-only because "what's the state of this feedback" is a
  *  workflow signal that belongs to the editor, not the client who
  *  left the note. We don't expose a public mutation for status
  *  (clients can't mark their own notes resolved on the editor's
  *  behalf).
+ *
+ *  Four states:
+ *    new          — default; reviewer left this, editor hasn't
+ *                   acted on it yet.
+ *    resolved     — editor incorporated the change. Green badge,
+ *                   no extra text.
+ *    question     — editor needs clarification; editorResponse
+ *                   carries the question text. Blue badge.
+ *    not-possible — editor can't do it; editorResponse carries the
+ *                   reason. Amber badge.
+ *
+ *  editorResponse is required for question/not-possible (gives the
+ *  reviewer the context they need) and stripped for new/resolved
+ *  (those statuses don't have any associated text).
  * ────────────────────────────────────────────────────────────── */
+type NoteStatus = 'new' | 'resolved' | 'question' | 'not-possible'
+
 async function handleUpdateNoteStatus(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as {
     idToken?: string
     projectId?: string
     noteId?: string
-    status?: 'new' | 'resolved'
+    status?: NoteStatus
+    editorResponse?: string
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -2373,8 +2401,23 @@ async function handleUpdateNoteStatus(req: VercelRequest, res: VercelResponse) {
   if (!projectId || !noteId) {
     return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
   }
-  if (status !== 'new' && status !== 'resolved') {
+  const validStatuses: NoteStatus[] = ['new', 'resolved', 'question', 'not-possible']
+  if (!status || !validStatuses.includes(status)) {
     return res.status(400).json({ ok: false, error: 'סטטוס לא תקין' })
+  }
+  // Trim + cap the response text. Same 2000-char limit as note text.
+  let editorResponse: string | null = null
+  if (status === 'question' || status === 'not-possible') {
+    editorResponse = String(body.editorResponse || '').trim().slice(0, 2000)
+    if (!editorResponse) {
+      return res.status(400).json({
+        ok: false,
+        error:
+          status === 'question'
+            ? 'חובה לכתוב את השאלה'
+            : 'חובה לכתוב את הסיבה שלא ניתן',
+      })
+    }
   }
 
   const projectRef = getDb().collection('revisionProjects').doc(projectId)
@@ -2392,7 +2435,14 @@ async function handleUpdateNoteStatus(req: VercelRequest, res: VercelResponse) {
   if (!noteSnap.exists) {
     return res.status(404).json({ ok: false, error: 'התיקון לא נמצא' })
   }
-  await noteRef.update({ status, updatedAt: Date.now() })
+  await noteRef.update({
+    status,
+    // Clear the response when moving BACK to new/resolved — keeps
+    // stale question/reason text from haunting a note the editor
+    // re-classified.
+    editorResponse,
+    updatedAt: Date.now(),
+  })
   return res.status(200).json({ ok: true })
 }
 
