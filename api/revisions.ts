@@ -757,6 +757,463 @@ function escapeHtml(s: string): string {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  PROJECT GROUPS — multi-round projects (new shape)
+ *
+ *  Until this section was added, each "revision project" was a
+ *  single video round and got its own public share link. Editors
+ *  who iterated through multiple rounds on the same cut ended up
+ *  with N separate cards in their desktop list and N separate
+ *  links to send the client — confusing for both sides.
+ *
+ *  The new shape introduces a "revision group" — a project that
+ *  contains one or more rounds. One share link per group; rounds
+ *  numbered 1, 2, 3… inside. Password and title live on the
+ *  group; each round has its own video file + per-round lock.
+ *
+ *  Data layout:
+ *    revisionGroups/{groupId}                    ← project
+ *      • title, shareToken, passwordHash, ownerUid, ownerEmail,
+ *        driveFolderId, notesFolderId, status, createdAt, updatedAt
+ *    revisionProjects/{roundId}                  ← round (existing
+ *                                                  collection, now
+ *                                                  with optional
+ *                                                  groupId pointer)
+ *      • groupId (NEW), roundNumber, driveFileId, video* fields,
+ *        videoStatus, locked, notesCount, createdAt, updatedAt
+ *    revisionProjects/{roundId}/notes/{noteId}   ← notes (unchanged)
+ *
+ *  Backward compatibility: existing revisionProjects docs without a
+ *  groupId continue to act as standalone "round-as-project" units.
+ *  Their shareToken + passwordHash + title live on the round doc
+ *  itself (as before) and existing /review/<token> links keep
+ *  resolving directly.
+ *
+ *  Public /review URL semantics:
+ *    /review/<token>           ↳ if token matches a group →
+ *                                round picker (or single round if
+ *                                exactly one).
+ *                              ↳ if token matches a legacy round →
+ *                                render that round directly.
+ *    /review/<token>?round=ID  ↳ specific round of a group.
+ * ────────────────────────────────────────────────────────────── */
+
+interface RevisionGroupDoc {
+  id: string
+  ownerUid: string
+  ownerEmail: string
+  title: string
+  shareToken: string
+  passwordHash: string | null
+  passwordSalt: string | null
+  driveFolderId: string | null
+  notesFolderId: string | null
+  status: 'active' | 'archived'
+  createdAt: number
+  updatedAt: number
+}
+
+/** Resolve a share token into either a new-style group or a legacy
+ *  single-round project. The two collections share namespace via
+ *  shareToken — a fresh token created today goes into the groups
+ *  collection; tokens from before the migration live on revision
+ *  Projects docs. We check the groups first because new traffic
+ *  is more common than legacy lookups. */
+async function resolveByShareToken(
+  shareToken: string,
+): Promise<
+  | { kind: 'group'; group: RevisionGroupDoc; ref: FirebaseFirestore.DocumentReference }
+  | { kind: 'legacy'; round: Record<string, unknown>; ref: FirebaseFirestore.DocumentReference }
+  | null
+> {
+  const groupsSnap = await getDb()
+    .collection('revisionGroups')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (!groupsSnap.empty) {
+    const doc = groupsSnap.docs[0]
+    return {
+      kind: 'group',
+      group: doc.data() as RevisionGroupDoc,
+      ref: doc.ref,
+    }
+  }
+  const legacySnap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (!legacySnap.empty) {
+    const doc = legacySnap.docs[0]
+    return {
+      kind: 'legacy',
+      round: doc.data() as Record<string, unknown>,
+      ref: doc.ref,
+    }
+  }
+  return null
+}
+
+/** Hash a password with PBKDF2-SHA256. Returns null hash/salt for
+ *  an empty password (= no password protection). Same primitive
+ *  the rest of revisions.ts uses; centralised here so the new
+ *  group flow and the legacy create-project flow can't drift. */
+function hashPasswordOrNull(
+  password: string,
+): { passwordHash: string; passwordSalt: string } | null {
+  if (!password) return null
+  const passwordSalt = crypto.randomBytes(16).toString('hex')
+  const passwordHash = crypto
+    .pbkdf2Sync(password, passwordSalt, 100_000, 32, 'sha256')
+    .toString('hex')
+  return { passwordHash, passwordSalt }
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: create-project-group  (auth required)
+ *
+ *  POST /api/revisions?action=create-project-group
+ *  Body: {
+ *    idToken,
+ *    title,             // project title
+ *    password?,         // project-level password (optional)
+ *    // first-round details — same shape as create-project's body:
+ *    driveFileId, driveFolderId,
+ *    videoFileName, videoSizeBytes, videoMime,
+ *    roundNumber? (default 1),
+ *  }
+ *  Returns: { ok, groupId, roundId, shareToken, shareUrl }
+ *
+ *  Creates the group + its first round in a single batch so we
+ *  never end up with an orphan group (a project with zero rounds)
+ *  or a round with a dangling groupId pointer.
+ * ────────────────────────────────────────────────────────────── */
+async function handleCreateProjectGroup(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    title?: string
+    password?: string
+    driveFileId?: string
+    driveFolderId?: string
+    videoFileName?: string
+    videoSizeBytes?: number
+    videoMime?: string
+    roundNumber?: number
+  }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+
+  const title = String(body.title || '').trim().slice(0, 200)
+  const driveFileId = String(body.driveFileId || '').trim()
+  const driveFolderId = String(body.driveFolderId || '').trim() || null
+  const videoFileName = String(body.videoFileName || '').trim().slice(0, 300)
+  const videoSizeBytes = Number(body.videoSizeBytes) || 0
+  const videoMime = String(body.videoMime || '').trim().slice(0, 100)
+  const password = String(body.password || '')
+  const roundNumber = Math.max(
+    1,
+    Math.min(99, Math.floor(Number(body.roundNumber) || 1)),
+  )
+
+  if (!title) return res.status(400).json({ ok: false, error: 'title required' })
+  if (!driveFileId) return res.status(400).json({ ok: false, error: 'driveFileId required' })
+
+  let pw: { passwordHash: string; passwordSalt: string } | null = null
+  if (password) {
+    if (password.length < 4) {
+      return res.status(400).json({ ok: false, error: 'הסיסמה קצרה מדי (4 תווים מינימום)' })
+    }
+    pw = hashPasswordOrNull(password)
+  }
+
+  const shareToken = crypto.randomBytes(16).toString('base64url')
+  const db = getDb()
+  const groupRef = db.collection('revisionGroups').doc()
+  const roundRef = db.collection('revisionProjects').doc()
+  const now = Date.now()
+
+  const batch = db.batch()
+  batch.set(groupRef, {
+    id: groupRef.id,
+    ownerUid: verified.uid,
+    ownerEmail: verified.email,
+    title,
+    shareToken,
+    passwordHash: pw?.passwordHash ?? null,
+    passwordSalt: pw?.passwordSalt ?? null,
+    driveFolderId,
+    notesFolderId: null,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+  })
+  batch.set(roundRef, {
+    id: roundRef.id,
+    // Linkage — distinguishes new-style rounds from legacy ones.
+    groupId: groupRef.id,
+    // Owner is mirrored onto the round for query convenience (so
+    // a single where('ownerUid','==',uid) over revisionProjects
+    // still returns the editor's rounds without needing a parent
+    // lookup).
+    ownerUid: verified.uid,
+    ownerEmail: verified.email,
+    driveFileId,
+    driveFolderId,
+    videoFileName,
+    videoSizeBytes,
+    videoMime,
+    videoStatus: 'ready',
+    roundNumber,
+    locked: false,
+    notesCount: 0,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+  })
+  await batch.commit()
+
+  return res.status(200).json({
+    ok: true,
+    groupId: groupRef.id,
+    roundId: roundRef.id,
+    shareToken,
+    shareUrl: `${WEBSITE_BASE}/review/${shareToken}`,
+  })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: add-round-to-group  (auth required — owner only)
+ *
+ *  POST /api/revisions?action=add-round-to-group
+ *  Body: {
+ *    idToken,
+ *    groupId,
+ *    driveFileId, driveFolderId, videoFileName,
+ *    videoSizeBytes, videoMime,
+ *    roundNumber? (default = highest existing + 1),
+ *  }
+ *  Returns: { ok, roundId }
+ *
+ *  Adds a new round to an existing project. The new round shares
+ *  the group's share link, password and title — the editor only
+ *  needs to upload a new video. If the editor doesn't supply a
+ *  roundNumber we auto-pick the next sequential number; if they
+ *  do, we let them (allows out-of-order numbering like 1, 2, 5).
+ * ────────────────────────────────────────────────────────────── */
+async function handleAddRoundToGroup(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    groupId?: string
+    driveFileId?: string
+    driveFolderId?: string
+    videoFileName?: string
+    videoSizeBytes?: number
+    videoMime?: string
+    roundNumber?: number
+  }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+
+  const groupId = String(body.groupId || '').trim()
+  const driveFileId = String(body.driveFileId || '').trim()
+  if (!groupId) return res.status(400).json({ ok: false, error: 'groupId required' })
+  if (!driveFileId) return res.status(400).json({ ok: false, error: 'driveFileId required' })
+
+  const db = getDb()
+  const groupRef = db.collection('revisionGroups').doc(groupId)
+  const groupSnap = await groupRef.get()
+  if (!groupSnap.exists) return res.status(404).json({ ok: false, error: 'הפרויקט לא נמצא' })
+  const group = groupSnap.data() as RevisionGroupDoc
+  if (group.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+
+  // Compute the next round number unless the caller supplied one.
+  // We let an explicit roundNumber win so the editor can leave gaps
+  // for organisational reasons (e.g. start a "round 5" without
+  // having sequential 2/3/4).
+  let roundNumber = Math.floor(Number(body.roundNumber) || 0)
+  if (!roundNumber || roundNumber < 1) {
+    const existing = await db
+      .collection('revisionProjects')
+      .where('groupId', '==', groupId)
+      .get()
+    const max = existing.docs.reduce((m, d) => {
+      const n = Number((d.data() as { roundNumber?: number }).roundNumber) || 0
+      return n > m ? n : m
+    }, 0)
+    roundNumber = Math.min(99, max + 1)
+  } else {
+    roundNumber = Math.min(99, roundNumber)
+  }
+
+  const roundRef = db.collection('revisionProjects').doc()
+  const now = Date.now()
+  await roundRef.set({
+    id: roundRef.id,
+    groupId,
+    ownerUid: verified.uid,
+    ownerEmail: verified.email,
+    driveFileId,
+    driveFolderId: String(body.driveFolderId || '').trim() || group.driveFolderId,
+    videoFileName: String(body.videoFileName || '').trim().slice(0, 300),
+    videoSizeBytes: Number(body.videoSizeBytes) || 0,
+    videoMime: String(body.videoMime || '').trim().slice(0, 100),
+    videoStatus: 'ready',
+    roundNumber,
+    locked: false,
+    notesCount: 0,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+  })
+  // Bump group's updatedAt so editor-side queries that sort by
+  // recency reflect the new activity.
+  await groupRef.update({ updatedAt: now })
+
+  return res.status(200).json({ ok: true, roundId: roundRef.id })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: list-rounds-for-group  (PUBLIC — gated by share token)
+ *
+ *  POST /api/revisions?action=list-rounds-for-group
+ *  Body: { shareToken, passwordToken? }
+ *  Returns: { ok, group: { title, roundNumber? }, rounds: [...] }
+ *
+ *  Powers the round-picker screen on /review/<token> when the
+ *  token resolves to a multi-round group. Returns rounds in
+ *  ascending roundNumber order with the minimal metadata the
+ *  picker needs (round id, number, locked, notesCount).
+ * ────────────────────────────────────────────────────────────── */
+async function handleListRoundsForGroup(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as { shareToken?: string; passwordToken?: string }
+  const shareToken = String(body.shareToken || '').trim()
+  if (!shareToken) return res.status(400).json({ ok: false, error: 'shareToken' })
+
+  const groupSnap = await getDb()
+    .collection('revisionGroups')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (groupSnap.empty) return res.status(404).json({ ok: false, error: 'הפרויקט לא נמצא' })
+  const group = groupSnap.docs[0].data() as RevisionGroupDoc
+  if (group.status !== 'active') {
+    return res.status(410).json({ ok: false, error: 'הפרויקט כבר לא פעיל' })
+  }
+  if (group.passwordHash) {
+    const passwordToken = String(body.passwordToken || '').trim()
+    if (!passwordToken || !verifyPasswordToken(passwordToken, group.id)) {
+      return res.status(403).json({ ok: false, error: 'נדרשת סיסמה' })
+    }
+  }
+
+  const roundsSnap = await getDb()
+    .collection('revisionProjects')
+    .where('groupId', '==', group.id)
+    .get()
+  const rounds = roundsSnap.docs
+    .map((d) => d.data() as Record<string, unknown>)
+    .filter((r) => r.status === 'active')
+    .map((r) => ({
+      id: r.id as string,
+      roundNumber: Number(r.roundNumber) || 1,
+      locked: r.locked === true,
+      notesCount: Number(r.notesCount) || 0,
+      videoFileName: String(r.videoFileName || ''),
+      createdAt: Number(r.createdAt) || 0,
+    }))
+    .sort((a, b) => a.roundNumber - b.roundNumber)
+
+  return res.status(200).json({
+    ok: true,
+    group: { id: group.id, title: group.title },
+    rounds,
+  })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: list-groups-owner  (auth required)
+ *
+ *  POST /api/revisions?action=list-groups-owner  { idToken }
+ *  Returns: { ok, groups: [...with embedded rounds summary...] }
+ *
+ *  Used by the desktop project list — each group renders as one
+ *  card and the rounds list expands inline. Returning rounds
+ *  inline (rather than a second roundtrip per card) cuts the
+ *  initial paint down to a single request.
+ * ────────────────────────────────────────────────────────────── */
+async function handleListGroupsOwner(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as { idToken?: string }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+
+  const groupsSnap = await getDb()
+    .collection('revisionGroups')
+    .where('ownerUid', '==', verified.uid)
+    .get()
+  const activeGroups = groupsSnap.docs
+    .map((d) => d.data() as RevisionGroupDoc)
+    .filter((g) => g.status === 'active')
+
+  // Pull all rounds in one go, then bucket client-side. One query
+  // per editor is cheaper than one query per group on Firestore's
+  // billing.
+  const roundsSnap = await getDb()
+    .collection('revisionProjects')
+    .where('ownerUid', '==', verified.uid)
+    .get()
+  const roundsByGroup = new Map<string, Record<string, unknown>[]>()
+  for (const doc of roundsSnap.docs) {
+    const r = doc.data() as Record<string, unknown>
+    if (r.status !== 'active') continue
+    const gid = String(r.groupId || '')
+    if (!gid) continue
+    if (!roundsByGroup.has(gid)) roundsByGroup.set(gid, [])
+    roundsByGroup.get(gid)!.push(r)
+  }
+
+  const out = activeGroups
+    .map((g) => {
+      const rounds = (roundsByGroup.get(g.id) || [])
+        .map((r) => ({
+          id: r.id as string,
+          roundNumber: Number(r.roundNumber) || 1,
+          videoFileName: String(r.videoFileName || ''),
+          videoSizeBytes: Number(r.videoSizeBytes) || 0,
+          locked: r.locked === true,
+          notesCount: Number(r.notesCount) || 0,
+          createdAt: Number(r.createdAt) || 0,
+        }))
+        .sort((a, b) => a.roundNumber - b.roundNumber)
+      return {
+        id: g.id,
+        title: g.title,
+        shareToken: g.shareToken,
+        hasPassword: Boolean(g.passwordHash),
+        createdAt: g.createdAt,
+        updatedAt: g.updatedAt,
+        rounds,
+      }
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+
+  return res.status(200).json({ ok: true, groups: out })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Action: create-project
  *
  *  POST /api/revisions?action=create-project
@@ -2782,6 +3239,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleOauthDisconnect(req, res)
       case 'create-project':
         return await handleCreateProject(req, res)
+      case 'create-project-group':
+        return await handleCreateProjectGroup(req, res)
+      case 'add-round-to-group':
+        return await handleAddRoundToGroup(req, res)
+      case 'list-rounds-for-group':
+        return await handleListRoundsForGroup(req, res)
+      case 'list-groups-owner':
+        return await handleListGroupsOwner(req, res)
       case 'get-project':
         return await handleGetProject(req, res)
       case 'verify-password':
