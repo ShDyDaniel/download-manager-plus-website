@@ -2342,6 +2342,112 @@ async function handleUpdateProject(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: replace-project-video  (auth required — owner only)
+ *
+ *  POST /api/revisions?action=replace-project-video
+ *  Body: {
+ *    idToken,
+ *    projectId,
+ *    driveFileId,        // ID of the NEW file already uploaded to Drive
+ *    videoFileName,
+ *    videoSizeBytes,
+ *    videoMime,
+ *    trashOldFile?: boolean,  // default true
+ *  }
+ *
+ *  Lets the editor swap the underlying video for an existing
+ *  revision round (e.g. they uploaded a wrong format or have a
+ *  fresh re-cut for the same round). Existing notes + share
+ *  link + folder + password all stay intact — only the pointer to
+ *  the Drive video file changes.
+ *
+ *  The desktop is expected to have already uploaded the new file
+ *  to Drive (under סרטונים) and set "anyone with link" sharing on
+ *  it BEFORE calling this action — same upload helpers as the new-
+ *  revision flow. We just update the Firestore pointer and trash
+ *  the obsolete old file from Drive (best-effort, never blocks).
+ * ────────────────────────────────────────────────────────────── */
+async function handleReplaceProjectVideo(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    projectId?: string
+    driveFileId?: string
+    videoFileName?: string
+    videoSizeBytes?: number
+    videoMime?: string
+    trashOldFile?: boolean
+  }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const projectId = String(body.projectId || '').trim()
+  const newDriveFileId = String(body.driveFileId || '').trim()
+  const videoFileName = String(body.videoFileName || '').trim().slice(0, 300)
+  const videoSizeBytes = Number(body.videoSizeBytes) || 0
+  const videoMime = String(body.videoMime || '').trim().slice(0, 100)
+  if (!projectId || !newDriveFileId) {
+    return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
+  }
+
+  const docRef = getDb().collection('revisionProjects').doc(projectId)
+  const snap = await docRef.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const project = snap.data() as {
+    ownerUid: string
+    driveFileId: string
+  }
+  if (project.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const oldDriveFileId = project.driveFileId
+
+  const now = Date.now()
+  await docRef.update({
+    driveFileId: newDriveFileId,
+    videoFileName: videoFileName || undefined,
+    videoSizeBytes: videoSizeBytes || undefined,
+    videoMime: videoMime || undefined,
+    // Reset videoStatus on the off chance the legacy polling
+    // path is still consulting it for a legacy project.
+    videoStatus: 'ready',
+    updatedAt: now,
+  })
+
+  // Best-effort: trash the old Drive file unless the caller asked
+  // to keep it. If Drive errors, the new pointer still lives on
+  // the project doc — the orphan is a cleanup nuisance, not a
+  // user-facing failure.
+  const trashOld = body.trashOldFile !== false
+  if (trashOld && oldDriveFileId && oldDriveFileId !== newDriveFileId) {
+    try {
+      const integrationSnap = await integrationDocRef(verified.uid).get()
+      if (integrationSnap.exists) {
+        const integration = integrationSnap.data() as IntegrationDoc
+        const refreshToken = decryptToken(integration.refreshTokenEnc)
+        const tokenResp = await refreshAccessToken(refreshToken)
+        await fetch(
+          `https://www.googleapis.com/drive/v3/files/${oldDriveFileId}`,
+          {
+            method: 'PATCH',
+            headers: {
+              Authorization: `Bearer ${tokenResp.accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ trashed: true }),
+          },
+        ).catch(() => undefined)
+      }
+    } catch (err) {
+      console.warn('[revisions/replace-video] trash-old failed:', err)
+    }
+  }
+
+  return res.status(200).json({ ok: true })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Action: list-notes-owner  (auth required — owner only)
  *
  *  POST /api/revisions?action=list-notes-owner  { idToken, projectId }
@@ -2539,6 +2645,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleDeleteNote(req, res)
       case 'update-project':
         return await handleUpdateProject(req, res)
+      case 'replace-project-video':
+        return await handleReplaceProjectVideo(req, res)
       case 'list-notes-owner':
         return await handleListNotesOwner(req, res)
       case 'update-note-status':
