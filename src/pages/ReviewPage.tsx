@@ -1396,13 +1396,16 @@ function NoteItem({
     : null
 
   // Border + bg color per status — picked so the four states are
-  // distinguishable at a glance when scrolling a long list.
+  // distinguishable at a glance when scrolling a long list. Per
+  // user feedback: resolved is now yellow (more celebratory than
+  // the previous quiet green), not-possible is red (the previous
+  // amber felt too mild for "we can't do this").
   const containerClass = resolved
-    ? 'border-success/20 bg-success/[0.04] hover:bg-success/[0.06]'
+    ? 'border-yellow-500/30 bg-yellow-500/[0.07] hover:bg-yellow-500/[0.09]'
     : isQuestion
       ? 'border-sky-500/20 bg-sky-500/[0.04] hover:bg-sky-500/[0.06]'
       : isNotPossible
-        ? 'border-amber-500/20 bg-amber-500/[0.04] hover:bg-amber-500/[0.06]'
+        ? 'border-red-500/30 bg-red-500/[0.06] hover:bg-red-500/[0.08]'
         : 'border-white/5 bg-white/[0.02] hover:bg-white/[0.04]'
 
   return (
@@ -1467,11 +1470,11 @@ function NoteItem({
                   className={
                     'font-mono rounded px-1.5 py-0.5 text-[11px] font-semibold transition-colors ' +
                     (resolved
-                      ? 'text-success/70 hover:bg-success/10'
+                      ? 'text-yellow-400 hover:bg-yellow-500/10'
                       : isQuestion
                         ? 'text-sky-400 hover:bg-sky-500/10'
                         : isNotPossible
-                          ? 'text-amber-400 hover:bg-amber-500/10'
+                          ? 'text-red-400 hover:bg-red-500/10'
                           : 'text-primary hover:bg-primary/10')
                   }
                 >
@@ -1483,8 +1486,8 @@ function NoteItem({
                   status (that's the editor's workflow). */}
               {resolved && (
                 <span
-                  title="הסטודיו סימן את התיקון כטופל"
-                  className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-1.5 py-0.5 text-[9px] font-medium text-success"
+                  title="העורך סימן את התיקון כטופל"
+                  className="inline-flex items-center gap-1 rounded-full border border-yellow-500/40 bg-yellow-500/15 px-1.5 py-0.5 text-[9px] font-medium text-yellow-400 whitespace-nowrap"
                 >
                   <CheckCircle2 className="h-2.5 w-2.5" />
                   טופל
@@ -1493,7 +1496,7 @@ function NoteItem({
               {isQuestion && (
                 <span
                   title="העורך מבקש הבהרה — ראו את הטקסט בתוך התיקון"
-                  className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-400"
+                  className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-400 whitespace-nowrap"
                 >
                   <MessageSquare className="h-2.5 w-2.5" />
                   שאלה
@@ -1502,7 +1505,7 @@ function NoteItem({
               {isNotPossible && (
                 <span
                   title="העורך הסביר למה לא ניתן לבצע — ראו את הטקסט בתוך התיקון"
-                  className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-400"
+                  className="inline-flex items-center gap-1 rounded-full border border-red-500/40 bg-red-500/15 px-1.5 py-0.5 text-[9px] font-medium text-red-400 whitespace-nowrap"
                 >
                   <AlertTriangle className="h-2.5 w-2.5" />
                   לא אפשרי
@@ -1564,7 +1567,7 @@ function NoteItem({
                 'mt-2 rounded-md border-r-2 px-2 py-1.5 text-[11px] leading-relaxed ' +
                 (isQuestion
                   ? 'border-sky-500/60 bg-sky-500/[0.04] text-sky-100/90'
-                  : 'border-amber-500/60 bg-amber-500/[0.04] text-amber-100/90')
+                  : 'border-red-500/60 bg-red-500/[0.04] text-red-100/90')
               }
             >
               <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-wide opacity-70">

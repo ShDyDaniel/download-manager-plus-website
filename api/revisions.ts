@@ -1049,15 +1049,23 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
   const shareToken = String(body.shareToken || '').trim()
   const viewerEmail = String(body.viewerEmail || '').trim().toLowerCase()
   const text = String(body.text || '').trim()
-  // timeSeconds is OPTIONAL now — a missing/negative value means the
-  // note is "general" (not tied to a specific moment in the video).
-  // General notes get a dedicated badge instead of a clickable
-  // timestamp on both the editor + reviewer side. Stored as null
-  // on the doc rather than 0 so we can distinguish "comment about
-  // the very first frame" from "no timestamp".
-  const rawTime = Number(body.timeSeconds)
+  // timeSeconds is OPTIONAL now — a missing/null/negative value
+  // means the note is "general" (not tied to a specific moment in
+  // the video). General notes get a dedicated badge instead of a
+  // clickable timestamp on both the editor + reviewer side. Stored
+  // as null on the doc rather than 0 so we can distinguish "comment
+  // about the very first frame" from "no timestamp".
+  //
+  // Important: we check the TYPE before coercing. Number(null) is 0,
+  // which would have turned every general note into a "second-zero"
+  // note — exactly the bug this comment now prevents from coming
+  // back.
   const timeSeconds: number | null =
-    Number.isFinite(rawTime) && rawTime >= 0 ? rawTime : null
+    typeof body.timeSeconds === 'number' &&
+    Number.isFinite(body.timeSeconds) &&
+    body.timeSeconds >= 0
+      ? body.timeSeconds
+      : null
   const screenshotDriveFileId = String(body.screenshotDriveFileId || '').trim() || null
   const audioDriveFileId = String(body.audioDriveFileId || '').trim() || null
   if (!shareToken) return res.status(400).json({ ok: false, error: 'shareToken' })
@@ -2027,7 +2035,11 @@ async function handleDeleteProject(req: VercelRequest, res: VercelResponse) {
   const docRef = getDb().collection('revisionProjects').doc(projectId)
   const snap = await docRef.get()
   if (!snap.exists) return res.status(404).json({ ok: false, error: 'לא נמצא' })
-  const project = snap.data() as { ownerUid: string; driveFileId: string }
+  const project = snap.data() as {
+    ownerUid: string
+    driveFileId: string
+    notesFolderId?: string
+  }
   if (project.ownerUid !== verified.uid) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
@@ -2045,21 +2057,36 @@ async function handleDeleteProject(req: VercelRequest, res: VercelResponse) {
       const tokenResp = await refreshAccessToken(refreshToken)
 
       if (deleteDriveFile) {
-        // Move the file to Drive's trash. We use trash rather than
-        // permanent delete so the editor can recover if they
-        // misclicked — Drive empties trash after 30 days on its
-        // own, which is plenty of time to notice the mistake.
-        const trashResp = await fetch(
-          `https://www.googleapis.com/drive/v3/files/${project.driveFileId}`,
-          {
-            method: 'PATCH',
-            headers: {
-              Authorization: `Bearer ${tokenResp.accessToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ trashed: true }),
+        // Trash the main video file AND the entire "קבצי תיקונים"
+        // subfolder (which sweeps every screenshot + voice memo
+        // attached to any note in this project). Trashing a Drive
+        // folder takes its contents along — no need to iterate
+        // individual notes.
+        //
+        // Both calls run in parallel for speed. We mark
+        // driveDeleted=true if the main video trash succeeded; the
+        // notes folder is best-effort beyond that (the user's
+        // primary concern is the video — orphan thumbnails are a
+        // cleanup nuisance, not a privacy leak, since they sit
+        // inside their own Drive).
+        const trashUrl = (id: string) =>
+          `https://www.googleapis.com/drive/v3/files/${id}`
+        const trashOpts = {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${tokenResp.accessToken}`,
+            'Content-Type': 'application/json',
           },
-        )
+          body: JSON.stringify({ trashed: true }),
+        }
+        const [trashResp] = await Promise.all([
+          fetch(trashUrl(project.driveFileId), trashOpts),
+          project.notesFolderId
+            ? fetch(trashUrl(project.notesFolderId), trashOpts).catch(
+                () => undefined,
+              )
+            : Promise.resolve(undefined),
+        ])
         if (trashResp.ok) {
           driveDeleted = true
         } else {
