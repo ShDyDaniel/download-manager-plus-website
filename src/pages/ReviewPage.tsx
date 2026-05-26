@@ -999,7 +999,12 @@ function OnboardingScreen({
                 התיקונים שלכם מופיעים אצל העורך באופן אוטומטי. כשהטיפול
                 בתיקון מסויים יסתיים תראו ליד התיקון אחת משלוש תוויות:
                 <br />
-                <span className="mt-1 inline-flex items-center gap-0.5 rounded bg-success/15 px-1 py-0 text-[10px] font-medium text-success">
+                {/* Colors here MUST match the NoteItem badges in the
+                    workspace below — otherwise viewers learn one
+                    color vocabulary in the onboarding and meet a
+                    different one in the actual UI. Resolved=yellow,
+                    question=sky, not-possible=red. */}
+                <span className="mt-1 inline-flex items-center gap-0.5 rounded bg-yellow-500/15 px-1 py-0 text-[10px] font-medium text-yellow-400">
                   <CheckCircle2 className="h-2.5 w-2.5" />
                   טופל
                 </span>{' '}
@@ -1011,7 +1016,7 @@ function OnboardingScreen({
                 </span>{' '}
                 — העורך לא בטוח מה התכוונתם, ויראה לכם שאלה ליד.
                 <br />
-                <span className="mt-1 inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1 py-0 text-[10px] font-medium text-amber-400">
+                <span className="mt-1 inline-flex items-center gap-0.5 rounded bg-red-500/15 px-1 py-0 text-[10px] font-medium text-red-400">
                   <AlertTriangle className="h-2.5 w-2.5" />
                   לא אפשרי
                 </span>{' '}
