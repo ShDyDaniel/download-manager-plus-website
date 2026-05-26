@@ -1193,12 +1193,18 @@ async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
   }
   const shareToken = String(body.shareToken || '').trim()
   const kind = body.kind
-  const mimeType = String(body.mimeType || '').trim()
+  const rawMime = String(body.mimeType || '').trim()
   const dataBase64 = String(body.dataBase64 || '')
   if (!shareToken) return res.status(400).json({ ok: false, error: 'shareToken' })
   if (kind !== 'image' && kind !== 'audio') {
     return res.status(400).json({ ok: false, error: 'kind חייב להיות image או audio' })
   }
+  // MediaRecorder in Chrome reports mimeTypes like
+  // `audio/webm;codecs=opus` — the codecs parameter is a hint to
+  // decoders, irrelevant for storage. Strip everything after the
+  // first `;` and validate just the base type. Without this strip
+  // the regex below would 400 every voice note from Chromium.
+  const mimeType = rawMime.split(';')[0].trim()
   if (!mimeType || !/^[a-z]+\/[a-z0-9.+-]+$/i.test(mimeType)) {
     return res.status(400).json({ ok: false, error: 'mimeType לא תקין' })
   }
