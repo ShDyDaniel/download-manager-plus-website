@@ -603,12 +603,15 @@ function RoundPickerScreen({
                   {round.roundNumber}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div
-                    className="truncate text-sm text-white"
-                    dir="ltr"
-                    title={round.videoFileName}
-                  >
-                    {round.videoFileName || `סבב ${round.roundNumber}`}
+                  {/* Generic label rather than the upload's filename
+                      — file names from the editor's desktop (e.g.
+                      "סקיצה-compressed.mp4") are an implementation
+                      detail the client doesn't care about, and they
+                      vary across rounds for the same project which
+                      makes the picker look noisy. The round number
+                      is the only thing the client uses to pick. */}
+                  <div className="truncate text-sm text-white">
+                    סבב תיקונים מס' {round.roundNumber}
                   </div>
                   <div className="mt-0.5 flex items-center gap-2 text-[10px] text-white/40">
                     {round.notesCount > 0 && (
