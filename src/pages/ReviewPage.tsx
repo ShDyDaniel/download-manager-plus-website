@@ -1160,13 +1160,12 @@ function ReviewWorkspace({
           ) : notes.length === 0 ? (
             <EmptyNotesState />
           ) : (
-            {/* Custom thin scrollbar — the default WebKit chrome is
-                a chunky grey strip that looks out of place against
-                the dark UI. The arbitrary `[&::-webkit-scrollbar*]`
-                classes target the WebKit pseudo-elements directly
-                so we don't need a Tailwind plugin or a global
-                stylesheet. Firefox uses the `[scrollbar-*]`
-                properties on the element itself. */}
+            // Custom thin scrollbar — the default WebKit chrome is a
+            // chunky grey strip that looks out of place against the
+            // dark UI. The arbitrary [&::-webkit-scrollbar*] classes
+            // target the WebKit pseudo-elements directly so we don't
+            // need a Tailwind plugin or a global stylesheet. Firefox
+            // uses the [scrollbar-*] properties on the element itself.
             <ul
               className="max-h-[calc(72vh-3rem)] space-y-2 overflow-y-auto pr-1
                          [scrollbar-color:rgba(255,255,255,0.12)_transparent]
