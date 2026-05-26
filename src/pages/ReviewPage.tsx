@@ -77,6 +77,13 @@ type State =
 
 const EMAIL_KEY_PREFIX = 'dmplus.review.email.'
 const PWD_TOKEN_KEY_PREFIX = 'dmplus.review.pwd.'
+/** localStorage flag — true once the viewer has seen the "how this
+ *  works" onboarding for this specific share token + viewer email.
+ *  We don't show it again on subsequent visits because the second
+ *  time the viewer already knows the drill. Per-token so different
+ *  reviewers (sharing the same browser) each get the explainer once
+ *  on their first project. */
+const ONBOARDED_KEY_PREFIX = 'dmplus.review.onboarded.'
 
 export function ReviewPage() {
   const { token: rawToken } = useParams<{ token: string }>()
@@ -227,12 +234,213 @@ export function ReviewPage() {
 
   return (
     <ReviewShell viewerEmail={state.viewerEmail}>
-      <ReviewWorkspace
+      <ReadyOrOnboarding
         token={token}
         project={state.project}
         viewerEmail={state.viewerEmail}
       />
     </ReviewShell>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Onboarding gate — shown ONCE per (token, viewer) pair on the
+ *  first visit. The workspace itself is intuitive once you know
+ *  the buttons, but the first-time viewer has no idea what's
+ *  expected of them — many clients have never used a review tool
+ *  before. The explainer cuts the "wait what does this do" round-
+ *  trip with the editor entirely.
+ * ───────────────────────────────────────────────────────────── */
+function ReadyOrOnboarding({
+  token,
+  project,
+  viewerEmail,
+}: {
+  token: string
+  project: ProjectInfo
+  viewerEmail: string
+}) {
+  const [onboarded, setOnboarded] = useState<boolean>(() => {
+    try {
+      return (
+        localStorage.getItem(ONBOARDED_KEY_PREFIX + token) === 'true'
+      )
+    } catch {
+      return false
+    }
+  })
+
+  if (!onboarded) {
+    return (
+      <OnboardingScreen
+        projectTitle={project.title}
+        roundNumber={project.roundNumber}
+        locked={project.locked}
+        onContinue={() => {
+          try {
+            localStorage.setItem(ONBOARDED_KEY_PREFIX + token, 'true')
+          } catch {
+            // ignore — quota / private browsing
+          }
+          setOnboarded(true)
+        }}
+      />
+    )
+  }
+
+  return (
+    <ReviewWorkspace
+      token={token}
+      project={project}
+      viewerEmail={viewerEmail}
+    />
+  )
+}
+
+function OnboardingScreen({
+  projectTitle,
+  roundNumber,
+  locked,
+  onContinue,
+}: {
+  projectTitle: string
+  roundNumber: number
+  locked: boolean
+  onContinue: () => void
+}) {
+  return (
+    <div className="mx-auto max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+        className="space-y-6"
+      >
+        {/* Header */}
+        <div>
+          <div className="mb-2 inline-flex items-center gap-1.5 rounded-full bg-primary/15 px-2.5 py-1 text-[10px] font-mono font-semibold text-primary">
+            <Hash className="h-3 w-3" />
+            סבב {roundNumber}
+          </div>
+          <h1 className="text-2xl font-medium tracking-tight text-fg sm:text-3xl">
+            ברוכים הבאים לסבב התיקונים
+          </h1>
+          <p
+            className="mt-1 truncate text-sm text-fg-muted"
+            title={projectTitle}
+          >
+            {projectTitle}
+          </p>
+        </div>
+
+        {/* Steps card */}
+        <div className="space-y-3 rounded-2xl border border-white/5 bg-white/[0.02] p-5">
+          <h2 className="mb-1 text-sm font-medium text-fg">
+            איך זה עובד —
+          </h2>
+          <Step
+            number="1"
+            title="צפו בסרטון"
+            body="הסרטון יתנגן בעמוד. עוצרים אותו בכל רגע שיש משהו לתקן."
+          />
+          <Step
+            number="2"
+            title="הוסיפו תיקון"
+            body={
+              <>
+                שני כפתורים מתחת לסרטון:
+                <br />
+                <strong className="font-semibold text-fg/90">
+                  • תיקון חדש
+                </strong>{' '}
+                — סתם להכניס הערה בטקסט.
+                <br />
+                <strong className="font-semibold text-fg/90">
+                  • צלם + תיקון
+                </strong>{' '}
+                — צילום של הרגע + מקום לסמן עליו עם חצים, עיגולים ומלבנים.
+                <br />
+                בשני המקרים — הזמן בסרטון נשמר אוטומטית.
+              </>
+            }
+          />
+          <Step
+            number="3"
+            title="כל תיקון מקושר לרגע בסרטון"
+            body="לחיצה על השעון של כל תיקון תקפיץ אותך לאותו רגע בדיוק. ככה אפשר לעבור על כל ההערות בסדר נכון."
+          />
+          <Step
+            number="4"
+            title="הסטודיו רואה הכל בזמן אמת"
+            body={
+              <>
+                התיקונים שלכם מופיעים אצל הסטודיו ברגע ששולחים אותם.
+                כשהם מטפלים בתיקון מסויים תראו ליד התיקון תווית{' '}
+                <span className="inline-flex items-center gap-0.5 rounded bg-success/15 px-1 py-0 text-[10px] font-medium text-success">
+                  <CheckCircle2 className="h-2.5 w-2.5" />
+                  טופל
+                </span>
+                .
+              </>
+            }
+          />
+          <Step
+            number="5"
+            title="אפשר למחוק תיקונים שלכם"
+            body="תיקונים שאתם הוספתם — תראו ליד המייל שלכם אייקון פח קטן. לחיצה תמחק. תיקונים של אחרים — לא נוגעים."
+          />
+        </div>
+
+        {/* Locked notice — only when relevant. The viewer arriving
+            on a locked round needs to understand BEFORE going in why
+            they can't add notes, otherwise they'll think the page is
+            broken. */}
+        {locked && (
+          <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-relaxed text-amber-200">
+            <Lock className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              הסבב הזה <strong className="font-semibold">סגור לתיקונים</strong>.
+              אתם תוכלו לראות את הסרטון ואת התיקונים הקודמים, אבל לא להוסיף
+              חדשים.
+            </span>
+          </div>
+        )}
+
+        {/* Continue CTA */}
+        <button
+          type="button"
+          onClick={onContinue}
+          className="inline-flex w-full min-h-[44px] items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-bg shadow-md shadow-primary/20 transition-all hover:bg-primary/90 sm:w-auto"
+        >
+          הבנתי, בואו נתחיל
+          <ArrowUpLeft className="h-4 w-4" />
+        </button>
+      </motion.div>
+    </div>
+  )
+}
+
+function Step({
+  number,
+  title,
+  body,
+}: {
+  number: string
+  title: string
+  body: React.ReactNode
+}) {
+  return (
+    <div className="flex gap-3 rounded-lg border border-white/5 bg-white/[0.015] p-3">
+      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[11px] font-semibold text-primary">
+        {number}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-xs font-semibold text-fg">{title}</div>
+        <div className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+          {body}
+        </div>
+      </div>
+    </div>
   )
 }
 
