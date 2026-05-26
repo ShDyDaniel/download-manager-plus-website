@@ -2969,11 +2969,20 @@ async function handleDeleteGroup(req: VercelRequest, res: VercelResponse) {
   })
 
   // Optional Drive cleanup — trash every round's video file plus
-  // the project's shared notes folder. Each Drive call is best-effort
-  // and runs in parallel; partial failures don't block the Firestore
-  // archive (the public review page checks status='active', so an
-  // archived doc is unreachable regardless of Drive state).
+  // every note attachment tagged with this project's group id via
+  // appProperties at upload time. We DO NOT trash the notes folder
+  // itself — it's shared across every project the same user owns
+  // (lives directly under their "ניהול הורדות פלוס" root). Trashing
+  // it would orphan every other project's screenshots and voice
+  // memos. Instead we list-and-trash by appProperties.dmpGroupId
+  // so only this project's media disappears, and the folder
+  // continues to serve the user's other projects untouched.
+  //
+  // Legacy media (uploaded before the appProperties tagging
+  // shipped) doesn't carry the group id and won't match the query
+  // — those files stay in the shared folder as harmless orphans.
   let driveDeleted = false
+  let mediaTrashedCount = 0
   if (deleteDriveFiles) {
     try {
       const integrationSnap = await integrationDocRef(verified.uid).get()
@@ -2981,31 +2990,75 @@ async function handleDeleteGroup(req: VercelRequest, res: VercelResponse) {
         const integration = integrationSnap.data() as IntegrationDoc
         const refreshToken = decryptToken(integration.refreshTokenEnc)
         const tokenResp = await refreshAccessToken(refreshToken)
-        const trashOpts = {
-          method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${tokenResp.accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ trashed: true }),
+        const trashHeaders = {
+          Authorization: `Bearer ${tokenResp.accessToken}`,
+          'Content-Type': 'application/json',
         }
+        const trashBody = JSON.stringify({ trashed: true })
         const trashUrl = (id: string) =>
           `https://www.googleapis.com/drive/v3/files/${id}`
-        const trashTargets: string[] = []
+
+        // 1. Trash each round's video file in parallel.
+        const videoIds: string[] = []
         for (const d of activeRoundDocs) {
           const r = d.data() as { driveFileId?: string }
-          if (r.driveFileId) trashTargets.push(r.driveFileId)
+          if (r.driveFileId) videoIds.push(r.driveFileId)
         }
-        if (group.notesFolderId) trashTargets.push(group.notesFolderId)
-        const results = await Promise.all(
-          trashTargets.map((id) =>
-            fetch(trashUrl(id), trashOpts).catch(() => undefined),
+        const videoResults = await Promise.all(
+          videoIds.map((id) =>
+            fetch(trashUrl(id), {
+              method: 'PATCH',
+              headers: trashHeaders,
+              body: trashBody,
+            })
+              .then((r) => r.ok)
+              .catch(() => false),
           ),
         )
-        // Mark driveDeleted=true if at least one trash call succeeded —
-        // this is the signal the desktop UI uses to show "הקבצים נמחקו
-        // מהדרייב" vs "השיתוף בוטל". We don't track per-file success.
-        driveDeleted = results.some((r) => r && r.ok)
+        if (videoResults.some(Boolean)) driveDeleted = true
+
+        // 2. List every note attachment tagged with this group id
+        //    and trash them in parallel. The shared notes folder
+        //    is untouched — only the files belonging to this
+        //    project go away.
+        try {
+          const listUrl = new URL('https://www.googleapis.com/drive/v3/files')
+          listUrl.searchParams.set(
+            'q',
+            `appProperties has { key='dmpGroupId' and value='${groupId}' } and trashed = false`,
+          )
+          listUrl.searchParams.set('fields', 'files(id)')
+          listUrl.searchParams.set('pageSize', '1000')
+          const listResp = await fetch(listUrl.toString(), {
+            headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
+          })
+          if (listResp.ok) {
+            const listJson = (await listResp.json()) as {
+              files?: Array<{ id: string }>
+            }
+            const ids = (listJson.files || []).map((f) => f.id).filter(Boolean)
+            const mediaResults = await Promise.all(
+              ids.map((id) =>
+                fetch(trashUrl(id), {
+                  method: 'PATCH',
+                  headers: trashHeaders,
+                  body: trashBody,
+                })
+                  .then((r) => r.ok)
+                  .catch(() => false),
+              ),
+            )
+            mediaTrashedCount = mediaResults.filter(Boolean).length
+            if (mediaTrashedCount > 0) driveDeleted = true
+          } else {
+            console.warn(
+              '[revisions/delete-group] media list failed:',
+              listResp.status,
+            )
+          }
+        } catch (err) {
+          console.warn('[revisions/delete-group] media cleanup failed:', err)
+        }
       }
     } catch (err) {
       console.warn('[revisions/delete-group] Drive cleanup failed:', err)
@@ -3030,6 +3083,7 @@ async function handleDeleteGroup(req: VercelRequest, res: VercelResponse) {
   return res.status(200).json({
     ok: true,
     driveDeleted,
+    mediaTrashedCount,
     roundsArchived: activeRoundDocs.length,
   })
 }
