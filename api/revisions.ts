@@ -1034,19 +1034,37 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
     viewerName?: string
     timeSeconds?: number
     text?: string
+    /** Legacy: base64 data URL stored on the note doc. New notes
+     *  should send screenshotDriveFileId instead — the bytes live
+     *  in the editor's Drive and the note stores only a pointer. */
     screenshotDataUrl?: string
+    /** Drive file ID of the uploaded screenshot. Set by the client
+     *  after calling action=upload-note-media. */
+    screenshotDriveFileId?: string
+    /** Drive file ID of the uploaded voice recording. Same flow as
+     *  screenshotDriveFileId — upload first, then submit the note. */
+    audioDriveFileId?: string
     annotations?: unknown[]
   }
   const shareToken = String(body.shareToken || '').trim()
   const viewerEmail = String(body.viewerEmail || '').trim().toLowerCase()
   const text = String(body.text || '').trim()
   const timeSeconds = Number(body.timeSeconds)
+  const screenshotDriveFileId = String(body.screenshotDriveFileId || '').trim() || null
+  const audioDriveFileId = String(body.audioDriveFileId || '').trim() || null
   if (!shareToken) return res.status(400).json({ ok: false, error: 'shareToken' })
   if (!viewerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(viewerEmail)) {
     return res.status(400).json({ ok: false, error: 'מייל לא תקין' })
   }
-  if (!text && !body.screenshotDataUrl) {
-    return res.status(400).json({ ok: false, error: 'חובה לכתוב תיאור או לצרף תמונה' })
+  if (
+    !text &&
+    !body.screenshotDataUrl &&
+    !screenshotDriveFileId &&
+    !audioDriveFileId
+  ) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'חובה לכתוב תיאור, לצרף תמונה או להקליט' })
   }
   if (!Number.isFinite(timeSeconds) || timeSeconds < 0) {
     return res.status(400).json({ ok: false, error: 'timestamp לא תקין' })
@@ -1104,7 +1122,12 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
     viewerName: String(body.viewerName || '').trim().slice(0, 80) || null,
     timeSeconds,
     text: text.slice(0, 2000),
+    // Legacy base64 path stays supported so existing data still
+    // renders. New uploads always go through the Drive route below
+    // (screenshotDriveFileId + audioDriveFileId).
     screenshotDataUrl: screenshotDataUrl || null,
+    screenshotDriveFileId,
+    audioDriveFileId,
     annotations,
     status: 'new',
     createdAt: now,
@@ -1119,6 +1142,357 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
     .catch(() => undefined)
 
   return res.status(200).json({ ok: true, noteId: noteRef.id })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: upload-note-media  (PUBLIC — gated by share + password)
+ *
+ *  POST /api/revisions?action=upload-note-media
+ *  Body: { shareToken, passwordToken?, kind: 'image'|'audio',
+ *          mimeType, dataBase64 }
+ *  Returns: { ok, driveFileId, mimeType }
+ *
+ *  Why this exists: the previous flow base64-encoded screenshots
+ *  into the note doc itself, which capped at ~700 KB because of
+ *  Firestore's 1 MB doc limit. That worked for stills but rules
+ *  out voice notes (90 s of Opus alone is ~270 KB, comfortable
+ *  inside the cap on its own but not alongside a screenshot, and
+ *  the user wants ALL media in Drive as a matter of principle —
+ *  one storage source).
+ *
+ *  Flow:
+ *    1. Browser uploads the blob (base64) here.
+ *    2. We auth the viewer (shareToken + optional passwordToken).
+ *    3. We use the project owner's stored refresh token to mint
+ *       a Drive access token.
+ *    4. Multipart upload to Drive into the project's parent folder.
+ *    5. Return the driveFileId. Client then sends add-note with
+ *       screenshotDriveFileId / audioDriveFileId pointing at it.
+ *
+ *  Permissions: the uploaded file stays private to the editor's
+ *  Drive — we don't flip "anyone with link" because the only path
+ *  back to it is action=note-media below, which re-auths every
+ *  request server-side. Smaller attack surface than public links.
+ *
+ *  Size caps:
+ *    image: 5 MB encoded (~3.5 MB raw). Plenty for a 1080p JPEG.
+ *    audio: 5 MB encoded (~3.5 MB raw). 90 s of 256 kbps Opus is
+ *           ~3 MB, so this caps the recording UI without us having
+ *           to expose the math.
+ *  These caps also keep us under Vercel Hobby's ~4.5 MB body cap.
+ * ────────────────────────────────────────────────────────────── */
+const NOTE_MEDIA_MAX_BASE64 = 5 * 1024 * 1024 // 5 MB encoded
+
+async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+    kind?: 'image' | 'audio'
+    mimeType?: string
+    dataBase64?: string
+  }
+  const shareToken = String(body.shareToken || '').trim()
+  const kind = body.kind
+  const mimeType = String(body.mimeType || '').trim()
+  const dataBase64 = String(body.dataBase64 || '')
+  if (!shareToken) return res.status(400).json({ ok: false, error: 'shareToken' })
+  if (kind !== 'image' && kind !== 'audio') {
+    return res.status(400).json({ ok: false, error: 'kind חייב להיות image או audio' })
+  }
+  if (!mimeType || !/^[a-z]+\/[a-z0-9.+-]+$/i.test(mimeType)) {
+    return res.status(400).json({ ok: false, error: 'mimeType לא תקין' })
+  }
+  if (!dataBase64) {
+    return res.status(400).json({ ok: false, error: 'dataBase64 חסר' })
+  }
+  if (dataBase64.length > NOTE_MEDIA_MAX_BASE64) {
+    return res.status(413).json({
+      ok: false,
+      error: kind === 'image' ? 'התמונה גדולה מדי' : 'ההקלטה ארוכה מדי',
+    })
+  }
+
+  // Project + auth check
+  const snap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const projectDoc = snap.docs[0]
+  const project = projectDoc.data() as {
+    id: string
+    ownerUid: string
+    driveFolderId: string
+    status: string
+    passwordHash: string | null
+    locked?: boolean
+  }
+  if (project.status !== 'active') {
+    return res.status(410).json({ ok: false, error: 'הסבב כבר לא פעיל' })
+  }
+  if (project.locked === true) {
+    return res.status(423).json({
+      ok: false,
+      error: 'הסבב סגור לתיקונים. אי אפשר להעלות מדיה חדשה.',
+    })
+  }
+  if (project.passwordHash) {
+    const passwordToken = String(body.passwordToken || '').trim()
+    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
+      return res.status(403).json({ ok: false, error: 'נדרשת סיסמה' })
+    }
+  }
+
+  // Drive access — refresh token belongs to the project owner.
+  const integrationSnap = await integrationDocRef(project.ownerUid).get()
+  if (!integrationSnap.exists) {
+    return res.status(500).json({ ok: false, error: 'Drive לא מחובר' })
+  }
+  const integration = integrationSnap.data() as IntegrationDoc
+  const refreshToken = decryptToken(integration.refreshTokenEnc)
+  let accessToken: string
+  try {
+    const r = await refreshAccessToken(refreshToken)
+    accessToken = r.accessToken
+  } catch {
+    return res.status(401).json({ ok: false, error: 'Drive auth פג תוקף' })
+  }
+
+  // Multipart upload to Drive — metadata + bytes in one request.
+  const ext =
+    kind === 'image'
+      ? mimeType.includes('png')
+        ? 'png'
+        : 'jpg'
+      : mimeType.includes('mp4')
+        ? 'm4a'
+        : 'webm'
+  const fileName = `note-${shareToken}-${Date.now()}-${crypto
+    .randomBytes(3)
+    .toString('hex')}.${ext}`
+  const bytes = Buffer.from(dataBase64, 'base64')
+  const boundary = `dmp-${crypto.randomBytes(8).toString('hex')}`
+  const metadata = {
+    name: fileName,
+    parents: project.driveFolderId ? [project.driveFolderId] : undefined,
+    mimeType,
+  }
+  const multipart = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\n` +
+        `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+        `${JSON.stringify(metadata)}\r\n` +
+        `--${boundary}\r\n` +
+        `Content-Type: ${mimeType}\r\n\r\n`,
+      'utf8',
+    ),
+    bytes,
+    Buffer.from(`\r\n--${boundary}--`, 'utf8'),
+  ])
+
+  const uploadResp = await fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+      },
+      body: multipart,
+    },
+  )
+  if (!uploadResp.ok) {
+    const errText = await uploadResp.text().catch(() => '')
+    console.error(
+      '[revisions/upload-note-media] Drive upload failed:',
+      uploadResp.status,
+      errText.slice(0, 200),
+    )
+    return res
+      .status(502)
+      .json({ ok: false, error: 'העלאה ל-Drive נכשלה' })
+  }
+  const uploadJson = (await uploadResp.json()) as { id?: string }
+  if (!uploadJson.id) {
+    return res.status(502).json({ ok: false, error: 'Drive החזיר תשובה לא תקינה' })
+  }
+
+  return res.status(200).json({
+    ok: true,
+    driveFileId: uploadJson.id,
+    mimeType,
+  })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: note-media  (PUBLIC — gated by share + password)
+ *
+ *  GET /api/revisions?action=note-media&token=<share>&note=<noteId>
+ *                                      &kind=image|audio&t=<pwd?>
+ *
+ *  Streams a single note's media file from the editor's Drive.
+ *  Same auth model as list-notes (share token + optional password
+ *  token). We look up the note doc, read screenshotDriveFileId /
+ *  audioDriveFileId, then proxy Drive's response.
+ *
+ *  Why Vercel proxy (not the Cloudflare Worker that serves video):
+ *  note media is small (sub-MB) and accessed sporadically. Burning
+ *  a Worker handshake per asset would be measurable latency for no
+ *  bandwidth win. Vercel Hobby has 100 GB egress/mo — at ~500 KB
+ *  per note image and ~300 KB per voice clip, that's headroom for
+ *  hundreds of thousands of views.
+ * ────────────────────────────────────────────────────────────── */
+async function handleNoteMedia(req: VercelRequest, res: VercelResponse) {
+  const shareToken = String(req.query.token || '').trim()
+  const noteId = String(req.query.note || '').trim()
+  const kind = String(req.query.kind || '').trim() as 'image' | 'audio'
+  const passwordToken = String(req.query.t || '').trim()
+  if (!shareToken || !noteId) {
+    return res.status(400).end('token + note required')
+  }
+  if (kind !== 'image' && kind !== 'audio') {
+    return res.status(400).end('kind must be image or audio')
+  }
+
+  const snap = await getDb()
+    .collection('revisionProjects')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) return res.status(404).end('not found')
+  const projectDoc = snap.docs[0]
+  const project = projectDoc.data() as {
+    id: string
+    ownerUid: string
+    status: string
+    passwordHash: string | null
+  }
+  if (project.status !== 'active') return res.status(410).end('archived')
+  if (project.passwordHash) {
+    if (!passwordToken || !verifyPasswordToken(passwordToken, project.id)) {
+      return res.status(403).end('password required')
+    }
+  }
+
+  const noteSnap = await projectDoc.ref.collection('notes').doc(noteId).get()
+  if (!noteSnap.exists) return res.status(404).end('note not found')
+  const note = noteSnap.data() as {
+    screenshotDriveFileId?: string | null
+    audioDriveFileId?: string | null
+  }
+  const driveFileId =
+    kind === 'image' ? note.screenshotDriveFileId : note.audioDriveFileId
+  if (!driveFileId) return res.status(404).end('media not attached')
+
+  // Mint a Drive access token via the owner's refresh token.
+  const integrationSnap = await integrationDocRef(project.ownerUid).get()
+  if (!integrationSnap.exists) return res.status(500).end('drive not connected')
+  const integration = integrationSnap.data() as IntegrationDoc
+  const refreshToken = decryptToken(integration.refreshTokenEnc)
+  let accessToken: string
+  try {
+    const r = await refreshAccessToken(refreshToken)
+    accessToken = r.accessToken
+  } catch {
+    return res.status(401).end('drive auth expired')
+  }
+
+  // Pull the bytes from Drive and stream them back. Note media is
+  // small enough that we don't bother with Range support — the
+  // browser fetches the whole thing once and caches it.
+  const driveResp = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  )
+  if (!driveResp.ok) {
+    return res.status(driveResp.status).end('drive fetch failed')
+  }
+  const contentType = driveResp.headers.get('content-type') || 'application/octet-stream'
+  const contentLength = driveResp.headers.get('content-length')
+  res.setHeader('Content-Type', contentType)
+  if (contentLength) res.setHeader('Content-Length', contentLength)
+  // 1-hour browser cache — note media is immutable once uploaded
+  // (delete-note tears it down rather than overwrites), so caching
+  // is safe and cuts repeat-view roundtrips.
+  res.setHeader('Cache-Control', 'private, max-age=3600')
+  res.setHeader('Content-Disposition', 'inline')
+  const buf = Buffer.from(await driveResp.arrayBuffer())
+  return res.status(200).send(buf)
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: note-media-owner  (auth required — owner only)
+ *
+ *  POST /api/revisions?action=note-media-owner
+ *  Body: { idToken, projectId, noteId, kind: 'image'|'audio' }
+ *  Returns: raw binary (image/audio bytes), with the Drive file's
+ *  Content-Type passed through verbatim.
+ *
+ *  Why a separate endpoint instead of extending note-media to
+ *  accept idToken? Owner auth needs idToken which we don't want
+ *  in a GET URL (logged in access logs, leaks via Referer, shows
+ *  up if the user copies an image URL). POST keeps the token in
+ *  the request body. The desktop renderer fetches with this then
+ *  builds an object-URL blob to assign to <img src>, so the
+ *  rendered URL never contains anything sensitive.
+ * ────────────────────────────────────────────────────────────── */
+async function handleNoteMediaOwner(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    projectId?: string
+    noteId?: string
+    kind?: 'image' | 'audio'
+  }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).end('unauthorized')
+  const projectId = String(body.projectId || '').trim()
+  const noteId = String(body.noteId || '').trim()
+  const kind = body.kind
+  if (!projectId || !noteId) return res.status(400).end('projectId + noteId required')
+  if (kind !== 'image' && kind !== 'audio') return res.status(400).end('bad kind')
+
+  const projectRef = getDb().collection('revisionProjects').doc(projectId)
+  const projectSnap = await projectRef.get()
+  if (!projectSnap.exists) return res.status(404).end('project not found')
+  const project = projectSnap.data() as { ownerUid: string }
+  if (project.ownerUid !== verified.uid) return res.status(403).end('forbidden')
+
+  const noteSnap = await projectRef.collection('notes').doc(noteId).get()
+  if (!noteSnap.exists) return res.status(404).end('note not found')
+  const note = noteSnap.data() as {
+    screenshotDriveFileId?: string | null
+    audioDriveFileId?: string | null
+  }
+  const driveFileId =
+    kind === 'image' ? note.screenshotDriveFileId : note.audioDriveFileId
+  if (!driveFileId) return res.status(404).end('media not attached')
+
+  const integrationSnap = await integrationDocRef(project.ownerUid).get()
+  if (!integrationSnap.exists) return res.status(500).end('drive not connected')
+  const integration = integrationSnap.data() as IntegrationDoc
+  const refreshToken = decryptToken(integration.refreshTokenEnc)
+  let accessToken: string
+  try {
+    const r = await refreshAccessToken(refreshToken)
+    accessToken = r.accessToken
+  } catch {
+    return res.status(401).end('drive auth expired')
+  }
+
+  const driveResp = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  )
+  if (!driveResp.ok) return res.status(driveResp.status).end('drive fetch failed')
+  const contentType = driveResp.headers.get('content-type') || 'application/octet-stream'
+  res.setHeader('Content-Type', contentType)
+  res.setHeader('Cache-Control', 'private, max-age=3600')
+  const buf = Buffer.from(await driveResp.arrayBuffer())
+  return res.status(200).send(buf)
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -1716,12 +2090,56 @@ async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
   if (!noteSnap.exists) {
     return res.status(404).json({ ok: false, error: 'התיקון לא נמצא' })
   }
-  const note = noteSnap.data() as { viewerEmail: string }
+  const note = noteSnap.data() as {
+    viewerEmail: string
+    screenshotDriveFileId?: string | null
+    audioDriveFileId?: string | null
+  }
   if ((note.viewerEmail || '').toLowerCase() !== viewerEmail) {
     return res.status(403).json({
       ok: false,
       error: 'ניתן למחוק רק תיקונים שאתם הוספתם',
     })
+  }
+
+  // Trash any Drive-side media attached to this note before removing
+  // the Firestore doc. Best-effort: if Drive hiccups we still drop
+  // the note (the user clicked delete, not "delete-pending-cleanup"),
+  // and the orphan media file just sits in the editor's Drive until
+  // they clean it up manually. Same forgiveness we apply elsewhere.
+  const driveIds = [note.screenshotDriveFileId, note.audioDriveFileId].filter(
+    (id): id is string => typeof id === 'string' && id.length > 0,
+  )
+  if (driveIds.length > 0) {
+    try {
+      const projectData = projectDoc.data() as { ownerUid: string }
+      const integrationSnap = await integrationDocRef(projectData.ownerUid).get()
+      if (integrationSnap.exists) {
+        const integration = integrationSnap.data() as IntegrationDoc
+        const refreshToken = decryptToken(integration.refreshTokenEnc)
+        const r = await refreshAccessToken(refreshToken)
+        await Promise.all(
+          driveIds.map((id) =>
+            fetch(
+              `https://www.googleapis.com/drive/v3/files/${id}`,
+              {
+                method: 'PATCH',
+                headers: {
+                  Authorization: `Bearer ${r.accessToken}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ trashed: true }),
+              },
+            ).catch(() => undefined),
+          ),
+        )
+      }
+    } catch (err) {
+      console.warn(
+        '[revisions/delete-note] Drive media cleanup failed:',
+        err,
+      )
+    }
   }
 
   await noteRef.delete()
@@ -1968,6 +2386,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleListNotesOwner(req, res)
       case 'update-note-status':
         return await handleUpdateNoteStatus(req, res)
+      case 'upload-note-media':
+        return await handleUploadNoteMedia(req, res)
+      case 'note-media':
+        return await handleNoteMedia(req, res)
+      case 'note-media-owner':
+        return await handleNoteMediaOwner(req, res)
       case 'get-stream-token':
         return await handleGetStreamToken(req, res)
       case 'stream-video':

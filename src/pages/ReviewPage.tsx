@@ -16,6 +16,8 @@ import {
   Hash,
   Trash2,
   CheckCircle2,
+  Mic,
+  Square,
 } from 'lucide-react'
 
 /**
@@ -63,7 +65,15 @@ interface Note {
   viewerName?: string | null
   timeSeconds: number
   text: string
+  /** Legacy: base64 data URL stored directly in the note doc.
+   *  Pre-Drive-migration notes still come down with this field set.
+   *  New notes ship with screenshotDriveFileId instead, and the
+   *  renderer falls back to whichever is present. */
   screenshotDataUrl?: string | null
+  /** Drive file ID of the screenshot (post-migration storage). */
+  screenshotDriveFileId?: string | null
+  /** Drive file ID of the voice recording attached to this note. */
+  audioDriveFileId?: string | null
   status: 'new' | 'resolved'
   createdAt: number
 }
@@ -77,6 +87,77 @@ type State =
 
 const EMAIL_KEY_PREFIX = 'dmplus.review.email.'
 const PWD_TOKEN_KEY_PREFIX = 'dmplus.review.pwd.'
+
+/** Strip the `data:<mime>;base64,` prefix off a data URL so we can
+ *  send just the base64 payload to upload-note-media. The server
+ *  rebuilds the buffer from the raw bytes. */
+function stripDataUrl(dataUrl: string): { mime: string; base64: string } | null {
+  const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl)
+  if (!m) return null
+  return { mime: m[1], base64: m[2] }
+}
+
+/** Read a Blob into base64 (without the data: prefix). MediaRecorder
+ *  hands us a Blob for audio; the only way to send it as JSON to the
+ *  upload endpoint is to base64-encode the bytes. */
+async function blobToBase64(blob: Blob): Promise<string> {
+  const arr = new Uint8Array(await blob.arrayBuffer())
+  // btoa needs a binary string. Chunk to avoid stack overflow on
+  // large blobs (>~125 KB) — String.fromCharCode(...arr) blows up
+  // with "Maximum call stack size exceeded" past a few hundred KB.
+  let binary = ''
+  const chunk = 0x8000
+  for (let i = 0; i < arr.length; i += chunk) {
+    binary += String.fromCharCode(...arr.subarray(i, i + chunk))
+  }
+  return btoa(binary)
+}
+
+/** POST a media blob/data-URL to upload-note-media. Returns the
+ *  Drive fileId the server stored it under. */
+async function uploadNoteMedia(
+  shareToken: string,
+  passwordToken: string | null,
+  kind: 'image' | 'audio',
+  mimeType: string,
+  base64: string,
+): Promise<string> {
+  const r = await fetch(`${API}?action=upload-note-media`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      shareToken,
+      passwordToken,
+      kind,
+      mimeType,
+      dataBase64: base64,
+    }),
+  })
+  const json = (await r.json()) as
+    | { ok: true; driveFileId: string; mimeType: string }
+    | { ok: false; error: string }
+  if (!json.ok) throw new Error(json.error || 'העלאה נכשלה')
+  return json.driveFileId
+}
+
+/** Build a URL the browser can use to fetch a note's media. Goes
+ *  through the Vercel proxy which re-auths server-side per request
+ *  (the file itself is private to the editor's Drive). */
+function noteMediaUrl(
+  shareToken: string,
+  noteId: string,
+  kind: 'image' | 'audio',
+  passwordToken: string | null,
+): string {
+  const params = new URLSearchParams({
+    action: 'note-media',
+    token: shareToken,
+    note: noteId,
+    kind,
+  })
+  if (passwordToken) params.set('t', passwordToken)
+  return `${API}?${params.toString()}`
+}
 /** localStorage flag — true once the viewer has seen the "how this
  *  works" onboarding for this specific share token + viewer email.
  *  We don't show it again on subsequent visits because the second
@@ -777,7 +858,13 @@ function ReviewWorkspace({
     | null
     | {
         timeSeconds: number
+        /** Captured frame as a data URL — null if the viewer opened
+         *  the composer via "תיקון חדש" (text-only) or "הקלט קול". */
         screenshotDataUrl: string | null
+        /** Recorded voice memo. Null until the user actually records.
+         *  Either or both of screenshot/audio can be present alongside
+         *  the required text. */
+        audioBlob: Blob | null
       }
   >(null)
   const [noteText, setNoteText] = useState('')
@@ -792,6 +879,7 @@ function ReviewWorkspace({
     setComposer({
       timeSeconds: Math.max(0, Math.floor(v.currentTime)),
       screenshotDataUrl: null,
+      audioBlob: null,
     })
     setNoteText('')
     setSubmitError(null)
@@ -805,22 +893,70 @@ function ReviewWorkspace({
     setComposer({
       timeSeconds: Math.max(0, Math.floor(v.currentTime)),
       screenshotDataUrl: data,
+      audioBlob: null,
     })
     setNoteText('')
     setSubmitError(null)
   }
 
-  /** Submit a new note. The composer can supply an annotated version
-   *  of the screenshot — drawn-on with the pen/arrow/rectangle tools
-   *  — which we prefer over the original capture. Passing null means
-   *  the viewer didn't add annotations, so we send the raw frame. */
+  /** Submit a new note. The composer can carry up to two media
+   *  attachments — an (optionally annotated) screenshot and a voice
+   *  recording — both of which are uploaded to the editor's Drive
+   *  BEFORE the note doc itself is created. The note ends up storing
+   *  only Drive fileIds, never the raw bytes; that way the user's
+   *  storage constraint ("everything in Drive") is satisfied, and
+   *  Firestore's 1 MB doc limit isn't a factor on note size.
+   *
+   *  finalScreenshotDataUrl: if the AnnotationCanvas drew on top of
+   *  the captured frame, this is the baked-in final image. Falls
+   *  back to the raw capture if the viewer skipped annotation. */
   async function submitNote(finalScreenshotDataUrl: string | null) {
-    if (!composer || !noteText.trim() || submitting) return
-    const screenshotToSave = finalScreenshotDataUrl ?? composer.screenshotDataUrl
+    if (!composer || submitting) return
+    const text = noteText.trim()
+    const screenshotToSave =
+      finalScreenshotDataUrl ?? composer.screenshotDataUrl
+    const audioBlob = composer.audioBlob
+    // Require at least one of: text, screenshot, audio. Server also
+    // enforces this but rejecting early avoids a wasted upload.
+    if (!text && !screenshotToSave && !audioBlob) {
+      setSubmitError('חובה לכתוב, לצרף תמונה או להקליט')
+      return
+    }
     setSubmitting(true)
     setSubmitError(null)
     try {
       const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
+
+      // ── Phase 1: upload media to Drive ──
+      // Done sequentially because each call hits the editor's
+      // refresh-token rotation; parallel calls would race on token
+      // refresh and waste quota.
+      let screenshotDriveFileId: string | null = null
+      let audioDriveFileId: string | null = null
+      if (screenshotToSave) {
+        const parsed = stripDataUrl(screenshotToSave)
+        if (parsed) {
+          screenshotDriveFileId = await uploadNoteMedia(
+            token,
+            passwordToken,
+            'image',
+            parsed.mime,
+            parsed.base64,
+          )
+        }
+      }
+      if (audioBlob) {
+        const base64 = await blobToBase64(audioBlob)
+        audioDriveFileId = await uploadNoteMedia(
+          token,
+          passwordToken,
+          'audio',
+          audioBlob.type || 'audio/webm',
+          base64,
+        )
+      }
+
+      // ── Phase 2: create the note pointing at the fileIds ──
       const r = await fetch(`${API}?action=add-note`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -829,8 +965,9 @@ function ReviewWorkspace({
           passwordToken,
           viewerEmail,
           timeSeconds: composer.timeSeconds,
-          text: noteText.trim(),
-          screenshotDataUrl: screenshotToSave,
+          text,
+          screenshotDriveFileId,
+          audioDriveFileId,
         }),
       })
       const json = (await r.json()) as
@@ -847,8 +984,9 @@ function ReviewWorkspace({
           id: json.noteId,
           viewerEmail,
           timeSeconds: composer.timeSeconds,
-          text: noteText.trim(),
-          screenshotDataUrl: screenshotToSave,
+          text,
+          screenshotDriveFileId,
+          audioDriveFileId,
           status: 'new',
           createdAt: Date.now(),
         },
@@ -856,8 +994,10 @@ function ReviewWorkspace({
       setComposer(null)
       setNoteText('')
       setSubmitting(false)
-    } catch {
-      setSubmitError('שגיאת רשת')
+    } catch (err) {
+      setSubmitError(
+        err instanceof Error ? err.message : 'שגיאת רשת',
+      )
       setSubmitting(false)
     }
   }
@@ -1009,6 +1149,7 @@ function ReviewWorkspace({
                   <NoteItem
                     key={note.id}
                     note={note}
+                    shareToken={token}
                     // Hide the trash icon entirely when the project
                     // is locked — the server enforces the same rule
                     // but showing a button that always errors makes
@@ -1034,6 +1175,10 @@ function ReviewWorkspace({
           <NoteComposer
             timeSeconds={composer.timeSeconds}
             screenshotDataUrl={composer.screenshotDataUrl}
+            audioBlob={composer.audioBlob}
+            setAudioBlob={(audioBlob) =>
+              setComposer((c) => (c ? { ...c, audioBlob } : c))
+            }
             text={noteText}
             setText={setNoteText}
             submitting={submitting}
@@ -1124,6 +1269,7 @@ function EmptyNotesState() {
 function NoteItem({
   note,
   isOwn,
+  shareToken,
   onSeek,
   onExpandImage,
   onDelete,
@@ -1133,6 +1279,8 @@ function NoteItem({
    *  stored viewerEmail — controls whether the trash icon shows.
    *  Server still enforces the same check on delete-note. */
   isOwn: boolean
+  /** Needed to build Drive-media URLs for screenshot + audio. */
+  shareToken: string
   onSeek: (t: number) => void
   onExpandImage: (url: string) => void
   onDelete: () => void
@@ -1144,6 +1292,18 @@ function NoteItem({
   // is a better fit than a modal for a sidebar full of small cards.
   const [confirming, setConfirming] = useState(false)
   const resolved = note.status === 'resolved'
+
+  // Resolve the screenshot URL — prefer the Drive-backed proxy URL
+  // for new notes; fall back to the inline data URL for legacy notes
+  // created before the Drive migration. Both display the same way.
+  const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + shareToken)
+  const screenshotUrl = note.screenshotDriveFileId
+    ? noteMediaUrl(shareToken, note.id, 'image', passwordToken)
+    : note.screenshotDataUrl || null
+  const audioUrl = note.audioDriveFileId
+    ? noteMediaUrl(shareToken, note.id, 'audio', passwordToken)
+    : null
+
   return (
     <li
       className={
@@ -1154,15 +1314,15 @@ function NoteItem({
       }
     >
       <div className="flex gap-2.5">
-        {note.screenshotDataUrl ? (
+        {screenshotUrl ? (
           <button
             type="button"
-            onClick={() => onExpandImage(note.screenshotDataUrl!)}
+            onClick={() => onExpandImage(screenshotUrl)}
             title="הגדלת התמונה"
             className="group/thumb relative shrink-0 overflow-hidden rounded-md border border-white/10 transition-transform hover:scale-[1.03]"
           >
             <img
-              src={note.screenshotDataUrl}
+              src={screenshotUrl}
               alt=""
               className={
                 'h-14 w-14 object-cover ' + (resolved ? 'opacity-60' : '')
@@ -1170,6 +1330,13 @@ function NoteItem({
             />
             <div className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover/thumb:bg-black/20" />
           </button>
+        ) : audioUrl ? (
+          <div
+            aria-hidden
+            className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-primary/5 text-primary/70"
+          >
+            <Mic className="h-5 w-5" />
+          </div>
         ) : (
           <div
             aria-hidden
@@ -1232,14 +1399,27 @@ function NoteItem({
               )}
             </div>
           </div>
-          <p
-            className={
-              'whitespace-pre-wrap break-words text-xs leading-relaxed ' +
-              (resolved ? 'text-fg/60 line-through decoration-fg/30' : 'text-fg')
-            }
-          >
-            {note.text}
-          </p>
+          {note.text && (
+            <p
+              className={
+                'whitespace-pre-wrap break-words text-xs leading-relaxed ' +
+                (resolved ? 'text-fg/60 line-through decoration-fg/30' : 'text-fg')
+              }
+            >
+              {note.text}
+            </p>
+          )}
+          {audioUrl && (
+            <audio
+              controls
+              src={audioUrl}
+              preload="metadata"
+              className={
+                'mt-1.5 block h-8 w-full rounded-md ' +
+                (resolved ? 'opacity-60' : '')
+              }
+            />
+          )}
           {/* Confirm strip — appears below the text only when the
               viewer clicked the trash. Keeps the destructive flow
               from triggering on a single accidental click. */}
@@ -1322,6 +1502,8 @@ function ImageLightbox({ url, onClose }: { url: string; onClose: () => void }) {
 function NoteComposer({
   timeSeconds,
   screenshotDataUrl,
+  audioBlob,
+  setAudioBlob,
   text,
   setText,
   submitting,
@@ -1331,6 +1513,8 @@ function NoteComposer({
 }: {
   timeSeconds: number
   screenshotDataUrl: string | null
+  audioBlob: Blob | null
+  setAudioBlob: (b: Blob | null) => void
   text: string
   setText: (s: string) => void
   submitting: boolean
@@ -1415,10 +1599,15 @@ function NoteComposer({
               onChange={(e) => setText(e.target.value)}
               autoFocus={!screenshotDataUrl}
               rows={4}
-              placeholder="לדוגמה: צבע הירק לא מתאים, להוריד את הווליום של המוזיקה ברקע..."
+              placeholder="לדוגמה: צבע הירק לא מתאים, להוריד את הווליום של המוזיקה ברקע... (אפשר גם להקליט הסבר קולי למטה)"
               className="block w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5 text-sm text-fg placeholder:text-fg-muted/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
             />
           </div>
+          <AudioRecorder
+            blob={audioBlob}
+            onChange={setAudioBlob}
+            disabled={submitting}
+          />
           {error && (
             <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {error}
@@ -1436,7 +1625,14 @@ function NoteComposer({
           <button
             type="button"
             onClick={() => onSubmit(annotatedDataUrl)}
-            disabled={!text.trim() || submitting}
+            // Allow submit when ANY of: text, screenshot (always
+            // present if composer opened via "צלם") or audio is
+            // provided. Server enforces the same rule but this gives
+            // immediate feedback in the disabled state.
+            disabled={
+              submitting ||
+              (!text.trim() && !screenshotDataUrl && !audioBlob)
+            }
             className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-bg transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-primary/40"
           >
             {submitting ? (
@@ -1449,5 +1645,204 @@ function NoteComposer({
         </div>
       </motion.div>
     </motion.div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  AudioRecorder — capture a voice memo via MediaRecorder.
+ *
+ *  Three visual states:
+ *    1. Idle: a single "🎙 הקלט הסבר קולי" button.
+ *    2. Recording: red pulsing indicator + elapsed seconds + stop
+ *       button. Auto-stops at MAX_SECONDS so we never produce a
+ *       blob bigger than the server upload cap (~5 MB).
+ *    3. Done: <audio controls> preview + delete (×) button.
+ *
+ *  Uses webm/opus on Chrome/Firefox/Edge (~24 KB/sec) and falls
+ *  back to whatever MediaRecorder defaults to on Safari (usually
+ *  audio/mp4). Both play back via <audio> on every modern browser.
+ *
+ *  Permission denial / no-microphone gracefully degrades — we show
+ *  an explanatory error instead of crashing the composer.
+ * ───────────────────────────────────────────────────────────── */
+const AUDIO_MAX_SECONDS = 90
+
+function AudioRecorder({
+  blob,
+  onChange,
+  disabled,
+}: {
+  blob: Blob | null
+  onChange: (b: Blob | null) => void
+  disabled?: boolean
+}) {
+  const [state, setState] = useState<'idle' | 'recording' | 'error'>('idle')
+  const [elapsed, setElapsed] = useState(0)
+  const [errMsg, setErrMsg] = useState<string | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const streamRef = useRef<MediaStream | null>(null)
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Memoize the playback URL so the <audio> tag doesn't re-fetch
+  // (and re-create the blob URL) on every render — and revoke it
+  // when the blob is cleared so we don't leak memory.
+  const previewUrl = useMemo(
+    () => (blob ? URL.createObjectURL(blob) : null),
+    [blob],
+  )
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl)
+    }
+  }, [previewUrl])
+
+  // Always tear down the stream + interval on unmount so the mic
+  // doesn't stay "in use" if the user closes the composer mid-
+  // recording.
+  useEffect(() => {
+    return () => {
+      try {
+        recorderRef.current?.state === 'recording' &&
+          recorderRef.current.stop()
+      } catch {
+        /* ignore */
+      }
+      streamRef.current?.getTracks().forEach((t) => t.stop())
+      if (tickRef.current) clearInterval(tickRef.current)
+    }
+  }, [])
+
+  async function start() {
+    if (disabled || state === 'recording') return
+    setErrMsg(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      })
+      streamRef.current = stream
+      // Let MediaRecorder pick the best mime; Chrome → webm/opus,
+      // Safari → audio/mp4. The blob.type ends up reflecting what
+      // was actually used, which we pass to the server so it stores
+      // the correct extension in Drive.
+      const rec = new MediaRecorder(stream)
+      chunksRef.current = []
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data)
+      }
+      rec.onstop = () => {
+        const mimeType = rec.mimeType || 'audio/webm'
+        const out = new Blob(chunksRef.current, { type: mimeType })
+        onChange(out)
+        // Release the mic AFTER the blob is assembled — stopping the
+        // tracks before onstop fires can drop the trailing buffer on
+        // some browsers.
+        streamRef.current?.getTracks().forEach((t) => t.stop())
+        streamRef.current = null
+        setState('idle')
+        setElapsed(0)
+        if (tickRef.current) {
+          clearInterval(tickRef.current)
+          tickRef.current = null
+        }
+      }
+      recorderRef.current = rec
+      rec.start()
+      setState('recording')
+      const startedAt = Date.now()
+      tickRef.current = setInterval(() => {
+        const e = Math.floor((Date.now() - startedAt) / 1000)
+        setElapsed(e)
+        if (e >= AUDIO_MAX_SECONDS) stop()
+      }, 200)
+    } catch (err) {
+      console.error('[recorder] getUserMedia failed:', err)
+      setErrMsg('לא הצלחנו לגשת למיקרופון. בדקו שאישרתם הרשאה בדפדפן.')
+      setState('error')
+    }
+  }
+
+  function stop() {
+    if (recorderRef.current?.state === 'recording') {
+      recorderRef.current.stop()
+    }
+  }
+
+  function clear() {
+    onChange(null)
+    setElapsed(0)
+  }
+
+  // Done state — preview the recorded audio + clear button.
+  if (blob && previewUrl) {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/[0.04] px-3 py-2">
+        <Mic className="h-4 w-4 shrink-0 text-primary" />
+        <audio
+          controls
+          src={previewUrl}
+          className="h-8 flex-1"
+          preload="metadata"
+        />
+        <button
+          type="button"
+          onClick={clear}
+          disabled={disabled}
+          aria-label="מחק הקלטה"
+          title="מחק הקלטה"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-muted transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    )
+  }
+
+  // Recording state — red pulsing badge + timer + stop button.
+  if (state === 'recording') {
+    const remaining = Math.max(0, AUDIO_MAX_SECONDS - elapsed)
+    const mm = Math.floor(elapsed / 60)
+    const ss = String(elapsed % 60).padStart(2, '0')
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2">
+        <span className="relative flex h-2.5 w-2.5 shrink-0">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-destructive opacity-75" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-destructive" />
+        </span>
+        <span className="font-mono text-xs text-destructive">
+          {mm}:{ss}
+        </span>
+        <span className="text-[10px] text-destructive/70">
+          · נשארו {remaining} שנ׳
+        </span>
+        <button
+          type="button"
+          onClick={stop}
+          className="ms-auto inline-flex items-center gap-1 rounded-md bg-destructive/90 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-destructive"
+        >
+          <Square className="h-3 w-3" />
+          עצור
+        </button>
+      </div>
+    )
+  }
+
+  // Idle state — "start recording" button. Wider on its own line.
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() => void start()}
+        disabled={disabled}
+        className="inline-flex w-full min-h-[40px] items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-sm font-medium text-fg-muted transition-colors hover:border-primary/30 hover:bg-primary/[0.04] hover:text-fg disabled:opacity-50"
+      >
+        <Mic className="h-4 w-4" />
+        הקלט הסבר קולי
+        <span className="text-[10px] text-fg-muted/70">· עד 90 שניות</span>
+      </button>
+      {errMsg && (
+        <p className="px-1 text-[11px] text-destructive">{errMsg}</p>
+      )}
+    </div>
   )
 }
