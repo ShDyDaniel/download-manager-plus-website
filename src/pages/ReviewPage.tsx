@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import {
@@ -20,6 +20,9 @@ import {
   CheckCircle2,
   Mic,
   Square,
+  ChevronLeft,
+  FolderClosed,
+  FileVideo,
 } from 'lucide-react'
 
 /**
@@ -51,8 +54,12 @@ import {
 const API = '/api/revisions'
 
 interface ProjectInfo {
-  /** Firestore document ID. Needed by owner-side actions like
-   *  update-note-status which target a specific project. */
+  /** Firestore document ID of the ROUND. In legacy single-round
+   *  projects this is also the share-token-resolved document. In
+   *  new-style project groups, this is the round the viewer
+   *  picked from the round picker (or the only round, if the
+   *  group has exactly one). Owner-side actions (update-note-
+   *  status etc.) target this id. */
   projectId: string
   title: string
   streamUrl: string
@@ -62,6 +69,27 @@ interface ProjectInfo {
    *  video + existing notes stay visible; the add-note buttons
    *  disappear and a friendly banner explains why. */
   locked: boolean
+  /** Present when this round is part of a multi-round group. The
+   *  workspace uses it to render the "back to picker" affordance
+   *  and so subsequent fetches that need a roundId can grab it
+   *  without a separate ref. Null for legacy single-round projects
+   *  and for groups that the user reached via the auto-select
+   *  shortcut (single-round groups). */
+  groupContext?: {
+    groupId: string
+    totalRounds: number
+  }
+}
+
+/** One round inside a group, as returned by the get-project
+ *  response. Drives the round picker UI. */
+interface PickerRound {
+  id: string
+  roundNumber: number
+  locked: boolean
+  notesCount: number
+  videoFileName: string
+  createdAt: number
 }
 
 interface Note {
@@ -95,6 +123,10 @@ type State =
   | { kind: 'not-found'; message: string }
   | { kind: 'needs-password'; title?: string; roundNumber?: number }
   | { kind: 'needs-email'; title: string; roundNumber: number }
+  | {
+      kind: 'needs-round-picker'
+      group: { id: string; title: string; rounds: PickerRound[] }
+    }
   | { kind: 'ready'; project: ProjectInfo; viewerEmail: string }
 
 const EMAIL_KEY_PREFIX = 'dmplus.review.email.'
@@ -126,10 +158,16 @@ async function blobToBase64(blob: Blob): Promise<string> {
 }
 
 /** POST a media blob/data-URL to upload-note-media. Returns the
- *  Drive fileId the server stored it under. */
+ *  Drive fileId the server stored it under.
+ *
+ *  `roundId` is required for new-style project groups (one share
+ *  token, many rounds — server needs to know which round's notes
+ *  folder to deposit the attachment in). Legacy single-round
+ *  projects ignore it. */
 async function uploadNoteMedia(
   shareToken: string,
   passwordToken: string | null,
+  roundId: string | null,
   kind: 'image' | 'audio',
   mimeType: string,
   base64: string,
@@ -140,6 +178,7 @@ async function uploadNoteMedia(
     body: JSON.stringify({
       shareToken,
       passwordToken,
+      roundId,
       kind,
       mimeType,
       dataBase64: base64,
@@ -154,12 +193,17 @@ async function uploadNoteMedia(
 
 /** Build a URL the browser can use to fetch a note's media. Goes
  *  through the Vercel proxy which re-auths server-side per request
- *  (the file itself is private to the editor's Drive). */
+ *  (the file itself is private to the editor's Drive).
+ *
+ *  Includes `&r=<roundId>` for grouped projects so the proxy can
+ *  resolve which round (= which Drive notes folder) the note
+ *  belongs to. */
 function noteMediaUrl(
   shareToken: string,
   noteId: string,
   kind: 'image' | 'audio',
   passwordToken: string | null,
+  roundId: string | null,
 ): string {
   const params = new URLSearchParams({
     action: 'note-media',
@@ -168,6 +212,7 @@ function noteMediaUrl(
     kind,
   })
   if (passwordToken) params.set('t', passwordToken)
+  if (roundId) params.set('r', roundId)
   return `${API}?${params.toString()}`
 }
 /** localStorage flag — true once the viewer has seen the "how this
@@ -232,8 +277,28 @@ function clearOwnerSession(token: string): void {
 
 export function ReviewPage() {
   const { token: rawToken } = useParams<{ token: string }>()
+  const [searchParams, setSearchParams] = useSearchParams()
   const token = (rawToken || '').trim()
+  // ?round=<id> — set by the round picker after the viewer chooses a
+  // cut. The presence of this param tells `load()` to drill straight
+  // into a specific round of a multi-round group; absence means
+  // either a legacy project or "show me the picker". We don't read
+  // hash fragments because Vercel + Cloudflare strip those.
+  const roundIdFromUrl = (searchParams.get('round') || '').trim() || null
   const [state, setState] = useState<State>({ kind: 'loading' })
+
+  // Allow children (RoundPicker, the workspace header) to navigate
+  // between rounds without re-implementing the URL marshalling. They
+  // call this with a roundId (drill in) or null (back to picker).
+  const navigateToRound = useCallback(
+    (roundId: string | null) => {
+      const next = new URLSearchParams(searchParams)
+      if (roundId) next.set('round', roundId)
+      else next.delete('round')
+      setSearchParams(next, { replace: false })
+    },
+    [searchParams, setSearchParams],
+  )
 
   useEffect(() => {
     if (!token) {
@@ -247,7 +312,11 @@ export function ReviewPage() {
         const r = await fetch(`${API}?action=get-project`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shareToken: token, passwordToken }),
+          body: JSON.stringify({
+            shareToken: token,
+            passwordToken,
+            roundId: roundIdFromUrl,
+          }),
         })
         const json = (await r.json()) as
           | {
@@ -256,16 +325,30 @@ export function ReviewPage() {
               title: string
               roundNumber?: number
               locked?: boolean
+              kind?: 'group' | 'single'
             }
           | {
               ok: true
               needsPassword: false
+              kind: 'single'
               project: {
                 id: string
                 title: string
                 roundNumber?: number
                 locked?: boolean
               }
+            }
+          | {
+              ok: true
+              needsPassword: false
+              kind: 'group'
+              group: { id: string; title: string; rounds: PickerRound[] }
+              project: {
+                id: string
+                title: string
+                roundNumber?: number
+                locked?: boolean
+              } | null
             }
           | { ok: false; error: string }
 
@@ -281,16 +364,42 @@ export function ReviewPage() {
           })
           return
         }
-        const round = json.project.roundNumber ?? 1
-        const locked = json.project.locked === true
-        const projectId = json.project.id
+        // Group with no auto-selected round → show the picker. This
+        // happens when the group has multiple rounds AND the URL
+        // didn't pin a specific one. Single-round groups are
+        // auto-selected by the server so they skip straight to the
+        // workspace below.
+        if (json.kind === 'group' && !json.project) {
+          setState({
+            kind: 'needs-round-picker',
+            group: json.group,
+          })
+          return
+        }
+        // Either legacy single-round OR group with auto/explicit
+        // round selection. Both reach the workspace via loadStream.
+        const proj = json.project!
+        const round = proj.roundNumber ?? 1
+        const locked = proj.locked === true
+        const projectId = proj.id
+        const groupContext =
+          json.kind === 'group'
+            ? { groupId: json.group.id, totalRounds: json.group.rounds.length }
+            : undefined
         const storedEmail = localStorage.getItem(EMAIL_KEY_PREFIX + token)
         if (storedEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(storedEmail)) {
-          await loadStream(storedEmail, json.project.title, round, locked, projectId)
+          await loadStream(
+            storedEmail,
+            proj.title,
+            round,
+            locked,
+            projectId,
+            groupContext,
+          )
         } else {
           setState({
             kind: 'needs-email',
-            title: json.project.title,
+            title: proj.title,
             roundNumber: round,
           })
         }
@@ -309,12 +418,21 @@ export function ReviewPage() {
       roundNumber: number,
       locked: boolean,
       projectId: string,
+      groupContext: ProjectInfo['groupContext'],
     ) {
       const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
       const r = await fetch(`${API}?action=get-stream-token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shareToken: token, passwordToken }),
+        body: JSON.stringify({
+          shareToken: token,
+          passwordToken,
+          // For groups the server needs the roundId to mint the
+          // correct stream URL (the URL embeds `&r=<roundId>` so
+          // the Worker → auth-stream → Drive flow can pick the
+          // right file). Legacy ignores this.
+          roundId: groupContext ? projectId : null,
+        }),
       })
       const json = (await r.json()) as
         | { ok: true; streamUrl: string; videoMime: string; title: string }
@@ -332,11 +450,12 @@ export function ReviewPage() {
           videoMime: json.videoMime,
           roundNumber,
           locked,
+          groupContext,
         },
         viewerEmail,
       })
     }
-  }, [token])
+  }, [token, roundIdFromUrl])
 
   if (state.kind === 'loading')
     return (
@@ -366,6 +485,15 @@ export function ReviewPage() {
         </CenterCard>
       </ReviewShell>
     )
+  if (state.kind === 'needs-round-picker')
+    return (
+      <ReviewShell>
+        <RoundPickerScreen
+          group={state.group}
+          onPick={(roundId) => navigateToRound(roundId)}
+        />
+      </ReviewShell>
+    )
   if (state.kind === 'needs-email')
     return (
       <ReviewShell>
@@ -387,9 +515,144 @@ export function ReviewPage() {
         token={token}
         project={state.project}
         viewerEmail={state.viewerEmail}
+        onBackToPicker={
+          state.project.groupContext && state.project.groupContext.totalRounds > 1
+            ? () => navigateToRound(null)
+            : undefined
+        }
       />
     </ReviewShell>
   )
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Round picker — first screen viewers see when a project has
+ *  multiple rounds.
+ *
+ *  Editorial pattern matches the rest of the review chrome: large
+ *  centered card, brand kicker, small explainer above the list.
+ *  Each round renders as a tappable row with the cut number, file
+ *  name, lock badge if frozen, and notes count. We sort newest
+ *  round first so the most recent cut is the easiest tap target
+ *  (typical viewer wants to see the latest version).
+ * ───────────────────────────────────────────────────────────── */
+function RoundPickerScreen({
+  group,
+  onPick,
+}: {
+  group: { id: string; title: string; rounds: PickerRound[] }
+  onPick: (roundId: string) => void
+}) {
+  const sorted = useMemo(
+    () => [...group.rounds].sort((a, b) => b.roundNumber - a.roundNumber),
+    [group.rounds],
+  )
+  // Single-round projects skip this screen server-side (see
+  // handleGetProject). If we ever land here with zero rounds it
+  // means the editor archived all of them — surface a friendly
+  // message rather than an empty list.
+  if (sorted.length === 0) {
+    return (
+      <CenterCard>
+        <div className="text-center">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-500/15 text-amber-400">
+            <AlertTriangle className="h-7 w-7" />
+          </div>
+          <h1 className="text-lg font-medium text-white">אין סבבים זמינים</h1>
+          <p className="mt-2 text-sm text-white/60">
+            כרגע אין סבבי תיקונים פעילים בפרויקט הזה. צרו קשר עם העורך.
+          </p>
+        </div>
+      </CenterCard>
+    )
+  }
+  return (
+    <div className="mx-auto w-full max-w-xl px-4 py-10">
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+        className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 backdrop-blur-sm"
+      >
+        <div className="mb-6 text-center">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-white/5 text-white/70">
+            <FolderClosed className="h-6 w-6" strokeWidth={1.8} />
+          </div>
+          <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-white/40">
+            — פרויקט
+          </div>
+          <h1 className="text-lg font-medium text-white">{group.title}</h1>
+          <p className="mt-2 text-xs text-white/60">
+            בחרו את סבב התיקונים שתרצו לפתוח.
+          </p>
+        </div>
+
+        <ul className="space-y-2">
+          {sorted.map((round) => (
+            <li key={round.id}>
+              <button
+                type="button"
+                onClick={() => onPick(round.id)}
+                className="group flex w-full items-center gap-3 rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-right transition-all hover:border-white/20 hover:bg-white/[0.05]"
+              >
+                <span
+                  title={`סבב ${round.roundNumber}`}
+                  className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-white/10 px-2 py-1 text-[11px] font-mono font-semibold text-white"
+                >
+                  <Hash className="h-3 w-3" />
+                  {round.roundNumber}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div
+                    className="truncate text-sm text-white"
+                    dir="ltr"
+                    title={round.videoFileName}
+                  >
+                    {round.videoFileName || `סבב ${round.roundNumber}`}
+                  </div>
+                  <div className="mt-0.5 flex items-center gap-2 text-[10px] text-white/40">
+                    {round.notesCount > 0 && (
+                      <span className="inline-flex items-center gap-1">
+                        <MessageSquare className="h-2.5 w-2.5" />
+                        {round.notesCount} תיקונים
+                      </span>
+                    )}
+                    {round.createdAt > 0 && (
+                      <span>{formatRoundDate(round.createdAt)}</span>
+                    )}
+                  </div>
+                </div>
+                {round.locked && (
+                  <span
+                    title="הסבב סגור לתיקונים חדשים"
+                    className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-400"
+                  >
+                    <Lock className="h-2.5 w-2.5" />
+                    נעול
+                  </span>
+                )}
+                <ChevronLeft
+                  className="h-4 w-4 shrink-0 text-white/30 transition-all group-hover:translate-x-[-2px] group-hover:text-white/60"
+                  aria-hidden
+                />
+              </button>
+            </li>
+          ))}
+        </ul>
+      </motion.div>
+    </div>
+  )
+}
+
+function formatRoundDate(ts: number): string {
+  try {
+    return new Date(ts).toLocaleDateString('he-IL', {
+      day: 'numeric',
+      month: 'short',
+    })
+  } catch {
+    return ''
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -404,10 +667,15 @@ function ReadyOrOnboarding({
   token,
   project,
   viewerEmail,
+  onBackToPicker,
 }: {
   token: string
   project: ProjectInfo
   viewerEmail: string
+  /** When set the workspace shows a small "back to round picker"
+   *  affordance in the header. Undefined for legacy projects and
+   *  for single-round groups. */
+  onBackToPicker?: () => void
 }) {
   const [onboarded, setOnboarded] = useState<boolean>(() => {
     try {
@@ -502,6 +770,7 @@ function ReadyOrOnboarding({
       token={token}
       project={project}
       viewerEmail={viewerEmail}
+      onBackToPicker={onBackToPicker}
       ownerIdToken={
         ownerCheck === 'authed' && ownerSession ? ownerSession.idToken : null
       }
@@ -1151,6 +1420,7 @@ function ReviewWorkspace({
   viewerEmail,
   ownerIdToken,
   onOwnerSessionInvalid,
+  onBackToPicker,
 }: {
   token: string
   project: ProjectInfo
@@ -1163,8 +1433,20 @@ function ReviewWorkspace({
    *  the cached idToken expired or was revoked. Bubbles up so the
    *  parent can clear the cache and re-prompt for sign-in. */
   onOwnerSessionInvalid: () => void
+  /** When defined the header shows a small "← לבחירת סבב" link
+   *  so the viewer can pop back to the picker mid-session. Only
+   *  provided for projects with >1 round. */
+  onBackToPicker?: () => void
 }) {
   const streamUrl = project.streamUrl
+  // For new-style groups every note-side call must include the
+  // roundId so the server can route the operation to the correct
+  // round doc (group + roundId resolves to a single round). For
+  // legacy single-round projects the share token alone identifies
+  // the round, so roundId is null. project.projectId IS the round
+  // id in both cases — we just only forward it when there's a
+  // group context to scope it.
+  const roundId = project.groupContext ? project.projectId : null
 
   const [notes, setNotes] = useState<Note[]>([])
   const [notesLoading, setNotesLoading] = useState(true)
@@ -1182,7 +1464,7 @@ function ReviewWorkspace({
         const r = await fetch(`${API}?action=list-notes`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shareToken: token, passwordToken }),
+          body: JSON.stringify({ shareToken: token, passwordToken, roundId }),
         })
         const json = (await r.json()) as
           | { ok: true; notes: Note[] }
@@ -1192,7 +1474,7 @@ function ReviewWorkspace({
         if (opts.showSpinner) setNotesLoading(false)
       }
     },
-    [token],
+    [token, roundId],
   )
   useEffect(() => {
     void refreshNotes({ showSpinner: true })
@@ -1303,6 +1585,7 @@ function ReviewWorkspace({
           screenshotDriveFileId = await uploadNoteMedia(
             token,
             passwordToken,
+            roundId,
             'image',
             parsed.mime,
             parsed.base64,
@@ -1314,6 +1597,7 @@ function ReviewWorkspace({
         audioDriveFileId = await uploadNoteMedia(
           token,
           passwordToken,
+          roundId,
           'audio',
           audioBlob.type || 'audio/webm',
           base64,
@@ -1327,6 +1611,7 @@ function ReviewWorkspace({
         body: JSON.stringify({
           shareToken: token,
           passwordToken,
+          roundId,
           viewerEmail,
           timeSeconds: composer.timeSeconds,
           text,
@@ -1398,6 +1683,7 @@ function ReviewWorkspace({
         body: JSON.stringify({
           shareToken: token,
           passwordToken,
+          roundId,
           noteId,
           viewerEmail,
         }),
@@ -1485,6 +1771,22 @@ function ReviewWorkspace({
         <h1 className="truncate text-lg font-medium text-fg sm:text-xl">
           {project.title}
         </h1>
+        {onBackToPicker && (
+          // Push the picker link to the LTR end of the row in RTL,
+          // far away from the title so it reads as secondary
+          // navigation. The chevron points back-direction-aware:
+          // ChevronLeft becomes "next" in RTL — exactly what we
+          // want for "switch round".
+          <button
+            type="button"
+            onClick={onBackToPicker}
+            className="ms-auto inline-flex shrink-0 items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[11px] text-white/70 transition-colors hover:bg-white/[0.07] hover:text-white"
+            title="חזרה לבחירת סבב בפרויקט"
+          >
+            <FileVideo className="h-3 w-3" />
+            סבב אחר
+          </button>
+        )}
       </div>
 
       <div className="grid gap-4 sm:gap-5 md:grid-cols-[1fr_340px]">
@@ -1610,6 +1912,7 @@ function ReviewWorkspace({
                     key={note.id}
                     note={note}
                     shareToken={token}
+                    roundId={roundId}
                     // Hide the trash icon entirely when the project
                     // is locked — the server enforces the same rule
                     // but showing a button that always errors makes
@@ -1735,6 +2038,7 @@ function NoteItem({
   isOwn,
   isOwnerMode,
   shareToken,
+  roundId,
   onSeek,
   onExpandImage,
   onDelete,
@@ -1750,6 +2054,11 @@ function NoteItem({
   isOwnerMode: boolean
   /** Needed to build Drive-media URLs for screenshot + audio. */
   shareToken: string
+  /** Required for grouped projects so the media proxy can resolve
+   *  which round's notes folder this note's attachment lives in.
+   *  Null on legacy single-round projects (the share token alone
+   *  uniquely identifies the round). */
+  roundId: string | null
   onSeek: (t: number) => void
   onExpandImage: (url: string) => void
   onDelete: () => void
@@ -1777,10 +2086,10 @@ function NoteItem({
   // created before the Drive migration. Both display the same way.
   const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + shareToken)
   const screenshotUrl = note.screenshotDriveFileId
-    ? noteMediaUrl(shareToken, note.id, 'image', passwordToken)
+    ? noteMediaUrl(shareToken, note.id, 'image', passwordToken, roundId)
     : note.screenshotDataUrl || null
   const audioUrl = note.audioDriveFileId
-    ? noteMediaUrl(shareToken, note.id, 'audio', passwordToken)
+    ? noteMediaUrl(shareToken, note.id, 'audio', passwordToken, roundId)
     : null
 
   // Border + bg color per status — picked so the four states are
