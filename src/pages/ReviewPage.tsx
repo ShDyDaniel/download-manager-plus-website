@@ -832,9 +832,15 @@ function ReviewWorkspace({
 
   const [notes, setNotes] = useState<Note[]>([])
   const [notesLoading, setNotesLoading] = useState(true)
-  useEffect(() => {
-    void loadNotes()
-    async function loadNotes() {
+  /** Fetch the canonical note list from the server. Lifted out of
+   *  the initial-load useEffect so submitNote / deleteNote can call
+   *  it for a post-write sync, ensuring viewers see exactly what
+   *  the server stored (with the real server-generated noteId, any
+   *  concurrent notes from other reviewers, etc.) rather than only
+   *  the optimistic local copy. */
+  const refreshNotes = useCallback(
+    async (opts: { showSpinner?: boolean } = {}): Promise<void> => {
+      if (opts.showSpinner) setNotesLoading(true)
       try {
         const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
         const r = await fetch(`${API}?action=list-notes`, {
@@ -847,10 +853,14 @@ function ReviewWorkspace({
           | { ok: false; error: string }
         if (json.ok) setNotes(json.notes)
       } finally {
-        setNotesLoading(false)
+        if (opts.showSpinner) setNotesLoading(false)
       }
-    }
-  }, [token])
+    },
+    [token],
+  )
+  useEffect(() => {
+    void refreshNotes({ showSpinner: true })
+  }, [refreshNotes])
 
   const videoRef = useRef<HTMLVideoElement>(null)
 
@@ -978,6 +988,11 @@ function ReviewWorkspace({
         setSubmitting(false)
         return
       }
+      // Optimistic insert — the viewer sees their note appear before
+      // the network round-trip below completes, so the submit feels
+      // instant. Then refreshNotes() pulls the canonical list which
+      // overwrites this entry with the server's stored copy +
+      // catches anything new other reviewers added in the meantime.
       setNotes((prev) => [
         ...prev,
         {
@@ -994,6 +1009,9 @@ function ReviewWorkspace({
       setComposer(null)
       setNoteText('')
       setSubmitting(false)
+      // Fire-and-forget — already showed the optimistic version,
+      // any drift gets reconciled when this resolves.
+      void refreshNotes()
     } catch (err) {
       setSubmitError(
         err instanceof Error ? err.message : 'שגיאת רשת',
@@ -1142,7 +1160,23 @@ function ReviewWorkspace({
           ) : notes.length === 0 ? (
             <EmptyNotesState />
           ) : (
-            <ul className="max-h-[calc(72vh-3rem)] space-y-2 overflow-y-auto pr-1">
+            {/* Custom thin scrollbar — the default WebKit chrome is
+                a chunky grey strip that looks out of place against
+                the dark UI. The arbitrary `[&::-webkit-scrollbar*]`
+                classes target the WebKit pseudo-elements directly
+                so we don't need a Tailwind plugin or a global
+                stylesheet. Firefox uses the `[scrollbar-*]`
+                properties on the element itself. */}
+            <ul
+              className="max-h-[calc(72vh-3rem)] space-y-2 overflow-y-auto pr-1
+                         [scrollbar-color:rgba(255,255,255,0.12)_transparent]
+                         [scrollbar-width:thin]
+                         [&::-webkit-scrollbar]:w-1.5
+                         [&::-webkit-scrollbar-track]:bg-transparent
+                         [&::-webkit-scrollbar-thumb]:rounded-full
+                         [&::-webkit-scrollbar-thumb]:bg-white/10
+                         [&::-webkit-scrollbar-thumb:hover]:bg-white/25"
+            >
               {[...notes]
                 .sort((a, b) => a.timeSeconds - b.timeSeconds)
                 .map((note) => (
