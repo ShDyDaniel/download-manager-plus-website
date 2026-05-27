@@ -2284,7 +2284,7 @@ function SubscriptionFlow({
             2. Pay-later button (if eligible for the user's locale).
             3. "Debit or Credit Card" button → expands an inline
                card-fields iframe ON THIS PAGE — user types card
-               number / exp / CVV without leaving www.dmplus.net.
+               number / exp / CVV without leaving dmplus.net.
           That third option is the embedded-card experience the
           user explicitly asked for: "let them enter credit card
           details right inside the website" (as in the previous

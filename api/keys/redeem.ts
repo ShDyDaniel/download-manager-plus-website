@@ -295,7 +295,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-const WEBSITE_BASE_REDEEM = 'https://www.dmplus.net'
+const WEBSITE_BASE_REDEEM = 'https://dmplus.net'
 
 /**
  * Pro-activation email. Twin of the same-named function in

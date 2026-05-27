@@ -18,7 +18,7 @@ import {
  * Wiring:
  *   1. Firebase Console → Authentication → Templates → Password
  *      reset → "Customize action URL" set to
- *      `https://www.dmplus.net/auth-action`.
+ *      `https://dmplus.net/auth-action`.
  *   2. From then on, every `generatePasswordResetLink()` call in
  *      api/reset-password.ts produces a URL with our domain
  *      instead of `n-plus-64549.firebaseapp.com`.

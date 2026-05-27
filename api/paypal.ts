@@ -890,7 +890,7 @@ export const config = {
 const ADMIN_EMAILS = ['dyshalts@gmail.com']
 const SESSION_TTL_SECONDS = 60 * 60 // 1 hour
 const MAX_REASON_LENGTH = 500
-const WEBSITE_BASE = 'https://www.dmplus.net'
+const WEBSITE_BASE = 'https://dmplus.net'
 
 /**
  *  Email-provider whitelist for signup.
@@ -2490,7 +2490,7 @@ async function handleCancel(req: VercelRequest, res: VercelResponse) {
   const subscriptionId = (body.subscriptionId || '').trim()
   const reason =
     (body.reason || '').slice(0, MAX_REASON_LENGTH).trim() ||
-    'User cancelled via www.dmplus.net/account'
+    'User cancelled via dmplus.net/account'
   if (!token || !subscriptionId) {
     return res.status(400).json({ ok: false, error: 'חסרים פרטי בקשה' })
   }

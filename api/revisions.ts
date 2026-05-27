@@ -93,7 +93,7 @@ const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 // and query strings have historically been a source of subtle
 // "redirect_uri_mismatch" failures (different encoding of `?`/`&`,
 // different ordering, etc.). A plain path always works.
-const REDIRECT_URI = 'https://www.dmplus.net/oauth/drive/callback'
+const REDIRECT_URI = 'https://dmplus.net/oauth/drive/callback'
 
 // State JWT lifetime — long enough for a slow user to complete the
 // Google consent flow, short enough that a stale state can't be
@@ -1760,7 +1760,7 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
   })
 }
 
-const WEBSITE_BASE = 'https://www.dmplus.net'
+const WEBSITE_BASE = 'https://dmplus.net'
 
 /* ──────────────────────────────────────────────────────────────
  *  Action: get-project  (PUBLIC — no auth)
