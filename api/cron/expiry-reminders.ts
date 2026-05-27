@@ -39,7 +39,7 @@ import nodemailer from 'nodemailer'
  */
 
 const REMINDER_TOKEN_TTL_DAYS = 14
-const WEBSITE_BASE = 'https://dm-plus.vercel.app'
+const WEBSITE_BASE = 'https://www.dmplus.net'
 
 /** Stages of the reminder pipeline. Order matters only for the
  *  loop below — we check them sequentially and break after the
@@ -549,7 +549,7 @@ async function sendAnnualReportEmail(args: {
         שאלות? תשובה ישירה למייל הזה תגיע לתמיכה.
       </p>
       <p style="margin:8px 0 0;font-size:11px;color:#5C5444;">
-        לניהול או ביטול המנוי: <a href="https://dm-plus.vercel.app/account" style="color:#D4A574;text-decoration:underline;">החשבון שלי</a>
+        לניהול או ביטול המנוי: <a href="https://www.dmplus.net/account" style="color:#D4A574;text-decoration:underline;">החשבון שלי</a>
       </p>
     `,
   })

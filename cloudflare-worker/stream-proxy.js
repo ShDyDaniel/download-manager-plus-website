@@ -25,7 +25,7 @@
  */
 
 const VERCEL_AUTH_URL =
-  'https://dm-plus.vercel.app/api/revisions?action=auth-stream'
+  'https://www.dmplus.net/api/revisions?action=auth-stream'
 
 // In-memory cache: key = `${shareToken}|${passwordToken}` → entry.
 // Lives only within a single Worker isolate; cold starts re-auth.
