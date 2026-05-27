@@ -1829,9 +1829,12 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
     // user-doc check. So we now log the error AND treat as
     // not-Pro so the inactive notice surfaces correctly.
     let ownerActive: boolean
+    let ownerCheckError: string | null = null
     try {
       ownerActive = await isUserPro(ownerUid, ownerEmail)
     } catch (err) {
+      ownerCheckError =
+        err instanceof Error ? err.message : String(err)
       console.warn(
         '[revisions/get-project] owner-active check threw:',
         err,
@@ -1840,15 +1843,44 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
     }
     console.log(
       '[revisions/get-project] ownerCheck',
-      JSON.stringify({ ownerUid, ownerEmail, ownerActive }),
+      JSON.stringify({ ownerUid, ownerEmail, ownerActive, ownerCheckError }),
     )
     if (!ownerActive) {
       return res.status(200).json({
         ok: true,
         ownerInactive: true,
         ownerEmail,
+        // Temporary diagnostic — included so the operator can see
+        // (via the browser network tab) WHY the check failed
+        // without needing access to Vercel logs. Safe to remove
+        // once the inactive flow is confirmed working.
+        __debug: { ownerUid, ownerCheckError, codeBuild: 'inactive-fix-v2' },
       })
     }
+    // Temporary diagnostic for the active branch too — if the
+    // operator's test ever shows the workspace when it shouldn't,
+    // this field tells us what the server actually saw and the
+    // build that returned it. Remove once stable.
+    void ownerCheckError
+    // Stash the debug info on the response object so the success
+    // branches below can include it without us threading another
+    // parameter through. setHeader is the right place — it lives
+    // on the request scope, doesn't get serialised into JSON, and
+    // any downstream `res.json(...)` we already do is untouched.
+    // We piggyback on a custom header so the operator can see the
+    // diagnostic in the Network tab → Headers without needing to
+    // pretty-print the response body. Sentinel value confirms the
+    // build is live ("inactive-fix-v2"); ownerUid + ownerActive
+    // tell us exactly what the check decided.
+    res.setHeader(
+      'X-Dmp-Owner-Check',
+      JSON.stringify({
+        ownerUid,
+        ownerEmail,
+        ownerActive,
+        codeBuild: 'inactive-fix-v2',
+      }),
+    )
   }
 
   // ── New-style group ────────────────────────────────────────
