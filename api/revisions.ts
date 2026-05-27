@@ -1244,6 +1244,14 @@ async function handleCreateProjectGroup(
     videoSizeBytes?: number
     videoMime?: string
     roundNumber?: number
+    // Public-review-page toggles, settable at creation time so
+    // the editor can pre-configure a project without having to
+    // open the edit modal afterwards. All optional — server
+    // falls back to the safe defaults (watermark on, download
+    // off, Drive link off) when omitted.
+    watermark?: boolean
+    allowDownload?: boolean
+    openInDrive?: boolean
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -1298,12 +1306,16 @@ async function handleCreateProjectGroup(
     driveFolderId,
     notesFolderId: null,
     status: 'active',
-    // Public-review-page toggles. New projects get the safe
-    // defaults that match the original ship behavior; the editor
-    // can flip any of them later from the edit-project modal.
-    watermark: true,
-    allowDownload: false,
-    openInDrive: false,
+    // Public-review-page toggles. Pre-fill from the request body
+    // when the editor set them in the creation modal — otherwise
+    // fall back to the safe defaults (watermark on, download off,
+    // Drive link off). The edit-project modal can flip any of
+    // them later.
+    watermark: typeof body.watermark === 'boolean' ? body.watermark : true,
+    allowDownload:
+      typeof body.allowDownload === 'boolean' ? body.allowDownload : false,
+    openInDrive:
+      typeof body.openInDrive === 'boolean' ? body.openInDrive : false,
     createdAt: now,
     updatedAt: now,
   })
@@ -2730,12 +2742,31 @@ async function handleGetStreamToken(req: VercelRequest, res: VercelResponse) {
   const roundSuffix = group
     ? `&r=${encodeURIComponent(String(roundData.id || ''))}`
     : ''
-  const url = cfBase
+  const baseUrl = cfBase
     ? `${cfBase.replace(/\/$/, '')}/?token=${encodeURIComponent(shareToken)}${passwordSuffix}${roundSuffix}`
     : `/api/revisions?action=stream-video&token=${encodeURIComponent(shareToken)}${passwordSuffix}${roundSuffix}`
+
+  // Separate download URL — appends `&d=1`, which the Worker
+  // honors by sending `Content-Disposition: attachment` instead
+  // of `inline`. That flips the browser from "play inline" mode
+  // (used by the <video> tag) to "save as file" mode (used by
+  // the explicit "הורדה" link rendered when the editor enables
+  // the allowDownload toggle). Only returned when the project's
+  // allowDownload setting is on AND we know about the group
+  // (legacy single-round projects don't have the toggle yet).
+  const allowDownload = group?.allowDownload === true
+  const downloadFileName = String(roundData.videoFileName || '') ||
+    `round-${roundData.roundNumber || 1}.mp4`
+  const downloadUrl =
+    allowDownload && cfBase
+      ? `${baseUrl}&d=1`
+      : null
+
   return res.status(200).json({
     ok: true,
-    streamUrl: url,
+    streamUrl: baseUrl,
+    downloadUrl,
+    downloadFileName,
     videoMime,
     title,
   })

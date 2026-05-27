@@ -23,6 +23,7 @@ import {
   ChevronLeft,
   FolderClosed,
   FileVideo,
+  Download as DownloadIcon,
 } from 'lucide-react'
 
 /**
@@ -63,6 +64,15 @@ interface ProjectInfo {
   projectId: string
   title: string
   streamUrl: string
+  /** Separate URL the explicit "הורדה" link points at. Differs
+   *  from streamUrl only in the trailing `&d=1` flag, which
+   *  tells the Cloudflare Worker to send `Content-Disposition:
+   *  attachment` instead of `inline` so the browser saves the
+   *  file rather than playing it. Null when allowDownload is
+   *  false on the project. */
+  downloadUrl: string | null
+  /** Filename to suggest in the browser's save dialog. */
+  downloadFileName: string
   videoMime: string
   roundNumber: number
   /** True when the editor closed the round to new feedback. The
@@ -472,7 +482,14 @@ export function ReviewPage() {
         }),
       })
       const json = (await r.json()) as
-        | { ok: true; streamUrl: string; videoMime: string; title: string }
+        | {
+            ok: true
+            streamUrl: string
+            downloadUrl?: string | null
+            downloadFileName?: string
+            videoMime: string
+            title: string
+          }
         | { ok: false; error: string }
       if (!json.ok) {
         setState({ kind: 'not-found', message: json.error || 'שגיאה בקבלת הסרטון' })
@@ -484,6 +501,8 @@ export function ReviewPage() {
           projectId,
           title,
           streamUrl: json.streamUrl,
+          downloadUrl: json.downloadUrl ?? null,
+          downloadFileName: json.downloadFileName || `round-${roundNumber}.mp4`,
           videoMime: json.videoMime,
           roundNumber,
           locked,
@@ -1854,12 +1873,17 @@ function ReviewWorkspace({
                 controls
                 crossOrigin="anonymous"
                 playsInline
-                // controlsList toggles the browser's native download
-                // button. The editor controls this per-project via
-                // the "Allow download" switch in the edit modal —
-                // default behavior stays "no download" so clients
-                // can't trivially save the cut.
-                controlsList={project.allowDownload ? undefined : 'nodownload'}
+                // We always disable Chrome's built-in download
+                // menu — its UX is inconsistent across browsers
+                // (Safari hides it, Firefox renders it ugly) and
+                // the streaming URL is wrapped in
+                // Content-Disposition: inline which would
+                // anyway prevent it from working cleanly. The
+                // editor's "Allow download" toggle surfaces a
+                // dedicated "הורדה" button below the player
+                // that hits a SEPARATE attachment-disposition
+                // URL for a proper save.
+                controlsList="nodownload"
                 onContextMenu={(e) => e.preventDefault()}
                 className="block max-h-[72vh] w-auto max-w-full"
               />
@@ -1871,21 +1895,34 @@ function ReviewWorkspace({
             {project.watermark && <Watermark email={viewerEmail} />}
           </div>
 
-          {/* Optional "Open in Drive" link — surfaces when the
-              editor explicitly turned the toggle on. Goes straight
-              to the raw Drive file (so it bypasses watermark +
-              streaming proxy entirely — only intended for trusted
-              clients who need the original-quality file). */}
-          {project.driveViewUrl && (
-            <a
-              href={project.driveViewUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 self-start rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-white/70 transition-colors hover:bg-white/[0.06] hover:text-white"
-            >
-              <FolderClosed className="h-3 w-3" />
-              פתח את הקובץ ב-Google Drive
-            </a>
+          {/* Optional toggleable affordances — both render only
+              when the editor explicitly enabled the matching
+              setting. Wrapped in a single flex row so they sit
+              side-by-side instead of stacking. */}
+          {(project.driveViewUrl || project.downloadUrl) && (
+            <div className="flex flex-wrap items-center gap-2">
+              {project.downloadUrl && (
+                <a
+                  href={project.downloadUrl}
+                  download={project.downloadFileName}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-white/70 transition-colors hover:bg-white/[0.06] hover:text-white"
+                >
+                  <DownloadIcon className="h-3 w-3" />
+                  הורדה
+                </a>
+              )}
+              {project.driveViewUrl && (
+                <a
+                  href={project.driveViewUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-white/70 transition-colors hover:bg-white/[0.06] hover:text-white"
+                >
+                  <FolderClosed className="h-3 w-3" />
+                  פתח את הקובץ ב-Google Drive
+                </a>
+              )}
+            </div>
           )}
 
           {/* Action strip — placed UNDER the video, not floating in

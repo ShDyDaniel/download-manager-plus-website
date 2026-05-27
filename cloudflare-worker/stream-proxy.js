@@ -42,14 +42,29 @@ function corsHeaders(extra) {
     'access-control-allow-headers': 'range, content-type',
     'access-control-expose-headers':
       'accept-ranges, content-length, content-range, content-type',
-    // Force the browser to play the response inline instead of
-    // treating it as a download. Without this header Chrome triggers
-    // a Downloads-tray entry for video/quicktime (and some other
-    // formats) the moment <video> starts streaming — the file ends
-    // up on disk even though it's also playing in the page.
+    // Default disposition is "inline" — the <video> tag plays the
+    // response without Chrome triggering a Downloads-tray entry
+    // for video/quicktime (and some other formats) the moment
+    // streaming starts. Callers that want to FORCE a download
+    // (the explicit "הורדה" link, when the editor enabled the
+    // allowDownload toggle) override this to "attachment" via
+    // the d=1 query param — see the dispositionFor() helper.
     'content-disposition': 'inline',
     ...(extra || {}),
   }
+}
+
+/** Pick the Content-Disposition header value based on the request's
+ *  `d` query param. `d=1` switches to `attachment` + the original
+ *  filename so the browser saves the response instead of playing
+ *  it inline. Anything else falls through to `inline`. */
+function dispositionFor(url) {
+  if (url.searchParams.get('d') !== '1') return 'inline'
+  // We don't know the real filename here — Vercel builds the URL
+  // and could include a filename hint in the future, but for now
+  // just use a generic name. The browser still respects the
+  // editor's "save as" rename either way.
+  return 'attachment; filename="video.mp4"'
 }
 
 async function fetchAuth(env, shareToken, passwordToken, roundId) {
@@ -160,7 +175,11 @@ export default {
     // Stream Drive's body back to the browser. The body is a
     // ReadableStream so nothing is buffered in the Worker — we just
     // pipe bytes through. Forward the headers the <video> tag needs.
-    const respHeaders = corsHeaders()
+    const respHeaders = corsHeaders({
+      // Override the default `inline` disposition when the caller
+      // asked for a download (d=1) — see dispositionFor() comment.
+      'content-disposition': dispositionFor(url),
+    })
     const passthrough = [
       'content-type',
       'content-length',
