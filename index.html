@@ -11,6 +11,18 @@
          as a foreign panel hovering on top of the site. Value
          matches CSS --bg in src/index.css. -->
     <meta name="theme-color" content="#16110D" />
+    <!-- Disable iOS Safari's data detectors. Without this, the
+         viewer-email watermark on /review (which animates every
+         frame) repeatedly triggers iOS's "compose mail" sheet
+         every few seconds, because the OS re-detects the email
+         string each time the DOM moves. Same hint covers phone
+         numbers, addresses and dates so we don't accidentally
+         create tappable overlays on copy that wasn't meant to
+         be actionable. -->
+    <meta
+      name="format-detection"
+      content="telephone=no, address=no, email=no, date=no"
+    />
     <title>ניהול הורדות פלוס</title>
     <meta
       name="description"

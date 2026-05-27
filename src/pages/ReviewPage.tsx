@@ -1990,6 +1990,26 @@ function captureFrame(video: HTMLVideoElement): string | null {
   }
 }
 
+/** Render an email as visually-identical text that iOS Safari's
+ *  data detector CANNOT parse as a mailto: candidate. Splits the
+ *  string at the '@' into two adjacent spans — the visual output
+ *  is identical, but the DOM no longer contains a single text
+ *  node matching the email regex, so iOS stops offering to
+ *  compose mail when the user lands on /review. (The global
+ *  format-detection meta tag handles most cases; this is
+ *  belt-and-suspenders for older iOS versions / WebViews that
+ *  ignore the meta hint.) */
+function SafeEmail({ email }: { email: string }) {
+  const atIdx = email.indexOf('@')
+  if (atIdx === -1) return <>{email}</>
+  return (
+    <>
+      <span>{email.slice(0, atIdx)}</span>
+      <span>{email.slice(atIdx)}</span>
+    </>
+  )
+}
+
 function Watermark({ email }: { email: string }) {
   return (
     <div
@@ -1998,7 +2018,7 @@ function Watermark({ email }: { email: string }) {
       style={{ mixBlendMode: 'overlay' }}
     >
       <div className="absolute top-4 right-4 text-white/40 text-[10px] tracking-wider font-mono">
-        {email}
+        <SafeEmail email={email} />
       </div>
       <div className="absolute bottom-4 left-4 text-white/40 text-[10px] tracking-wider font-mono">
         PREVIEW · NOT FOR DISTRIBUTION
@@ -2016,7 +2036,7 @@ function Watermark({ email }: { email: string }) {
           ease: 'easeInOut',
         }}
       >
-        {email}
+        <SafeEmail email={email} />
       </motion.div>
     </div>
   )
