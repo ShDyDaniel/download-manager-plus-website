@@ -1103,6 +1103,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminGrantPro(req, res)
       case 'get-pricing':
         return await handleGetPricing(req, res)
+      case 'get-terms':
+        return await handleGetTerms(req, res)
       default:
         return res
           .status(400)
@@ -4648,6 +4650,66 @@ async function handleGetPricing(_req: VercelRequest, res: VercelResponse) {
   // so fetchLivePricing on the client doesn't need any branching
   // between old and new URLs.
   return res.status(200).json({ ok: true, ...pricing })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  get-terms — public read of appConfig/terms for the website
+ *
+ *  Mirrors what the desktop's TermsProvider already does via the
+ *  Firebase Web SDK directly, but exposes the same data over HTTP
+ *  so the website (which deliberately ships without Firebase
+ *  Web SDK) can show the same terms in its signup modal.
+ *
+ *  No auth — terms of use are public-by-design. Cached for 60s
+ *  at the edge so repeated modal opens don't keep hammering
+ *  Firestore.
+ * ───────────────────────────────────────────────────────────── */
+async function handleGetTerms(_req: VercelRequest, res: VercelResponse) {
+  try {
+    const db = getDb()
+    const snap = await db.collection('appConfig').doc('terms').get()
+    res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=600')
+    if (!snap.exists) {
+      // Operator hasn't seeded the doc yet (or the very first
+      // install). Return a clear stub the modal can render so the
+      // user sees something actionable rather than "loading…"
+      // forever. The desktop has the full canonical text — that's
+      // what the operator typically publishes when they first
+      // open the admin panel's TermsEditorCard.
+      return res.status(200).json({
+        ok: true,
+        version: 0,
+        lastUpdated: '',
+        sections: [
+          {
+            title: 'תנאי השימוש טרם פורסמו',
+            paragraphs: [
+              'תנאי השימוש המלאים זמינים בתוכנת ניהול הורדות פלוס לאחר התקנה.',
+              'בכל שאלה אפשר לפנות אלינו במייל: dyshalts@gmail.com',
+            ],
+          },
+        ],
+      })
+    }
+    const data = snap.data() as {
+      version?: number
+      lastUpdated?: string
+      sections?: Array<{ title: string; paragraphs: string[] }>
+    }
+    return res.status(200).json({
+      ok: true,
+      version: typeof data.version === 'number' ? data.version : 0,
+      lastUpdated:
+        typeof data.lastUpdated === 'string' ? data.lastUpdated : '',
+      sections: Array.isArray(data.sections) ? data.sections : [],
+    })
+  } catch (err) {
+    console.error('[paypal/get-terms] failed:', err)
+    return res.status(500).json({
+      ok: false,
+      error: 'לא הצלחנו לטעון את תנאי השימוש כרגע. נסו שוב.',
+    })
+  }
 }
 
 async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {

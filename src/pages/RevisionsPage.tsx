@@ -496,6 +496,7 @@ function SignupDetailsForm({
   const [marketing, setMarketing] = useState(initial.marketingOptIn)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [termsModalOpen, setTermsModalOpen] = useState(false)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -538,6 +539,8 @@ function SignupDetailsForm({
   }
 
   return (
+    <>
+    {termsModalOpen && <TermsModal onClose={() => setTermsModalOpen(false)} />}
     <form onSubmit={submit} className="space-y-4">
       <Field
         label="שם תצוגה"
@@ -569,8 +572,21 @@ function SignupDetailsForm({
           className="mt-0.5 accent-current"
         />
         <span>
-          אני מאשר/ת את תנאי השימוש ומדיניות הפרטיות של ניהול
-          הורדות פלוס.
+          אני מאשר/ת את{' '}
+          <button
+            type="button"
+            // Opens an in-place modal with the live terms doc
+            // pulled from /api/paypal?action=get-terms. We
+            // deliberately don't use a real <a href> — a new tab
+            // would lose the half-filled signup form. The
+            // checkbox-+-link pattern matches how /buy presents
+            // its subscription-terms link.
+            onClick={() => setTermsModalOpen(true)}
+            className="text-accent underline underline-offset-2 transition-colors hover:text-fg"
+          >
+            תנאי השימוש
+          </button>{' '}
+          של ניהול הורדות פלוס.
         </span>
       </label>
       <label className="flex items-start gap-2 text-xs leading-relaxed text-fg-muted">
@@ -601,6 +617,7 @@ function SignupDetailsForm({
         חזרה להתחברות
       </button>
     </form>
+    </>
   )
 }
 
@@ -924,6 +941,164 @@ function FeedbackCard({
         {message}
       </p>
       {action && <div className="mt-6 flex justify-center">{action}</div>}
+    </div>
+  )
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Terms modal — fetched on-demand from /api/paypal?action=get-terms
+ *
+ *  The terms doc is the SAME one the desktop's TermsModal renders
+ *  (Firestore appConfig/terms, edited via the admin panel). We
+ *  fetch when the modal opens so the user always sees the latest
+ *  published version even if it was updated since they landed on
+ *  the page.
+ * ────────────────────────────────────────────────────────────── */
+
+interface TermsSection {
+  title: string
+  paragraphs: string[]
+}
+interface TermsDoc {
+  version: number
+  lastUpdated: string
+  sections: TermsSection[]
+}
+
+function TermsModal({ onClose }: { onClose: () => void }) {
+  const [state, setState] = useState<
+    | { kind: 'loading' }
+    | { kind: 'ready'; terms: TermsDoc }
+    | { kind: 'error'; message: string }
+  >({ kind: 'loading' })
+
+  // Esc-to-close — common modal expectation. Keep this lightweight;
+  // we don't trap focus or do anything fancy because the modal is
+  // short-lived and contains no interactive content beyond the
+  // close button.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const r = await fetch('/api/paypal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'get-terms' }),
+        })
+        const data = (await r.json()) as
+          | (TermsDoc & { ok: true })
+          | { ok: false; error: string }
+        if (cancelled) return
+        if (!data.ok) {
+          setState({ kind: 'error', message: data.error })
+          return
+        }
+        setState({ kind: 'ready', terms: data })
+      } catch {
+        if (cancelled) return
+        setState({
+          kind: 'error',
+          message: 'בעיית רשת. נסו שוב בעוד רגע.',
+        })
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+      onClick={(e) => {
+        // Click-outside-to-close — only on the backdrop itself
+        // (e.target === currentTarget), so clicks INSIDE the
+        // panel don't accidentally dismiss the modal mid-read.
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div className="relative w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl border border-border bg-bg-elevated p-6 md:p-8">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute left-3 top-3 rounded-md p-1.5 text-fg-muted transition-colors hover:bg-bg-card hover:text-fg"
+          aria-label="סגור"
+        >
+          {/* Inline X icon — avoids importing an icon library just
+              for this one glyph. 14×14 stroke-1.5 reads at the same
+              weight as the editorial text around it. */}
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-4 w-4"
+          >
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+
+        <h2 className="mb-1 text-xl font-medium text-fg">תנאי השימוש</h2>
+        {state.kind === 'ready' && state.terms.lastUpdated && (
+          <div className="mb-5 text-xs text-fg-muted">
+            עודכן: {state.terms.lastUpdated}
+          </div>
+        )}
+
+        {state.kind === 'loading' && (
+          <div className="py-8 text-center text-sm text-fg-muted">
+            טוען…
+          </div>
+        )}
+
+        {state.kind === 'error' && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            {state.message}
+          </div>
+        )}
+
+        {state.kind === 'ready' && (
+          <div className="space-y-5">
+            {state.terms.sections.length === 0 ? (
+              <p className="text-sm text-fg-muted">
+                התנאים טרם פורסמו.
+              </p>
+            ) : (
+              state.terms.sections.map((section, i) => (
+                <section key={i}>
+                  <h3 className="mb-2 text-sm font-semibold text-fg">
+                    {section.title}
+                  </h3>
+                  <div className="space-y-2 text-xs leading-relaxed text-fg-muted">
+                    {section.paragraphs.map((p, j) => (
+                      <p key={j}>{p}</p>
+                    ))}
+                  </div>
+                </section>
+              ))
+            )}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-6 w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover"
+        >
+          סגירה
+        </button>
+      </div>
     </div>
   )
 }
