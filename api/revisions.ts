@@ -1554,19 +1554,26 @@ async function handleListGroupsOwner(
 
   // Pull all rounds in one go, then bucket client-side. One query
   // per editor is cheaper than one query per group on Firestore's
-  // billing.
+  // billing. Rounds with a groupId belong inside a group card;
+  // rounds without one are legacy single-round projects from
+  // before the group refactor — we surface them in a separate
+  // array so the desktop can render them as standalone cards.
   const roundsSnap = await getDb()
     .collection('revisionProjects')
     .where('ownerUid', '==', verified.uid)
     .get()
   const roundsByGroup = new Map<string, Record<string, unknown>[]>()
+  const legacyRoundDocs: Record<string, unknown>[] = []
   for (const doc of roundsSnap.docs) {
     const r = doc.data() as Record<string, unknown>
     if (r.status !== 'active') continue
     const gid = String(r.groupId || '')
-    if (!gid) continue
-    if (!roundsByGroup.has(gid)) roundsByGroup.set(gid, [])
-    roundsByGroup.get(gid)!.push(r)
+    if (gid) {
+      if (!roundsByGroup.has(gid)) roundsByGroup.set(gid, [])
+      roundsByGroup.get(gid)!.push(r)
+    } else {
+      legacyRoundDocs.push(r)
+    }
   }
 
   const out = activeGroups
@@ -1602,7 +1609,27 @@ async function handleListGroupsOwner(
     })
     .sort((a, b) => b.updatedAt - a.updatedAt)
 
-  return res.status(200).json({ ok: true, groups: out })
+  // Shape the legacy projects in a flat array. Their fields
+  // overlap with rounds-inside-a-group (videoFileName, locked,
+  // notesCount) but they also have their own shareToken +
+  // hasPassword (groups own those for new-style projects).
+  const legacyProjects = legacyRoundDocs
+    .map((r) => ({
+      id: String(r.id || ''),
+      title: String(r.title || ''),
+      shareToken: String(r.shareToken || ''),
+      hasPassword: Boolean(r.passwordHash),
+      videoFileName: String(r.videoFileName || ''),
+      videoSizeBytes: Number(r.videoSizeBytes) || 0,
+      roundNumber: Number(r.roundNumber) || 1,
+      locked: r.locked === true,
+      notesCount: Number(r.notesCount) || 0,
+      createdAt: Number(r.createdAt) || 0,
+      updatedAt: Number(r.updatedAt) || 0,
+    }))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+
+  return res.status(200).json({ ok: true, groups: out, legacyProjects })
 }
 
 /* ──────────────────────────────────────────────────────────────
