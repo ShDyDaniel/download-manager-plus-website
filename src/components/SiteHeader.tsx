@@ -52,6 +52,10 @@ export function SiteHeader() {
   // שלי" link belongs to the operator's flow, not the end-client
   // who clicked a share link — surfacing it would just confuse them.
   if (location.pathname.startsWith('/review')) return null
+  // /revisions has its own workspace chrome (project list, account
+  // pill, Drive footer); the marketing header would duplicate the
+  // "סבבי תיקונים" link the user just clicked to get there.
+  if (location.pathname.startsWith('/revisions')) return null
 
   // Per-route alignment. If we add more pages later (e.g. /pricing,
   // /docs), extend this conditional with their max-width and top
@@ -76,7 +80,28 @@ export function SiteHeader() {
     // through to the page beneath.
     <div className={`pointer-events-none absolute inset-x-0 z-10 ${topClass}`}>
       <div className={`mx-auto px-5 md:px-6 ${widthClass}`}>
+        {/* Two editorial links separated by a hair-thin dot. DOM
+            order matters in an RTL document: the FIRST link sits
+            visually to the RIGHT of the second within the cluster,
+            so listing "סבבי תיקונים" before "החשבון שלי" produces
+            the right-to-left reading order requested by the
+            operator — "Revisions" reads first, "Account" reads
+            after it. The whole cluster is left-anchored (text-left)
+            so it lines up under the same column as the rest of the
+            page chrome. */}
         <div className="text-left">
+          <Link
+            to="/revisions"
+            className="pointer-events-auto text-sm text-fg-muted transition-colors hover:text-fg"
+          >
+            סבבי תיקונים
+          </Link>
+          <span
+            aria-hidden="true"
+            className="px-3 text-fg-muted/40 select-none"
+          >
+            ·
+          </span>
           <Link
             to="/account"
             className="pointer-events-auto text-sm text-fg-muted transition-colors hover:text-fg"

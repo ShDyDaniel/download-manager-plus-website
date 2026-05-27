@@ -10,6 +10,7 @@ import { BuyPage } from './pages/BuyPage'
 import AccountPage from './pages/AccountPage'
 import AuthActionPage from './pages/AuthActionPage'
 import { ReviewPage } from './pages/ReviewPage'
+import { RevisionsPage } from './pages/RevisionsPage'
 
 // Top-level layout. The marketing site is the default route (`/`);
 // the purchase flow lives at `/buy` so the URL is shareable, deep-
@@ -56,6 +57,14 @@ function App() {
             (used for watermark), then renders the Drive embed
             player + notes sidebar. See pages/ReviewPage.tsx. */}
         <Route path="/review/:token" element={<ReviewPage />} />
+        {/* Web /revisions workspace — full editor-side of the
+            Revisions feature ported from the desktop app. Lets
+            anyone with a Pro subscription manage projects, rounds,
+            and share links from a browser instead of having to
+            install the desktop app. Auth + Pro entitlement are
+            gated client-side, and re-enforced server-side on every
+            API call. See pages/RevisionsPage.tsx. */}
+        <Route path="/revisions" element={<RevisionsPage />} />
         {/* /manage was the original subscription-management page
             before /account absorbed all its functionality. Keep a
             permanent redirect so old emails, footers, the desktop

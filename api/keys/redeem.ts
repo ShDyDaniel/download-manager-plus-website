@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
+import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { getFirestore } from 'firebase-admin/firestore'
@@ -57,16 +58,79 @@ function getFirebase(): App {
   return firebaseApp
 }
 
+/* ──────────────────────────────────────────────────────────────
+ *  Website session-token verifier (mirror of paypal.ts)
+ *
+ *  Desktop callers always send a Firebase ID token; the website
+ *  uses our HMAC-signed session JWT instead (paid via /api/paypal
+ *  ?action=session) because we deliberately avoided shipping the
+ *  Firebase Web SDK to the public site. Accept either here so the
+ *  /revisions web page can redeem keys with the same token it
+ *  already has, without forcing the user to authenticate twice.
+ *
+ *  Keep the HMAC secret + JWT shape exactly aligned with paypal.ts
+ *  → signSessionToken / verifySessionToken. If those move, mirror
+ *  the change here too (the per-file no-shared-helpers convention
+ *  was forced on us by Vercel's bundler).
+ * ────────────────────────────────────────────────────────────── */
+interface WebSessionClaims {
+  uid: string
+  email: string
+  iat: number
+  exp: number
+}
+
+function b64urlDecode(s: string): Buffer {
+  const padded = s
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .padEnd(s.length + ((4 - (s.length % 4)) % 4), '=')
+  return Buffer.from(padded, 'base64')
+}
+
+function verifyWebSessionToken(token: string): WebSessionClaims | null {
+  if (!token) return null
+  const secret = process.env.RENEW_TOKEN_SECRET
+  if (!secret) return null
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    const [headerB64, payloadB64, sigB64] = parts
+    const expected = crypto
+      .createHmac('sha256', Buffer.from(secret, 'utf8'))
+      .update(`${headerB64}.${payloadB64}`)
+      .digest()
+    const actual = b64urlDecode(sigB64)
+    if (expected.length !== actual.length) return null
+    if (!crypto.timingSafeEqual(expected, actual)) return null
+    const claims = JSON.parse(
+      b64urlDecode(payloadB64).toString('utf8'),
+    ) as WebSessionClaims
+    const now = Math.floor(Date.now() / 1000)
+    if (claims.exp && claims.exp < now) return null
+    if (!claims.uid || !claims.email) return null
+    return claims
+  } catch (err) {
+    console.warn('[keys/redeem] verifyWebSessionToken failed:', err)
+    return null
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
   }
 
-  const body = req.body as { idToken?: string; key?: string }
+  const body = req.body as {
+    idToken?: string
+    sessionToken?: string
+    key?: string
+  }
   const idToken = (body.idToken || '').trim()
+  const sessionToken = (body.sessionToken || '').trim()
   const rawKey = (body.key || '').trim().toUpperCase()
 
-  if (!idToken) {
+  if (!idToken && !sessionToken) {
     return res.status(401).json({ ok: false, error: 'אסימון אימות חסר' })
   }
   if (!KEY_FORMAT.test(rawKey)) {
@@ -81,21 +145,59 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const auth = getAuth(app)
     const db = getFirestore(app)
 
-    // Verify the ID token — this is the gate. Body uid/email are
-    // never read; we always pull the trusted values out of the
-    // decoded token claims.
-    let decoded
-    try {
-      decoded = await auth.verifyIdToken(idToken)
-    } catch (err) {
-      console.warn('keys/redeem: token verification failed', err)
-      return res
-        .status(401)
-        .json({ ok: false, error: 'אימות נכשל — התחברו מחדש ונסו שוב' })
+    // Resolve {uid, email} from whichever token type we got. The
+    // desktop sends a Firebase ID token (has Firebase Web SDK
+    // loaded); the website /revisions page sends a session JWT
+    // (no SDK on the page — purely server-issued). The Firebase
+    // path also returns `emailVerified` from the decoded token,
+    // which we use for the optional ENFORCE_EMAIL_VERIFIED gate.
+    // The session path can't tell us emailVerified directly, so
+    // we read it from the Firebase Auth user record AS A SECOND
+    // ROUND-TRIP when the gate is on — keeps the happy path fast
+    // for the common case where the gate is off.
+    let uid: string
+    let email: string
+    let emailVerified: boolean
+
+    if (idToken) {
+      let decoded
+      try {
+        decoded = await auth.verifyIdToken(idToken)
+      } catch (err) {
+        console.warn('keys/redeem: id token verification failed', err)
+        return res
+          .status(401)
+          .json({ ok: false, error: 'אימות נכשל — התחברו מחדש ונסו שוב' })
+      }
+      uid = decoded.uid
+      email = (decoded.email || '').toLowerCase().trim()
+      emailVerified = decoded.email_verified === true
+    } else {
+      const claims = verifyWebSessionToken(sessionToken)
+      if (!claims) {
+        return res
+          .status(401)
+          .json({ ok: false, error: 'אימות נכשל — התחברו מחדש ונסו שוב' })
+      }
+      uid = claims.uid
+      email = claims.email.toLowerCase().trim()
+      // Lookup emailVerified only when the gate is actually on —
+      // avoids an extra Auth round-trip for the common case.
+      if (process.env.ENFORCE_EMAIL_VERIFIED === 'true') {
+        try {
+          const u = await auth.getUser(uid)
+          emailVerified = u.emailVerified === true
+        } catch (err) {
+          console.warn('keys/redeem: getUser failed', err)
+          emailVerified = false
+        }
+      } else {
+        // Gate off — we never check this; assume true so the
+        // downstream condition is always false.
+        emailVerified = true
+      }
     }
 
-    const uid = decoded.uid
-    const email = (decoded.email || '').toLowerCase().trim()
     if (!email) {
       return res
         .status(400)
@@ -108,7 +210,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // buyerEmail=victim). The signup flow already issues users
     // with emailVerified=true; the migration covers pre-existing
     // users.
-    if (process.env.ENFORCE_EMAIL_VERIFIED === 'true' && !decoded.email_verified) {
+    if (process.env.ENFORCE_EMAIL_VERIFIED === 'true' && !emailVerified) {
       return res.status(403).json({
         ok: false,
         error: 'יש לאמת את כתובת המייל לפני מימוש מפתח.',

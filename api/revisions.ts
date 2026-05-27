@@ -197,16 +197,25 @@ interface StateClaims {
   /** "drive-oauth" — separator so we never confuse states across
    *  features that might one day share the same signing secret. */
   purpose: 'drive-oauth'
+  /** Origin of the connect flow. `desktop` (default — legacy) returns
+   *  the HTML "Connected, you can close this tab" page so Electron's
+   *  external-browser flow can finish gracefully. `web` returns a 302
+   *  redirect back into the SPA at `/revisions?oauth=connected` so the
+   *  user lands on the workspace they came from. Embedded in the
+   *  HMAC-signed state so a tampered redirect can't trick the
+   *  callback into the wrong branch. */
+  source?: 'desktop' | 'web'
   iat: number
   exp: number
 }
 
-function mintStateToken(uid: string): string {
+function mintStateToken(uid: string, source: 'desktop' | 'web' = 'desktop'): string {
   const now = Math.floor(Date.now() / 1000)
   const header = b64url(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })))
   const claims: StateClaims = {
     uid,
     purpose: 'drive-oauth',
+    source,
     iat: now,
     exp: now + STATE_TTL_SECONDS,
   }
@@ -230,6 +239,12 @@ function verifyStateToken(token: string): StateClaims | null {
     if (claims.purpose !== 'drive-oauth') return null
     if (typeof claims.uid !== 'string' || !claims.uid) return null
     if (claims.exp && claims.exp < Math.floor(Date.now() / 1000)) return null
+    // Default to 'desktop' for tokens minted before the `source` field
+    // existed — backward compat for any tokens still in flight when
+    // we deployed this change.
+    if (claims.source !== 'web' && claims.source !== 'desktop') {
+      claims.source = 'desktop'
+    }
     return claims
   } catch {
     return null
@@ -256,6 +271,80 @@ async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedUser | nu
     console.warn('[revisions] verifyIdToken failed:', err)
     return null
   }
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Website session-token verifier (mirror of paypal.ts)
+ *
+ *  The desktop app sends Firebase ID tokens because it has the
+ *  Firebase Web SDK loaded and the user signed in via email/
+ *  password. The website signed in via /api/paypal?action=session
+ *  and got back a custom HMAC-signed session JWT — no Firebase
+ *  SDK on the page. Both flows produce the same final `{uid,
+ *  email}` once verified, so downstream handlers don't care which
+ *  was used. This mirror keeps the verification logic local to
+ *  revisions.ts so we don't have a cross-file import dependency
+ *  (paypal.ts is huge and re-imports would bloat the bundle).
+ *
+ *  Keep the secret env-var name (`RENEW_TOKEN_SECRET`) and JWT
+ *  shape exactly aligned with paypal.ts → signSessionToken /
+ *  verifySessionToken. If those ever change there, mirror the
+ *  change here too.
+ * ────────────────────────────────────────────────────────────── */
+interface WebSessionClaims {
+  uid: string
+  email: string
+  subscriptionIds?: string[]
+  iat: number
+  exp: number
+}
+
+function verifyWebSessionToken(token: string): WebSessionClaims | null {
+  if (!token) return null
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    const [headerB64, payloadB64, sigB64] = parts
+    const expected = crypto
+      .createHmac('sha256', hmacSecret())
+      .update(`${headerB64}.${payloadB64}`)
+      .digest()
+    const actual = b64urlDecode(sigB64)
+    if (expected.length !== actual.length) return null
+    if (!crypto.timingSafeEqual(expected, actual)) return null
+    const claims = JSON.parse(b64urlDecode(payloadB64).toString('utf8')) as WebSessionClaims
+    const now = Math.floor(Date.now() / 1000)
+    if (claims.exp && claims.exp < now) return null
+    if (!claims.uid || !claims.email) return null
+    return claims
+  } catch (err) {
+    console.warn('[revisions] verifyWebSessionToken failed:', err)
+    return null
+  }
+}
+
+/** Owner-side auth wrapper that accepts EITHER a Firebase ID token
+ *  (desktop) or a website session token (web /revisions). Both
+ *  travel in the request body as `idToken` or `sessionToken`
+ *  respectively; we try the Firebase path first since it's the
+ *  pre-existing convention and almost all current callers use it.
+ *
+ *  Returns null if neither token is present or valid. Caller
+ *  should respond 401. */
+async function verifyOwnerAuth(req: VercelRequest): Promise<VerifiedUser | null> {
+  const body = (req.body || {}) as { idToken?: string; sessionToken?: string }
+  const idToken = String(body.idToken || req.query.idToken || '').trim()
+  if (idToken) {
+    const v = await verifyFirebaseIdToken(idToken)
+    if (v) return v
+    // Fall through — maybe they sent both; try session token next.
+  }
+  const sessionToken = String(body.sessionToken || req.query.sessionToken || '').trim()
+  if (sessionToken) {
+    const claims = verifyWebSessionToken(sessionToken)
+    if (claims) return { uid: claims.uid, email: claims.email.toLowerCase() }
+  }
+  return null
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -553,16 +642,28 @@ interface IntegrationDoc {
  *  scoped (drive-oauth purpose only) and 10-min-lived.
  * ────────────────────────────────────────────────────────────── */
 async function handleOauthStart(req: VercelRequest, res: VercelResponse) {
-  const idToken = String(req.query.idToken || '').trim()
-  const verified = await verifyFirebaseIdToken(idToken)
+  // `source` lets the caller tell us where to send them after the
+  // Google handoff completes. The desktop opens this URL in the
+  // system browser and depends on the post-callback HTML page (so
+  // the user can close the tab themselves); the website opens it
+  // in-place and wants a redirect back into the SPA. Defaults to
+  // 'desktop' for backward compat with existing Electron builds
+  // that don't send this param.
+  const sourceRaw = String(req.query.source || '').trim().toLowerCase()
+  const source: 'desktop' | 'web' = sourceRaw === 'web' ? 'web' : 'desktop'
+  // verifyOwnerAuth accepts either Firebase ID token (desktop) or
+  // website session token (web). Both arrive in the query string
+  // for this handler because it's hit via a GET navigation that
+  // can't carry a body.
+  const verified = await verifyOwnerAuth(req)
   if (!verified) {
-    return res.status(401).send(errorHtml('יש להתחבר מחדש לתוכנה ולנסות שוב.'))
+    return res.status(401).send(errorHtml('יש להתחבר מחדש ולנסות שוב.'))
   }
   const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID
   if (!clientId) {
     return res.status(500).send(errorHtml('שירות החיבור לא מוגדר. פנו לתמיכה.'))
   }
-  const state = mintStateToken(verified.uid)
+  const state = mintStateToken(verified.uid, source)
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: REDIRECT_URI,
@@ -668,6 +769,19 @@ async function handleOauthCallback(req: VercelRequest, res: VercelResponse) {
       .send(errorHtml('שמירת החיבור נכשלה. נסו שוב או פנו לתמיכה.'))
   }
 
+  // Branch on origin: desktop gets the "you can close this tab"
+  // HTML page (Electron opened the URL in the system browser, the
+  // app is polling Firestore for connection state, the user needs
+  // a visual cue that something happened). Web users came from
+  // inside the SPA — bounce them straight back to /revisions so
+  // they don't have to manually navigate. Cache-Control: no-store
+  // because the email we just connected with is sensitive enough
+  // that we don't want it sitting in any intermediate cache.
+  if (claims.source === 'web') {
+    const target = `${WEBSITE_BASE}/revisions?oauth=connected`
+    res.setHeader('Cache-Control', 'no-store')
+    return res.redirect(302, target)
+  }
   return res.status(200).send(successHtml(email))
 }
 
@@ -683,7 +797,7 @@ async function handleOauthCallback(req: VercelRequest, res: VercelResponse) {
  * ────────────────────────────────────────────────────────────── */
 async function handleAccessToken(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { idToken?: string }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
 
@@ -730,7 +844,7 @@ async function handleAccessToken(req: VercelRequest, res: VercelResponse) {
  * ────────────────────────────────────────────────────────────── */
 async function handleOauthStatus(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { idToken?: string }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
 
   const snap = await integrationDocRef(verified.uid).get()
@@ -759,7 +873,7 @@ async function handleOauthStatus(req: VercelRequest, res: VercelResponse) {
  * ────────────────────────────────────────────────────────────── */
 async function handleOauthDisconnect(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { idToken?: string }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
 
   const ref = integrationDocRef(verified.uid)
@@ -794,7 +908,7 @@ async function handleOauthDisconnect(req: VercelRequest, res: VercelResponse) {
  * ────────────────────────────────────────────────────────────── */
 async function handleDriveStorage(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { idToken?: string }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
 
   const integrationSnap = await integrationDocRef(verified.uid).get()
@@ -1270,7 +1384,7 @@ async function handleCreateProjectGroup(
     allowDownload?: boolean
     openInDrive?: boolean
   }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
 
@@ -1409,7 +1523,7 @@ async function handleAddRoundToGroup(
     videoMime?: string
     roundNumber?: number
   }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
 
@@ -1550,7 +1664,7 @@ async function handleListGroupsOwner(
   res: VercelResponse,
 ) {
   const body = (req.body || {}) as { idToken?: string }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
 
   const groupsSnap = await getDb()
@@ -1674,7 +1788,7 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
     password?: string
     roundNumber?: number
   }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
 
@@ -2577,7 +2691,7 @@ async function handleNoteMediaOwner(
     noteId?: string
     kind?: 'image' | 'audio'
   }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).end('unauthorized')
   const projectId = String(body.projectId || '').trim()
   const noteId = String(body.noteId || '').trim()
@@ -2946,7 +3060,7 @@ async function handleAuthStream(req: VercelRequest, res: VercelResponse) {
  * ────────────────────────────────────────────────────────────── */
 async function handleCheckVideoStatus(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { idToken?: string; projectId?: string }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
 
@@ -3049,7 +3163,7 @@ async function handleDeleteProject(req: VercelRequest, res: VercelResponse) {
     projectId?: string
     deleteDriveFile?: boolean
   }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
   const projectId = String(body.projectId || '').trim()
@@ -3181,7 +3295,7 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
     roundId?: string
     deleteDriveFile?: boolean
   }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
   const roundId = String(body.roundId || '').trim()
@@ -3341,7 +3455,7 @@ async function handleDeleteGroup(req: VercelRequest, res: VercelResponse) {
     groupId?: string
     deleteDriveFiles?: boolean
   }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
   const groupId = String(body.groupId || '').trim()
@@ -3645,7 +3759,7 @@ async function handleUpdateGroup(req: VercelRequest, res: VercelResponse) {
     allowDownload?: boolean
     openInDrive?: boolean
   }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
   const groupId = String(body.groupId || '').trim()
@@ -3714,7 +3828,7 @@ async function handleUpdateProject(req: VercelRequest, res: VercelResponse) {
     password?: string
     locked?: boolean
   }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
   const projectId = String(body.projectId || '').trim()
@@ -3804,7 +3918,7 @@ async function handleReplaceProjectVideo(
     videoMime?: string
     trashOldFile?: boolean
   }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
   const projectId = String(body.projectId || '').trim()
@@ -4038,7 +4152,7 @@ async function handleCheckOwnerEmail(
  * ────────────────────────────────────────────────────────────── */
 async function handleListNotesOwner(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { idToken?: string; projectId?: string }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   const projectId = String(body.projectId || '').trim()
   if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
@@ -4102,7 +4216,7 @@ async function handleUpdateNoteStatus(req: VercelRequest, res: VercelResponse) {
     status?: NoteStatus
     editorResponse?: string
   }
-  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
   const projectId = String(body.projectId || '').trim()
