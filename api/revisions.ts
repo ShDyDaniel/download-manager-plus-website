@@ -869,6 +869,39 @@ async function handleOauthStatus(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: check-pro
+ *
+ *  POST /api/revisions?action=check-pro { idToken | sessionToken }
+ *  Returns { ok: true, isPro: boolean }
+ *
+ *  The /paypal?action=status endpoint only knows about PayPal
+ *  subscriptions, but a user can be Pro via a redeemed product
+ *  key, an active trial, an admin role, or the betaMode global.
+ *  This action wraps the canonical isUserPro() check so the web
+ *  /revisions page can ask "is this user entitled?" in one round-
+ *  trip without re-implementing the gate ladder client-side.
+ *
+ *  No requirePro() here — the whole point IS the gate check, so
+ *  we surface the answer instead of bouncing 403.
+ * ────────────────────────────────────────────────────────────── */
+async function handleCheckPro(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  try {
+    const pro = await isUserPro(verified.uid, verified.email)
+    return res.status(200).json({ ok: true, isPro: pro })
+  } catch (err) {
+    // Fail-closed: same posture as requirePro — when we can't
+    // determine entitlement we say "unknown" via 503 rather than
+    // ever falsely returning isPro:true on an error path.
+    console.warn('[revisions/check-pro] entitlement check failed:', err)
+    return res
+      .status(503)
+      .json({ ok: false, error: 'לא הצלחנו לבדוק את המנוי כרגע. נסו שוב.' })
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Action: oauth-disconnect
  * ────────────────────────────────────────────────────────────── */
 async function handleOauthDisconnect(req: VercelRequest, res: VercelResponse) {
@@ -4316,6 +4349,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAccessToken(req, res)
       case 'oauth-status':
         return await handleOauthStatus(req, res)
+      case 'check-pro':
+        return await handleCheckPro(req, res)
       case 'oauth-disconnect':
         return await handleOauthDisconnect(req, res)
       case 'drive-storage':

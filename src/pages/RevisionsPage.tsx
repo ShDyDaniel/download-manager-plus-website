@@ -298,14 +298,36 @@ function RedeemKeyForm({
 
 type AuthMode =
   | 'signin'
-  | 'signup-email'
-  | 'signup-code'
+  | 'signup-details'
+  | 'signup-verify'
   | 'forgot'
   | 'forgot-sent'
 
+/** Form draft shared between the two signup screens. The user
+ *  fills EVERYTHING in step 1 (name + email + password + terms +
+ *  optional marketing opt-in); step 2 is just the 6-digit code
+ *  echo-back. This mirrors the desktop's signup UX — by the time
+ *  we ask for the code, the user already knows the account they
+ *  are about to create. Keeping the draft at the AuthShell level
+ *  also means a user who hits "back" from the verify screen lands
+ *  on a form with all their previous answers pre-filled. */
+interface SignupDraft {
+  name: string
+  email: string
+  password: string
+  marketingOptIn: boolean
+}
+
+const EMPTY_SIGNUP_DRAFT: SignupDraft = {
+  name: '',
+  email: '',
+  password: '',
+  marketingOptIn: false,
+}
+
 function AuthShell({ onSignedIn }: { onSignedIn: () => void }) {
   const [mode, setMode] = useState<AuthMode>('signin')
-  const [signupEmail, setSignupEmail] = useState('')
+  const [signupDraft, setSignupDraft] = useState<SignupDraft>(EMPTY_SIGNUP_DRAFT)
 
   return (
     <div className="mx-auto mt-8 max-w-md">
@@ -317,7 +339,7 @@ function AuthShell({ onSignedIn }: { onSignedIn: () => void }) {
           <h1 className="mt-2 text-xl font-medium text-fg">
             {mode === 'signin'
               ? 'התחברות'
-              : mode === 'signup-email' || mode === 'signup-code'
+              : mode === 'signup-details' || mode === 'signup-verify'
                 ? 'יצירת חשבון'
                 : 'איפוס סיסמה'}
           </h1>
@@ -327,24 +349,25 @@ function AuthShell({ onSignedIn }: { onSignedIn: () => void }) {
           {mode === 'signin' && (
             <SignInForm
               onSignedIn={onSignedIn}
-              onSwitchSignup={() => setMode('signup-email')}
+              onSwitchSignup={() => setMode('signup-details')}
               onSwitchForgot={() => setMode('forgot')}
             />
           )}
-          {mode === 'signup-email' && (
-            <SignupEmailForm
-              onCodeSent={(email) => {
-                setSignupEmail(email)
-                setMode('signup-code')
+          {mode === 'signup-details' && (
+            <SignupDetailsForm
+              initial={signupDraft}
+              onCodeSent={(draft) => {
+                setSignupDraft(draft)
+                setMode('signup-verify')
               }}
               onBack={() => setMode('signin')}
             />
           )}
-          {mode === 'signup-code' && (
-            <SignupCodeForm
-              email={signupEmail}
+          {mode === 'signup-verify' && (
+            <SignupVerifyForm
+              draft={signupDraft}
               onSignedIn={onSignedIn}
-              onBack={() => setMode('signup-email')}
+              onBack={() => setMode('signup-details')}
             />
           )}
           {mode === 'forgot' && (
@@ -451,79 +474,154 @@ function SignInForm({
   )
 }
 
-function SignupEmailForm({
+/** Step 1 of signup — collect ALL the user's details + agreements.
+ *  No Firebase user is created here; we just persist the draft in
+ *  the AuthShell's React state and ask the server to email a code.
+ *  Step 2 only takes the code echo-back. Mirrors the desktop's
+ *  signup flow so a user who's done it there already knows the
+ *  rhythm. */
+function SignupDetailsForm({
+  initial,
   onCodeSent,
   onBack,
 }: {
-  onCodeSent: (email: string) => void
+  initial: SignupDraft
+  onCodeSent: (draft: SignupDraft) => void
   onBack: () => void
 }) {
-  const [email, setEmail] = useState('')
+  const [name, setName] = useState(initial.name)
+  const [email, setEmail] = useState(initial.email)
+  const [password, setPassword] = useState(initial.password)
+  const [terms, setTerms] = useState(false)
+  const [marketing, setMarketing] = useState(initial.marketingOptIn)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (busy) return
+    const trimmedName = name.trim()
+    const trimmedEmail = email.trim().toLowerCase()
+    // Client-side guards. The server re-validates everything, but
+    // catching obvious issues here saves a round-trip and gives a
+    // faster error message.
+    if (!trimmedName) {
+      setError('יש להזין שם תצוגה')
+      return
+    }
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setError('יש להזין כתובת אימייל תקינה')
+      return
+    }
+    if (password.length < 6) {
+      setError('הסיסמה חייבת להיות לפחות 6 תווים')
+      return
+    }
+    if (!terms) {
+      setError('יש לאשר את תנאי השימוש כדי להמשיך')
+      return
+    }
     setBusy(true)
     setError(null)
-    const r = await requestSignupCode(email)
+    const r = await requestSignupCode(trimmedEmail)
     setBusy(false)
     if (!r.ok) {
       setError(r.error)
       return
     }
-    onCodeSent(email.trim().toLowerCase())
+    onCodeSent({
+      name: trimmedName,
+      email: trimmedEmail,
+      password,
+      marketingOptIn: marketing,
+    })
   }
 
   return (
     <form onSubmit={submit} className="space-y-4">
-      <p className="text-xs leading-relaxed text-fg-muted">
-        נשלח אליך קוד אימות בן 6 ספרות. הזן אותו במסך הבא כדי
-        להשלים את ההרשמה.
-      </p>
+      <Field
+        label="שם תצוגה"
+        type="text"
+        autoComplete="name"
+        value={name}
+        onChange={setName}
+        autoFocus
+      />
       <Field
         label="אימייל"
         type="email"
         autoComplete="email"
         value={email}
         onChange={setEmail}
-        autoFocus
       />
+      <Field
+        label="סיסמה (לפחות 6 תווים)"
+        type="password"
+        autoComplete="new-password"
+        value={password}
+        onChange={setPassword}
+      />
+      <label className="flex items-start gap-2 text-xs leading-relaxed text-fg-muted">
+        <input
+          type="checkbox"
+          checked={terms}
+          onChange={(e) => setTerms(e.target.checked)}
+          className="mt-0.5 accent-current"
+        />
+        <span>
+          אני מאשר/ת את תנאי השימוש ומדיניות הפרטיות של ניהול
+          הורדות פלוס.
+        </span>
+      </label>
+      <label className="flex items-start gap-2 text-xs leading-relaxed text-fg-muted">
+        <input
+          type="checkbox"
+          checked={marketing}
+          onChange={(e) => setMarketing(e.target.checked)}
+          className="mt-0.5 accent-current"
+        />
+        <span>
+          אני רוצה לקבל עדכונים על תוספות, הטבות וטיפים. ניתן
+          להסיר את הסכמה בכל עת.
+        </span>
+      </label>
       {error && <FieldError>{error}</FieldError>}
       <button
         type="submit"
-        disabled={busy || !email}
-        className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover disabled:opacity-40"
+        disabled={busy}
+        className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
       >
-        {busy ? 'שולח…' : 'שליחת קוד אימות'}
+        {busy ? 'שולח קוד אימות…' : 'המשך — שליחת קוד אימות'}
       </button>
       <button
         type="button"
         onClick={onBack}
         className="block w-full text-xs text-fg-muted transition-colors hover:text-fg"
       >
-        חזרה
+        חזרה להתחברות
       </button>
     </form>
   )
 }
 
-function SignupCodeForm({
-  email,
+/** Step 2 of signup — the only thing the user does here is type
+ *  in the 6-digit code we just emailed. All other account fields
+ *  came along in the draft from step 1. On verify success we
+ *  immediately auto-signin so the user lands in the workspace
+ *  without retyping their password. */
+function SignupVerifyForm({
+  draft,
   onSignedIn,
   onBack,
 }: {
-  email: string
+  draft: SignupDraft
   onSignedIn: () => void
   onBack: () => void
 }) {
   const [code, setCode] = useState('')
-  const [password, setPassword] = useState('')
-  const [name, setName] = useState('')
-  const [marketing, setMarketing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [resentChip, setResentChip] = useState<string | null>(null)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -532,18 +630,14 @@ function SignupCodeForm({
       setError('הקוד חייב להיות 6 ספרות')
       return
     }
-    if (password.length < 6) {
-      setError('הסיסמה חייבת להיות לפחות 6 תווים')
-      return
-    }
     setBusy(true)
     setError(null)
     const verify = await verifySignupCode({
-      email,
+      email: draft.email,
       code,
-      password,
-      name: name.trim() || undefined,
-      marketingOptIn: marketing,
+      password: draft.password,
+      name: draft.name,
+      marketingOptIn: draft.marketingOptIn,
     })
     if (!verify.ok) {
       setBusy(false)
@@ -551,8 +645,9 @@ function SignupCodeForm({
       return
     }
     // signup-verify-code doesn't issue a session token — sign in
-    // straight away with the password the user just set.
-    const r = await signIn(email, password)
+    // straight away with the password the user already set in
+    // step 1.
+    const r = await signIn(draft.email, draft.password)
     setBusy(false)
     if (!r.ok) {
       setError(
@@ -563,14 +658,27 @@ function SignupCodeForm({
     onSignedIn()
   }
 
+  async function resend() {
+    if (busy) return
+    setResentChip(null)
+    setError(null)
+    const r = await requestSignupCode(draft.email)
+    if (!r.ok) {
+      setError(r.error)
+      return
+    }
+    setResentChip('הקוד נשלח שוב למייל.')
+    setTimeout(() => setResentChip(null), 4000)
+  }
+
   return (
     <form onSubmit={submit} className="space-y-4">
       <p className="text-xs leading-relaxed text-fg-muted">
         שלחנו קוד 6 ספרות ל-
         <span dir="ltr" className="mx-1 text-fg">
-          {email}
+          {draft.email}
         </span>
-        . הזן אותו יחד עם סיסמה חדשה לחשבון.
+        . הזן אותו כדי להשלים את יצירת החשבון.
       </p>
       <Field
         label="קוד אימות (6 ספרות)"
@@ -582,47 +690,35 @@ function SignupCodeForm({
         dir="ltr"
         className="text-center font-mono text-lg tracking-[0.4em]"
       />
-      <Field
-        label="סיסמה לחשבון (לפחות 6 תווים)"
-        type="password"
-        autoComplete="new-password"
-        value={password}
-        onChange={setPassword}
-      />
-      <Field
-        label="שם תצוגה (אופציונלי)"
-        type="text"
-        autoComplete="name"
-        value={name}
-        onChange={setName}
-      />
-      <label className="flex items-start gap-2 text-xs leading-relaxed text-fg-muted">
-        <input
-          type="checkbox"
-          checked={marketing}
-          onChange={(e) => setMarketing(e.target.checked)}
-          className="mt-0.5 accent-current"
-        />
-        <span>
-          אני רוצה לקבל עדכונים על תוספות, הטבות וטיפים. אפשר
-          להסיר את הסכמה בכל עת.
-        </span>
-      </label>
+      {resentChip && (
+        <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-xs text-success">
+          {resentChip}
+        </div>
+      )}
       {error && <FieldError>{error}</FieldError>}
       <button
         type="submit"
-        disabled={busy || code.length !== 6 || password.length < 6}
-        className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover disabled:opacity-40"
+        disabled={busy || code.length !== 6}
+        className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
       >
-        {busy ? 'יוצר חשבון…' : 'יצירת חשבון'}
+        {busy ? 'יוצר חשבון…' : 'אימות והשלמת ההרשמה'}
       </button>
-      <button
-        type="button"
-        onClick={onBack}
-        className="block w-full text-xs text-fg-muted transition-colors hover:text-fg"
-      >
-        חזרה (אימייל שונה)
-      </button>
+      <div className="flex items-center justify-between text-xs text-fg-muted">
+        <button
+          type="button"
+          onClick={onBack}
+          className="transition-colors hover:text-fg"
+        >
+          חזרה לעריכת פרטים
+        </button>
+        <button
+          type="button"
+          onClick={() => void resend()}
+          className="transition-colors hover:text-fg"
+        >
+          שליחת קוד מחדש
+        </button>
+      </div>
     </form>
   )
 }

@@ -367,52 +367,41 @@ export async function redeemProductKey(
   }
 }
 
-/** Subscription / entitlement summary for the signed-in user.
- *  Reused from the existing /api/paypal?action=status endpoint —
- *  AccountPage already calls this to render the dashboard. */
+/** Entitlement snapshot for the signed-in user. We deliberately
+ *  ask the revisions endpoint (which uses isUserPro) rather than
+ *  the /paypal?action=status one — that one only knows about
+ *  PayPal subscriptions and would falsely report not-Pro for
+ *  users who became Pro via a redeemed product key, an active
+ *  trial, an admin role, or the betaMode global. */
 export interface AccountStatus {
   ok: true
   hasPro: boolean
-  /** Active key the user redeemed, if any. */
-  activeKey?: {
-    id: string
-    expiresAt: string | null
-    subscriptionStatus?: string
-  } | null
-  /** Active PayPal subscription, if any. */
-  subscription?: unknown
-  /** Convenience copy of the user doc (subscription field, role,
-   *  trial status). Server may add fields over time so we keep
-   *  this open-ended. */
-  user?: Record<string, unknown>
 }
 
 /** Fetch the canonical Pro-entitlement state from the server.
- *  Centralizes the "is this user Pro?" decision so we don't
- *  re-implement the check across handlers. Returns null if the
- *  fetch fails — caller should treat that as "unknown" and
- *  optimistically retry, not as "definitely not Pro". */
+ *  Returns null on transient failures so the caller can show a
+ *  retry button instead of incorrectly displaying "not Pro" — we
+ *  never want to demote a paying user because of a one-off
+ *  network blip. The server itself is fail-closed: if it can't
+ *  verify entitlement it sends 503 and we fall through to null. */
 export async function fetchAccountStatus(): Promise<AccountStatus | null> {
   const token = getSessionToken()
   if (!token) return null
   let r: Response
   try {
-    r = await fetch(PAYPAL_API, {
+    r = await fetch('/api/revisions?action=check-pro', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // The status action uses the older field name `token` — see
-      // the wire-shape note on signIn() above for why this differs
-      // from the `sessionToken` field newer endpoints accept.
-      body: JSON.stringify({ action: 'status', token }),
+      body: JSON.stringify({ sessionToken: token }),
     })
   } catch {
     return null
   }
   if (!r.ok) return null
   const data = (await r.json().catch(() => null)) as
-    | (AccountStatus & { ok: true })
+    | { ok: true; isPro: boolean }
     | { ok: false }
     | null
   if (!data || data.ok !== true) return null
-  return data as AccountStatus
+  return { ok: true, hasPro: data.isPro === true }
 }
