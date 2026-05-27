@@ -1902,14 +1902,10 @@ function ReviewWorkspace({
           {(project.driveViewUrl || project.downloadUrl) && (
             <div className="flex flex-wrap items-center gap-2">
               {project.downloadUrl && (
-                <a
-                  href={project.downloadUrl}
-                  download={project.downloadFileName}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-white/70 transition-colors hover:bg-white/[0.06] hover:text-white"
-                >
-                  <DownloadIcon className="h-3 w-3" />
-                  הורדה
-                </a>
+                <DownloadButton
+                  url={project.downloadUrl}
+                  filename={project.downloadFileName}
+                />
               )}
               {project.driveViewUrl && (
                 <a
@@ -2091,6 +2087,75 @@ function captureFrame(video: HTMLVideoElement): string | null {
     console.warn('[review] captureFrame failed (CORS?):', err)
     return null
   }
+}
+
+/** Force a real download regardless of the response's Content-
+ *  Disposition. The naive `<a download href="..." />` approach
+ *  fails when the browser decides the response is "playable" and
+ *  opens it in a new tab instead of saving — happens on iOS
+ *  Safari and on Chrome when the URL is cross-origin without an
+ *  attachment hint.
+ *
+ *  We fetch the file as a Blob, hand it to a temporary anchor
+ *  with the `download` attribute, and revoke the object URL
+ *  afterwards. Works in every modern browser regardless of
+ *  CORS/Content-Disposition quirks.
+ *
+ *  Trade-off: the file lives in memory until the save dialog
+ *  resolves. Acceptable for review-cut sizes (typically 50–500
+ *  MB); a future enhancement could stream via the File System
+ *  Access API for big files, but it's a Chrome-only API and the
+ *  permission prompt would feel heavier than this approach. */
+function DownloadButton({ url, filename }: { url: string; filename: string }) {
+  const [state, setState] = useState<'idle' | 'downloading' | 'error'>('idle')
+
+  async function download() {
+    if (state === 'downloading') return
+    setState('downloading')
+    try {
+      const r = await fetch(url)
+      if (!r.ok) throw new Error(`status ${r.status}`)
+      const blob = await r.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = objectUrl
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      // Free the blob backing memory shortly after the browser
+      // takes over the download. Synchronous revoke would race
+      // with some browsers' download workers.
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+      setState('idle')
+    } catch (err) {
+      console.error('[review] download failed:', err)
+      setState('error')
+      // Auto-clear the error after a few seconds so the button
+      // returns to its idle label and the viewer can retry.
+      setTimeout(() => setState('idle'), 3000)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={download}
+      disabled={state === 'downloading'}
+      className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-white/70 transition-colors hover:bg-white/[0.06] hover:text-white disabled:cursor-wait disabled:opacity-60"
+    >
+      {state === 'downloading' ? (
+        <Loader2 className="h-3 w-3 animate-spin" />
+      ) : (
+        <DownloadIcon className="h-3 w-3" />
+      )}
+      {state === 'downloading'
+        ? 'מוריד…'
+        : state === 'error'
+          ? 'נסו שוב'
+          : 'הורדה'}
+    </button>
+  )
 }
 
 /** Render an email as visually-identical text that iOS Safari's
