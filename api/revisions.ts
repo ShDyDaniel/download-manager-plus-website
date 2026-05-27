@@ -1792,6 +1792,44 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
   const resolved = await resolveByShareToken(shareToken)
   if (!resolved) return res.status(404).json({ ok: false, error: 'הקישור לא נמצא' })
 
+  // Owner-entitlement gate: if the editor's Pro subscription has
+  // lapsed, the project's share link should NOT serve content.
+  // We short-circuit with a special response shape that the
+  // website renders as a friendly notice (instead of the
+  // workspace) telling the viewer to contact the editor. Putting
+  // the check here, BEFORE the password gate, means the viewer
+  // sees the right message regardless of whether the password is
+  // typed — they're not getting in either way, so the early notice
+  // is clearer than "wrong password" loop after lapse.
+  const ownerUid =
+    resolved.kind === 'group'
+      ? resolved.group.ownerUid
+      : String((resolved.round as { ownerUid?: string }).ownerUid || '')
+  const ownerEmail =
+    resolved.kind === 'group'
+      ? resolved.group.ownerEmail
+      : String((resolved.round as { ownerEmail?: string }).ownerEmail || '')
+  if (ownerUid) {
+    let ownerActive = true
+    try {
+      ownerActive = await isUserPro(ownerUid, ownerEmail)
+    } catch (err) {
+      // Fail-OPEN here (the opposite of requirePro for owner
+      // actions) — denying viewers because of a transient
+      // Firestore blip would punish the editor's CLIENTS for the
+      // editor's outage. We accept the small risk of serving a
+      // recently-lapsed project for a few seconds.
+      console.warn('[revisions/get-project] owner-active check failed:', err)
+    }
+    if (!ownerActive) {
+      return res.status(200).json({
+        ok: true,
+        ownerInactive: true,
+        ownerEmail,
+      })
+    }
+  }
+
   // ── New-style group ────────────────────────────────────────
   if (resolved.kind === 'group') {
     const group = resolved.group

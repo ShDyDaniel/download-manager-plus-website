@@ -155,6 +155,10 @@ type State =
       group: { id: string; title: string; rounds: PickerRound[] }
     }
   | { kind: 'ready'; project: ProjectInfo; viewerEmail: string }
+  // Owner's Pro subscription has lapsed — viewer should contact
+  // the editor directly. We surface their email so the viewer
+  // has a one-tap way to reach out.
+  | { kind: 'owner-inactive'; ownerEmail: string }
 
 const EMAIL_KEY_PREFIX = 'dmplus.review.email.'
 const PWD_TOKEN_KEY_PREFIX = 'dmplus.review.pwd.'
@@ -348,6 +352,11 @@ export function ReviewPage() {
         const json = (await r.json()) as
           | {
               ok: true
+              ownerInactive: true
+              ownerEmail: string
+            }
+          | {
+              ok: true
               needsPassword: true
               title: string
               roundNumber?: number
@@ -387,6 +396,19 @@ export function ReviewPage() {
 
         if (!json.ok) {
           setState({ kind: 'not-found', message: json.error || 'הקישור לא נמצא.' })
+          return
+        }
+        // Owner's Pro subscription has lapsed — show the friendly
+        // notice + the editor's email so the viewer can reach
+        // out, instead of dumping them into a broken workspace.
+        // `'ownerInactive' in json` is the canonical type-guard
+        // here (the field only exists on the lapsed-owner variant
+        // of the union), so this implicitly narrows json below.
+        if ('ownerInactive' in json) {
+          setState({
+            kind: 'owner-inactive',
+            ownerEmail: json.ownerEmail || '',
+          })
           return
         }
         if (json.needsPassword) {
@@ -541,6 +563,14 @@ export function ReviewPage() {
             title={state.title || 'סבב מוגן'}
             onVerified={() => window.location.reload()}
           />
+        </CenterCard>
+      </ReviewShell>
+    )
+  if (state.kind === 'owner-inactive')
+    return (
+      <ReviewShell>
+        <CenterCard>
+          <OwnerInactiveState ownerEmail={state.ownerEmail} />
         </CenterCard>
       </ReviewShell>
     )
@@ -1316,6 +1346,45 @@ function NotFoundState({ message }: { message: string }) {
       </div>
       <h1 className="mb-2 text-lg font-medium text-fg">לא הצלחנו לטעון את הסרטון</h1>
       <p className="text-sm leading-relaxed text-fg-muted">{message}</p>
+    </div>
+  )
+}
+
+/** Shown when the project's owner (the editor) doesn't currently
+ *  have an active Pro subscription. The viewer can't open the
+ *  workspace, but we surface the editor's email as a mailto:
+ *  link so they have a one-tap way to ask the editor to renew
+ *  or send the material another way. The pre-filled subject
+ *  saves the viewer from having to summarize the situation. */
+function OwnerInactiveState({ ownerEmail }: { ownerEmail: string }) {
+  // Build the mailto URL. We KNOW we're allowed to render a real
+  // mailto here (this is a contact action the viewer chose) so
+  // the email-detector mitigations we use elsewhere in the page
+  // (SafeEmail / format-detection meta) don't apply.
+  const mailto = ownerEmail
+    ? `mailto:${ownerEmail}?subject=${encodeURIComponent('בקשה לצפייה בסרטון לתיקונים')}`
+    : null
+  return (
+    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-8 text-center">
+      <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-500/20 text-amber-400">
+        <AlertTriangle className="h-6 w-6" />
+      </div>
+      <h1 className="mb-3 text-lg font-medium text-fg">
+        הקישור לא זמין כרגע
+      </h1>
+      <p className="mx-auto mb-5 max-w-md text-sm leading-relaxed text-fg-muted">
+        המנוי של העורך שלכם הסתיים, ולכן הסרטון לא נטען. מומלץ
+        ליצור איתם קשר ישירות כדי להמשיך בתהליך התיקונים.
+      </p>
+      {mailto && (
+        <a
+          href={mailto}
+          className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-amber-500/90 px-5 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-amber-500"
+        >
+          <Mail className="h-4 w-4" />
+          שלחו מייל לעורך
+        </a>
+      )}
     </div>
   )
 }
