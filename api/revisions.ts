@@ -733,7 +733,15 @@ async function handleOauthStatus(req: VercelRequest, res: VercelResponse) {
     ok: true,
     connected: true,
     email: data.email,
+    // Full integration shape so the desktop can stop using a
+    // direct Firestore listener (blocked by rules for non-admin
+    // users) and rely entirely on this server-side read instead.
+    // Admin SDK on the server bypasses rules, so this works for
+    // every user regardless of how their Firestore rules are
+    // configured.
+    scope: data.scope || '',
     connectedAt: data.connectedAt,
+    lastUsedAt: data.lastUsedAt,
   })
 }
 
