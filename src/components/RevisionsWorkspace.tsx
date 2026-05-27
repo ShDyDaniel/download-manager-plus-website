@@ -39,12 +39,19 @@ import {
   fetchDriveAccessToken,
   fetchDriveIntegration,
   fetchDriveStorage,
+  fetchNoteMediaAsObjectUrl,
   formatBytes,
   listGroupsForOwner,
+  listNotesAsOwner,
   updateGroup,
+  updateNoteStatus,
+  updateProjectLock,
   type DriveIntegration,
   type DriveStorage,
+  type GroupRoundSummary,
   type LegacyProjectSummary,
+  type NoteStatus,
+  type OwnerNote,
   type RevisionGroup,
 } from '../lib/revisionsApi'
 import {
@@ -213,6 +220,14 @@ function ConnectedWorkspace({
   const [showNewProject, setShowNewProject] = useState(false)
   const [editingGroup, setEditingGroup] = useState<RevisionGroup | null>(null)
   const [addingRoundTo, setAddingRoundTo] = useState<RevisionGroup | null>(null)
+  // When set, opens the per-round notes-browser modal. The `round`
+  // and `group` give the modal enough context to fetch notes,
+  // render the share URL, and toggle the round's lock state.
+  const [viewingRound, setViewingRound] = useState<
+    | { group: RevisionGroup; round: GroupRoundSummary }
+    | { legacy: LegacyProjectSummary }
+    | null
+  >(null)
   const [confirmDelete, setConfirmDelete] = useState<
     | { kind: 'group'; group: RevisionGroup }
     | { kind: 'round'; group: RevisionGroup; roundId: string }
@@ -298,6 +313,8 @@ function ConnectedWorkspace({
           projects={projects}
           onEditGroup={(g) => setEditingGroup(g)}
           onAddRound={(g) => setAddingRoundTo(g)}
+          onOpenRound={(g, round) => setViewingRound({ group: g, round })}
+          onOpenLegacy={(p) => setViewingRound({ legacy: p })}
           onDeleteRound={(g, roundId) =>
             setConfirmDelete({ kind: 'round', group: g, roundId })
           }
@@ -347,6 +364,13 @@ function ConnectedWorkspace({
             setConfirmDelete(null)
             reload()
           }}
+        />
+      )}
+      {viewingRound && (
+        <RoundDetailModal
+          target={viewingRound}
+          onClose={() => setViewingRound(null)}
+          onLockChanged={reload}
         />
       )}
     </div>
@@ -423,6 +447,8 @@ function ProjectList({
   projects,
   onEditGroup,
   onAddRound,
+  onOpenRound,
+  onOpenLegacy,
   onDeleteRound,
   onDeleteGroup,
   onDeleteLegacy,
@@ -430,6 +456,8 @@ function ProjectList({
   projects: Projects
   onEditGroup: (g: RevisionGroup) => void
   onAddRound: (g: RevisionGroup) => void
+  onOpenRound: (g: RevisionGroup, round: GroupRoundSummary) => void
+  onOpenLegacy: (p: LegacyProjectSummary) => void
   onDeleteRound: (g: RevisionGroup, roundId: string) => void
   onDeleteGroup: (g: RevisionGroup) => void
   onDeleteLegacy: (p: LegacyProjectSummary) => void
@@ -458,6 +486,7 @@ function ProjectList({
             group={item.group}
             onEdit={() => onEditGroup(item.group)}
             onAddRound={() => onAddRound(item.group)}
+            onOpenRound={(round) => onOpenRound(item.group, round)}
             onDeleteRound={(roundId) => onDeleteRound(item.group, roundId)}
             onDeleteGroup={() => onDeleteGroup(item.group)}
           />
@@ -465,6 +494,7 @@ function ProjectList({
           <LegacyCard
             key={`l-${item.project.id}`}
             project={item.project}
+            onOpen={() => onOpenLegacy(item.project)}
             onDelete={() => onDeleteLegacy(item.project)}
           />
         ),
@@ -481,63 +511,120 @@ function GroupCard({
   group,
   onEdit,
   onAddRound,
+  onOpenRound,
   onDeleteRound,
   onDeleteGroup,
 }: {
   group: RevisionGroup
   onEdit: () => void
   onAddRound: () => void
+  onOpenRound: (round: GroupRoundSummary) => void
   onDeleteRound: (roundId: string) => void
   onDeleteGroup: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const shareUrl = buildShareUrl(group.shareToken)
 
+  // `stopActionPropagation` — wrap the inline action buttons so a
+  // click on them doesn't ALSO toggle the expand state. The whole
+  // header is a button (for keyboard + screen-reader friendliness)
+  // so without this, every action click would race with the
+  // expand handler.
+  const stopActionPropagation = (e: React.MouseEvent) => {
+    e.stopPropagation()
+  }
+
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-bg-card">
-      {/* Header — title + chips + actions */}
-      <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate text-base font-medium text-fg">
-              {group.title || 'ללא שם'}
-            </h3>
-            {group.hasPassword && (
-              <span className="rounded bg-bg-elevated px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-fg-muted">
-                סיסמה
-              </span>
-            )}
-          </div>
-          <div className="mt-1.5 flex items-center gap-3 text-xs text-fg-muted">
-            <span>{group.rounds.length} סבבים</span>
-            <span>·</span>
-            <span>{formatDateShort(group.updatedAt)}</span>
+    <div className="overflow-hidden rounded-xl border border-border bg-bg-card transition-colors hover:border-fg/15">
+      {/* Header — entire row is the expand affordance. We use a
+          div with role=button (not a real <button>) because the
+          row contains nested buttons (copy-link, edit, add-round),
+          and nested <button>s are invalid HTML — browsers either
+          flatten them or fire double events. role=button keeps
+          a11y semantics while allowing the nested buttons to
+          stopPropagation cleanly. */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpanded((e) => !e)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            setExpanded((s) => !s)
+          }
+        }}
+        aria-expanded={expanded}
+        className="flex w-full cursor-pointer flex-col gap-3 p-5 text-right sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <ChevronDownIcon
+            // Rotates 180° when expanded so the user gets a
+            // visual confirmation of state. The icon itself is
+            // an inline SVG — no library needed.
+            className={
+              'h-4 w-4 shrink-0 text-fg-muted transition-transform duration-200 ' +
+              (expanded ? 'rotate-180' : '')
+            }
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h3 className="truncate text-base font-medium text-fg">
+                {group.title || 'ללא שם'}
+              </h3>
+              {group.hasPassword && (
+                <span className="rounded bg-bg-elevated px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-fg-muted">
+                  סיסמה
+                </span>
+              )}
+            </div>
+            <div className="mt-1.5 flex items-center gap-3 text-xs text-fg-muted">
+              <span>{group.rounds.length} סבבים</span>
+              <span>·</span>
+              <span>{formatDateShort(group.updatedAt)}</span>
+            </div>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div
+          className="flex flex-wrap items-center gap-2"
+          onClick={stopActionPropagation}
+        >
           <CopyShareLinkButton url={shareUrl} />
-          <button
-            type="button"
-            onClick={onAddRound}
-            className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation()
+              onAddRound()
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                onAddRound()
+              }
+            }}
+            className="cursor-pointer rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
           >
             + סבב חדש
-          </button>
-          <button
-            type="button"
-            onClick={onEdit}
-            className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
+          </span>
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation()
+              onEdit()
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                onEdit()
+              }
+            }}
+            className="cursor-pointer rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
           >
             עריכה
-          </button>
-          <button
-            type="button"
-            onClick={() => setExpanded((e) => !e)}
-            aria-label={expanded ? 'מזעור' : 'הרחבה'}
-            className="rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:bg-bg-elevated"
-          >
-            {expanded ? '−' : '+'}
-          </button>
+          </span>
         </div>
       </div>
 
@@ -573,6 +660,13 @@ function GroupCard({
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onOpenRound(round)}
+                      className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
+                    >
+                      הערות ({round.notesCount})
+                    </button>
                     <a
                       href={`${shareUrl}?r=${round.id}`}
                       target="_blank"
@@ -614,9 +708,11 @@ function GroupCard({
 
 function LegacyCard({
   project,
+  onOpen,
   onDelete,
 }: {
   project: LegacyProjectSummary
+  onOpen: () => void
   onDelete: () => void
 }) {
   const shareUrl = buildShareUrl(project.shareToken)
@@ -644,6 +740,13 @@ function LegacyCard({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <CopyShareLinkButton url={shareUrl} />
+          <button
+            type="button"
+            onClick={onOpen}
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
+          >
+            הערות ({project.notesCount})
+          </button>
           <a
             href={shareUrl}
             target="_blank"
@@ -687,7 +790,13 @@ function CopyShareLinkButton({ url }: { url: string }) {
   return (
     <button
       type="button"
-      onClick={() => void copy()}
+      onClick={(e) => {
+        // Live inside the GroupCard's role=button container — a
+        // bubble would also toggle the expand state. Stop the
+        // propagation so the copy action stays isolated.
+        e.stopPropagation()
+        void copy()
+      }}
       className={
         'rounded-md border px-3 py-1.5 text-xs transition-colors ' +
         (copied
@@ -1259,6 +1368,501 @@ function ConfirmDeleteModal({
   )
 }
 
+/* ──────────────────────────────────────────────────────────────
+ *  RoundDetailModal — notes browser for a single round
+ *
+ *  Mirrors the desktop's ProjectDetailView but trimmed to fit a
+ *  modal. Shows every note the client(s) left, lets the editor
+ *  flip statuses (new / resolved / question / not-possible), and
+ *  toggles the round's lock state. Screenshots + audio attached
+ *  to notes are fetched on-demand from the owner-auth media
+ *  proxy.
+ *
+ *  Takes either a {group, round} pair (new-style) or a legacy
+ *  standalone project. Both resolve to the same notes endpoint —
+ *  the only API difference is which `projectId` we send.
+ * ────────────────────────────────────────────────────────────── */
+
+function RoundDetailModal({
+  target,
+  onClose,
+  onLockChanged,
+}: {
+  target:
+    | { group: RevisionGroup; round: GroupRoundSummary }
+    | { legacy: LegacyProjectSummary }
+  onClose: () => void
+  onLockChanged: () => void
+}) {
+  // Resolve the common fields once so the rest of the modal body
+  // doesn't have to switch over `target` on every read.
+  const isLegacy = 'legacy' in target
+  const projectId = isLegacy ? target.legacy.id : target.round.id
+  const title = isLegacy
+    ? target.legacy.title || 'ללא שם'
+    : `${target.group.title || 'ללא שם'} — סבב מס׳ ${target.round.roundNumber}`
+  const shareUrl = isLegacy
+    ? buildShareUrl(target.legacy.shareToken)
+    : `${buildShareUrl(target.group.shareToken)}?r=${target.round.id}`
+  const locked = isLegacy ? target.legacy.locked : target.round.locked
+
+  const [notes, setNotes] = useState<OwnerNote[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [busyLock, setBusyLock] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    setNotes(null)
+    setLoadError(null)
+    void (async () => {
+      try {
+        const list = await listNotesAsOwner(projectId)
+        if (!cancelled) setNotes(list)
+      } catch (err) {
+        if (cancelled) return
+        setLoadError(
+          err instanceof Error ? err.message : 'טעינת ההערות נכשלה',
+        )
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, refreshKey])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  async function toggleLock() {
+    if (busyLock) return
+    setBusyLock(true)
+    const r = await updateProjectLock(projectId, !locked)
+    setBusyLock(false)
+    if (r.ok) {
+      onLockChanged()
+      onClose()
+    } else {
+      alert(r.error)
+    }
+  }
+
+  /** Apply a new status to a note in-place. Optimistic — flips
+   *  the local copy first, then mirrors to the server; reverts
+   *  on failure. Editor response payload is required for the two
+   *  statuses that surface text back to the reviewer. */
+  async function applyStatus(
+    noteId: string,
+    status: NoteStatus,
+    editorResponse?: string,
+  ) {
+    if (!notes) return
+    const prev = notes
+    setNotes(
+      notes.map((n) =>
+        n.id === noteId
+          ? {
+              ...n,
+              status,
+              editorResponse: editorResponse ?? n.editorResponse,
+            }
+          : n,
+      ),
+    )
+    try {
+      await updateNoteStatus(projectId, noteId, status, editorResponse)
+    } catch (err) {
+      setNotes(prev)
+      alert(err instanceof Error ? err.message : 'עדכון הסטטוס נכשל')
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div className="relative flex w-full max-w-3xl max-h-[90vh] flex-col overflow-hidden rounded-2xl border border-border bg-bg-elevated">
+        {/* Sticky header */}
+        <div className="flex flex-col gap-3 border-b border-border bg-bg-elevated p-5 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-lg font-medium text-fg">
+              {title}
+            </h2>
+            <div className="mt-1 flex items-center gap-2 text-xs">
+              <span className="text-fg-muted">
+                {notes ? `${notes.length} הערות` : 'טוען…'}
+              </span>
+              {locked && (
+                <span className="rounded bg-bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-fg-muted">
+                  סגור
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <CopyShareLinkButton url={shareUrl} />
+            <a
+              href={shareUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-card"
+            >
+              צפייה בדף הציבורי
+            </a>
+            <button
+              type="button"
+              onClick={() => void toggleLock()}
+              disabled={busyLock}
+              className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-card disabled:opacity-40"
+            >
+              {busyLock ? '…' : locked ? 'פתיחת הסבב' : 'סגירת הסבב'}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md p-1.5 text-fg-muted transition-colors hover:bg-bg-card hover:text-fg"
+              aria-label="סגור"
+            >
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable notes list */}
+        <div className="flex-1 overflow-y-auto p-5">
+          {loadError ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              {loadError}
+              <button
+                type="button"
+                onClick={() => setRefreshKey((n) => n + 1)}
+                className="ms-3 underline underline-offset-2"
+              >
+                נסה שוב
+              </button>
+            </div>
+          ) : !notes ? (
+            <div className="py-12 text-center text-sm text-fg-muted">
+              טוען הערות…
+            </div>
+          ) : notes.length === 0 ? (
+            <div className="py-12 text-center text-sm text-fg-muted">
+              אין עדיין הערות מהלקוח. ההערות שיתווספו לדף הציבורי
+              יופיעו כאן.
+            </div>
+          ) : (
+            <ul className="space-y-3">
+              {notes.map((note) => (
+                <NoteCard
+                  key={note.id}
+                  note={note}
+                  projectId={projectId}
+                  onApplyStatus={(status, payload) =>
+                    void applyStatus(note.id, status, payload)
+                  }
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Single note card — viewer info, timestamp link, body, optional
+ *  screenshot + audio, status pill. Lazy-loads the media via the
+ *  owner-auth proxy when the card mounts. */
+function NoteCard({
+  note,
+  projectId,
+  onApplyStatus,
+}: {
+  note: OwnerNote
+  projectId: string
+  onApplyStatus: (status: NoteStatus, editorResponse?: string) => void
+}) {
+  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [responseDraft, setResponseDraft] = useState(
+    note.editorResponse || '',
+  )
+  const [editingResponse, setEditingResponse] = useState<
+    null | 'question' | 'not-possible'
+  >(null)
+
+  // Fetch screenshot once on mount (or when the file id changes).
+  useEffect(() => {
+    if (!note.screenshotDriveFileId) return
+    let url: string | null = null
+    let cancelled = false
+    void (async () => {
+      try {
+        const u = await fetchNoteMediaAsObjectUrl(
+          projectId,
+          note.id,
+          'image',
+        )
+        if (cancelled) {
+          URL.revokeObjectURL(u)
+          return
+        }
+        url = u
+        setScreenshotUrl(u)
+      } catch {
+        // Don't error-toast — just don't render the screenshot.
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [projectId, note.id, note.screenshotDriveFileId])
+
+  // Same for audio.
+  useEffect(() => {
+    if (!note.audioDriveFileId) return
+    let url: string | null = null
+    let cancelled = false
+    void (async () => {
+      try {
+        const u = await fetchNoteMediaAsObjectUrl(
+          projectId,
+          note.id,
+          'audio',
+        )
+        if (cancelled) {
+          URL.revokeObjectURL(u)
+          return
+        }
+        url = u
+        setAudioUrl(u)
+      } catch {
+        // ignore
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [projectId, note.id, note.audioDriveFileId])
+
+  const ts = formatTimestamp(note.timeSeconds)
+  const dateStr = formatDateLong(note.createdAt)
+
+  function submitResponse(kind: 'question' | 'not-possible') {
+    if (!responseDraft.trim()) {
+      alert(
+        kind === 'question'
+          ? 'יש לכתוב את השאלה'
+          : 'יש לכתוב מדוע אי אפשר',
+      )
+      return
+    }
+    onApplyStatus(kind, responseDraft.trim())
+    setEditingResponse(null)
+  }
+
+  return (
+    <li className="rounded-xl border border-border bg-bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
+            <span dir="ltr" className="text-fg">
+              {note.viewerEmail}
+            </span>
+            <span>·</span>
+            {ts && (
+              <>
+                <span dir="ltr" className="font-mono text-fg">
+                  {ts}
+                </span>
+                <span>·</span>
+              </>
+            )}
+            <span>{dateStr}</span>
+          </div>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-fg">
+            {note.text}
+          </p>
+        </div>
+        <StatusBadge status={note.status} />
+      </div>
+
+      {/* Screenshot */}
+      {(screenshotUrl || note.screenshotDataUrl) && (
+        <div className="mt-3 overflow-hidden rounded-lg border border-border">
+          <img
+            src={screenshotUrl || note.screenshotDataUrl || ''}
+            alt=""
+            className="block max-h-72 w-full object-contain"
+          />
+        </div>
+      )}
+
+      {/* Audio */}
+      {audioUrl && (
+        <audio
+          controls
+          src={audioUrl}
+          className="mt-3 w-full"
+        />
+      )}
+
+      {/* Existing editor response (status = question / not-possible) */}
+      {note.editorResponse && !editingResponse && (
+        <div className="mt-3 rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-fg-muted">
+          <div className="mb-0.5 text-[10px] uppercase tracking-wider text-fg-faint">
+            תגובת העורך
+          </div>
+          <div className="whitespace-pre-wrap text-fg">
+            {note.editorResponse}
+          </div>
+        </div>
+      )}
+
+      {/* Inline response editor */}
+      {editingResponse && (
+        <div className="mt-3 space-y-2">
+          <textarea
+            value={responseDraft}
+            onChange={(e) => setResponseDraft(e.target.value)}
+            rows={2}
+            placeholder={
+              editingResponse === 'question'
+                ? 'איזו שאלה מבהירה ללקוח?'
+                : 'מדוע אי אפשר ליישם?'
+            }
+            className="w-full rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-fg placeholder:text-fg-faint focus:border-fg/30 focus:outline-none"
+            autoFocus
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setEditingResponse(null)
+                setResponseDraft(note.editorResponse || '')
+              }}
+              className="text-xs text-fg-muted hover:text-fg"
+            >
+              ביטול
+            </button>
+            <button
+              type="button"
+              onClick={() => submitResponse(editingResponse)}
+              className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-bg transition-colors hover:bg-primary-hover"
+            >
+              שליחת תגובה
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Status action buttons */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <StatusActionButton
+          label="חדש"
+          active={note.status === 'new'}
+          color="muted"
+          onClick={() => onApplyStatus('new')}
+        />
+        <StatusActionButton
+          label="טופל"
+          active={note.status === 'resolved'}
+          color="success"
+          onClick={() => onApplyStatus('resolved')}
+        />
+        <StatusActionButton
+          label="שאלה"
+          active={note.status === 'question'}
+          color="warning"
+          onClick={() => setEditingResponse('question')}
+        />
+        <StatusActionButton
+          label="לא אפשרי"
+          active={note.status === 'not-possible'}
+          color="destructive"
+          onClick={() => setEditingResponse('not-possible')}
+        />
+      </div>
+    </li>
+  )
+}
+
+function StatusBadge({ status }: { status: NoteStatus }) {
+  const styles: Record<NoteStatus, { label: string; cls: string }> = {
+    new: {
+      label: 'חדש',
+      cls: 'bg-bg-elevated text-fg-muted',
+    },
+    resolved: {
+      label: 'טופל',
+      cls: 'bg-success/10 text-success border-success/40',
+    },
+    question: {
+      label: 'שאלה',
+      cls: 'bg-primary/10 text-primary border-primary/40',
+    },
+    'not-possible': {
+      label: 'לא אפשרי',
+      cls: 'bg-destructive/10 text-destructive border-destructive/40',
+    },
+  }
+  const s = styles[status]
+  return (
+    <span
+      className={
+        'rounded-full border border-transparent px-2.5 py-0.5 text-[10px] uppercase tracking-wider ' +
+        s.cls
+      }
+    >
+      {s.label}
+    </span>
+  )
+}
+
+function StatusActionButton({
+  label,
+  active,
+  color,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  color: 'muted' | 'success' | 'warning' | 'destructive'
+  onClick: () => void
+}) {
+  const colorOn: Record<typeof color, string> = {
+    muted: 'border-fg/30 bg-bg-elevated text-fg',
+    success: 'border-success/40 bg-success/10 text-success',
+    warning: 'border-primary/40 bg-primary/10 text-primary',
+    destructive:
+      'border-destructive/40 bg-destructive/10 text-destructive',
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        'rounded-md border px-3 py-1.5 text-xs transition-colors ' +
+        (active
+          ? colorOn[color]
+          : 'border-border text-fg-muted hover:bg-bg-elevated hover:text-fg')
+      }
+    >
+      {label}
+    </button>
+  )
+}
+
 /* ══════════════════════════════════════════════════════════════
  *  SHARED PRIMITIVES
  * ══════════════════════════════════════════════════════════════ */
@@ -1355,13 +1959,69 @@ function ToggleRow({
           <div className="mt-0.5 text-xs text-fg-muted">{description}</div>
         )}
       </div>
-      <input
-        type="checkbox"
-        checked={value}
-        onChange={(e) => onChange(e.target.checked)}
-        className="mt-1 accent-current"
-      />
+      <Switch checked={value} onChange={onChange} />
     </label>
+  )
+}
+
+/** Custom squared switch — mirrors the desktop Switch (built on
+ *  Radix), but without the dependency. Same visual: square track
+ *  with rounded corners, tile-shaped thumb, copper "on" state
+ *  with a soft halo glow. The whole component is a real <button>
+ *  so it's keyboard-operable + screen-reader-friendly (role and
+ *  aria-checked attributes get the right state).
+ *
+ *  RTL note: thumb starts on the right of the track (RTL inline
+ *  direction) and slides LEFT to the "on" position. Physical
+ *  translate so the animation feels identical in any language. */
+function Switch({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean
+  onChange: (next: boolean) => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={(e) => {
+        e.preventDefault()
+        if (!disabled) onChange(!checked)
+      }}
+      className={
+        'relative mt-0.5 inline-flex h-5 w-10 shrink-0 cursor-pointer items-center rounded-md border transition-colors duration-300 ' +
+        (disabled ? 'cursor-not-allowed opacity-50 ' : '') +
+        (checked
+          ? 'border-primary bg-primary '
+          : 'border-border bg-white/[0.04] ')
+      }
+    >
+      {/* Soft halo glow when "on" — absolutely positioned so it
+          doesn't shift the track's box. */}
+      <span
+        aria-hidden="true"
+        className={
+          'pointer-events-none absolute inset-0 rounded-md bg-primary/40 blur-md transition-opacity duration-300 ' +
+          (checked ? 'opacity-100' : 'opacity-0')
+        }
+      />
+      {/* Thumb — tile-shaped, ~16 px travel from right to left. */}
+      <span
+        aria-hidden="true"
+        className={
+          'pointer-events-none relative z-10 block h-3.5 w-3.5 rounded-sm shadow-lg transition-transform duration-300 ' +
+          'ease-[cubic-bezier(0.34,1.56,0.64,1)] ' +
+          (checked
+            ? '-translate-x-[18px] bg-bg'
+            : '-translate-x-[3px] bg-fg/95')
+        }
+      />
+    </button>
   )
 }
 
@@ -1432,6 +2092,26 @@ function CloseIcon() {
   )
 }
 
+function ChevronDownIcon({ className }: { className?: string }) {
+  // Used by GroupCard as the expand affordance. Rotates 180° via
+  // a Tailwind transform when the card is open — single glyph,
+  // two visual states, no PNG asset needed.
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  )
+}
+
 /* ══════════════════════════════════════════════════════════════
  *  Misc utilities
  * ══════════════════════════════════════════════════════════════ */
@@ -1447,4 +2127,36 @@ function formatDateShort(ts: number): string {
   } catch {
     return ''
   }
+}
+
+function formatDateLong(ts: number): string {
+  if (!ts) return ''
+  try {
+    return new Date(ts).toLocaleString('he-IL', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return ''
+  }
+}
+
+/** "M:SS" / "H:MM:SS" — for note timestamps tied to a specific
+ *  second in the video. Returns empty string when timeSeconds
+ *  is null (general note not pinned to a moment). */
+function formatTimestamp(seconds: number | null): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) {
+    return ''
+  }
+  const s = Math.max(0, Math.floor(seconds))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+  }
+  return `${m}:${String(sec).padStart(2, '0')}`
 }

@@ -419,6 +419,132 @@ export async function deleteLegacyProject(
  *  Helpers
  * ────────────────────────────────────────────────────────────── */
 
+/* ──────────────────────────────────────────────────────────────
+ *  Notes — list / status toggle / media fetch
+ *
+ *  The editor's view of what clients left on a round. The /review/
+ *  :token page lets clients ADD notes; this section is the
+ *  editor's review-and-respond surface. Status values are loaded
+ *  via list-notes-owner (skips password gate, uses the editor's
+ *  session token) and updated via update-note-status.
+ * ────────────────────────────────────────────────────────────── */
+
+export type NoteStatus = 'new' | 'resolved' | 'question' | 'not-possible'
+
+export interface OwnerNote {
+  id: string
+  viewerEmail: string
+  viewerName?: string | null
+  /** Number = pinned to this second in the video. null = general
+   *  note not tied to any specific moment. */
+  timeSeconds: number | null
+  text: string
+  /** Legacy storage: base64 data URL on the note doc itself. */
+  screenshotDataUrl?: string | null
+  /** New storage: Drive file ID of the screenshot. Fetch via
+   *  fetchNoteMediaAsObjectUrl. */
+  screenshotDriveFileId?: string | null
+  /** Drive file ID of the voice recording attached to this note. */
+  audioDriveFileId?: string | null
+  status: NoteStatus
+  /** Free-text editor response. Populated when status is 'question'
+   *  or 'not-possible'. */
+  editorResponse?: string | null
+  createdAt: number
+}
+
+/** Fetch all notes the client(s) left on this round. Sorted
+ *  server-side by timeSeconds ASC — render order matches video
+ *  playback order without re-sorting on the client. */
+export async function listNotesAsOwner(
+  projectId: string,
+): Promise<OwnerNote[]> {
+  const r = await postAction<{ ok: true; notes: OwnerNote[] }>(
+    'list-notes-owner',
+    authBody({ projectId }),
+  )
+  return r.notes
+}
+
+/** Flip a note's status. The server requires `editorResponse` for
+ *  the two statuses that carry text back to the reviewer
+ *  ('question' / 'not-possible'); leave it undefined for 'new' /
+ *  'resolved'. Throws on failure so the caller knows to revert
+ *  any optimistic UI update. */
+export async function updateNoteStatus(
+  projectId: string,
+  noteId: string,
+  status: NoteStatus,
+  editorResponse?: string,
+): Promise<void> {
+  await postAction<{ ok: true }>(
+    'update-note-status',
+    authBody({ projectId, noteId, status, editorResponse }),
+  )
+}
+
+/** Fetch a note's screenshot or audio as a blob URL the caller
+ *  can plug into <img src> or <audio src>. Uses the owner-auth
+ *  proxy so password-protected projects work too — the public
+ *  GET URL would need a passwordToken we don't have here.
+ *
+ *  IMPORTANT: caller MUST URL.revokeObjectURL() the returned URL
+ *  when done (typically in a useEffect cleanup) or it leaks
+ *  memory. */
+export async function fetchNoteMediaAsObjectUrl(
+  projectId: string,
+  noteId: string,
+  kind: 'image' | 'audio',
+): Promise<string> {
+  const token = getSessionToken()
+  if (!token) throw new Error('יש להתחבר מחדש')
+  const r = await fetch(`${API_BASE}?action=note-media-owner`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionToken: token,
+      projectId,
+      noteId,
+      kind,
+    }),
+  })
+  if (!r.ok) {
+    throw new Error(`טעינת המדיה נכשלה (${r.status})`)
+  }
+  const blob = await r.blob()
+  return URL.createObjectURL(blob)
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Round-level mutations (lock/unlock)
+ * ────────────────────────────────────────────────────────────── */
+
+/** Toggle a round's lock state. When locked, the public review
+ *  page can still play the video and read existing notes, but
+ *  the add-note endpoint rejects with 423. Use this when the
+ *  round is "closed" and the editor is incorporating changes. */
+export async function updateProjectLock(
+  projectId: string,
+  locked: boolean,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await postAction<{ ok: true }>(
+      'update-project',
+      authBody({ projectId, locked }),
+    )
+    return { ok: true }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'שגיאה',
+    }
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Helpers
+ * ────────────────────────────────────────────────────────────── */
+
 /** Build the public share URL the editor sends to clients.
  *  Single source of truth for the URL template. */
 export function buildShareUrl(shareToken: string): string {
