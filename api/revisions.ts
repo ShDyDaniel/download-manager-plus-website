@@ -338,12 +338,21 @@ async function isUserPro(uid: string, email: string): Promise<boolean> {
 
   const db = getDb()
 
-  // Beta-mode global override. Throws bubble up → caller sends
-  // 503. We INTENTIONALLY don't swallow appConfig errors anymore:
-  // if we can't read the global config we don't know whether
-  // betaMode is on, so granting access would be guessing.
-  const cfgSnap = await db.collection('appConfig').doc('global').get()
-  if (cfgSnap.exists && cfgSnap.data()?.betaMode === true) return true
+  // Beta-mode global override. Wrapped in try/catch — if the
+  // appConfig/global doc doesn't exist yet (operator hasn't
+  // turned beta mode on/off explicitly), reading it succeeds
+  // but `.exists` is false → we fall through to user-level
+  // checks. If the read itself THROWS (Firestore down) we also
+  // fall through; either way `betaMode` defaults to false. The
+  // alternative — letting the exception bubble — would punish
+  // viewers of legitimately-Pro projects for an unrelated
+  // Firestore hiccup on an OPTIONAL config flag.
+  try {
+    const cfgSnap = await db.collection('appConfig').doc('global').get()
+    if (cfgSnap.exists && cfgSnap.data()?.betaMode === true) return true
+  } catch (err) {
+    console.warn('[revisions/isUserPro] appConfig read failed (continuing):', err)
+  }
 
   // User doc — primary source of subscription / trial / role state.
   const userSnap = await db.collection('users').doc(uid).get()
@@ -1810,17 +1819,29 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
       ? resolved.group.ownerEmail
       : String((resolved.round as { ownerEmail?: string }).ownerEmail || '')
   if (ownerUid) {
-    let ownerActive = true
+    // Fail-CLOSED for the owner-Pro check. The earlier version
+    // was fail-OPEN (treat errors as "Pro") on the theory that
+    // denying viewers because of a transient Firestore blip is
+    // worse than briefly serving a lapsed project. In practice
+    // the most common "error" is the appConfig/global doc not
+    // existing yet (operator hasn't created it) — and that
+    // shouldn't grant access; it should fall through to the
+    // user-doc check. So we now log the error AND treat as
+    // not-Pro so the inactive notice surfaces correctly.
+    let ownerActive: boolean
     try {
       ownerActive = await isUserPro(ownerUid, ownerEmail)
     } catch (err) {
-      // Fail-OPEN here (the opposite of requirePro for owner
-      // actions) — denying viewers because of a transient
-      // Firestore blip would punish the editor's CLIENTS for the
-      // editor's outage. We accept the small risk of serving a
-      // recently-lapsed project for a few seconds.
-      console.warn('[revisions/get-project] owner-active check failed:', err)
+      console.warn(
+        '[revisions/get-project] owner-active check threw:',
+        err,
+      )
+      ownerActive = false
     }
+    console.log(
+      '[revisions/get-project] ownerCheck',
+      JSON.stringify({ ownerUid, ownerEmail, ownerActive }),
+    )
     if (!ownerActive) {
       return res.status(200).json({
         ok: true,
