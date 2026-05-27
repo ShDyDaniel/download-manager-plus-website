@@ -1031,6 +1031,24 @@ interface RevisionGroupDoc {
   driveFolderId: string | null
   notesFolderId: string | null
   status: 'active' | 'archived'
+  /** Public-review-page toggles, settable by the owner in the
+   *  edit-project modal. All have safe legacy defaults so groups
+   *  created before this field was added behave the same as the
+   *  original ship: watermark on, download off, Drive link off.
+   *
+   *  - watermark      : show the animated viewer-email watermark
+   *                     over the video.
+   *  - allowDownload  : let the browser render the native download
+   *                     button on the player (removes the
+   *                     controlsList="nodownload" hint).
+   *  - openInDrive    : surface a "פתח ב-Google Drive" link on the
+   *                     workspace. Requires the editor to have
+   *                     marked the underlying Drive file as
+   *                     publicly viewable (already done at upload
+   *                     time via setShareablePermissions). */
+  watermark?: boolean
+  allowDownload?: boolean
+  openInDrive?: boolean
   createdAt: number
   updatedAt: number
 }
@@ -1280,6 +1298,12 @@ async function handleCreateProjectGroup(
     driveFolderId,
     notesFolderId: null,
     status: 'active',
+    // Public-review-page toggles. New projects get the safe
+    // defaults that match the original ship behavior; the editor
+    // can flip any of them later from the edit-project modal.
+    watermark: true,
+    allowDownload: false,
+    openInDrive: false,
     createdAt: now,
     updatedAt: now,
   })
@@ -1543,6 +1567,14 @@ async function handleListGroupsOwner(
         title: g.title,
         shareToken: g.shareToken,
         hasPassword: Boolean(g.passwordHash),
+        // Public-review-page toggles. Legacy groups that don't
+        // have these fields fall back to the original ship
+        // behavior (watermark on, download off, Drive link off)
+        // so the desktop UI shows the right toggle states even
+        // for projects created before the feature existed.
+        watermark: g.watermark !== false,
+        allowDownload: g.allowDownload === true,
+        openInDrive: g.openInDrive === true,
         createdAt: g.createdAt,
         updatedAt: g.updatedAt,
         rounds,
@@ -1789,6 +1821,17 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
             videoMime: String(selectedRoundData.videoMime || ''),
             createdAt: selectedRound.createdAt,
             locked: selectedRound.locked,
+            // Public-review-page toggles, inherited from the group
+            // (legacy fallback = original ship behavior).
+            watermark: group.watermark !== false,
+            allowDownload: group.allowDownload === true,
+            // Only expose the Drive URL when the editor explicitly
+            // turned on "open in Drive" — otherwise the client
+            // would have a backdoor around the streaming proxy.
+            driveViewUrl:
+              group.openInDrive === true
+                ? `https://drive.google.com/file/d/${selectedRoundData.driveFileId}/view`
+                : null,
           }
         : null,
     })
@@ -1840,6 +1883,12 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
       videoSizeBytes: project.videoSizeBytes,
       videoMime: project.videoMime,
       createdAt: project.createdAt,
+      // Legacy single-round projects pre-date the per-project
+      // settings — they always get the original ship defaults
+      // (watermark on, download off, no Drive link).
+      watermark: true,
+      allowDownload: false,
+      driveViewUrl: null,
       locked,
     },
   })
@@ -3443,6 +3492,89 @@ async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: update-group  (auth required — owner only)
+ *
+ *  POST /api/revisions?action=update-group
+ *  Body: {
+ *    idToken,
+ *    groupId,
+ *    password?,        // "" clears, non-empty sets, undefined = no change
+ *    watermark?,       // boolean, undefined = no change
+ *    allowDownload?,   // boolean, undefined = no change
+ *    openInDrive?,     // boolean, undefined = no change
+ *  }
+ *  Returns: { ok }
+ *
+ *  Lets the project owner mutate group-level settings after the
+ *  group already exists. Patch semantics — only the fields
+ *  explicitly passed get touched, everything else stays.
+ *
+ *  Password convention matches update-project:
+ *    - undefined → no change
+ *    - ""         → clear existing password
+ *    - non-empty  → hash with a fresh salt and store
+ *  Existing password tokens already minted stay valid for their
+ *  6h TTL (same trade-off as update-project — simpler than
+ *  tracking a per-group revocation epoch).
+ * ────────────────────────────────────────────────────────────── */
+async function handleUpdateGroup(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    groupId?: string
+    password?: string
+    watermark?: boolean
+    allowDownload?: boolean
+    openInDrive?: boolean
+  }
+  const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
+  const groupId = String(body.groupId || '').trim()
+  if (!groupId) return res.status(400).json({ ok: false, error: 'groupId' })
+
+  const ref = getDb().collection('revisionGroups').doc(groupId)
+  const snap = await ref.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const group = snap.data() as RevisionGroupDoc
+  if (group.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+
+  // Patch fields — only touch what the caller explicitly passed.
+  // `Record<string, unknown>` rather than a typed Partial because
+  // Firestore's update() accepts arbitrary key/value pairs and
+  // typing it would require enumerating every legal field.
+  const update: Record<string, unknown> = { updatedAt: Date.now() }
+
+  if (typeof body.password === 'string') {
+    if (body.password === '') {
+      // Clear path.
+      update.passwordHash = null
+      update.passwordSalt = null
+    } else {
+      if (body.password.length < 4) {
+        return res.status(400).json({
+          ok: false,
+          error: 'הסיסמה קצרה מדי (4 תווים מינימום)',
+        })
+      }
+      const pw = hashPasswordOrNull(body.password)!
+      update.passwordHash = pw.passwordHash
+      update.passwordSalt = pw.passwordSalt
+    }
+  }
+
+  if (typeof body.watermark === 'boolean') update.watermark = body.watermark
+  if (typeof body.allowDownload === 'boolean')
+    update.allowDownload = body.allowDownload
+  if (typeof body.openInDrive === 'boolean')
+    update.openInDrive = body.openInDrive
+
+  await ref.update(update)
+  return res.status(200).json({ ok: true })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Action: update-project  (auth required — owner only)
  *
  *  POST /api/revisions?action=update-project
@@ -3985,6 +4117,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleDeleteNote(req, res)
       case 'update-project':
         return await handleUpdateProject(req, res)
+      case 'update-group':
+        return await handleUpdateGroup(req, res)
       case 'replace-project-video':
         return await handleReplaceProjectVideo(req, res)
       case 'list-notes-owner':

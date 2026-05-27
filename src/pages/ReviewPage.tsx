@@ -69,6 +69,23 @@ interface ProjectInfo {
    *  video + existing notes stay visible; the add-note buttons
    *  disappear and a friendly banner explains why. */
   locked: boolean
+  /** Public-review-page toggles, inherited from the project group
+   *  (or default values for legacy single-round projects).
+   *
+   *  - watermark      : render the animated viewer-email overlay
+   *                     on top of the video. Defaults to true.
+   *  - allowDownload  : let the browser show its native download
+   *                     button on the <video> tag. Defaults to
+   *                     false (we keep `controlsList="nodownload"`
+   *                     then).
+   *  - driveViewUrl   : present when the editor explicitly turned
+   *                     on "open in Drive" — null otherwise. When
+   *                     set, the workspace surfaces a small link
+   *                     that opens the raw Drive file in a new tab.
+   */
+  watermark: boolean
+  allowDownload: boolean
+  driveViewUrl: string | null
   /** Present when this round is part of a multi-round group. The
    *  workspace uses it to render the "back to picker" affordance
    *  and so subsequent fetches that need a roundId can grab it
@@ -336,6 +353,9 @@ export function ReviewPage() {
                 title: string
                 roundNumber?: number
                 locked?: boolean
+                watermark?: boolean
+                allowDownload?: boolean
+                driveViewUrl?: string | null
               }
             }
           | {
@@ -348,6 +368,9 @@ export function ReviewPage() {
                 title: string
                 roundNumber?: number
                 locked?: boolean
+                watermark?: boolean
+                allowDownload?: boolean
+                driveViewUrl?: string | null
               } | null
             }
           | { ok: false; error: string }
@@ -382,6 +405,14 @@ export function ReviewPage() {
         const round = proj.roundNumber ?? 1
         const locked = proj.locked === true
         const projectId = proj.id
+        // Public-review-page toggles, with safe defaults for any
+        // legacy response that doesn't include them (treat
+        // watermark as on, download as off, no Drive link).
+        const projectFlags = {
+          watermark: proj.watermark !== false,
+          allowDownload: proj.allowDownload === true,
+          driveViewUrl: proj.driveViewUrl ?? null,
+        }
         const groupContext =
           json.kind === 'group'
             ? { groupId: json.group.id, totalRounds: json.group.rounds.length }
@@ -395,6 +426,7 @@ export function ReviewPage() {
             locked,
             projectId,
             groupContext,
+            projectFlags,
           )
         } else {
           setState({
@@ -419,6 +451,11 @@ export function ReviewPage() {
       locked: boolean,
       projectId: string,
       groupContext: ProjectInfo['groupContext'],
+      flags: {
+        watermark: boolean
+        allowDownload: boolean
+        driveViewUrl: string | null
+      },
     ) {
       const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
       const r = await fetch(`${API}?action=get-stream-token`, {
@@ -450,6 +487,9 @@ export function ReviewPage() {
           videoMime: json.videoMime,
           roundNumber,
           locked,
+          watermark: flags.watermark,
+          allowDownload: flags.allowDownload,
+          driveViewUrl: flags.driveViewUrl,
           groupContext,
         },
         viewerEmail,
@@ -1814,13 +1854,39 @@ function ReviewWorkspace({
                 controls
                 crossOrigin="anonymous"
                 playsInline
-                controlsList="nodownload"
+                // controlsList toggles the browser's native download
+                // button. The editor controls this per-project via
+                // the "Allow download" switch in the edit modal —
+                // default behavior stays "no download" so clients
+                // can't trivially save the cut.
+                controlsList={project.allowDownload ? undefined : 'nodownload'}
                 onContextMenu={(e) => e.preventDefault()}
                 className="block max-h-[72vh] w-auto max-w-full"
               />
             </div>
-            <Watermark email={viewerEmail} />
+            {/* Watermark is per-project — editor decides whether the
+                viewer's email shows over the video. Defaults to on
+                for new projects; can be flipped off from the edit
+                modal when the editor trusts the client. */}
+            {project.watermark && <Watermark email={viewerEmail} />}
           </div>
+
+          {/* Optional "Open in Drive" link — surfaces when the
+              editor explicitly turned the toggle on. Goes straight
+              to the raw Drive file (so it bypasses watermark +
+              streaming proxy entirely — only intended for trusted
+              clients who need the original-quality file). */}
+          {project.driveViewUrl && (
+            <a
+              href={project.driveViewUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 self-start rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-white/70 transition-colors hover:bg-white/[0.06] hover:text-white"
+            >
+              <FolderClosed className="h-3 w-3" />
+              פתח את הקובץ ב-Google Drive
+            </a>
+          )}
 
           {/* Action strip — placed UNDER the video, not floating in
               the header. When the editor locks the round we hide
