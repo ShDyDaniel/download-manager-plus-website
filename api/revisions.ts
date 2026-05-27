@@ -317,6 +317,60 @@ function serverIsKeyActive(key: Record<string, unknown> | null): boolean {
   return false
 }
 
+/** Same as isUserPro, but returns a verbose breakdown of which
+ *  individual check decided the outcome. Used by the get-project
+ *  diagnostic header so the operator can see exactly which signal
+ *  is granting (or denying) access without us having to log
+ *  every step server-side. */
+async function isUserProDebug(
+  uid: string,
+  email: string,
+): Promise<{ pro: boolean; reason: string }> {
+  if (email && SERVER_ADMIN_EMAILS.has(email.toLowerCase())) {
+    return { pro: true, reason: 'admin-email' }
+  }
+  const db = getDb()
+  try {
+    const cfgSnap = await db.collection('appConfig').doc('global').get()
+    if (cfgSnap.exists && cfgSnap.data()?.betaMode === true) {
+      return { pro: true, reason: 'betaMode' }
+    }
+  } catch (err) {
+    console.warn('[isUserProDebug] appConfig read failed:', err)
+  }
+  const userSnap = await db.collection('users').doc(uid).get()
+  const userExists = userSnap.exists
+  let userRole: unknown = null
+  let userSubscription: unknown = null
+  if (userExists) {
+    const user = userSnap.data() as Record<string, unknown>
+    userRole = user.role
+    userSubscription = user.subscription
+    if (user.role === 'admin') return { pro: true, reason: 'user.role=admin' }
+    if (user.subscription === 'pro') {
+      return { pro: true, reason: 'user.subscription=pro' }
+    }
+    if (serverIsTrialActive(user)) {
+      return { pro: true, reason: 'trial-active' }
+    }
+  }
+  const keySnap = await db
+    .collection('productKeys')
+    .where('redeemedBy', '==', uid)
+    .limit(1)
+    .get()
+  if (!keySnap.empty) {
+    const key = keySnap.docs[0].data() as Record<string, unknown>
+    if (serverIsKeyActive(key)) {
+      return { pro: true, reason: `key-active(id=${keySnap.docs[0].id})` }
+    }
+  }
+  return {
+    pro: false,
+    reason: `none(userExists=${userExists},role=${String(userRole)},sub=${String(userSubscription)})`,
+  }
+}
+
 /** True if the (already-Firebase-Auth-verified) user has Pro
  *  entitlement. Reads users/{uid}, productKeys (by redeemedBy=uid),
  *  and appConfig/global for the betaMode flag. Order of checks
@@ -1829,9 +1883,12 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
     // user-doc check. So we now log the error AND treat as
     // not-Pro so the inactive notice surfaces correctly.
     let ownerActive: boolean
+    let ownerReason = 'unknown'
     let ownerCheckError: string | null = null
     try {
-      ownerActive = await isUserPro(ownerUid, ownerEmail)
+      const result = await isUserProDebug(ownerUid, ownerEmail)
+      ownerActive = result.pro
+      ownerReason = result.reason
     } catch (err) {
       ownerCheckError =
         err instanceof Error ? err.message : String(err)
@@ -1840,47 +1897,35 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
         err,
       )
       ownerActive = false
+      ownerReason = `threw(${ownerCheckError})`
     }
     console.log(
       '[revisions/get-project] ownerCheck',
-      JSON.stringify({ ownerUid, ownerEmail, ownerActive, ownerCheckError }),
+      JSON.stringify({ ownerUid, ownerEmail, ownerActive, ownerReason }),
     )
-    if (!ownerActive) {
-      return res.status(200).json({
-        ok: true,
-        ownerInactive: true,
-        ownerEmail,
-        // Temporary diagnostic — included so the operator can see
-        // (via the browser network tab) WHY the check failed
-        // without needing access to Vercel logs. Safe to remove
-        // once the inactive flow is confirmed working.
-        __debug: { ownerUid, ownerCheckError, codeBuild: 'inactive-fix-v2' },
-      })
-    }
-    // Temporary diagnostic for the active branch too — if the
-    // operator's test ever shows the workspace when it shouldn't,
-    // this field tells us what the server actually saw and the
-    // build that returned it. Remove once stable.
-    void ownerCheckError
-    // Stash the debug info on the response object so the success
-    // branches below can include it without us threading another
-    // parameter through. setHeader is the right place — it lives
-    // on the request scope, doesn't get serialised into JSON, and
-    // any downstream `res.json(...)` we already do is untouched.
-    // We piggyback on a custom header so the operator can see the
-    // diagnostic in the Network tab → Headers without needing to
-    // pretty-print the response body. Sentinel value confirms the
-    // build is live ("inactive-fix-v2"); ownerUid + ownerActive
-    // tell us exactly what the check decided.
     res.setHeader(
       'X-Dmp-Owner-Check',
       JSON.stringify({
         ownerUid,
         ownerEmail,
         ownerActive,
-        codeBuild: 'inactive-fix-v2',
+        reason: ownerReason,
+        codeBuild: 'inactive-fix-v3',
       }),
     )
+    if (!ownerActive) {
+      return res.status(200).json({
+        ok: true,
+        ownerInactive: true,
+        ownerEmail,
+        __debug: {
+          ownerUid,
+          ownerReason,
+          ownerCheckError,
+          codeBuild: 'inactive-fix-v3',
+        },
+      })
+    }
   }
 
   // ── New-style group ────────────────────────────────────────
