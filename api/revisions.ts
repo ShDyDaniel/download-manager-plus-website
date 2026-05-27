@@ -273,13 +273,15 @@ async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedUser | nu
  *  legitimate Pro user never sees a server-side denial after the
  *  client said they're entitled.
  *
- *  Fail-open on transient errors: if Firestore is unreachable or
- *  the user/key/config docs throw, we LET THE USER THROUGH and
- *  log a warning. Locking out paying customers because of a
- *  network blip is worse than letting a free user squeeze through
- *  a 30-second outage. The check is defense-in-depth on top of an
- *  already-valid Firebase Auth session — anyone who reaches this
- *  point is at least signed in as a real user.
+ *  FAIL-CLOSED on transient errors. If any Firestore query throws
+ *  we send 503 (transient — retry-friendly) rather than granting
+ *  access. The product is in beta with no paying customers yet,
+ *  so the priority is "no unauthorized use ever" over "no false
+ *  negatives ever". A legit user who hits a one-in-a-million
+ *  Firestore blip retries their request and it succeeds the
+ *  second time. The original fail-open design (let users through
+ *  on errors) was rejected by the operator for exactly this
+ *  reason — security over availability while in beta.
  * ────────────────────────────────────────────────────────────── */
 
 // Mirrors src/lib/firestore.ts → ADMIN_EMAILS. Keep in sync if you
@@ -319,54 +321,50 @@ function serverIsKeyActive(key: Record<string, unknown> | null): boolean {
  *  entitlement. Reads users/{uid}, productKeys (by redeemedBy=uid),
  *  and appConfig/global for the betaMode flag. Order of checks
  *  matches the client (admin email → betaMode → role/subscription
- *  → key → trial) so denials happen for the same reason at both
- *  layers.
+ *  → trial → active key) so denials happen for the same reason at
+ *  both layers.
  *
- *  Throws are caught at the caller (requirePro) which treats them
- *  as "allow" — see the doc-block above for the rationale. */
+ *  Returns positive at the FIRST signal that qualifies — later
+ *  checks (and their potential errors) are skipped once we have a
+ *  definite "yes". This keeps the happy path fast AND immune to
+ *  errors in later checks for already-qualified users.
+ *
+ *  Throws on Firestore errors. The caller (`requirePro`) catches
+ *  and converts to a 503 — see the doc-block above. */
 async function isUserPro(uid: string, email: string): Promise<boolean> {
-  // Fast path — admin email, no Firestore round-trip.
+  // Fast path — admin email, no Firestore round-trip. Admins keep
+  // working even if Firestore is completely down.
   if (email && SERVER_ADMIN_EMAILS.has(email.toLowerCase())) return true
 
   const db = getDb()
 
-  // Beta mode = global override. Read this BEFORE the user doc so
-  // we can short-circuit during a beta window without ever loading
-  // user state.
-  try {
-    const cfgSnap = await db.collection('appConfig').doc('global').get()
-    if (cfgSnap.exists && cfgSnap.data()?.betaMode === true) return true
-  } catch (err) {
-    // If appConfig is unreachable just continue — don't block on
-    // optional state.
-    console.warn('[revisions/isUserPro] appConfig read failed (continuing):', err)
+  // Beta-mode global override. Throws bubble up → caller sends
+  // 503. We INTENTIONALLY don't swallow appConfig errors anymore:
+  // if we can't read the global config we don't know whether
+  // betaMode is on, so granting access would be guessing.
+  const cfgSnap = await db.collection('appConfig').doc('global').get()
+  if (cfgSnap.exists && cfgSnap.data()?.betaMode === true) return true
+
+  // User doc — primary source of subscription / trial / role state.
+  const userSnap = await db.collection('users').doc(uid).get()
+  if (userSnap.exists) {
+    const user = userSnap.data() as Record<string, unknown>
+    if (user.role === 'admin') return true
+    if (user.subscription === 'pro') return true
+    if (serverIsTrialActive(user)) return true
   }
 
-  const userSnap = await db.collection('users').doc(uid).get()
-  if (!userSnap.exists) return false
-  const user = userSnap.data() as Record<string, unknown>
-
-  if (user.role === 'admin') return true
-  if (user.subscription === 'pro') return true
-  if (serverIsTrialActive(user)) return true
-
-  // Last check — active redeemed key. Costs an extra round-trip,
-  // so it's last (most Pro users are subscription-based, not key-
-  // redeemed, so this rarely fires).
-  try {
-    const keySnap = await db
-      .collection('productKeys')
-      .where('redeemedBy', '==', uid)
-      .limit(1)
-      .get()
-    if (!keySnap.empty) {
-      const key = keySnap.docs[0].data() as Record<string, unknown>
-      if (serverIsKeyActive(key)) return true
-    }
-  } catch (err) {
-    console.warn('[revisions/isUserPro] productKeys query failed:', err)
-    // Fall through — if we can't check the key, deny rather than
-    // grant (we already passed every other Pro indicator above).
+  // Active redeemed key. Costs an extra round-trip so it's last
+  // (most Pro users are subscription-based; key-redeemed users
+  // are the minority). Throws bubble up → 503.
+  const keySnap = await db
+    .collection('productKeys')
+    .where('redeemedBy', '==', uid)
+    .limit(1)
+    .get()
+  if (!keySnap.empty) {
+    const key = keySnap.docs[0].data() as Record<string, unknown>
+    if (serverIsKeyActive(key)) return true
   }
 
   return false
@@ -379,11 +377,15 @@ async function isUserPro(uid: string, email: string): Promise<boolean> {
  *     if (!(await requirePro(res, verified))) return
  *     // ... continue with the action ...
  *
- *  On Pro → returns true.
- *  On non-Pro → sends 403 with a Hebrew message + returns false.
- *  On error → logs and returns true (fail open). Better to grant
- *  a free user a brief grace window than to break paid features
- *  for legitimate Pro users during a Firestore hiccup. */
+ *  Three response shapes:
+ *    - Pro confirmed         → returns true, no response sent
+ *    - Definitively not Pro  → sends 403, returns false
+ *    - Couldn't determine    → sends 503, returns false (user
+ *                              retries the same request)
+ *
+ *  The 503 → retry pattern lets a legit user hit a one-off
+ *  Firestore blip and recover with a single retry, without ever
+ *  granting access to someone we couldn't verify. */
 async function requirePro(
   res: VercelResponse,
   verified: VerifiedUser,
@@ -392,8 +394,12 @@ async function requirePro(
   try {
     pro = await isUserPro(verified.uid, verified.email)
   } catch (err) {
-    console.warn('[revisions/requirePro] check threw — failing open:', err)
-    return true
+    console.warn('[revisions/requirePro] entitlement check failed:', err)
+    res.status(503).json({
+      ok: false,
+      error: 'לא הצלחנו לאמת את המנוי כרגע. נסו שוב בעוד רגע.',
+    })
+    return false
   }
   if (pro) return true
   res.status(403).json({
