@@ -259,6 +259,151 @@ async function verifyFirebaseIdToken(idToken: string): Promise<VerifiedUser | nu
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Server-side Pro entitlement check
+ *
+ *  The desktop renderer renders Pro-only UI behind a `!isPro` gate,
+ *  but a determined attacker can patch the JS bundle (asar isn't
+ *  encrypted on Windows — Mac uses asar integrity fuses, Windows
+ *  doesn't have an equivalent yet). They can also bypass the
+ *  client entirely and call this API straight from the browser.
+ *
+ *  So every owner-side action that touches Pro features
+ *  re-validates entitlement server-side via this helper. The logic
+ *  mirrors `hasProAccess` in src/lib/firestore.ts EXACTLY so a
+ *  legitimate Pro user never sees a server-side denial after the
+ *  client said they're entitled.
+ *
+ *  Fail-open on transient errors: if Firestore is unreachable or
+ *  the user/key/config docs throw, we LET THE USER THROUGH and
+ *  log a warning. Locking out paying customers because of a
+ *  network blip is worse than letting a free user squeeze through
+ *  a 30-second outage. The check is defense-in-depth on top of an
+ *  already-valid Firebase Auth session — anyone who reaches this
+ *  point is at least signed in as a real user.
+ * ────────────────────────────────────────────────────────────── */
+
+// Mirrors src/lib/firestore.ts → ADMIN_EMAILS. Keep in sync if you
+// ever change the client-side list.
+const SERVER_ADMIN_EMAILS = new Set(['dyshalts@gmail.com'])
+
+// Mirror of isTrialActive() from src/lib/firestore.ts — APPROVED
+// trial that hasn't expired.
+function serverIsTrialActive(user: Record<string, unknown>): boolean {
+  if (user.trialStatus !== 'approved') return false
+  const exp = user.trialExpiresAt
+  if (!exp) return false
+  const ts = new Date(String(exp)).getTime()
+  if (!Number.isFinite(ts)) return false
+  return ts > Date.now()
+}
+
+// Mirror of isKeyActive() from src/lib/firestore.ts — null/expired
+// key returns false; perpetual key (no expiresAt) returns true;
+// future expiry returns true; expired-but-still-active PayPal
+// subscription gets a 24h grace window before lockout.
+function serverIsKeyActive(key: Record<string, unknown> | null): boolean {
+  if (!key) return false
+  if (!key.expiresAt) return true
+  const expiry = new Date(String(key.expiresAt)).getTime()
+  if (!Number.isFinite(expiry)) return true
+  const now = Date.now()
+  if (expiry > now) return true
+  if (key.subscriptionStatus === 'active') {
+    const SUBSCRIPTION_GRACE_MS = 24 * 60 * 60 * 1000
+    return now - expiry <= SUBSCRIPTION_GRACE_MS
+  }
+  return false
+}
+
+/** True if the (already-Firebase-Auth-verified) user has Pro
+ *  entitlement. Reads users/{uid}, productKeys (by redeemedBy=uid),
+ *  and appConfig/global for the betaMode flag. Order of checks
+ *  matches the client (admin email → betaMode → role/subscription
+ *  → key → trial) so denials happen for the same reason at both
+ *  layers.
+ *
+ *  Throws are caught at the caller (requirePro) which treats them
+ *  as "allow" — see the doc-block above for the rationale. */
+async function isUserPro(uid: string, email: string): Promise<boolean> {
+  // Fast path — admin email, no Firestore round-trip.
+  if (email && SERVER_ADMIN_EMAILS.has(email.toLowerCase())) return true
+
+  const db = getDb()
+
+  // Beta mode = global override. Read this BEFORE the user doc so
+  // we can short-circuit during a beta window without ever loading
+  // user state.
+  try {
+    const cfgSnap = await db.collection('appConfig').doc('global').get()
+    if (cfgSnap.exists && cfgSnap.data()?.betaMode === true) return true
+  } catch (err) {
+    // If appConfig is unreachable just continue — don't block on
+    // optional state.
+    console.warn('[revisions/isUserPro] appConfig read failed (continuing):', err)
+  }
+
+  const userSnap = await db.collection('users').doc(uid).get()
+  if (!userSnap.exists) return false
+  const user = userSnap.data() as Record<string, unknown>
+
+  if (user.role === 'admin') return true
+  if (user.subscription === 'pro') return true
+  if (serverIsTrialActive(user)) return true
+
+  // Last check — active redeemed key. Costs an extra round-trip,
+  // so it's last (most Pro users are subscription-based, not key-
+  // redeemed, so this rarely fires).
+  try {
+    const keySnap = await db
+      .collection('productKeys')
+      .where('redeemedBy', '==', uid)
+      .limit(1)
+      .get()
+    if (!keySnap.empty) {
+      const key = keySnap.docs[0].data() as Record<string, unknown>
+      if (serverIsKeyActive(key)) return true
+    }
+  } catch (err) {
+    console.warn('[revisions/isUserPro] productKeys query failed:', err)
+    // Fall through — if we can't check the key, deny rather than
+    // grant (we already passed every other Pro indicator above).
+  }
+
+  return false
+}
+
+/** Gate a handler behind Pro entitlement. Caller pattern:
+ *
+ *     const verified = await verifyFirebaseIdToken(...)
+ *     if (!verified) return res.status(401).json({...})
+ *     if (!(await requirePro(res, verified))) return
+ *     // ... continue with the action ...
+ *
+ *  On Pro → returns true.
+ *  On non-Pro → sends 403 with a Hebrew message + returns false.
+ *  On error → logs and returns true (fail open). Better to grant
+ *  a free user a brief grace window than to break paid features
+ *  for legitimate Pro users during a Firestore hiccup. */
+async function requirePro(
+  res: VercelResponse,
+  verified: VerifiedUser,
+): Promise<boolean> {
+  let pro: boolean
+  try {
+    pro = await isUserPro(verified.uid, verified.email)
+  } catch (err) {
+    console.warn('[revisions/requirePro] check threw — failing open:', err)
+    return true
+  }
+  if (pro) return true
+  res.status(403).json({
+    ok: false,
+    error: 'נדרש מנוי Pro פעיל כדי להשתמש בסבבי תיקונים',
+  })
+  return false
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Google Drive token exchange / refresh
  * ────────────────────────────────────────────────────────────── */
 
@@ -525,6 +670,7 @@ async function handleAccessToken(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { idToken?: string }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
 
   const snap = await integrationDocRef(verified.uid).get()
   if (!snap.exists) {
@@ -1077,6 +1223,7 @@ async function handleCreateProjectGroup(
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
 
   const title = String(body.title || '').trim().slice(0, 200)
   const driveFileId = String(body.driveFileId || '').trim()
@@ -1205,6 +1352,7 @@ async function handleAddRoundToGroup(
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
 
   const groupId = String(body.groupId || '').trim()
   const driveFileId = String(body.driveFileId || '').trim()
@@ -1434,6 +1582,7 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
 
   const driveFileId = String(body.driveFileId || '').trim()
   const driveFolderId = String(body.driveFolderId || '').trim()
@@ -2625,6 +2774,7 @@ async function handleCheckVideoStatus(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { idToken?: string; projectId?: string }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
 
   const projectId = String(body.projectId || '').trim()
   if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
@@ -2727,6 +2877,7 @@ async function handleDeleteProject(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
   const projectId = String(body.projectId || '').trim()
   if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
   const deleteDriveFile = body.deleteDriveFile === true
@@ -2858,6 +3009,7 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
   const roundId = String(body.roundId || '').trim()
   if (!roundId) return res.status(400).json({ ok: false, error: 'roundId' })
   const deleteDriveFile = body.deleteDriveFile === true
@@ -3017,6 +3169,7 @@ async function handleDeleteGroup(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
   const groupId = String(body.groupId || '').trim()
   if (!groupId) return res.status(400).json({ ok: false, error: 'groupId' })
   const deleteDriveFiles = body.deleteDriveFiles === true
@@ -3306,6 +3459,7 @@ async function handleUpdateProject(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
   const projectId = String(body.projectId || '').trim()
   if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
 
@@ -3395,6 +3549,7 @@ async function handleReplaceProjectVideo(
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
   const projectId = String(body.projectId || '').trim()
   const newDriveFileId = String(body.driveFileId || '').trim()
   const videoFileName = String(body.videoFileName || '').trim().slice(0, 300)
@@ -3692,6 +3847,7 @@ async function handleUpdateNoteStatus(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyFirebaseIdToken(String(body.idToken || ''))
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
   const projectId = String(body.projectId || '').trim()
   const noteId = String(body.noteId || '').trim()
   const status = body.status
