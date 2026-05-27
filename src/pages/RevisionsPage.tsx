@@ -12,6 +12,7 @@ import {
   verifySignupCode,
   type DecodedSession,
 } from '../lib/webSession'
+import { RevisionsWorkspace as WebRevisionsWorkspace } from '../components/RevisionsWorkspace'
 
 /**
  * Public /revisions workspace — the editor side of the Revisions
@@ -831,42 +832,11 @@ function RevisionsWorkspace() {
 }
 
 function WorkspacePlaceholder() {
-  return (
-    <div className="mx-auto max-w-2xl rounded-2xl border border-border bg-bg-card p-10 text-center">
-      <div className="text-xs uppercase tracking-[0.18em] text-fg-muted">
-        סבבי תיקונים
-      </div>
-      <h2 className="mt-3 text-2xl font-medium text-fg">
-        המערכת בהקמה
-      </h2>
-      <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-fg-muted">
-        כל שכבת ה-Auth (התחברות, הרשמה, אימות מייל, הפעלת מפתח
-        מוצר) ובדיקת המנוי כבר עובדים. שכבת ה-UI של ניהול
-        הפרויקטים תועבר מהתוכנה לדפדפן בשלב הבא — כל הלוגיקה
-        בענן זהה לחלוטין, אז כל פרויקט שנוצר כאן יופיע גם בתוכנה
-        ולהפך.
-      </p>
-      <p className="mx-auto mt-4 max-w-md text-xs text-fg-faint">
-        בינתיים, אפשר לנהל את הפרויקטים שלך מתוך התוכנה. הסבבי
-        תיקונים שיצרת מהתוכנה כבר זמינים דרך קישורי השיתוף
-        הציבוריים.
-      </p>
-      <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-center">
-        <Link
-          to="/"
-          className="inline-flex items-center justify-center rounded-md border border-border px-5 py-2.5 text-sm text-fg transition-colors hover:bg-bg-card"
-        >
-          הורדת התוכנה
-        </Link>
-        <Link
-          to="/account"
-          className="inline-flex items-center justify-center rounded-md border border-border px-5 py-2.5 text-sm text-fg transition-colors hover:bg-bg-card"
-        >
-          לחשבון שלי
-        </Link>
-      </div>
-    </div>
-  )
+  // Workspace itself lives in src/components/RevisionsWorkspace.tsx
+  // to keep this file focused on the auth ladder. It handles
+  // Drive-connection state, project list rendering, the create/
+  // edit/add-round modals, and Drive storage display.
+  return <WebRevisionsWorkspace />
 }
 
 /* ──────────────────────────────────────────────────────────────
