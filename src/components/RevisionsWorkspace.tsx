@@ -26,6 +26,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import {
   addRoundToGroup,
   buildOauthStartUrl,
@@ -298,81 +299,123 @@ function ConnectedWorkspace({
   const isEmpty =
     projects.groups.length === 0 && projects.legacy.length === 0
 
+  // When the editor opened a round to browse its notes, the
+  // workspace area swaps to a full-page detail view (slides in
+  // from the right, RTL natural direction). AnimatePresence
+  // handles the two-way transition so going BACK to the list
+  // also animates instead of snapping.
   return (
-    <div className="space-y-8">
-      <ActionBar
-        onNewProject={() => setShowNewProject(true)}
-        drive={drive}
-        onDisconnect={handleDisconnect}
-      />
+    <div className="relative space-y-8">
+      <AnimatePresence mode="wait" initial={false}>
+        {viewingRound ? (
+          <motion.div
+            key="detail"
+            initial={{ opacity: 0, x: -24 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -24 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <RoundDetailView
+              target={viewingRound}
+              onBack={() => setViewingRound(null)}
+              onLockChanged={() => {
+                reload()
+                setViewingRound(null)
+              }}
+            />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="list"
+            initial={{ opacity: 0, x: 24 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 24 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            className="space-y-8"
+          >
+            <ActionBar
+              onNewProject={() => setShowNewProject(true)}
+              drive={drive}
+              onDisconnect={handleDisconnect}
+            />
 
-      {isEmpty ? (
-        <EmptyProjectList onNew={() => setShowNewProject(true)} />
-      ) : (
-        <ProjectList
-          projects={projects}
-          onEditGroup={(g) => setEditingGroup(g)}
-          onAddRound={(g) => setAddingRoundTo(g)}
-          onOpenRound={(g, round) => setViewingRound({ group: g, round })}
-          onOpenLegacy={(p) => setViewingRound({ legacy: p })}
-          onDeleteRound={(g, roundId) =>
-            setConfirmDelete({ kind: 'round', group: g, roundId })
-          }
-          onDeleteGroup={(g) => setConfirmDelete({ kind: 'group', group: g })}
-          onDeleteLegacy={(p) =>
-            setConfirmDelete({ kind: 'legacy', project: p })
-          }
-        />
-      )}
+            {isEmpty ? (
+              <EmptyProjectList onNew={() => setShowNewProject(true)} />
+            ) : (
+              <ProjectList
+                projects={projects}
+                onEditGroup={(g) => setEditingGroup(g)}
+                onAddRound={(g) => setAddingRoundTo(g)}
+                onOpenRound={(g, round) =>
+                  setViewingRound({ group: g, round })
+                }
+                onOpenLegacy={(p) => setViewingRound({ legacy: p })}
+                onDeleteRound={(g, roundId) =>
+                  setConfirmDelete({ kind: 'round', group: g, roundId })
+                }
+                onDeleteGroup={(g) =>
+                  setConfirmDelete({ kind: 'group', group: g })
+                }
+                onDeleteLegacy={(p) =>
+                  setConfirmDelete({ kind: 'legacy', project: p })
+                }
+              />
+            )}
 
-      {storage && <DriveStorageFooter drive={drive} storage={storage} />}
+            {storage && <DriveStorageFooter drive={drive} storage={storage} />}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {showNewProject && (
-        <NewProjectModal
-          onClose={() => setShowNewProject(false)}
-          onCreated={() => {
-            setShowNewProject(false)
-            reload()
-          }}
-        />
-      )}
-      {editingGroup && (
-        <EditGroupModal
-          group={editingGroup}
-          onClose={() => setEditingGroup(null)}
-          onSaved={() => {
-            setEditingGroup(null)
-            reload()
-          }}
-        />
-      )}
-      {addingRoundTo && (
-        <AddRoundModal
-          group={addingRoundTo}
-          onClose={() => setAddingRoundTo(null)}
-          onAdded={() => {
-            setAddingRoundTo(null)
-            reload()
-          }}
-        />
-      )}
-      {confirmDelete && (
-        <ConfirmDeleteModal
-          target={confirmDelete}
-          onClose={() => setConfirmDelete(null)}
-          onDeleted={() => {
-            setConfirmDelete(null)
-            reload()
-          }}
-        />
-      )}
-      {viewingRound && (
-        <RoundDetailModal
-          target={viewingRound}
-          onClose={() => setViewingRound(null)}
-          onLockChanged={reload}
-        />
-      )}
+      {/* Modals — wrapped in AnimatePresence so they fade out
+          cleanly when dismissed. The conditional render inside
+          determines mount/unmount; framer-motion handles the
+          transition lifecycle. */}
+      <AnimatePresence>
+        {showNewProject && (
+          <NewProjectModal
+            key="new"
+            onClose={() => setShowNewProject(false)}
+            onCreated={() => {
+              setShowNewProject(false)
+              reload()
+            }}
+          />
+        )}
+        {editingGroup && (
+          <EditGroupModal
+            key="edit"
+            group={editingGroup}
+            onClose={() => setEditingGroup(null)}
+            onSaved={() => {
+              setEditingGroup(null)
+              reload()
+            }}
+          />
+        )}
+        {addingRoundTo && (
+          <AddRoundModal
+            key="addround"
+            group={addingRoundTo}
+            onClose={() => setAddingRoundTo(null)}
+            onAdded={() => {
+              setAddingRoundTo(null)
+              reload()
+            }}
+          />
+        )}
+        {confirmDelete && (
+          <ConfirmDeleteModal
+            key="delete"
+            target={confirmDelete}
+            onClose={() => setConfirmDelete(null)}
+            onDeleted={() => {
+              setConfirmDelete(null)
+              reload()
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }
@@ -628,8 +671,20 @@ function GroupCard({
         </div>
       </div>
 
-      {/* Rounds list — collapsible */}
+      {/* Rounds list — collapsible. AnimatePresence keeps the
+          exit animation alive long enough to fade out, and the
+          height: auto trick (initial 0, animate auto) gives a
+          natural reveal without a flash of jump. */}
+      <AnimatePresence initial={false}>
       {expanded && (
+        <motion.div
+          key="rounds"
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: 'auto', opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+          className="overflow-hidden"
+        >
         <div className="border-t border-border bg-bg/40">
           {group.rounds.length === 0 ? (
             <div className="p-4 text-center text-xs text-fg-muted">
@@ -697,7 +752,9 @@ function GroupCard({
             </button>
           </div>
         </div>
+        </motion.div>
       )}
+      </AnimatePresence>
     </div>
   )
 }
@@ -868,13 +925,31 @@ function ModalShell({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
   return (
-    <div
+    // Backdrop: fades in. We don't gate the inner panel on
+    // AnimatePresence because it lives inside the parent's
+    // conditional render — the parent only mounts ModalShell
+    // when it should be visible, so a single entrance animation
+    // is enough.
+    <motion.div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.18, ease: 'easeOut' }}
     >
-      <div className="relative w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl border border-border bg-bg-elevated p-6">
+      <motion.div
+        className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-border bg-bg-elevated p-6"
+        // Subtle entrance — fade + small upward translate. Same
+        // shape the BuyPage signin modal uses, so all in-place
+        // dialogs across the site feel like one family.
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 12, scale: 0.98 }}
+        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      >
         <button
           type="button"
           onClick={onClose}
@@ -885,8 +960,8 @@ function ModalShell({
         </button>
         <h2 className="mb-5 text-lg font-medium text-fg">{title}</h2>
         {children}
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   )
 }
 
@@ -1383,15 +1458,15 @@ function ConfirmDeleteModal({
  *  the only API difference is which `projectId` we send.
  * ────────────────────────────────────────────────────────────── */
 
-function RoundDetailModal({
+function RoundDetailView({
   target,
-  onClose,
+  onBack,
   onLockChanged,
 }: {
   target:
     | { group: RevisionGroup; round: GroupRoundSummary }
     | { legacy: LegacyProjectSummary }
-  onClose: () => void
+  onBack: () => void
   onLockChanged: () => void
 }) {
   // Resolve the common fields once so the rest of the modal body
@@ -1431,13 +1506,15 @@ function RoundDetailModal({
     }
   }, [projectId, refreshKey])
 
+  // Esc → back to project list. Same shortcut the editor expects
+  // from any "drill-into" surface across the app.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') onBack()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onBack])
 
   async function toggleLock() {
     if (busyLock) return
@@ -1445,8 +1522,10 @@ function RoundDetailModal({
     const r = await updateProjectLock(projectId, !locked)
     setBusyLock(false)
     if (r.ok) {
+      // Parent reloads the project list with the new lock state.
+      // No auto-navigate-back — the editor stays in the detail
+      // view to continue reviewing notes.
       onLockChanged()
-      onClose()
     } else {
       alert(r.error)
     }
@@ -1483,96 +1562,101 @@ function RoundDetailModal({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
-    >
-      <div className="relative flex w-full max-w-3xl max-h-[90vh] flex-col overflow-hidden rounded-2xl border border-border bg-bg-elevated">
-        {/* Sticky header */}
-        <div className="flex flex-col gap-3 border-b border-border bg-bg-elevated p-5 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 flex-1">
-            <h2 className="truncate text-lg font-medium text-fg">
-              {title}
-            </h2>
-            <div className="mt-1 flex items-center gap-2 text-xs">
-              <span className="text-fg-muted">
-                {notes ? `${notes.length} הערות` : 'טוען…'}
-              </span>
-              {locked && (
-                <span className="rounded bg-bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-fg-muted">
-                  סגור
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <CopyShareLinkButton url={shareUrl} />
-            <a
-              href={shareUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-card"
-            >
-              צפייה בדף הציבורי
-            </a>
-            <button
-              type="button"
-              onClick={() => void toggleLock()}
-              disabled={busyLock}
-              className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-card disabled:opacity-40"
-            >
-              {busyLock ? '…' : locked ? 'פתיחת הסבב' : 'סגירת הסבב'}
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md p-1.5 text-fg-muted transition-colors hover:bg-bg-card hover:text-fg"
-              aria-label="סגור"
-            >
-              <CloseIcon />
-            </button>
-          </div>
-        </div>
+    <div className="space-y-6">
+      {/* Back link — first thing the eye lands on, top-right in RTL.
+          Editorial style matches the rest of the page chrome. */}
+      <button
+        type="button"
+        onClick={onBack}
+        className="group inline-flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-fg-muted transition-colors hover:text-fg"
+      >
+        <ChevronRightIcon className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+        <span>חזרה לפרויקטים</span>
+      </button>
 
-        {/* Scrollable notes list */}
-        <div className="flex-1 overflow-y-auto p-5">
-          {loadError ? (
-            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-              {loadError}
-              <button
-                type="button"
-                onClick={() => setRefreshKey((n) => n + 1)}
-                className="ms-3 underline underline-offset-2"
-              >
-                נסה שוב
-              </button>
-            </div>
-          ) : !notes ? (
-            <div className="py-12 text-center text-sm text-fg-muted">
-              טוען הערות…
-            </div>
-          ) : notes.length === 0 ? (
-            <div className="py-12 text-center text-sm text-fg-muted">
-              אין עדיין הערות מהלקוח. ההערות שיתווספו לדף הציבורי
-              יופיעו כאן.
-            </div>
-          ) : (
-            <ul className="space-y-3">
-              {notes.map((note) => (
-                <NoteCard
-                  key={note.id}
-                  note={note}
-                  projectId={projectId}
-                  onApplyStatus={(status, payload) =>
-                    void applyStatus(note.id, status, payload)
-                  }
-                />
-              ))}
-            </ul>
-          )}
+      {/* Title block + action bar */}
+      <div className="flex flex-col gap-4 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-2xl font-medium text-fg">{title}</h2>
+          <div className="mt-2 flex items-center gap-2 text-xs">
+            <span className="text-fg-muted">
+              {notes ? `${notes.length} הערות` : 'טוען…'}
+            </span>
+            {locked && (
+              <span className="rounded bg-bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-fg-muted">
+                סגור
+              </span>
+            )}
+          </div>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <CopyShareLinkButton url={shareUrl} />
+          <a
+            href={shareUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-card"
+          >
+            צפייה בדף הציבורי
+          </a>
+          <button
+            type="button"
+            onClick={() => void toggleLock()}
+            disabled={busyLock}
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-card disabled:opacity-40"
+          >
+            {busyLock ? '…' : locked ? 'פתיחת הסבב' : 'סגירת הסבב'}
+          </button>
+        </div>
+      </div>
+
+      {/* Notes list — flows down the page, no inner scroll container.
+          The whole /revisions page scrolls naturally when there are
+          many notes (better than a fixed-height inner scroll the
+          user can lose). */}
+      <div>
+        {loadError ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            {loadError}
+            <button
+              type="button"
+              onClick={() => setRefreshKey((n) => n + 1)}
+              className="ms-3 underline underline-offset-2"
+            >
+              נסה שוב
+            </button>
+          </div>
+        ) : !notes ? (
+          <div className="py-12 text-center text-sm text-fg-muted">
+            טוען הערות…
+          </div>
+        ) : notes.length === 0 ? (
+          <div className="rounded-2xl border border-border bg-bg-card p-12 text-center">
+            <h3 className="text-base font-medium text-fg">
+              עדיין אין הערות
+            </h3>
+            <p className="mx-auto mt-3 max-w-md text-sm text-fg-muted">
+              הערות שלקוחות מוסיפים דרך הקישור הציבורי יופיעו כאן.
+              שלח את הקישור כדי להתחיל.
+            </p>
+            <div className="mt-5">
+              <CopyShareLinkButton url={shareUrl} />
+            </div>
+          </div>
+        ) : (
+          <ul className="space-y-3">
+            {notes.map((note) => (
+              <NoteCard
+                key={note.id}
+                note={note}
+                projectId={projectId}
+                onApplyStatus={(status, payload) =>
+                  void applyStatus(note.id, status, payload)
+                }
+              />
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   )
@@ -2108,6 +2192,27 @@ function ChevronDownIcon({ className }: { className?: string }) {
       className={className}
     >
       <path d="m6 9 6 6 6-6" />
+    </svg>
+  )
+}
+
+function ChevronRightIcon({ className }: { className?: string }) {
+  // Used by the round-detail view's back link. Points RIGHT
+  // because in an RTL document, "back" navigates rightward (to
+  // the start of the reading direction). Mirrors what the desktop
+  // app's back-button arrow does.
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="m9 18 6-6-6-6" />
     </svg>
   )
 }
