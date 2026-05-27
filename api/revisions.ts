@@ -317,60 +317,6 @@ function serverIsKeyActive(key: Record<string, unknown> | null): boolean {
   return false
 }
 
-/** Same as isUserPro, but returns a verbose breakdown of which
- *  individual check decided the outcome. Used by the get-project
- *  diagnostic header so the operator can see exactly which signal
- *  is granting (or denying) access without us having to log
- *  every step server-side. */
-async function isUserProDebug(
-  uid: string,
-  email: string,
-): Promise<{ pro: boolean; reason: string }> {
-  if (email && SERVER_ADMIN_EMAILS.has(email.toLowerCase())) {
-    return { pro: true, reason: 'admin-email' }
-  }
-  const db = getDb()
-  try {
-    const cfgSnap = await db.collection('appConfig').doc('global').get()
-    if (cfgSnap.exists && cfgSnap.data()?.betaMode === true) {
-      return { pro: true, reason: 'betaMode' }
-    }
-  } catch (err) {
-    console.warn('[isUserProDebug] appConfig read failed:', err)
-  }
-  const userSnap = await db.collection('users').doc(uid).get()
-  const userExists = userSnap.exists
-  let userRole: unknown = null
-  let userSubscription: unknown = null
-  if (userExists) {
-    const user = userSnap.data() as Record<string, unknown>
-    userRole = user.role
-    userSubscription = user.subscription
-    if (user.role === 'admin') return { pro: true, reason: 'user.role=admin' }
-    if (user.subscription === 'pro') {
-      return { pro: true, reason: 'user.subscription=pro' }
-    }
-    if (serverIsTrialActive(user)) {
-      return { pro: true, reason: 'trial-active' }
-    }
-  }
-  const keySnap = await db
-    .collection('productKeys')
-    .where('redeemedBy', '==', uid)
-    .limit(1)
-    .get()
-  if (!keySnap.empty) {
-    const key = keySnap.docs[0].data() as Record<string, unknown>
-    if (serverIsKeyActive(key)) {
-      return { pro: true, reason: `key-active(id=${keySnap.docs[0].id})` }
-    }
-  }
-  return {
-    pro: false,
-    reason: `none(userExists=${userExists},role=${String(userRole)},sub=${String(userSubscription)})`,
-  }
-}
-
 /** True if the (already-Firebase-Auth-verified) user has Pro
  *  entitlement. Reads users/{uid}, productKeys (by redeemedBy=uid),
  *  and appConfig/global for the betaMode flag. Order of checks
@@ -1873,57 +1819,28 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
       ? resolved.group.ownerEmail
       : String((resolved.round as { ownerEmail?: string }).ownerEmail || '')
   if (ownerUid) {
-    // Fail-CLOSED for the owner-Pro check. The earlier version
-    // was fail-OPEN (treat errors as "Pro") on the theory that
-    // denying viewers because of a transient Firestore blip is
-    // worse than briefly serving a lapsed project. In practice
-    // the most common "error" is the appConfig/global doc not
-    // existing yet (operator hasn't created it) — and that
-    // shouldn't grant access; it should fall through to the
-    // user-doc check. So we now log the error AND treat as
-    // not-Pro so the inactive notice surfaces correctly.
+    // Fail-CLOSED for the owner-Pro check. If the check throws
+    // (e.g. Firestore down) we treat as not-Pro and surface the
+    // inactive notice rather than leaking access to a lapsed
+    // project. Internal diagnostics go through console.log only
+    // — we never expose owner-side details (uid, key id, reason)
+    // to the public response since viewers shouldn't be able to
+    // enumerate the editor's account state.
     let ownerActive: boolean
-    let ownerReason = 'unknown'
-    let ownerCheckError: string | null = null
     try {
-      const result = await isUserProDebug(ownerUid, ownerEmail)
-      ownerActive = result.pro
-      ownerReason = result.reason
+      ownerActive = await isUserPro(ownerUid, ownerEmail)
     } catch (err) {
-      ownerCheckError =
-        err instanceof Error ? err.message : String(err)
       console.warn(
         '[revisions/get-project] owner-active check threw:',
         err,
       )
       ownerActive = false
-      ownerReason = `threw(${ownerCheckError})`
     }
-    console.log(
-      '[revisions/get-project] ownerCheck',
-      JSON.stringify({ ownerUid, ownerEmail, ownerActive, ownerReason }),
-    )
-    res.setHeader(
-      'X-Dmp-Owner-Check',
-      JSON.stringify({
-        ownerUid,
-        ownerEmail,
-        ownerActive,
-        reason: ownerReason,
-        codeBuild: 'inactive-fix-v3',
-      }),
-    )
     if (!ownerActive) {
       return res.status(200).json({
         ok: true,
         ownerInactive: true,
         ownerEmail,
-        __debug: {
-          ownerUid,
-          ownerReason,
-          ownerCheckError,
-          codeBuild: 'inactive-fix-v3',
-        },
       })
     }
   }
