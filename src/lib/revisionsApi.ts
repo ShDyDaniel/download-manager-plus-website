@@ -21,7 +21,7 @@
  * edits in the other two.
  */
 
-import { getSessionToken } from './webSession'
+import { getSessionToken, signOut } from './webSession'
 
 const API_BASE = '/api/revisions'
 const WEBSITE_BASE = 'https://dmplus.net'
@@ -49,6 +49,18 @@ async function postAction<T>(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...body, action }),
   })
+  // 401/403 from any owner-side action means the session token
+  // the server saw is no longer trusted (expired, revoked, or the
+  // secret rotated under us). Wipe the local session
+  // synchronously so subscribers re-render into AuthShell instead
+  // of letting the workspace strand the user on stale state with
+  // every subsequent call also failing. Caller still gets a
+  // thrown error so its own UI can show a one-time "session
+  // expired" message before unmounting.
+  if (r.status === 401 || r.status === 403) {
+    signOut()
+    throw new Error('הסשן פג. יש להתחבר מחדש.')
+  }
   const json = (await r.json().catch(() => ({}))) as
     | (T & { ok: true })
     | { ok: false; error?: string }

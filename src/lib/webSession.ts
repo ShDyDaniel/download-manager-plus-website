@@ -383,7 +383,14 @@ export interface AccountStatus {
  *  retry button instead of incorrectly displaying "not Pro" — we
  *  never want to demote a paying user because of a one-off
  *  network blip. The server itself is fail-closed: if it can't
- *  verify entitlement it sends 503 and we fall through to null. */
+ *  verify entitlement it sends 503 and we fall through to null.
+ *
+ *  401 path is treated differently from 5xx: it means the session
+ *  token is no longer valid (expired, rotated secret, or wiped on
+ *  the server). We clear the local session synchronously and fire
+ *  listeners — this re-renders the page into the AuthShell instead
+ *  of stranding the user on a "transient error" card that retries
+ *  forever against an authoritatively-rejected token. */
 export async function fetchAccountStatus(): Promise<AccountStatus | null> {
   const token = getSessionToken()
   if (!token) return null
@@ -395,6 +402,13 @@ export async function fetchAccountStatus(): Promise<AccountStatus | null> {
       body: JSON.stringify({ sessionToken: token }),
     })
   } catch {
+    return null
+  }
+  if (r.status === 401 || r.status === 403) {
+    // Server explicitly rejected our token. Don't keep showing the
+    // user as "signed in" while every API call fails — wipe the
+    // bad token so the next render falls back to the login form.
+    signOut()
     return null
   }
   if (!r.ok) return null

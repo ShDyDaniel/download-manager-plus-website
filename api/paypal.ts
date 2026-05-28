@@ -888,7 +888,15 @@ export const config = {
 }
 
 const ADMIN_EMAILS = ['dyshalts@gmail.com']
-const SESSION_TTL_SECONDS = 60 * 60 // 1 hour
+// Bumped from 1h to 24h after the /revisions workspace launched —
+// editors spend MUCH longer in a workspace than they do on /account
+// (which is a quick "check status, manage subscription, leave"
+// flow). A 1h session meant a user uploading a long video round
+// could hit a hard logout mid-task with no warning. 24h matches
+// the desktop's Firebase ID-token refresh cadence so /account
+// users see a similar lifetime regardless of which surface they
+// signed in on.
+const SESSION_TTL_SECONDS = 24 * 60 * 60
 const MAX_REASON_LENGTH = 500
 const WEBSITE_BASE = 'https://dmplus.net'
 
