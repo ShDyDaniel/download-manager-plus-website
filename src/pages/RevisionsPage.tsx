@@ -46,6 +46,51 @@ export function RevisionsPage() {
   // page in sync if the user signs in via /account in another tab.
   useEffect(() => subscribeSession(() => setSession(getSession())), [])
 
+  // OAuth-popup auto-close. ConnectDriveEmptyState opens the
+  // Drive OAuth flow in a new tab via `window.open(_, _, 'noopener')`.
+  // The `noopener` strips the link to the original tab — which
+  // also means the new tab starts with EMPTY sessionStorage
+  // (sessionStorage isn't inherited across noopener boundaries).
+  // So when Google redirects the new tab back here with
+  // `?oauth=connected`, it has no session and would otherwise
+  // strand the user on the login form ("I already signed in!").
+  //
+  // The original workspace tab is polling Drive integration state
+  // every 2s and will pick up the new connection within a beat,
+  // so this throwaway tab serves no further purpose. Close it.
+  //
+  // Fallback: if the browser blocks window.close() (some do, when
+  // the tab wasn't opened by script — shouldn't happen here, but
+  // belt-and-suspenders), we keep rendering and the user sees the
+  // SignedOutOauthSuccess card below telling them they can close
+  // the tab manually.
+  const isOauthCallback = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    const url = new URL(window.location.href)
+    return url.searchParams.get('oauth') === 'connected'
+  }, [])
+
+  useEffect(() => {
+    // Only auto-close if (a) this looks like the OAuth result tab
+    // (?oauth=connected) and (b) we have no session — which is the
+    // exact signature of a noopener-opened OAuth popup landing here.
+    // A signed-in user landing on /revisions?oauth=connected (in the
+    // ORIGINAL tab, if they used same-tab navigation somehow) keeps
+    // their normal workspace render path; we don't close on them.
+    if (isOauthCallback && !session) {
+      try {
+        window.close()
+      } catch {
+        // Browser blocked the close — fall through to the visible
+        // "you can close this tab" card instead.
+      }
+    }
+  }, [isOauthCallback, session])
+
+  if (isOauthCallback && !session) {
+    return <SignedOutOauthSuccess />
+  }
+
   return (
     <div className="min-h-dvh bg-bg text-fg">
       <WorkspaceHeader />
@@ -56,6 +101,41 @@ export function RevisionsPage() {
           <AuthShell onSignedIn={() => setSession(getSession())} />
         )}
       </main>
+    </div>
+  )
+}
+
+/** Last-resort UI for the OAuth popup tab when window.close() got
+ *  blocked. The original workspace tab has already picked up the
+ *  fresh Drive connection via its polling effect, so this tab is
+ *  only here to confirm to the user that the flow worked and tell
+ *  them they can close it. */
+function SignedOutOauthSuccess() {
+  return (
+    <div className="flex min-h-dvh items-center justify-center bg-bg p-8 text-center">
+      <div className="max-w-md">
+        <div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-success/10 text-success">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-7 w-7"
+          >
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+        </div>
+        <h1 className="mb-3 text-xl font-medium text-fg">
+          ה-Drive מחובר
+        </h1>
+        <p className="text-sm leading-relaxed text-fg-muted">
+          אפשר לסגור את החלון הזה ולחזור לחלון של סבבי התיקונים
+          — הוא יזהה את החיבור תוך שניות.
+        </p>
+      </div>
     </div>
   )
 }
