@@ -1,5 +1,5 @@
-import { motion } from 'framer-motion'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { AnimatePresence, motion } from 'framer-motion'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Hero } from './components/Hero'
 import { Features } from './components/Features'
 import { QuickStart } from './components/QuickStart'
@@ -25,54 +25,106 @@ function App() {
     // page; it reappears only when scrolling back to the top.
     <div className="relative">
       <SiteHeader />
-      <Routes>
-        <Route
-          path="/"
-          element={
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.4 }}
-              className="relative"
-            >
-              <Hero />
-              <Features />
-              <QuickStart />
-              <FAQ />
-              <Footer />
-            </motion.div>
-          }
-        />
-        <Route path="/buy" element={<BuyPage />} />
-        <Route path="/account" element={<AccountPage />} />
-        {/* Custom Firebase Auth action handler. Hosts the password-
-            reset (and future verifyEmail) flow on our domain so the
-            user never sees the firebaseapp.com fallback page. Wired
-            via Firebase Console → Authentication → Templates →
-            Customize action URL. */}
-        <Route path="/auth-action" element={<AuthActionPage />} />
-        {/* Public revision-review page — link sent to client by the
-            editor. /review/:token resolves the share token to a
-            project, gates by optional password + required email
-            (used for watermark), then renders the Drive embed
-            player + notes sidebar. See pages/ReviewPage.tsx. */}
-        <Route path="/review/:token" element={<ReviewPage />} />
-        {/* Web /revisions workspace — full editor-side of the
-            Revisions feature ported from the desktop app. Lets
-            anyone with a Pro subscription manage projects, rounds,
-            and share links from a browser instead of having to
-            install the desktop app. Auth + Pro entitlement are
-            gated client-side, and re-enforced server-side on every
-            API call. See pages/RevisionsPage.tsx. */}
-        <Route path="/revisions" element={<RevisionsPage />} />
-        {/* /manage was the original subscription-management page
-            before /account absorbed all its functionality. Keep a
-            permanent redirect so old emails, footers, the desktop
-            app's pre-update "ניהול תוכנית" button, and Google
-            results still land somewhere useful. */}
-        <Route path="/manage" element={<Navigate to="/account" replace />} />
-      </Routes>
+      <AnimatedRoutes />
     </div>
+  )
+}
+
+/**
+ * Routes wrapped in AnimatePresence so every navigation cross-
+ * fades smoothly instead of snapping. The outgoing page fades +
+ * slides out while the incoming page fades + slides in, both on
+ * the same timeline, so the user never sees a flash of blank
+ * background between pages.
+ *
+ * Implementation notes:
+ *
+ *   - mode="wait" is deliberate: we let the outgoing page finish
+ *     its exit before mounting the incoming one. This avoids a
+ *     brief moment where two full pages stack on top of each other
+ *     (which the AccountPage's sticky chrome doesn't survive
+ *     cleanly when overlapped with the Hero's full-screen gradient).
+ *   - We key by `location.pathname`, NOT `location.key`. Two
+ *     different navigations to the same URL (a refresh of the
+ *     current page, say) should NOT trigger a re-mount + re-
+ *     animation; the user expects "stay where I am". Path-keyed
+ *     means only an actual route change triggers the transition.
+ *   - initial={false} on AnimatePresence skips the entrance
+ *     animation on the very first paint — the page is already
+ *     visible, so re-fading it in feels jittery. Subsequent
+ *     navigations get the full enter+exit.
+ *   - The transition uses a 180 ms ease-out — fast enough to feel
+ *     responsive, slow enough that the eye registers it as
+ *     intentional motion rather than a glitch.
+ */
+function AnimatedRoutes() {
+  const location = useLocation()
+
+  // /review/:token is the public client-review surface — clients
+  // who land there shouldn't see a transition animation flash from
+  // a page they never visited. Same for /auth-action which gets
+  // hit by Firebase from a fresh tab. Bypass the wrapper for those
+  // routes so they render instantly with no enter animation.
+  const isStandalone =
+    location.pathname.startsWith('/review') ||
+    location.pathname.startsWith('/auth-action')
+
+  if (isStandalone) {
+    return (
+      <Routes location={location}>
+        <Route path="/auth-action" element={<AuthActionPage />} />
+        <Route path="/review/:token" element={<ReviewPage />} />
+      </Routes>
+    )
+  }
+
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      <motion.div
+        // Key by pathname so route changes — and ONLY route changes
+        // — re-mount the children and re-run the animation.
+        key={location.pathname}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -8 }}
+        transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+      >
+        <Routes location={location}>
+          <Route
+            path="/"
+            element={
+              <div className="relative">
+                <Hero />
+                <Features />
+                <QuickStart />
+                <FAQ />
+                <Footer />
+              </div>
+            }
+          />
+          <Route path="/buy" element={<BuyPage />} />
+          <Route path="/account" element={<AccountPage />} />
+          {/* Web /revisions workspace — full editor-side of the
+              Revisions feature ported from the desktop app. Lets
+              anyone with a Pro subscription manage projects,
+              rounds, and share links from a browser instead of
+              having to install the desktop app. Auth + Pro
+              entitlement are gated client-side, and re-enforced
+              server-side on every API call. See
+              pages/RevisionsPage.tsx. */}
+          <Route path="/revisions" element={<RevisionsPage />} />
+          {/* /manage was the original subscription-management page
+              before /account absorbed all its functionality. Keep
+              a permanent redirect so old emails, footers, the
+              desktop app's pre-update "ניהול תוכנית" button, and
+              Google results still land somewhere useful. */}
+          <Route
+            path="/manage"
+            element={<Navigate to="/account" replace />}
+          />
+        </Routes>
+      </motion.div>
+    </AnimatePresence>
   )
 }
 

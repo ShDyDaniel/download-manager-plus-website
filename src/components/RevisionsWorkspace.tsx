@@ -1851,24 +1851,29 @@ function NoteCard({
     setEditingResponse(null)
   }
 
-  // Border-left color reflects the note's status so the editor
-  // can scan a long list and instantly see which notes are still
-  // open, which got resolved, which became a question, and which
-  // turned out impossible. Same color palette as the StatusBadge
-  // + StatusActionButton so all three signals agree.
+  // Whole-card color reflects the note's status, matching the
+  // convention used on the public /review page so editors and
+  // clients see the same palette across both surfaces:
+  //   • טופל (resolved)    = yellow
+  //   • שאלה (question)    = sky / blue
+  //   • לא אפשרי (not-possible) = red
+  //   • חדש (new)          = neutral (default border + faint bg)
+  // (Picked over the muted green for "resolved" specifically per
+  // operator's call — yellow feels more celebratory than green
+  // which was reading as a hospital checkmark.)
   const statusStyles: Record<NoteStatus, string> = {
-    new: 'border-r-border bg-bg-card',
-    resolved: 'border-r-success/60 bg-success/[0.04]',
-    question: 'border-r-primary/60 bg-primary/[0.04]',
-    'not-possible': 'border-r-destructive/60 bg-destructive/[0.04]',
+    new: 'border-border bg-bg-card',
+    resolved: 'border-yellow-500/30 bg-yellow-500/[0.07]',
+    question: 'border-sky-500/30 bg-sky-500/[0.06]',
+    'not-possible': 'border-red-500/30 bg-red-500/[0.07]',
   }
   return (
     <li
       className={
-        // The right border is the thick "status rail". Switching
-        // to a 4 px rail on the start-side gives a strong visual
-        // cue without taking up real estate inside the card.
-        'rounded-xl border border-border border-r-4 p-4 transition-colors ' +
+        // Full-bleed status color: card border + bg both pick up
+        // the status tint so a note's state reads instantly even
+        // when the editor is scrolling fast through a long list.
+        'rounded-xl border p-4 transition-colors ' +
         statusStyles[note.status]
       }
     >
@@ -1970,25 +1975,25 @@ function NoteCard({
         <StatusActionButton
           label="חדש"
           active={note.status === 'new'}
-          color="muted"
+          color="neutral"
           onClick={() => onApplyStatus('new')}
         />
         <StatusActionButton
           label="טופל"
           active={note.status === 'resolved'}
-          color="success"
+          color="resolved"
           onClick={() => onApplyStatus('resolved')}
         />
         <StatusActionButton
           label="שאלה"
           active={note.status === 'question'}
-          color="warning"
+          color="question"
           onClick={() => setEditingResponse('question')}
         />
         <StatusActionButton
           label="לא אפשרי"
           active={note.status === 'not-possible'}
-          color="destructive"
+          color="not-possible"
           onClick={() => setEditingResponse('not-possible')}
         />
       </div>
@@ -1997,6 +2002,9 @@ function NoteCard({
 }
 
 function StatusBadge({ status }: { status: NoteStatus }) {
+  // Mirrors the public /review page's badge palette so editor +
+  // client both see the same colors per status. yellow/sky/red
+  // — see NoteCard comment for the rationale.
   const styles: Record<NoteStatus, { label: string; cls: string }> = {
     new: {
       label: 'חדש',
@@ -2004,15 +2012,15 @@ function StatusBadge({ status }: { status: NoteStatus }) {
     },
     resolved: {
       label: 'טופל',
-      cls: 'bg-success/10 text-success border-success/40',
+      cls: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/40',
     },
     question: {
       label: 'שאלה',
-      cls: 'bg-primary/10 text-primary border-primary/40',
+      cls: 'bg-sky-500/15 text-sky-400 border-sky-500/40',
     },
     'not-possible': {
       label: 'לא אפשרי',
-      cls: 'bg-destructive/10 text-destructive border-destructive/40',
+      cls: 'bg-red-500/15 text-red-400 border-red-500/40',
     },
   }
   const s = styles[status]
@@ -2036,15 +2044,18 @@ function StatusActionButton({
 }: {
   label: string
   active: boolean
-  color: 'muted' | 'success' | 'warning' | 'destructive'
+  // Names map to the four note statuses, not abstract semantic
+  // colors, so the call-site stays readable: a "resolved" button
+  // uses the yellow palette (per the public-review convention),
+  // a "question" button uses sky, etc.
+  color: 'neutral' | 'resolved' | 'question' | 'not-possible'
   onClick: () => void
 }) {
   const colorOn: Record<typeof color, string> = {
-    muted: 'border-fg/30 bg-bg-elevated text-fg',
-    success: 'border-success/40 bg-success/10 text-success',
-    warning: 'border-primary/40 bg-primary/10 text-primary',
-    destructive:
-      'border-destructive/40 bg-destructive/10 text-destructive',
+    neutral: 'border-fg/30 bg-bg-elevated text-fg',
+    resolved: 'border-yellow-500/40 bg-yellow-500/10 text-yellow-400',
+    question: 'border-sky-500/40 bg-sky-500/10 text-sky-400',
+    'not-possible': 'border-red-500/40 bg-red-500/10 text-red-400',
   }
   return (
     <button
