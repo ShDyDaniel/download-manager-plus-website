@@ -55,6 +55,7 @@ import {
   formatBytes,
   listGroupsForOwner,
   listNotesAsOwner,
+  replaceProjectVideo,
   updateGroup,
   updateNoteStatus,
   updateProjectLock,
@@ -240,6 +241,13 @@ function ConnectedWorkspace({
     | { legacy: LegacyProjectSummary }
     | null
   >(null)
+  // Replace-video modal — opened from inside the round detail
+  // view. The projectId is the round id (or the legacy project id);
+  // the modal handles the upload + replace-project-video call.
+  const [replacingProject, setReplacingProject] = useState<{
+    projectId: string
+    currentName: string
+  } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<
     | { kind: 'group'; group: RevisionGroup }
     | { kind: 'round'; group: RevisionGroup; roundId: string }
@@ -333,6 +341,9 @@ function ConnectedWorkspace({
                 reload()
                 setViewingRound(null)
               }}
+              onRequestReplaceVideo={(projectId, currentName) =>
+                setReplacingProject({ projectId, currentName })
+              }
             />
           </motion.div>
         ) : (
@@ -422,6 +433,18 @@ function ConnectedWorkspace({
             onClose={() => setConfirmDelete(null)}
             onDeleted={() => {
               setConfirmDelete(null)
+              reload()
+            }}
+          />
+        )}
+        {replacingProject && (
+          <ReplaceVideoModal
+            key="replace"
+            projectId={replacingProject.projectId}
+            currentName={replacingProject.currentName}
+            onClose={() => setReplacingProject(null)}
+            onReplaced={() => {
+              setReplacingProject(null)
               reload()
             }}
           />
@@ -632,9 +655,17 @@ function GroupCard({
               )}
             </div>
             <div className="mt-1.5 flex items-center gap-3 text-xs text-fg-muted">
-              <span>{group.rounds.length} סבבים</span>
+              {/* `<bdi dir="ltr">` isolates pure-LTR fragments
+                  (numbers + dates) from the surrounding RTL
+                  document direction. Without isolation the
+                  bidi algorithm reorders "25.6 MB · 27.05.2026"
+                  into something like "MB 25.6 27.05.2026 ·"
+                  because punctuation flips direction. */}
+              <span>
+                <bdi dir="ltr">{group.rounds.length}</bdi> סבבים
+              </span>
               <span>·</span>
-              <span>{formatDateShort(group.updatedAt)}</span>
+              <bdi dir="ltr">{formatDateShort(group.updatedAt)}</bdi>
             </div>
           </div>
         </div>
@@ -711,7 +742,7 @@ function GroupCard({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 text-sm text-fg">
                       <span className="font-medium">
-                        סבב מס׳ {round.roundNumber}
+                        סבב מס׳ <bdi dir="ltr">{round.roundNumber}</bdi>
                       </span>
                       {round.locked && (
                         <span className="rounded bg-bg-elevated px-1.5 py-0.5 text-[10px] uppercase text-fg-muted">
@@ -720,9 +751,10 @@ function GroupCard({
                       )}
                     </div>
                     <div className="mt-0.5 text-xs text-fg-muted">
-                      {formatBytes(round.videoSizeBytes)} ·{' '}
-                      {round.notesCount} הערות ·{' '}
-                      {formatDateShort(round.createdAt)}
+                      <bdi dir="ltr">{formatBytes(round.videoSizeBytes)}</bdi>{' '}
+                      ·{' '}
+                      <bdi dir="ltr">{round.notesCount}</bdi> הערות ·{' '}
+                      <bdi dir="ltr">{formatDateShort(round.createdAt)}</bdi>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -802,8 +834,9 @@ function LegacyCard({
             )}
           </div>
           <div className="mt-1.5 text-xs text-fg-muted">
-            {formatBytes(project.videoSizeBytes)} · {project.notesCount}{' '}
-            הערות · {formatDateShort(project.updatedAt)}
+            <bdi dir="ltr">{formatBytes(project.videoSizeBytes)}</bdi> ·{' '}
+            <bdi dir="ltr">{project.notesCount}</bdi> הערות ·{' '}
+            <bdi dir="ltr">{formatDateShort(project.updatedAt)}</bdi>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1259,11 +1292,17 @@ function AddRoundModal({
 
   return (
     <ModalShell
-      title={`סבב חדש — ${group.title}`}
+      // Project name lives in the workspace below (and at the top
+      // of the round-detail view if the editor came from there) —
+      // including it in the modal title produced awkward results
+      // when the project name was a number, e.g. "סבב חדש — 1"
+      // read as a dangling math expression. Keep the title clean
+      // and let the call-site context do the disambiguation work.
+      title="סבב חדש"
       onClose={handleClose}
     >
       <form onSubmit={submit} className="space-y-4">
-        <FileFieldPicker
+        <DropZone
           file={file}
           onPick={(f) => {
             if (f && f.size > MAX_UPLOAD_BYTES) {
@@ -1277,7 +1316,7 @@ function AddRoundModal({
             setFile(f)
           }}
           inputRef={fileInputRef}
-          required
+          disabled={busy}
         />
         {progress && (
           <UploadProgressBar progress={progress} fileName={file?.name || ''} />
@@ -1313,6 +1352,144 @@ function AddRoundModal({
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  ReplaceVideoModal — swap the video on an existing round.
+ *
+ *  Same upload pipeline as AddRound (drop zone + chunked upload +
+ *  permissions), but the final server call is `replace-project-
+ *  video` instead of `add-round-to-group`. Notes + share token
+ *  + lock state on the round are preserved across the swap; only
+ *  the underlying Drive file changes. Most editors hit this when
+ *  they uploaded the wrong cut and need to fix it without losing
+ *  the round's history.
+ * ────────────────────────────────────────────────────────────── */
+
+function ReplaceVideoModal({
+  projectId,
+  currentName,
+  onClose,
+  onReplaced,
+}: {
+  projectId: string
+  currentName: string
+  onClose: () => void
+  onReplaced: () => void
+}) {
+  const [file, setFile] = useState<File | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState<UploadProgress | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const abortRef = useRef<AbortController | null>(null)
+
+  function handleClose() {
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
+    }
+    onClose()
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (busy || !file) return
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError(
+        `הקובץ גדול מהמותר (מקסימום ${formatBytes(MAX_UPLOAD_BYTES)}).`,
+      )
+      return
+    }
+    setError(null)
+    setBusy(true)
+    const controller = new AbortController()
+    abortRef.current = controller
+    try {
+      const at = await fetchDriveAccessToken()
+      if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
+      const folders = await ensureProjectFolders(at.accessToken)
+      if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
+      const upload = await uploadFileToDrive({
+        accessToken: at.accessToken,
+        file,
+        folderId: folders.videosFolderId,
+        onProgress: setProgress,
+        signal: controller.signal,
+      })
+      await setShareablePermissions(at.accessToken, upload.driveFileId)
+      const r = await replaceProjectVideo({
+        projectId,
+        driveFileId: upload.driveFileId,
+        driveFolderId: folders.videosFolderId,
+        videoFileName: file.name,
+        videoSizeBytes: file.size,
+        videoMime: file.type || 'video/mp4',
+      })
+      if (!r.ok) throw new Error(r.error)
+      onReplaced()
+    } catch (err) {
+      setBusy(false)
+      setProgress(null)
+      if (controller.signal.aborted) return
+      setError(err instanceof Error ? err.message : 'החלפת הוידאו נכשלה')
+    }
+  }
+
+  return (
+    <ModalShell title="החלפת וידאו" onClose={handleClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <div className="rounded-md border border-border bg-bg-card px-3 py-2.5 text-xs text-fg-muted">
+          הוידאו הקודם יוחלף ב-{currentName}. ההערות, קישור
+          השיתוף, הסיסמה ושאר ההגדרות יישמרו ללא שינוי.
+        </div>
+        <DropZone
+          file={file}
+          onPick={(f) => {
+            if (f && f.size > MAX_UPLOAD_BYTES) {
+              setFile(null)
+              setError(
+                `הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}.`,
+              )
+              return
+            }
+            setError(null)
+            setFile(f)
+          }}
+          inputRef={fileInputRef}
+          disabled={busy}
+        />
+        {progress && (
+          <UploadProgressBar progress={progress} fileName={file?.name || ''} />
+        )}
+        {error && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {error}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={handleClose}
+            className="text-sm text-fg-muted transition-colors hover:text-fg"
+          >
+            {busy ? 'ביטול ההעלאה' : 'ביטול'}
+          </button>
+          <button
+            type="submit"
+            disabled={busy || !file}
+            className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
+          >
+            {busy
+              ? progress
+                ? `מעלה ${Math.round(progress.fraction * 100)}%`
+                : 'מעלה…'
+              : 'החלפת הוידאו'}
+          </button>
+        </div>
+      </form>
+    </ModalShell>
+  )
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  EditGroupModal — password + 3 toggles
  * ────────────────────────────────────────────────────────────── */
 
@@ -1333,6 +1510,7 @@ function EditGroupModal({
   // action = remove.
   const [password, setPassword] = useState('')
   const [clearPw, setClearPw] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
   const [watermark, setWatermark] = useState(group.watermark)
   const [allowDownload, setAllowDownload] = useState(group.allowDownload)
   const [openInDrive, setOpenInDrive] = useState(group.openInDrive)
@@ -1377,21 +1555,49 @@ function EditGroupModal({
               </span>
             )}
           </label>
-          <input
-            type="text"
-            value={password}
-            onChange={(e) => {
-              setPassword(e.target.value)
-              if (e.target.value) setClearPw(false)
-            }}
-            disabled={clearPw}
-            placeholder={
-              group.hasPassword
-                ? 'השאר ריק כדי לא לשנות'
-                : 'ריק = ללא סיסמה'
-            }
-            className="w-full rounded-md border border-border bg-bg-card px-3 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-fg/30 focus:outline-none disabled:opacity-50"
-          />
+          <div className="relative">
+            <input
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              onChange={(e) => {
+                setPassword(e.target.value)
+                if (e.target.value) setClearPw(false)
+              }}
+              disabled={clearPw}
+              placeholder={
+                group.hasPassword
+                  ? 'השאר ריק כדי לא לשנות'
+                  : 'ריק = ללא סיסמה'
+              }
+              className="w-full rounded-md border border-border bg-bg-card px-3 py-2.5 pe-10 text-sm text-fg placeholder:text-fg-faint focus:border-fg/30 focus:outline-none disabled:opacity-50"
+            />
+            {/* Eye toggle — same UX the desktop's EditProjectGroup
+                uses. Disabled when "clear password" is on (no
+                point in showing nothing). The button lives in the
+                input padding (pe-10) so it doesn't visually
+                detach from the field. */}
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={() => setShowPassword((s) => !s)}
+              disabled={clearPw}
+              aria-label={showPassword ? 'הסתר סיסמה' : 'הצג סיסמה'}
+              className="absolute inset-y-0 end-0 flex w-10 items-center justify-center text-fg-muted transition-colors hover:text-fg disabled:opacity-30"
+            >
+              {showPassword ? (
+                <EyeOffIcon className="h-4 w-4" />
+              ) : (
+                <EyeIcon className="h-4 w-4" />
+              )}
+            </button>
+          </div>
+          {/* Hint mirrors the desktop's wording — important so a
+              user who changes the password understands existing
+              client sessions don't get kicked out immediately. */}
+          <p className="mt-1.5 text-[11px] leading-relaxed text-fg-muted">
+            לקוחות שכבר נכנסו עם הסיסמה הקודמת יישארו בפנים עד 6
+            שעות.
+          </p>
           {group.hasPassword && (
             <label className="mt-2 flex items-center gap-2 text-xs text-fg-muted">
               <input
@@ -1558,12 +1764,18 @@ function RoundDetailView({
   target,
   onBack,
   onLockChanged,
+  onRequestReplaceVideo,
 }: {
   target:
     | { group: RevisionGroup; round: GroupRoundSummary }
     | { legacy: LegacyProjectSummary }
   onBack: () => void
   onLockChanged: () => void
+  /** Pop the Replace-Video modal for the round currently being
+   *  viewed. The parent handles the actual modal mount so it can
+   *  coexist with other modals (delete confirm etc.) without
+   *  fighting for the same z-stack. */
+  onRequestReplaceVideo: (projectId: string, currentName: string) => void
 }) {
   // Resolve the common fields once so the rest of the modal body
   // doesn't have to switch over `target` on every read.
@@ -1695,6 +1907,18 @@ function RoundDetailView({
           >
             צפייה בדף הציבורי
           </a>
+          <button
+            type="button"
+            onClick={() =>
+              onRequestReplaceVideo(
+                projectId,
+                isLegacy ? target.legacy.title : `סבב מס׳ ${target.round.roundNumber}`,
+              )
+            }
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-card"
+          >
+            החלפת וידאו
+          </button>
           <button
             type="button"
             onClick={() => void toggleLock()}
@@ -2129,7 +2353,7 @@ function FileFieldPicker({
             constraint BEFORE they pick a giant file and get an
             error toast. Same surface, less surprise. */}
         <span className="text-fg-faint">
-          עד {formatBytes(MAX_UPLOAD_BYTES)}
+          עד <bdi dir="ltr">{formatBytes(MAX_UPLOAD_BYTES)}</bdi>
         </span>
       </label>
       <div className="flex items-center gap-3">
@@ -2147,6 +2371,158 @@ function FileFieldPicker({
               ? 'חובה לבחור קובץ'
               : 'לא נבחר קובץ (אפשר להוסיף סבב אחר כך)'}
         </span>
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="video/*"
+        className="sr-only"
+        onChange={(e) => onPick(e.target.files?.[0] || null)}
+      />
+    </div>
+  )
+}
+
+/** Large drag-and-drop file picker. Bigger visual presence than
+ *  FileFieldPicker — meant for modals where uploading is the
+ *  primary action (add-round, replace-video) rather than one
+ *  field among many (new-project).
+ *
+ *  States:
+ *    - empty / idle: dashed border + upload icon + prompt
+ *    - dragging-over: solid primary border + tinted bg
+ *    - file picked: filename + size badge + "replace" link
+ *    - disabled (during upload): muted, no interactions
+ *
+ *  Accepts the file from either drop event OR the hidden
+ *  <input type=file>, so users who prefer the click flow get the
+ *  same experience.
+ */
+function DropZone({
+  file,
+  onPick,
+  inputRef,
+  disabled = false,
+}: {
+  file: File | null
+  onPick: (f: File | null) => void
+  inputRef: React.RefObject<HTMLInputElement>
+  disabled?: boolean
+}) {
+  const [dragOver, setDragOver] = useState(false)
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOver(false)
+    if (disabled) return
+    const dropped = e.dataTransfer.files?.[0]
+    if (dropped) onPick(dropped)
+  }
+
+  return (
+    <div>
+      <label className="mb-2 flex items-center justify-between text-xs text-fg-muted">
+        <span>קובץ וידאו</span>
+        <span className="text-fg-faint">
+          עד <bdi dir="ltr">{formatBytes(MAX_UPLOAD_BYTES)}</bdi>
+        </span>
+      </label>
+      {/* The whole zone is the affordance — click anywhere opens
+          the file picker, drop anywhere accepts the file. We use
+          a div + role=button (not a real <button>) because a
+          button can't legally contain the "replace" button shown
+          when a file is already picked. */}
+      <div
+        role="button"
+        tabIndex={disabled ? -1 : 0}
+        onClick={() => {
+          if (!disabled) inputRef.current?.click()
+        }}
+        onKeyDown={(e) => {
+          if (disabled) return
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            inputRef.current?.click()
+          }
+        }}
+        onDragEnter={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          if (!disabled) setDragOver(true)
+        }}
+        onDragOver={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          if (!disabled) setDragOver(true)
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          setDragOver(false)
+        }}
+        onDrop={handleDrop}
+        className={
+          'group relative flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-10 text-center transition-all ' +
+          (disabled
+            ? 'cursor-not-allowed border-border bg-bg-card/40 opacity-60'
+            : dragOver
+              ? 'border-primary bg-primary/10 scale-[1.01]'
+              : file
+                ? 'border-border bg-bg-card hover:border-fg/20'
+                : 'cursor-pointer border-border bg-bg-card hover:border-fg/30 hover:bg-bg-elevated')
+        }
+      >
+        {file ? (
+          <>
+            {/* File picked — show filename + size in a clean
+                row, with a "replace" action to swap it out. */}
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <VideoFileIcon className="h-6 w-6" />
+            </div>
+            <div className="min-w-0 max-w-full">
+              <div className="truncate text-sm font-medium text-fg">
+                {file.name}
+              </div>
+              <div className="mt-1 text-xs text-fg-muted">
+                <bdi dir="ltr">{formatBytes(file.size)}</bdi>
+              </div>
+            </div>
+            {!disabled && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  inputRef.current?.click()
+                }}
+                className="text-xs text-fg-muted underline-offset-2 transition-colors hover:text-fg hover:underline"
+              >
+                החלפת קובץ
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            <div
+              className={
+                'flex h-14 w-14 items-center justify-center rounded-2xl transition-colors ' +
+                (dragOver
+                  ? 'bg-primary/20 text-primary'
+                  : 'bg-bg-elevated text-fg-muted group-hover:bg-primary/10 group-hover:text-primary')
+              }
+            >
+              <UploadIcon className="h-7 w-7" />
+            </div>
+            <div>
+              <div className="text-sm font-medium text-fg">
+                {dragOver ? 'שחרר כאן' : 'גרור קובץ וידאו לכאן'}
+              </div>
+              <div className="mt-1 text-xs text-fg-muted">
+                או <span className="text-primary">לחץ כדי לבחור</span> מהמחשב
+              </div>
+            </div>
+          </>
+        )}
       </div>
       <input
         ref={inputRef}
@@ -2357,6 +2733,86 @@ function ChevronDownIcon({ className }: { className?: string }) {
       className={className}
     >
       <path d="m6 9 6 6 6-6" />
+    </svg>
+  )
+}
+
+function EyeIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  )
+}
+
+function EyeOffIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+      <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+      <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+      <line x1="2" y1="2" x2="22" y2="22" />
+    </svg>
+  )
+}
+
+function UploadIcon({ className }: { className?: string }) {
+  // Tray-with-up-arrow — universally read as "upload" across
+  // OS icon sets. Used in the drag-and-drop zone's empty state.
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="17 8 12 3 7 8" />
+      <line x1="12" y1="3" x2="12" y2="15" />
+    </svg>
+  )
+}
+
+function VideoFileIcon({ className }: { className?: string }) {
+  // File-with-play-triangle — for the drop zone's "file picked"
+  // state. Reads as "this is a video file" at a glance.
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <polygon points="10 11 16 14.5 10 18" />
     </svg>
   )
 }

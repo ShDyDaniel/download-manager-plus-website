@@ -541,6 +541,44 @@ export async function updateProjectLock(
   }
 }
 
+/** Replace the underlying video on an existing round / legacy
+ *  project. The new video must already live on Drive (caller
+ *  uploads via driveUpload.ts first, same as for create-round).
+ *  Existing notes + share token are preserved — only the video
+ *  bytes change. Optionally trashes the old Drive video file
+ *  too (default true, to free quota since most editors are
+ *  replacing because the old upload was wrong). */
+export interface ReplaceVideoInput {
+  projectId: string
+  driveFileId: string
+  driveFolderId: string
+  videoFileName: string
+  videoSizeBytes: number
+  videoMime: string
+  /** When true, the server moves the old video to Drive trash
+   *  after the swap. Defaults to true server-side; pass false
+   *  here only if the editor explicitly opts to keep the old
+   *  file (e.g. they wanted both in their Drive for backup). */
+  deleteOldDriveFile?: boolean
+}
+
+export async function replaceProjectVideo(
+  input: ReplaceVideoInput,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await postAction<{ ok: true }>(
+      'replace-project-video',
+      authBody(input as unknown as Record<string, unknown>),
+    )
+    return { ok: true }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'שגיאה',
+    }
+  }
+}
+
 /* ──────────────────────────────────────────────────────────────
  *  Helpers
  * ────────────────────────────────────────────────────────────── */
