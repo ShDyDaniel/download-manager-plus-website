@@ -1,3 +1,14 @@
+/** Hard cap on the file size the web upload flow accepts. Drive
+ *  itself can handle 5 TB per file, but a 2 GB cap on the web
+ *  side gives us a sane upper bound for browser memory pressure
+ *  (each File.slice() into an XHR PUT still holds the chunk in
+ *  RAM during transit) and matches the operator's preference of
+ *  keeping the per-round footprint modest so the user's Drive
+ *  quota lasts. The cap is enforced both at file-pick time
+ *  (instant validation, before the user clicks upload) and at
+ *  submit time (defence-in-depth in case the picker is bypassed). */
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024 // 2 GB
+
 /**
  * RevisionsWorkspace — the editor side of the Revisions feature
  * for the web. Replaces the WorkspacePlaceholder once the user
@@ -986,6 +997,24 @@ function NewProjectModal({
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<UploadProgress | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // Per-upload AbortController. We swap it on every submit so a
+  // user who cancels mid-upload and tries again gets a fresh
+  // signal (the old one stays aborted). Kept in a ref because
+  // we don't want abort to trigger a re-render — we just need
+  // to call .abort() on the current controller from the
+  // close/cancel handlers.
+  const abortRef = useRef<AbortController | null>(null)
+
+  /** Handle close / cancel — aborts any in-flight upload first
+   *  so the XHRs in driveUpload.ts stop sending bytes, then
+   *  unmounts the modal via the parent. */
+  function handleClose() {
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
+    }
+    onClose()
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -994,8 +1023,19 @@ function NewProjectModal({
       setError('יש לתת שם לפרויקט')
       return
     }
+    // Defence-in-depth: file picker already validates on pick,
+    // but a determined user could swap the file via devtools.
+    if (file && file.size > MAX_UPLOAD_BYTES) {
+      setError(
+        `הקובץ גדול מהמותר (מקסימום ${formatBytes(MAX_UPLOAD_BYTES)}). בחרו קובץ קטן יותר.`,
+      )
+      return
+    }
     setError(null)
     setBusy(true)
+
+    const controller = new AbortController()
+    abortRef.current = controller
 
     try {
       // If the user didn't pick a video, create an empty group
@@ -1014,14 +1054,18 @@ function NewProjectModal({
 
       // Got a video — full flow: access token → ensure folder →
       // upload chunks → set permissions → create group with the
-      // resulting driveFileId.
+      // resulting driveFileId. Each step checks abort so a click
+      // on cancel exits at the next yield point.
       const at = await fetchDriveAccessToken()
+      if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
       const folders = await ensureProjectFolders(at.accessToken)
+      if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
       const upload = await uploadFileToDrive({
         accessToken: at.accessToken,
         file,
         folderId: folders.videosFolderId,
         onProgress: setProgress,
+        signal: controller.signal,
       })
       await setShareablePermissions(at.accessToken, upload.driveFileId)
       await createProjectGroup({
@@ -1041,12 +1085,21 @@ function NewProjectModal({
     } catch (err) {
       setBusy(false)
       setProgress(null)
+      // Suppress the error toast when the user explicitly aborted
+      // — they triggered the cancel, surfacing an error would be
+      // noise. The modal closes itself via the cancel handler in
+      // that case; we just need to keep the form in a sane state
+      // in case the AbortController was triggered by something
+      // other than the close button.
+      if (controller.signal.aborted) {
+        return
+      }
       setError(err instanceof Error ? err.message : 'יצירת הפרויקט נכשלה')
     }
   }
 
   return (
-    <ModalShell title="פרויקט חדש" onClose={busy ? () => undefined : onClose}>
+    <ModalShell title="פרויקט חדש" onClose={handleClose}>
       <form onSubmit={submit} className="space-y-4">
         <LabelledField
           label="שם הפרויקט"
@@ -1063,7 +1116,21 @@ function NewProjectModal({
         />
         <FileFieldPicker
           file={file}
-          onPick={setFile}
+          onPick={(f) => {
+            // Validate size on pick so the error shows up before
+            // the user clicks "create" — much better UX than
+            // letting them fill out the form and only failing on
+            // submit.
+            if (f && f.size > MAX_UPLOAD_BYTES) {
+              setFile(null)
+              setError(
+                `הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}.`,
+              )
+              return
+            }
+            setError(null)
+            setFile(f)
+          }}
           inputRef={fileInputRef}
         />
         <ToggleRow
@@ -1095,11 +1162,10 @@ function NewProjectModal({
         <div className="flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="text-sm text-fg-muted hover:text-fg disabled:opacity-40"
+            onClick={handleClose}
+            className="text-sm text-fg-muted transition-colors hover:text-fg"
           >
-            ביטול
+            {busy ? 'ביטול ההעלאה' : 'ביטול'}
           </button>
           <button
             type="submit"
@@ -1138,20 +1204,40 @@ function AddRoundModal({
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<UploadProgress | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const abortRef = useRef<AbortController | null>(null)
+
+  function handleClose() {
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
+    }
+    onClose()
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (busy || !file) return
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError(
+        `הקובץ גדול מהמותר (מקסימום ${formatBytes(MAX_UPLOAD_BYTES)}). בחרו קובץ קטן יותר.`,
+      )
+      return
+    }
     setError(null)
     setBusy(true)
+    const controller = new AbortController()
+    abortRef.current = controller
     try {
       const at = await fetchDriveAccessToken()
+      if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
       const folders = await ensureProjectFolders(at.accessToken)
+      if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
       const upload = await uploadFileToDrive({
         accessToken: at.accessToken,
         file,
         folderId: folders.videosFolderId,
         onProgress: setProgress,
+        signal: controller.signal,
       })
       await setShareablePermissions(at.accessToken, upload.driveFileId)
       await addRoundToGroup({
@@ -1166,6 +1252,7 @@ function AddRoundModal({
     } catch (err) {
       setBusy(false)
       setProgress(null)
+      if (controller.signal.aborted) return
       setError(err instanceof Error ? err.message : 'הוספת הסבב נכשלה')
     }
   }
@@ -1173,12 +1260,22 @@ function AddRoundModal({
   return (
     <ModalShell
       title={`סבב חדש — ${group.title}`}
-      onClose={busy ? () => undefined : onClose}
+      onClose={handleClose}
     >
       <form onSubmit={submit} className="space-y-4">
         <FileFieldPicker
           file={file}
-          onPick={setFile}
+          onPick={(f) => {
+            if (f && f.size > MAX_UPLOAD_BYTES) {
+              setFile(null)
+              setError(
+                `הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}.`,
+              )
+              return
+            }
+            setError(null)
+            setFile(f)
+          }}
           inputRef={fileInputRef}
           required
         />
@@ -1193,11 +1290,10 @@ function AddRoundModal({
         <div className="flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="text-sm text-fg-muted hover:text-fg disabled:opacity-40"
+            onClick={handleClose}
+            className="text-sm text-fg-muted transition-colors hover:text-fg"
           >
-            ביטול
+            {busy ? 'ביטול ההעלאה' : 'ביטול'}
           </button>
           <button
             type="submit"
@@ -1755,8 +1851,27 @@ function NoteCard({
     setEditingResponse(null)
   }
 
+  // Border-left color reflects the note's status so the editor
+  // can scan a long list and instantly see which notes are still
+  // open, which got resolved, which became a question, and which
+  // turned out impossible. Same color palette as the StatusBadge
+  // + StatusActionButton so all three signals agree.
+  const statusStyles: Record<NoteStatus, string> = {
+    new: 'border-r-border bg-bg-card',
+    resolved: 'border-r-success/60 bg-success/[0.04]',
+    question: 'border-r-primary/60 bg-primary/[0.04]',
+    'not-possible': 'border-r-destructive/60 bg-destructive/[0.04]',
+  }
   return (
-    <li className="rounded-xl border border-border bg-bg-card p-4">
+    <li
+      className={
+        // The right border is the thick "status rail". Switching
+        // to a 4 px rail on the start-side gives a strong visual
+        // cue without taking up real estate inside the card.
+        'rounded-xl border border-border border-r-4 p-4 transition-colors ' +
+        statusStyles[note.status]
+      }
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
@@ -1994,8 +2109,17 @@ function FileFieldPicker({
 }) {
   return (
     <div>
-      <label className="mb-1.5 block text-xs text-fg-muted">
-        קובץ וידאו {required && <span className="text-destructive">*</span>}
+      <label className="mb-1.5 flex items-center justify-between text-xs text-fg-muted">
+        <span>
+          קובץ וידאו{' '}
+          {required && <span className="text-destructive">*</span>}
+        </span>
+        {/* Display the size cap inline so the user knows the
+            constraint BEFORE they pick a giant file and get an
+            error toast. Same surface, less surprise. */}
+        <span className="text-fg-faint">
+          עד {formatBytes(MAX_UPLOAD_BYTES)}
+        </span>
       </label>
       <div className="flex items-center gap-3">
         <button
@@ -2067,8 +2191,14 @@ function Switch({
   onChange: (next: boolean) => void
   disabled?: boolean
 }) {
+  // Use framer-motion so the toggle's thumb animation is
+  // declarative + interruptible. Plain CSS `transition-transform`
+  // works in most cases, but it occasionally snaps on the very
+  // first interaction (some browsers skip the transition when
+  // the className is replaced rather than mutated). Framer's
+  // animate prop reliably triggers on every state change.
   return (
-    <button
+    <motion.button
       type="button"
       role="switch"
       aria-checked={checked}
@@ -2077,35 +2207,59 @@ function Switch({
         e.preventDefault()
         if (!disabled) onChange(!checked)
       }}
+      // Tap-down feedback — track contracts by 2% for a moment.
+      // Mirrors the "press" feel users expect from a physical
+      // toggle. whileTap is interruptible: if the user releases
+      // mid-press the animation snaps right back.
+      whileTap={disabled ? undefined : { scale: 0.95 }}
+      // Track color transition handled by framer too. CSS
+      // transition-colors works fine here but we want the same
+      // spring physics as the thumb so the whole switch feels
+      // unified.
+      animate={{
+        backgroundColor: checked
+          ? 'var(--primary)'
+          : 'rgba(255,255,255,0.04)',
+        borderColor: checked ? 'var(--primary)' : 'var(--border)',
+      }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
       className={
-        'relative mt-0.5 inline-flex h-5 w-10 shrink-0 cursor-pointer items-center rounded-md border transition-colors duration-300 ' +
-        (disabled ? 'cursor-not-allowed opacity-50 ' : '') +
-        (checked
-          ? 'border-primary bg-primary '
-          : 'border-border bg-white/[0.04] ')
+        'relative mt-0.5 inline-flex h-5 w-10 shrink-0 items-center rounded-md border ' +
+        (disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer')
       }
     >
       {/* Soft halo glow when "on" — absolutely positioned so it
           doesn't shift the track's box. */}
-      <span
+      <motion.span
         aria-hidden="true"
-        className={
-          'pointer-events-none absolute inset-0 rounded-md bg-primary/40 blur-md transition-opacity duration-300 ' +
-          (checked ? 'opacity-100' : 'opacity-0')
-        }
+        animate={{ opacity: checked ? 1 : 0 }}
+        transition={{ duration: 0.22 }}
+        className="pointer-events-none absolute inset-0 rounded-md bg-primary/40 blur-md"
       />
-      {/* Thumb — tile-shaped, ~16 px travel from right to left. */}
-      <span
+      {/* Thumb — tile-shaped, ~18 px travel from right to left.
+          x is a transform so it animates smoothly on the GPU;
+          the spring curve gives a small overshoot for a snappy
+          physical feel (matches the desktop's Radix switch). */}
+      <motion.span
         aria-hidden="true"
-        className={
-          'pointer-events-none relative z-10 block h-3.5 w-3.5 rounded-sm shadow-lg transition-transform duration-300 ' +
-          'ease-[cubic-bezier(0.34,1.56,0.64,1)] ' +
-          (checked
-            ? '-translate-x-[18px] bg-bg'
-            : '-translate-x-[3px] bg-fg/95')
-        }
+        animate={{
+          x: checked ? -18 : -3,
+          backgroundColor: checked
+            ? 'var(--bg)'
+            : 'rgba(245,239,230,0.95)',
+        }}
+        transition={{
+          x: {
+            type: 'spring',
+            stiffness: 500,
+            damping: 32,
+            mass: 0.8,
+          },
+          backgroundColor: { duration: 0.22 },
+        }}
+        className="pointer-events-none relative z-10 block h-3.5 w-3.5 rounded-sm shadow-lg"
       />
-    </button>
+    </motion.button>
   )
 }
 
