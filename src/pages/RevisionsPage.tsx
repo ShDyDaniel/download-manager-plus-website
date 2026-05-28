@@ -78,6 +78,22 @@ export function RevisionsPage() {
     // ORIGINAL tab, if they used same-tab navigation somehow) keeps
     // their normal workspace render path; we don't close on them.
     if (isOauthCallback && !session) {
+      // Broadcast to other tabs of the origin BEFORE closing — the
+      // original workspace tab is also polling every 2s, but the
+      // polling can be throttled when the tab is backgrounded
+      // (Chrome aggressively throttles setInterval in inactive
+      // tabs to ~1/min). BroadcastChannel ignores throttling, so
+      // the original tab refreshes the instant the popup closes
+      // instead of after a delayed poll. Caller listens on the
+      // matching channel name in ConnectDriveEmptyState.
+      try {
+        const channel = new BroadcastChannel('dmplus-revisions-oauth')
+        channel.postMessage({ kind: 'connected' })
+        channel.close()
+      } catch {
+        // BroadcastChannel unsupported (very old Safari) — fall
+        // back to the polling-only path. Not fatal.
+      }
       try {
         window.close()
       } catch {
