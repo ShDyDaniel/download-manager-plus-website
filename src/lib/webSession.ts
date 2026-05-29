@@ -229,6 +229,48 @@ async function postJson<T>(
   return { ok: true, result: data as T }
 }
 
+/** Tell the browser's password manager (Chrome / Safari / Edge /
+ *  1Password / etc.) to offer saving these credentials. Calling
+ *  this explicitly is FAR more reliable than relying on the
+ *  browser to auto-detect a login form — SPA submits via fetch
+ *  with no page navigation, which most password-manager
+ *  heuristics treat as ambiguous. This API skips all the
+ *  heuristics: it says "these credentials successfully logged
+ *  in, store them now."
+ *
+ *  Available since Chrome 51, Safari 13, Edge 79 (= 95%+ of
+ *  global usage). Wrapped in a try/catch so older browsers or
+ *  insecure contexts fall through silently — the user can still
+ *  log in, they just don't get the save prompt.
+ *
+ *  Privacy note: this only fires the BROWSER's save prompt; the
+ *  credentials never reach our server here (the actual auth
+ *  call happened before this). The browser asks the user
+ *  whether to save and what name to use. We're just hinting. */
+async function offerCredentialSave(
+  email: string,
+  password: string,
+): Promise<void> {
+  try {
+    // PasswordCredential isn't in lib.dom yet for all TS targets.
+    // Cast through unknown to bypass; the runtime check below is
+    // what actually gates this code path on older browsers.
+    const PC = (window as unknown as { PasswordCredential?: new (init: {
+      id: string
+      password: string
+      name?: string
+    }) => Credential }).PasswordCredential
+    if (!PC) return
+    if (!navigator.credentials || !navigator.credentials.store) return
+    const cred = new PC({ id: email, password })
+    await navigator.credentials.store(cred)
+  } catch (err) {
+    // Safari throws in some non-HTTPS or third-party-cookie
+    // configurations. Not fatal — the login already succeeded.
+    console.debug('[webSession] credential store failed:', err)
+  }
+}
+
 /** Sign in with email + password. Adopts the returned session
  *  token on success. The returned claims are also stored for
  *  consumers to read via getSession().
@@ -254,6 +296,10 @@ export async function signIn(
   }
   try {
     const claims = adoptToken(token)
+    // Fire-and-forget: prompt the browser to save these creds.
+    // Doesn't block the signin flow — if the user dismisses the
+    // browser's save prompt the signin still succeeded.
+    void offerCredentialSave(email.trim().toLowerCase(), password)
     return { ok: true, claims }
   } catch (err) {
     return {

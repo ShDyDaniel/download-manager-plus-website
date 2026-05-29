@@ -363,7 +363,6 @@ export default function AccountPage() {
       setSessionEmail(json.email || cleanEmail)
       setProfile(json.profile || null)
       setSubs(json.subscriptions ?? [])
-      setPassword('')
       // Persist for cross-page sharing within the tab. The next
       // navigation (e.g. clicking "החשבון שלי" from another page)
       // will rehydrate via restore-session instead of asking for
@@ -373,6 +372,34 @@ export default function AccountPage() {
       } catch {
         // sessionStorage disabled — degrade gracefully.
       }
+      // Explicit "save these credentials" hint to the browser's
+      // password manager. Without this call, Chrome's heuristic
+      // for SPA login often misses (fetch + state update with no
+      // page navigation looks ambiguous). This API skips the
+      // heuristic: it tells the browser "the user just logged in
+      // successfully, offer to save." Must happen BEFORE we wipe
+      // `password` below — otherwise we'd be storing an empty
+      // string. Available since Chrome 51 / Safari 13; falls
+      // through silently on older browsers.
+      try {
+        const PC = (
+          window as unknown as {
+            PasswordCredential?: new (init: {
+              id: string
+              password: string
+            }) => Credential
+          }
+        ).PasswordCredential
+        if (PC && navigator.credentials?.store) {
+          await navigator.credentials.store(
+            new PC({ id: cleanEmail, password }),
+          )
+        }
+      } catch {
+        // Credentials API rejected (cross-origin frame, insecure
+        // context, etc.) — not fatal. Login already succeeded.
+      }
+      setPassword('')
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : 'שגיאת רשת. נסה שוב.')
     } finally {
@@ -805,6 +832,12 @@ export default function AccountPage() {
           /* ── Login form (SSO failed or never present) ── */
           <form
             onSubmit={handleLogin}
+            // method + action are Chrome heuristic hints for
+            // "this is a real login form, offer to save creds on
+            // submit". We still intercept with onSubmit + fetch,
+            // so the action="#" never actually runs.
+            method="post"
+            action="#"
             className="card-elevated mx-auto max-w-md space-y-4 rounded-2xl border-border p-6 md:p-8"
           >
             <div className="flex items-center gap-2 text-sm font-semibold text-fg">
@@ -827,7 +860,12 @@ export default function AccountPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
-                autoComplete="email"
+                // `username` is the autocomplete token Chrome's
+                // "save password" detector looks for; `email`
+                // enables value autofill from the browser's
+                // contact list. Dual-token enables both.
+                autoComplete="username email"
+                name="email"
                 disabled={authing}
                 // No explicit dir — inherits dir="rtl" from <html lang="he">.
                 // The latin characters of the email still render LTR
@@ -848,6 +886,7 @@ export default function AccountPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="current-password"
+                name="password"
                 disabled={authing}
                 className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
               />
