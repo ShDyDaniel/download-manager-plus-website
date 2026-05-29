@@ -1621,9 +1621,9 @@ function ConfirmDisconnectDriveModal({
   return (
     <ModalShell title="ניתוק חשבון Google Drive" onClose={onClose}>
       <p className="text-sm leading-relaxed text-fg-muted">
-        הפרויקטים הקיימים יישארו, אבל לא תוכל להעלות סבבים
-        חדשים עד שתחבר חשבון Google מחדש. הקבצים שהועלו עד עכשיו
-        יישארו ב-Drive שלך.
+        הפרויקטים הקיימים יישארו, אבל לא יהיה אפשר להעלות סבבים
+        חדשים או לגשת לפרוייקטים הקיימים עד קישור חשבון Google
+        מחדש. הקבצים שהועלו עד עכשיו יישארו ב-Drive שלך.
       </p>
       {error && (
         <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
