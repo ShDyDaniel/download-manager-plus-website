@@ -323,6 +323,14 @@ function ConnectedWorkspace({
     | { kind: 'legacy'; project: LegacyProjectSummary }
     | null
   >(null)
+  // Disconnect-Drive confirm dialog. Boolean rather than an object
+  // because there's only one thing the user can be confirming here.
+  // Previously this used window.confirm() — replaced because the
+  // native dialog is unstyled, breaks the dark theme, and shows the
+  // domain name prefix ("www.dmplus.net says…") which reads as a
+  // bug to non-technical users.
+  const [confirmDisconnectDrive, setConfirmDisconnectDrive] =
+    useState(false)
 
   const reload = useCallback(() => setRefreshTick((n) => n + 1), [])
 
@@ -347,16 +355,11 @@ function ConnectedWorkspace({
     }
   }, [refreshTick])
 
-  async function handleDisconnect() {
-    if (
-      !window.confirm(
-        'לנתק את חשבון Google Drive? פרויקטים קיימים יישארו אבל לא תוכל להעלות סבבים חדשים עד שתחבר מחדש.',
-      )
-    ) {
-      return
-    }
-    await disconnectDrive()
-    onDisconnected()
+  function handleDisconnect() {
+    // Just open the modal. The actual disconnect call moves to
+    // the modal's confirm button so the busy state + errors render
+    // inside the dialog rather than vanishing into a void.
+    setConfirmDisconnectDrive(true)
   }
 
   if (error) {
@@ -515,6 +518,16 @@ function ConnectedWorkspace({
             onReplaced={() => {
               setReplacingProject(null)
               reload()
+            }}
+          />
+        )}
+        {confirmDisconnectDrive && (
+          <ConfirmDisconnectDriveModal
+            key="disconnect-drive"
+            onClose={() => setConfirmDisconnectDrive(false)}
+            onConfirmed={() => {
+              setConfirmDisconnectDrive(false)
+              onDisconnected()
             }}
           />
         )}
@@ -1554,6 +1567,87 @@ function ReplaceVideoModal({
           </button>
         </div>
       </form>
+    </ModalShell>
+  )
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  ConfirmDisconnectDriveModal — replaces the native window.confirm
+ *
+ *  The previous flow used `window.confirm(...)`. That breaks the
+ *  dark theme, prefixes the text with the domain ("www.dmplus.net
+ *  says…") which reads as suspicious to non-technical users, and
+ *  blocks the entire renderer thread until dismissed. Switched to
+ *  a regular themed modal so the disconnect prompt looks like
+ *  every other confirmation in the workspace.
+ *
+ *  The actual disconnectDrive() call moves into here so we can
+ *  surface a loading state ("מנתק…") and an inline error message
+ *  if the server rejects the request — the native confirm() had
+ *  nowhere to put either of those.
+ * ────────────────────────────────────────────────────────────── */
+
+function ConfirmDisconnectDriveModal({
+  onClose,
+  onConfirmed,
+}: {
+  onClose: () => void
+  onConfirmed: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function confirm() {
+    setBusy(true)
+    setError(null)
+    try {
+      await disconnectDrive()
+    } catch (err) {
+      setBusy(false)
+      setError(
+        err instanceof Error ? err.message : 'הניתוק נכשל',
+      )
+      return
+    }
+    // Even if disconnectDrive's internal try/catch swallowed an
+    // error and we got here without throwing, we still want to
+    // flip the UI — the worst case is the user reconnects and
+    // overrides the stale Firestore doc. The fail-safe is "the
+    // user is OUT of this Drive integration locally" which is
+    // what the modal promised.
+    onConfirmed()
+  }
+
+  return (
+    <ModalShell title="ניתוק חשבון Google Drive" onClose={onClose}>
+      <p className="text-sm leading-relaxed text-fg-muted">
+        הפרויקטים הקיימים יישארו, אבל לא תוכל להעלות סבבים
+        חדשים עד שתחבר חשבון Google מחדש. הקבצים שהועלו עד עכשיו
+        יישארו ב-Drive שלך.
+      </p>
+      {error && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      )}
+      <div className="mt-6 flex items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={busy}
+          className="text-sm text-fg-muted transition-colors hover:text-fg disabled:opacity-40"
+        >
+          ביטול
+        </button>
+        <button
+          type="button"
+          onClick={() => void confirm()}
+          disabled={busy}
+          className="rounded-md bg-destructive px-5 py-2 text-sm font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-40"
+        >
+          {busy ? 'מנתק…' : 'ניתוק'}
+        </button>
+      </div>
     </ModalShell>
   )
 }
