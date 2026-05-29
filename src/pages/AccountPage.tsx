@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
+import { offerCredentialSave } from '../lib/webSession'
 import {
   ArrowRight,
   LogIn,
@@ -378,41 +379,14 @@ export default function AccountPage() {
       } catch {
         // sessionStorage disabled — degrade gracefully.
       }
-      // Explicit "save these credentials" prompt. Two parts:
-      //
-      //   1. PasswordCredential(formElement) — passing the form
-      //      node (vs an object literal) is what reliably triggers
-      //      Chrome's save bubble. The earlier {id,password} form
-      //      stored silently in some cases without prompting.
-      //
-      //   2. history.replaceState — Chromium's password-save
-      //      heuristic for fetch-based logins requires either a
-      //      real page nav or a synthesized history change PLUS
-      //      the form being removed from the DOM. The setToken()
-      //      above already removes the form (the render switches
-      //      to the dashboard); this adds the missing history
-      //      signal so the heuristic completes.
-      //
-      // Both must happen BEFORE setPassword('') wipes the value.
-      try {
-        const PC = (
-          window as unknown as {
-            PasswordCredential?: new (form: HTMLFormElement) => Credential
-          }
-        ).PasswordCredential
-        if (PC && navigator.credentials?.store && loginFormRef.current) {
-          await navigator.credentials.store(new PC(loginFormRef.current))
-        }
-      } catch {
-        // Credentials API rejected (cross-origin frame, insecure
-        // context, etc.) — not fatal. Login already succeeded.
-      }
-      try {
-        const here = window.location.pathname + window.location.search
-        window.history.replaceState(window.history.state, '', here)
-      } catch {
-        // No-op — login still works without this.
-      }
+      // Hand off to the shared helper in webSession.ts so both
+      // /account and /revisions share one implementation. The
+      // helper also has the [pw-save] diagnostic logs, so we'll
+      // see in DevTools whether the credential store + history
+      // replaceState fired here too. Must happen BEFORE
+      // setPassword('') so the form's password input still has a
+      // value when PasswordCredential reads it.
+      await offerCredentialSave(loginFormRef.current)
       setPassword('')
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : 'שגיאת רשת. נסה שוב.')
