@@ -250,37 +250,49 @@ async function postJson<T>(
 export async function offerCredentialSave(
   form: HTMLFormElement | null,
 ): Promise<void> {
-  if (!form) return
+  // Diagnostic logs (temporary — remove once the operator
+  // confirms the save prompt is firing). Each log is prefixed
+  // with [pw-save] so it's filterable in DevTools console. If a
+  // step says "skipped" or "failed", that's our culprit.
+  console.log('[pw-save] offerCredentialSave called', {
+    formPresent: !!form,
+    formAction: form?.action,
+    formMethod: form?.method,
+    inputCount: form?.elements.length,
+  })
+  if (!form) {
+    console.warn('[pw-save] SKIPPED — no form element')
+    return
+  }
   try {
-    // PasswordCredential constructor accepts an HTMLFormElement;
-    // when it does, the browser reads name="" and autocomplete=""
-    // attributes off the form's inputs itself. The form-element
-    // signature (vs the {id,password} object literal we tried
-    // before) is what reliably triggers the save prompt.
     const PC = (
       window as unknown as {
         PasswordCredential?: new (form: HTMLFormElement) => Credential
       }
     ).PasswordCredential
-    if (!PC) return
-    if (!navigator.credentials || !navigator.credentials.store) return
+    console.log('[pw-save] PasswordCredential available?', !!PC)
+    if (!PC) {
+      console.warn('[pw-save] SKIPPED — PasswordCredential not in window')
+      return
+    }
+    console.log('[pw-save] navigator.credentials available?', !!navigator.credentials, '/ .store?', !!navigator.credentials?.store)
+    if (!navigator.credentials || !navigator.credentials.store) {
+      console.warn('[pw-save] SKIPPED — navigator.credentials.store missing')
+      return
+    }
     const cred = new PC(form)
+    console.log('[pw-save] PasswordCredential constructed', cred)
     await navigator.credentials.store(cred)
+    console.log('[pw-save] credentials.store() resolved successfully')
   } catch (err) {
-    // Safari throws in some non-HTTPS / third-party-cookie
-    // configurations. Not fatal — the login already succeeded.
-    console.debug('[webSession] credential store failed:', err)
+    console.error('[pw-save] FAILED in credential store:', err)
   }
-  // Synthetic "navigation" — Chrome's password-save heuristic
-  // needs this when the actual auth call was a fetch (no real
-  // page nav). Replace state with the SAME path; the goal is the
-  // heuristic, not actually changing the URL. Wrapped in
-  // try/catch because some sandboxed/iframe contexts disallow it.
   try {
     const here = window.location.pathname + window.location.search
     window.history.replaceState(window.history.state, '', here)
-  } catch {
-    // No-op — login still works.
+    console.log('[pw-save] history.replaceState fired for', here)
+  } catch (err) {
+    console.error('[pw-save] FAILED in history.replaceState:', err)
   }
 }
 
