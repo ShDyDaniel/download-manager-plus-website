@@ -229,45 +229,58 @@ async function postJson<T>(
   return { ok: true, result: data as T }
 }
 
-/** Tell the browser's password manager (Chrome / Safari / Edge /
- *  1Password / etc.) to offer saving these credentials. Calling
- *  this explicitly is FAR more reliable than relying on the
- *  browser to auto-detect a login form — SPA submits via fetch
- *  with no page navigation, which most password-manager
- *  heuristics treat as ambiguous. This API skips all the
- *  heuristics: it says "these credentials successfully logged
- *  in, store them now."
+/** Tell the browser's password manager to offer saving these
+ *  credentials. Must be called from a component that has access
+ *  to the actual <form> DOM element — passing the form to
+ *  `PasswordCredential` is what makes Chrome detect this as a
+ *  real submission and trigger the save bubble. The earlier
+ *  attempt to pass `{id, password}` literals stored the
+ *  credential silently in some scenarios but did not show the
+ *  prompt.
  *
- *  Available since Chrome 51, Safari 13, Edge 79 (= 95%+ of
- *  global usage). Wrapped in a try/catch so older browsers or
- *  insecure contexts fall through silently — the user can still
- *  log in, they just don't get the save prompt.
+ *  This function ALSO calls history.replaceState to emulate a
+ *  navigation — Chromium docs explicitly call out that the
+ *  password-save heuristic for fetch-based logins requires
+ *  either a real page nav OR a synthetic pushState/replaceState
+ *  PLUS the form being removed from the DOM. The caller is
+ *  responsible for unmounting the form (typically via the same
+ *  React state change that mounted the post-login UI).
  *
- *  Privacy note: this only fires the BROWSER's save prompt; the
- *  credentials never reach our server here (the actual auth
- *  call happened before this). The browser asks the user
- *  whether to save and what name to use. We're just hinting. */
-async function offerCredentialSave(
-  email: string,
-  password: string,
+ *  Source: https://www.chromium.org/developers/design-documents/create-amazing-password-forms/ */
+export async function offerCredentialSave(
+  form: HTMLFormElement | null,
 ): Promise<void> {
+  if (!form) return
   try {
-    // PasswordCredential isn't in lib.dom yet for all TS targets.
-    // Cast through unknown to bypass; the runtime check below is
-    // what actually gates this code path on older browsers.
-    const PC = (window as unknown as { PasswordCredential?: new (init: {
-      id: string
-      password: string
-      name?: string
-    }) => Credential }).PasswordCredential
+    // PasswordCredential constructor accepts an HTMLFormElement;
+    // when it does, the browser reads name="" and autocomplete=""
+    // attributes off the form's inputs itself. The form-element
+    // signature (vs the {id,password} object literal we tried
+    // before) is what reliably triggers the save prompt.
+    const PC = (
+      window as unknown as {
+        PasswordCredential?: new (form: HTMLFormElement) => Credential
+      }
+    ).PasswordCredential
     if (!PC) return
     if (!navigator.credentials || !navigator.credentials.store) return
-    const cred = new PC({ id: email, password })
+    const cred = new PC(form)
     await navigator.credentials.store(cred)
   } catch (err) {
-    // Safari throws in some non-HTTPS or third-party-cookie
+    // Safari throws in some non-HTTPS / third-party-cookie
     // configurations. Not fatal — the login already succeeded.
     console.debug('[webSession] credential store failed:', err)
+  }
+  // Synthetic "navigation" — Chrome's password-save heuristic
+  // needs this when the actual auth call was a fetch (no real
+  // page nav). Replace state with the SAME path; the goal is the
+  // heuristic, not actually changing the URL. Wrapped in
+  // try/catch because some sandboxed/iframe contexts disallow it.
+  try {
+    const here = window.location.pathname + window.location.search
+    window.history.replaceState(window.history.state, '', here)
+  } catch {
+    // No-op — login still works.
   }
 }
 
@@ -279,7 +292,12 @@ async function offerCredentialSave(
  *  a field called `token` (NOT `sessionToken` — that's the body
  *  field name used by the newer revisions / redeem endpoints).
  *  Keep both names in mind: server SENDS `token`, our /revisions
- *  + /redeem code RECEIVES `sessionToken`. */
+ *  + /redeem code RECEIVES `sessionToken`.
+ *
+ *  Does NOT call offerCredentialSave automatically — the form
+ *  element lives in the component, not here. Caller is
+ *  responsible for the credential save after this resolves
+ *  successfully. */
 export async function signIn(
   email: string,
   password: string,
@@ -296,10 +314,6 @@ export async function signIn(
   }
   try {
     const claims = adoptToken(token)
-    // Fire-and-forget: prompt the browser to save these creds.
-    // Doesn't block the signin flow — if the user dismisses the
-    // browser's save prompt the signin still succeeded.
-    void offerCredentialSave(email.trim().toLowerCase(), password)
     return { ok: true, claims }
   } catch (err) {
     return {

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
@@ -339,6 +339,12 @@ export default function AccountPage() {
   }, [])
 
   /** Login form submit — email + password fallback. */
+  // Ref to the login <form>. Passed to PasswordCredential so
+  // Chrome detects a real submission (vs the object-literal form
+  // we tried first, which silently stored without ever surfacing
+  // the save bubble).
+  const loginFormRef = useRef<HTMLFormElement>(null)
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     const cleanEmail = email.trim().toLowerCase()
@@ -372,32 +378,40 @@ export default function AccountPage() {
       } catch {
         // sessionStorage disabled — degrade gracefully.
       }
-      // Explicit "save these credentials" hint to the browser's
-      // password manager. Without this call, Chrome's heuristic
-      // for SPA login often misses (fetch + state update with no
-      // page navigation looks ambiguous). This API skips the
-      // heuristic: it tells the browser "the user just logged in
-      // successfully, offer to save." Must happen BEFORE we wipe
-      // `password` below — otherwise we'd be storing an empty
-      // string. Available since Chrome 51 / Safari 13; falls
-      // through silently on older browsers.
+      // Explicit "save these credentials" prompt. Two parts:
+      //
+      //   1. PasswordCredential(formElement) — passing the form
+      //      node (vs an object literal) is what reliably triggers
+      //      Chrome's save bubble. The earlier {id,password} form
+      //      stored silently in some cases without prompting.
+      //
+      //   2. history.replaceState — Chromium's password-save
+      //      heuristic for fetch-based logins requires either a
+      //      real page nav or a synthesized history change PLUS
+      //      the form being removed from the DOM. The setToken()
+      //      above already removes the form (the render switches
+      //      to the dashboard); this adds the missing history
+      //      signal so the heuristic completes.
+      //
+      // Both must happen BEFORE setPassword('') wipes the value.
       try {
         const PC = (
           window as unknown as {
-            PasswordCredential?: new (init: {
-              id: string
-              password: string
-            }) => Credential
+            PasswordCredential?: new (form: HTMLFormElement) => Credential
           }
         ).PasswordCredential
-        if (PC && navigator.credentials?.store) {
-          await navigator.credentials.store(
-            new PC({ id: cleanEmail, password }),
-          )
+        if (PC && navigator.credentials?.store && loginFormRef.current) {
+          await navigator.credentials.store(new PC(loginFormRef.current))
         }
       } catch {
         // Credentials API rejected (cross-origin frame, insecure
         // context, etc.) — not fatal. Login already succeeded.
+      }
+      try {
+        const here = window.location.pathname + window.location.search
+        window.history.replaceState(window.history.state, '', here)
+      } catch {
+        // No-op — login still works without this.
       }
       setPassword('')
     } catch (err) {
@@ -831,13 +845,15 @@ export default function AccountPage() {
         ) : !token ? (
           /* ── Login form (SSO failed or never present) ── */
           <form
+            ref={loginFormRef}
             onSubmit={handleLogin}
-            // method + action are Chrome heuristic hints for
-            // "this is a real login form, offer to save creds on
-            // submit". We still intercept with onSubmit + fetch,
-            // so the action="#" never actually runs.
+            // method + action point at the real session endpoint.
+            // We intercept with onSubmit + fetch so this never
+            // actually POSTs, but pointing action at a real URL
+            // (not "#") completes the "this is a real login form"
+            // picture Chrome's save-password heuristic walks.
             method="post"
-            action="#"
+            action="/api/paypal?action=session"
             className="card-elevated mx-auto max-w-md space-y-4 rounded-2xl border-border p-6 md:p-8"
           >
             <div className="flex items-center gap-2 text-sm font-semibold text-fg">

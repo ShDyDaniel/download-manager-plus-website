@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   fetchAccountStatus,
   getSession,
+  offerCredentialSave,
   redeemProductKey,
   requestPasswordReset,
   requestSignupCode,
@@ -534,6 +535,13 @@ function SignInForm({
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Ref to the actual <form> element. PasswordCredential's most
+  // reliable constructor signature takes the form node directly —
+  // it reads name + autocomplete attributes off the inputs the
+  // way a real submit would. The object-literal form ({id,
+  // password}) we tried before stores credentials silently in
+  // some scenarios without ever triggering Chrome's save bubble.
+  const formRef = useRef<HTMLFormElement>(null)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -546,19 +554,30 @@ function SignInForm({
       setError(r.error)
       return
     }
+    // Fire the credential-save hint BEFORE the parent flips state
+    // and unmounts this form. offerCredentialSave reads attributes
+    // off the form node and also synthesizes a history.replaceState
+    // call, which Chrome's password-save heuristic needs for
+    // fetch-based logins. Doing it after onSignedIn() would race
+    // against React's unmount and pass a stale form ref.
+    await offerCredentialSave(formRef.current)
     onSignedIn()
   }
 
   return (
-    // method="post" + action="#" is purely cosmetic but it nudges
-    // Chrome's heuristic for "this is a real login form" — the
-    // password manager prompt fires much more reliably when the
-    // form looks like a classic POST submission, even though we
-    // intercept with onSubmit and submit via fetch.
+    // action points at the real session endpoint. Even though we
+    // intercept onSubmit + use fetch (so the form never actually
+    // POSTs), having a real URL — not "#" — completes the picture
+    // for Chrome's heuristic that "this is a sign-in form". The
+    // browser walks the form on submit and asks: does action look
+    // like a real auth endpoint? does method=post? are there
+    // current-password + username fields? are inputs visible? ALL
+    // signals together get the prompt to fire.
     <form
+      ref={formRef}
       onSubmit={submit}
       method="post"
-      action="#"
+      action="/api/paypal?action=session"
       className="space-y-4"
     >
       <Field
