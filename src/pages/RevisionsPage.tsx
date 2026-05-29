@@ -550,11 +550,28 @@ function SignInForm({
   }
 
   return (
-    <form onSubmit={submit} className="space-y-4">
+    // method="post" + action="#" is purely cosmetic but it nudges
+    // Chrome's heuristic for "this is a real login form" — the
+    // password manager prompt fires much more reliably when the
+    // form looks like a classic POST submission, even though we
+    // intercept with onSubmit and submit via fetch.
+    <form
+      onSubmit={submit}
+      method="post"
+      action="#"
+      className="space-y-4"
+    >
       <Field
         label="אימייל"
         type="email"
-        autoComplete="email"
+        // `username` is the autocomplete token password managers
+        // look for on a login form. `email` works for autofill of
+        // the email value itself, but Chrome's "save password"
+        // prompt is keyed on `username` next to a
+        // `current-password` field. Use `username email` to get
+        // both behaviors.
+        autoComplete="username email"
+        name="email"
         value={email}
         onChange={setEmail}
         autoFocus
@@ -563,6 +580,7 @@ function SignInForm({
         label="סיסמה"
         type="password"
         autoComplete="current-password"
+        name="password"
         value={password}
         onChange={setPassword}
       />
@@ -661,11 +679,17 @@ function SignupDetailsForm({
   return (
     <>
     {termsModalOpen && <TermsModal onClose={() => setTermsModalOpen(false)} />}
-    <form onSubmit={submit} className="space-y-4">
+    <form
+      onSubmit={submit}
+      method="post"
+      action="#"
+      className="space-y-4"
+    >
       <Field
         label="שם תצוגה"
         type="text"
         autoComplete="name"
+        name="name"
         value={name}
         onChange={setName}
         autoFocus
@@ -673,14 +697,23 @@ function SignupDetailsForm({
       <Field
         label="אימייל"
         type="email"
-        autoComplete="email"
+        // Same dual-token pattern as SignInForm — `username` is
+        // what password managers key the save prompt on, `email`
+        // enables value autofill from the browser's address book.
+        autoComplete="username email"
+        name="email"
         value={email}
         onChange={setEmail}
       />
       <Field
         label="סיסמה (לפחות 6 תווים)"
         type="password"
+        // new-password (vs current-password on SignInForm) tells
+        // the password manager this is a fresh credential — most
+        // managers offer to GENERATE a strong password instead of
+        // suggesting one of the user's existing logins.
         autoComplete="new-password"
+        name="new-password"
         value={password}
         onChange={setPassword}
       />
@@ -972,6 +1005,11 @@ function Field(props: {
   inputMode?: 'numeric' | 'text'
   dir?: 'rtl' | 'ltr'
   className?: string
+  /** HTML `name` attribute. Required for browser password
+   *  managers (Chrome, 1Password, etc.) to recognize the field
+   *  as part of a login form — without it they silently refuse
+   *  to offer the "save password" prompt after submission. */
+  name?: string
 }) {
   const id = useMemo(
     () => `f${Math.random().toString(36).slice(2, 9)}`,
@@ -987,6 +1025,7 @@ function Field(props: {
       </label>
       <input
         id={id}
+        name={props.name}
         type={props.type || 'text'}
         autoComplete={props.autoComplete}
         autoFocus={props.autoFocus}
