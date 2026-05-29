@@ -132,29 +132,18 @@ function ConnectDriveEmptyState({
   // it unmounts us, automatically clearing the polling effect.
   const [waitingForOAuth, setWaitingForOAuth] = useState(false)
 
+  // OAuth-completion listeners — wired ALWAYS, not just while
+  // waitingForOAuth is true. Reason: it's racy to only start
+  // listening AFTER the popup opens. If the popup runs its
+  // window.close() broadcast before this effect's setup completes
+  // (or before React re-renders after setWaitingForOAuth(true)),
+  // the message arrives in a tab with no listener and gets lost
+  // forever. Setting them up on mount means they're already in
+  // place by the time any popup can fire. Cost is near-zero —
+  // these are passive listeners, not polling.
   useEffect(() => {
-    if (!waitingForOAuth) return
-    // Three independent triggers for "refetch Drive state", any
-    // of which will pick up a successful OAuth completion. We
-    // wire them all because no single one is reliable on its own:
-    //
-    //   - BroadcastChannel: the popup tab posts here on close.
-    //     Fires within milliseconds of OAuth completion. Best UX
-    //     when it works — instant flip — but unsupported on very
-    //     old Safari, and we can't rely on the popup actually
-    //     running our code (e.g. if the user closed the popup
-    //     mid-flow).
-    //
-    //   - visibilitychange (tab focus): when the user comes back
-    //     to this tab from the popup, fire one refetch. Catches
-    //     the case where BroadcastChannel didn't fire but the
-    //     user is now looking at our tab.
-    //
-    //   - 2s interval (fallback): the original polling, kept as
-    //     a safety net for popup-blocked / weird-browser cases.
-    //     Bumped timeout to 5min (was 90s) so a slow OAuth flow
-    //     — e.g. user 2FA'ing on their phone — doesn't drop the
-    //     polling before completion.
+    // BroadcastChannel: ideal path. Popup posts {kind:'connected'}
+    // right before window.close() (see pages/RevisionsPage.tsx).
     const channel = (() => {
       try {
         return new BroadcastChannel('dmplus-revisions-oauth')
@@ -169,12 +158,48 @@ function ConnectDriveEmptyState({
         }
       }
     }
+    // localStorage 'storage' event: backup for BroadcastChannel
+    // (fires in OTHER tabs of the same origin when a value is set).
+    // Works even when BroadcastChannel is unavailable (old Safari),
+    // and even when the popup's React bundle is a stale cached
+    // version that knows about localStorage but not BroadcastChannel.
+    // We use a transient key so we don't accumulate localStorage
+    // garbage — set then immediately delete in the popup.
+    function onStorage(e: StorageEvent) {
+      if (e.key === 'dmplus.revisions.oauth.signal' && e.newValue) {
+        onRequestRefresh()
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    // visibilitychange + focus: user returning to this tab from
+    // the popup (whether the popup auto-closed cleanly or they
+    // closed it manually). Two separate events because browsers
+    // fire them inconsistently — Firefox fires only focus on tab
+    // switch, Chrome fires both. Cover both to be safe.
     function onVisibility() {
       if (document.visibilityState === 'visible') {
         onRequestRefresh()
       }
     }
+    function onFocus() {
+      onRequestRefresh()
+    }
     document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      if (channel) channel.close()
+      window.removeEventListener('storage', onStorage)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [onRequestRefresh])
+
+  // Active polling — only while waitingForOAuth, as a last-ditch
+  // fallback if all the event-based mechanisms above somehow miss
+  // the connection signal. Capped at 5 minutes so the polling
+  // dies if the user abandons the flow.
+  useEffect(() => {
+    if (!waitingForOAuth) return
     const interval = window.setInterval(() => onRequestRefresh(), 2000)
     const timeout = window.setTimeout(
       () => {
@@ -184,8 +209,6 @@ function ConnectDriveEmptyState({
       5 * 60_000,
     )
     return () => {
-      if (channel) channel.close()
-      document.removeEventListener('visibilitychange', onVisibility)
       window.clearInterval(interval)
       window.clearTimeout(timeout)
     }

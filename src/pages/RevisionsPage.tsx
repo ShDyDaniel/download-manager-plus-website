@@ -78,21 +78,44 @@ export function RevisionsPage() {
     // ORIGINAL tab, if they used same-tab navigation somehow) keeps
     // their normal workspace render path; we don't close on them.
     if (isOauthCallback && !session) {
-      // Broadcast to other tabs of the origin BEFORE closing — the
-      // original workspace tab is also polling every 2s, but the
-      // polling can be throttled when the tab is backgrounded
-      // (Chrome aggressively throttles setInterval in inactive
-      // tabs to ~1/min). BroadcastChannel ignores throttling, so
-      // the original tab refreshes the instant the popup closes
-      // instead of after a delayed poll. Caller listens on the
-      // matching channel name in ConnectDriveEmptyState.
+      // Three signals to the original workspace tab, fired in
+      // parallel. Whichever lands first triggers the refetch.
+      // Belt-and-braces because we can't be sure the original tab
+      // is in a state to receive every variant:
+      //
+      // 1. BroadcastChannel — same-origin pub/sub. Best UX when
+      //    supported; instant.
+      // 2. localStorage 'storage' event — fires in other tabs of
+      //    the same origin when a key is set. Works even when
+      //    BroadcastChannel is unavailable, and survives a stale
+      //    cached bundle that knows about localStorage but not
+      //    BroadcastChannel.
+      // 3. window.close() — the popup is now redundant. Closing
+      //    it also makes the original tab's focus listener fire,
+      //    which itself triggers a refetch. So even if 1 and 2
+      //    fail silently, the focus-on-close path is the universal
+      //    backup.
       try {
         const channel = new BroadcastChannel('dmplus-revisions-oauth')
         channel.postMessage({ kind: 'connected' })
         channel.close()
       } catch {
-        // BroadcastChannel unsupported (very old Safari) — fall
-        // back to the polling-only path. Not fatal.
+        // BroadcastChannel unsupported (very old Safari) — the
+        // localStorage path below still fires.
+      }
+      try {
+        // Set then immediately remove so we don't accumulate
+        // localStorage garbage. The 'storage' event fires only in
+        // OTHER tabs, so the original tab's listener catches the
+        // set. Value is a timestamp purely to ensure setItem fires
+        // a change event even if a previous value happened to
+        // match (the API only fires on actual value change).
+        const key = 'dmplus.revisions.oauth.signal'
+        localStorage.setItem(key, String(Date.now()))
+        localStorage.removeItem(key)
+      } catch {
+        // localStorage blocked (private browsing in older
+        // Safari, etc.) — fall through to the close + focus path.
       }
       try {
         window.close()
