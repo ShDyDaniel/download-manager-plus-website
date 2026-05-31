@@ -676,6 +676,11 @@ function SignupDetailsForm({
   onCodeSent: (draft: SignupDraft) => void
   onBack: () => void
 }) {
+  // Warm the legal-doc cache the moment the signup form mounts —
+  // by the time the user finishes typing their name/email/password
+  // and reaches for either link, the doc is almost always already
+  // there, so the modal opens with text instead of a spinner.
+  usePrefetchLegalDocs()
   const [name, setName] = useState(initial.name)
   const [email, setEmail] = useState(initial.email)
   const [password, setPassword] = useState(initial.password)
@@ -1142,13 +1147,31 @@ function FeedbackCard({
 }
 
 /* ──────────────────────────────────────────────────────────────
- *  Terms modal — fetched on-demand from /api/paypal?action=get-terms
+ *  Terms / Privacy modal — fetched on-demand, with prefetch.
  *
- *  The terms doc is the SAME one the desktop's TermsModal renders
- *  (Firestore appConfig/terms, edited via the admin panel). We
- *  fetch when the modal opens so the user always sees the latest
- *  published version even if it was updated since they landed on
- *  the page.
+ *  Both docs are the SAME ones the desktop's TermsModal /
+ *  PrivacyModal render (Firestore appConfig/terms +
+ *  appConfig/privacy, edited via the admin panel). Without
+ *  prefetch the user clicked the link → modal mounted → useEffect
+ *  fired the network call → "טוען…" spinner for ~300-800ms before
+ *  the text appeared. That's exactly the moment when intent is
+ *  high and patience is low, so it felt slow even when it wasn't.
+ *
+ *  Module-level cache + the `prefetchLegalDocs()` helper below let
+ *  the signup form kick off both fetches as soon as it mounts. By
+ *  the time the user clicks either link the cached promise is
+ *  usually already resolved and the modal renders the text
+ *  instantly, no spinner. If they happen to click before the
+ *  fetch resolves the modal awaits the in-flight promise — still
+ *  one network round-trip total, just amortised against the form-
+ *  filling time.
+ *
+ *  The cache is intentionally TTL-less. The signup form is
+ *  short-lived (page navigation away clears the module state on
+ *  next mount via Vite HMR / cold load), and a new SignupDetails
+ *  mount fires a fresh prefetch anyway. Stale data risk is
+ *  bounded by "how long can the user sit on the signup screen",
+ *  which for a real user is minutes at most.
  * ────────────────────────────────────────────────────────────── */
 
 interface TermsSection {
@@ -1161,12 +1184,82 @@ interface TermsDoc {
   sections: TermsSection[]
 }
 
+type LegalKind = 'terms' | 'privacy'
+type LegalCacheEntry =
+  | { kind: 'loading'; promise: Promise<TermsDoc> }
+  | { kind: 'ready'; doc: TermsDoc }
+  | { kind: 'error'; message: string }
+const legalDocCache: Partial<Record<LegalKind, LegalCacheEntry>> = {}
+
+/** Kick off a fetch for the given legal doc. Safe to call
+ *  repeatedly — concurrent calls share the in-flight promise. */
+function loadLegalDoc(kind: LegalKind): Promise<TermsDoc> {
+  const existing = legalDocCache[kind]
+  if (existing && existing.kind === 'ready') return Promise.resolve(existing.doc)
+  if (existing && existing.kind === 'loading') return existing.promise
+  const action = kind === 'terms' ? 'get-terms' : 'get-privacy'
+  const promise = (async () => {
+    try {
+      const r = await fetch('/api/paypal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      })
+      const data = (await r.json()) as
+        | (TermsDoc & { ok: true })
+        | { ok: false; error: string }
+      if (!data.ok) {
+        legalDocCache[kind] = { kind: 'error', message: data.error }
+        throw new Error(data.error)
+      }
+      const doc: TermsDoc = {
+        version: data.version,
+        lastUpdated: data.lastUpdated,
+        sections: data.sections,
+      }
+      legalDocCache[kind] = { kind: 'ready', doc }
+      return doc
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'בעיית רשת. נסו שוב.'
+      legalDocCache[kind] = { kind: 'error', message }
+      throw err
+    }
+  })()
+  legalDocCache[kind] = { kind: 'loading', promise }
+  return promise
+}
+
+/** Prefetch hook — call from any component that's likely a
+ *  precursor to opening one of the legal modals (currently
+ *  SignupDetailsForm). Fires both fetches in parallel; doesn't
+ *  re-fetch if the cache already has them. */
+function usePrefetchLegalDocs(): void {
+  useEffect(() => {
+    void loadLegalDoc('terms').catch(() => undefined)
+    void loadLegalDoc('privacy').catch(() => undefined)
+  }, [])
+}
+
 function TermsModal({ onClose }: { onClose: () => void }) {
+  // Initialise straight from the module cache so a prefetched
+  // doc renders without ever showing a spinner. If the cache
+  // already has a ready entry we land in `ready`; otherwise we
+  // start in `loading` and the effect below resolves it.
+  const cached = legalDocCache['terms']
   const [state, setState] = useState<
     | { kind: 'loading' }
     | { kind: 'ready'; terms: TermsDoc }
     | { kind: 'error'; message: string }
-  >({ kind: 'loading' })
+  >(() => {
+    if (cached && cached.kind === 'ready') {
+      return { kind: 'ready', terms: cached.doc }
+    }
+    if (cached && cached.kind === 'error') {
+      return { kind: 'error', message: cached.message }
+    }
+    return { kind: 'loading' }
+  })
 
   // Esc-to-close — common modal expectation. Keep this lightweight;
   // we don't trap focus or do anything fancy because the modal is
@@ -1181,34 +1274,28 @@ function TermsModal({ onClose }: { onClose: () => void }) {
   }, [onClose])
 
   useEffect(() => {
+    // If we already rendered in `ready` from the cache there's
+    // nothing to do — the doc is on screen. Bail to avoid an
+    // unnecessary state churn.
+    if (state.kind === 'ready') return
     let cancelled = false
-    void (async () => {
-      try {
-        const r = await fetch('/api/paypal', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'get-terms' }),
-        })
-        const data = (await r.json()) as
-          | (TermsDoc & { ok: true })
-          | { ok: false; error: string }
+    void loadLegalDoc('terms')
+      .then((doc) => {
         if (cancelled) return
-        if (!data.ok) {
-          setState({ kind: 'error', message: data.error })
-          return
-        }
-        setState({ kind: 'ready', terms: data })
-      } catch {
+        setState({ kind: 'ready', terms: doc })
+      })
+      .catch((err) => {
         if (cancelled) return
         setState({
           kind: 'error',
-          message: 'בעיית רשת. נסו שוב בעוד רגע.',
+          message:
+            err instanceof Error ? err.message : 'בעיית רשת. נסו שוב בעוד רגע.',
         })
-      }
-    })()
+      })
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
@@ -1311,11 +1398,23 @@ function TermsModal({ onClose }: { onClose: () => void }) {
  *  CTA that doesn't apply to terms).
  * ────────────────────────────────────────────────────────────── */
 function PrivacyModal({ onClose }: { onClose: () => void }) {
+  // Same prefetch-aware initial state as TermsModal — if the
+  // signup form already pulled the doc into the cache, we
+  // skip the spinner entirely.
+  const cached = legalDocCache['privacy']
   const [state, setState] = useState<
     | { kind: 'loading' }
     | { kind: 'ready'; privacy: TermsDoc }
     | { kind: 'error'; message: string }
-  >({ kind: 'loading' })
+  >(() => {
+    if (cached && cached.kind === 'ready') {
+      return { kind: 'ready', privacy: cached.doc }
+    }
+    if (cached && cached.kind === 'error') {
+      return { kind: 'error', message: cached.message }
+    }
+    return { kind: 'loading' }
+  })
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1326,34 +1425,25 @@ function PrivacyModal({ onClose }: { onClose: () => void }) {
   }, [onClose])
 
   useEffect(() => {
+    if (state.kind === 'ready') return
     let cancelled = false
-    void (async () => {
-      try {
-        const r = await fetch('/api/paypal', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'get-privacy' }),
-        })
-        const data = (await r.json()) as
-          | (TermsDoc & { ok: true })
-          | { ok: false; error: string }
+    void loadLegalDoc('privacy')
+      .then((doc) => {
         if (cancelled) return
-        if (!data.ok) {
-          setState({ kind: 'error', message: data.error })
-          return
-        }
-        setState({ kind: 'ready', privacy: data })
-      } catch {
+        setState({ kind: 'ready', privacy: doc })
+      })
+      .catch((err) => {
         if (cancelled) return
         setState({
           kind: 'error',
-          message: 'בעיית רשת. נסו שוב בעוד רגע.',
+          message:
+            err instanceof Error ? err.message : 'בעיית רשת. נסו שוב בעוד רגע.',
         })
-      }
-    })()
+      })
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
