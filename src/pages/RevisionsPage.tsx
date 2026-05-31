@@ -461,14 +461,33 @@ function AuthShell({ onSignedIn }: { onSignedIn: () => void }) {
   const [mode, setMode] = useState<AuthMode>(initialMode)
   const [signupDraft, setSignupDraft] = useState<SignupDraft>(EMPTY_SIGNUP_DRAFT)
 
+  // `?mode=signup` is set ONLY when the user arrived via the
+  // "יצירת חשבון חדש" link on /account. In that flow the user
+  // didn't actively choose the Revisions feature — they just
+  // wanted an account — so labelling the form "סבבי תיקונים"
+  // feels misleading. Hide the chip on that entry path; users
+  // who came to /revisions directly still see it (it explains
+  // what the workspace they're signing into actually is). The
+  // URL param is set once and never updated by the AuthShell
+  // transitions, so the chip stays consistently hidden through
+  // the whole signup flow once the user lands here from /account.
+  const cameFromAccountSignup = searchParams.get('mode') === 'signup'
+
   return (
     <div className="mx-auto mt-8 max-w-md">
       <div className="rounded-2xl border border-border bg-bg-card p-8">
         <div className="text-center">
-          <div className="text-xs uppercase tracking-[0.18em] text-fg-muted">
-            סבבי תיקונים
-          </div>
-          <h1 className="mt-2 text-xl font-medium text-fg">
+          {!cameFromAccountSignup && (
+            <div className="text-xs uppercase tracking-[0.18em] text-fg-muted">
+              סבבי תיקונים
+            </div>
+          )}
+          <h1
+            className={
+              'text-xl font-medium text-fg ' +
+              (cameFromAccountSignup ? '' : 'mt-2')
+            }
+          >
             {mode === 'signin'
               ? 'התחברות'
               : mode === 'signup-details' || mode === 'signup-verify'
