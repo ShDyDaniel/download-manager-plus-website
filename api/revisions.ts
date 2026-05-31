@@ -420,6 +420,43 @@ function serverIsKeyActive(key: Record<string, unknown> | null): boolean {
  *
  *  Throws on Firestore errors. The caller (`requirePro`) catches
  *  and converts to a 503 — see the doc-block above. */
+/* In-memory cache for the global betaMode flag.
+ *
+ *  `appConfig/global` is identical for every user and changes maybe
+ *  once a month (operator toggling beta). Before this cache,
+ *  isUserPro re-read it on EVERY call — and isUserPro runs on the
+ *  hottest path in the whole API (check-pro on every app boot + tab
+ *  entry, plus every requirePro() gate). That was 1 wasted Firestore
+ *  read per call, which the runaway-loop incident multiplied into a
+ *  read storm.
+ *
+ *  60s TTL — same freshness window the edge-cached config endpoints
+ *  (get-terms / get-privacy) already use. Serverless caveat: each
+ *  Vercel instance has its own copy and cold starts re-read, so this
+ *  is a best-effort reducer, not a hard guarantee — exactly right for
+ *  a non-critical flag. On any read error we return false WITHOUT
+ *  caching so the next call retries, preserving the original
+ *  "betaMode defaults off on error → fall through to per-user checks"
+ *  behavior byte-for-byte. */
+let betaModeCache: { value: boolean; expiresAt: number } | null = null
+const BETA_MODE_TTL_MS = 60 * 1000
+
+async function isBetaModeOn(): Promise<boolean> {
+  const now = Date.now()
+  if (betaModeCache && betaModeCache.expiresAt > now) {
+    return betaModeCache.value
+  }
+  try {
+    const cfgSnap = await getDb().collection('appConfig').doc('global').get()
+    const value = cfgSnap.exists && cfgSnap.data()?.betaMode === true
+    betaModeCache = { value, expiresAt: now + BETA_MODE_TTL_MS }
+    return value
+  } catch (err) {
+    console.warn('[revisions/isUserPro] appConfig read failed (continuing):', err)
+    return false
+  }
+}
+
 async function isUserPro(uid: string, email: string): Promise<boolean> {
   // Fast path — admin email, no Firestore round-trip. Admins keep
   // working even if Firestore is completely down.
@@ -427,21 +464,14 @@ async function isUserPro(uid: string, email: string): Promise<boolean> {
 
   const db = getDb()
 
-  // Beta-mode global override. Wrapped in try/catch — if the
-  // appConfig/global doc doesn't exist yet (operator hasn't
-  // turned beta mode on/off explicitly), reading it succeeds
-  // but `.exists` is false → we fall through to user-level
-  // checks. If the read itself THROWS (Firestore down) we also
-  // fall through; either way `betaMode` defaults to false. The
-  // alternative — letting the exception bubble — would punish
-  // viewers of legitimately-Pro projects for an unrelated
-  // Firestore hiccup on an OPTIONAL config flag.
-  try {
-    const cfgSnap = await db.collection('appConfig').doc('global').get()
-    if (cfgSnap.exists && cfgSnap.data()?.betaMode === true) return true
-  } catch (err) {
-    console.warn('[revisions/isUserPro] appConfig read failed (continuing):', err)
-  }
+  // Beta-mode global override — served from a 60s in-memory cache
+  // (see isBetaModeOn) instead of a fresh Firestore read on every
+  // call. Same semantics as before: beta on → everyone's Pro; beta
+  // off OR doc missing OR read error → fall through to the per-user
+  // checks below. Fail-CLOSED posture preserved: the users/{uid} and
+  // productKeys reads further down can still throw and bubble to
+  // requirePro → 503.
+  if (await isBetaModeOn()) return true
 
   // User doc — primary source of subscription / trial / role state.
   const userSnap = await db.collection('users').doc(uid).get()
@@ -1712,9 +1742,19 @@ async function handleListGroupsOwner(
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
 
+  // `.limit(500)` is a pure runaway guard — it does NOT change
+  // behavior for any real user (nobody in beta has 500 projects),
+  // it just caps the worst case so a data anomaly or the runaway
+  // loop can't make this read an unbounded number of docs. Single
+  // equality filter + limit needs only the automatic single-field
+  // index — NO composite index, so it can't throw FAILED_PRECONDITION
+  // and break the list. (We deliberately did NOT add a second
+  // `.where('status','==','active')` filter — that WOULD require a
+  // composite index. Status is still filtered in JS below.)
   const groupsSnap = await getDb()
     .collection('revisionGroups')
     .where('ownerUid', '==', verified.uid)
+    .limit(500)
     .get()
   const activeGroups = groupsSnap.docs
     .map((d) => d.data() as RevisionGroupDoc)
@@ -1726,9 +1766,13 @@ async function handleListGroupsOwner(
   // rounds without one are legacy single-round projects from
   // before the group refactor — we surface them in a separate
   // array so the desktop can render them as standalone cards.
+  // `.limit(2000)`: same runaway guard — 500 projects × a few rounds
+  // stays well under 2000, so no real user is affected. Single-field
+  // equality + limit → no composite index needed.
   const roundsSnap = await getDb()
     .collection('revisionProjects')
     .where('ownerUid', '==', verified.uid)
+    .limit(2000)
     .get()
   const roundsByGroup = new Map<string, Record<string, unknown>[]>()
   const legacyRoundDocs: Record<string, unknown>[] = []
