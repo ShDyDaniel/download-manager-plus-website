@@ -825,11 +825,23 @@ async function handleAccessToken(req: VercelRequest, res: VercelResponse) {
     })
   }
 
-  // Best-effort touch — used as a "last activity" indicator in the
-  // UI. Errors here don't block returning the access token.
-  void integrationDocRef(verified.uid)
-    .update({ lastUsedAt: Date.now() })
-    .catch(() => undefined)
+  // Best-effort "last activity" touch — THROTTLED to at most once
+  // per hour. access-token is called just-in-time before every Drive
+  // operation (often many times per editing session), and writes
+  // count against the Firestore daily write quota. The lastUsedAt
+  // field isn't displayed anywhere in either client (verified by
+  // grep), so hour-granularity is more than enough — we just don't
+  // want a write on every single token mint. `data` is the
+  // integration doc we already read above, so this guard costs zero
+  // extra reads.
+  const HOUR_MS = 60 * 60 * 1000
+  const lastTouch =
+    typeof data.lastUsedAt === 'number' ? data.lastUsedAt : 0
+  if (Date.now() - lastTouch > HOUR_MS) {
+    void integrationDocRef(verified.uid)
+      .update({ lastUsedAt: Date.now() })
+      .catch(() => undefined)
+  }
 
   return res.status(200).json({
     ok: true,

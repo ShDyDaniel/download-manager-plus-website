@@ -2302,9 +2302,16 @@ async function respondWithSession(
   const { uid, email } = args
   try {
     const db = getDb()
+    // `.limit(50)` is a runaway guard — a real user has 1-3 keys
+    // (one active + a couple of historical/replaced ones). 50 is far
+    // above any legitimate count, so no real account is affected; it
+    // just stops this scan from reading an unbounded number of docs
+    // if something ever goes wrong. Single equality + limit → no
+    // composite index needed, can't break the query.
     const ownedSnap = await db
       .collection('productKeys')
       .where('redeemedBy', '==', uid)
+      .limit(50)
       .get()
     const subs: SubscriptionSummary[] = []
     const ownedKeyDocs: KeyDoc[] = []
@@ -2354,6 +2361,7 @@ async function respondWithSession(
     const buyerSnap = await db
       .collection('productKeys')
       .where('buyerEmail', '==', email)
+      .limit(50)
       .get()
     for (const doc of buyerSnap.docs) {
       const k = doc.data() as KeyDoc
@@ -4601,6 +4609,7 @@ async function handleMintRenewToken(req: VercelRequest, res: VercelResponse) {
   const snap = await db
     .collection('productKeys')
     .where('redeemedBy', '==', claims.uid)
+    .limit(50)
     .get()
   if (snap.empty) {
     return res
