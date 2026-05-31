@@ -109,6 +109,65 @@ export async function fetchLivePricing(): Promise<LivePricing> {
   }
 }
 
+/** STRICT pricing fetch for the actual PURCHASE flow.
+ *
+ *  Unlike fetchLivePricing (which falls back to DEFAULT_PRICING so
+ *  the Hero "starting from X₪" copy always renders SOMETHING), this
+ *  returns null on ANY failure — server down, Firestore quota
+ *  exhausted, malformed response, or a price that doesn't look
+ *  real. The /buy page uses this to HARD-BLOCK checkout when it
+ *  can't confirm the true price.
+ *
+ *  Why blocking matters (operator's exact concern): the price lives
+ *  in Firestore. If the DB is unreachable, the only number we'd have
+ *  is the hardcoded DEFAULT (9₪/60₪) — which may be wrong, and worse,
+ *  the SAME outage means the post-payment webhook can't mint a
+ *  product key. So a purchase during an outage charges real money
+ *  (PayPal LIVE) and produces NOTHING. Refusing to show the buy
+ *  button until we have a server-confirmed price prevents that
+ *  entire failure class.
+ *
+ *  Returns the live pricing on success, or null to signal "do not
+ *  let the user buy right now". */
+export async function fetchLivePricingStrict(): Promise<LivePricing | null> {
+  try {
+    const r = await fetch('/api/paypal?action=get-pricing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      cache: 'no-store',
+    })
+    if (!r.ok) return null
+    const json = (await r.json()) as
+      | ({ ok: true } & LivePricing)
+      | { ok: false; error?: string }
+    if (!json.ok) return null
+    // Validate the shape + sanity-check the numbers. A missing or
+    // non-positive regular price means the server answered but the
+    // pricing doc is broken/absent — also a "don't sell" condition.
+    if (
+      !json.monthly ||
+      !json.yearly ||
+      typeof json.monthly.regular !== 'number' ||
+      typeof json.yearly.regular !== 'number' ||
+      json.monthly.regular <= 0 ||
+      json.yearly.regular <= 0 ||
+      typeof json.currency !== 'string' ||
+      !json.currency
+    ) {
+      return null
+    }
+    return {
+      monthly: json.monthly,
+      yearly: json.yearly,
+      currency: json.currency,
+      saleLabel: json.saleLabel,
+    }
+  } catch {
+    return null
+  }
+}
+
 /** localStorage key for the cached pricing snapshot. Bumping the
  *  version forces a cache invalidation if the pricing shape ever
  *  changes — readers that get an unparseable / wrong-shape blob

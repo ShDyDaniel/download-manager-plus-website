@@ -17,7 +17,7 @@ import {
   currencySymbol,
   DEFAULT_PRICING,
   effectivePrice,
-  fetchLivePricing,
+  fetchLivePricingStrict,
   formatPrice,
   readPricingCache,
   writePricingCache,
@@ -327,6 +327,14 @@ export function BuyPage() {
   const [pricing, setPricing] = useState<LivePricing | null>(() =>
     readPricingCache(),
   )
+  // Hard-block flag. Set true when the STRICT pricing fetch fails
+  // (server/Firestore down) — the page then refuses to show any
+  // checkout button and renders a "service unavailable" notice
+  // instead. Critical because a purchase made while the backend is
+  // down would charge real money (PayPal LIVE) but the webhook
+  // couldn't mint a product key — money in, nothing out. See
+  // fetchLivePricingStrict() for the full rationale.
+  const [pricingUnavailable, setPricingUnavailable] = useState(false)
   const pricingRef = useRef<LivePricing>(DEFAULT_PRICING)
   pricingRef.current = pricing ?? DEFAULT_PRICING
 
@@ -384,13 +392,27 @@ export function BuyPage() {
   // until the network response lands.
   useEffect(() => {
     let alive = true
-    // Synchronous cache read for first-paint freshness.
+    // Synchronous cache read for first-paint freshness — lets a
+    // returning visitor see plausible prices instantly. But the
+    // cache is NOT trusted for the actual sale: the strict fetch
+    // below must confirm a live price before checkout is allowed,
+    // so a stale cache can't enable a purchase during an outage.
     const cached = readPricingCache()
     if (cached) setPricing(cached)
-    void fetchLivePricing().then((p) => {
+    void fetchLivePricingStrict().then((p) => {
       if (!alive) return
-      setPricing(p)
-      writePricingCache(p)
+      if (p) {
+        // Server confirmed a real price — safe to sell.
+        setPricing(p)
+        setPricingUnavailable(false)
+        writePricingCache(p)
+      } else {
+        // Could NOT confirm the price (server/Firestore down).
+        // Block checkout. We deliberately do NOT fall back to the
+        // cached value or DEFAULT_PRICING for the SALE — showing a
+        // buy button now risks a charge with no key minted.
+        setPricingUnavailable(true)
+      }
     })
     return () => {
       alive = false
@@ -1076,6 +1098,33 @@ export function BuyPage() {
             </motion.div>
           )}
 
+        {/* Pricing-unavailable HARD BLOCK. When the strict pricing
+            fetch failed (server / Firestore down) we refuse to show
+            ANY checkout UI below — a purchase right now would charge
+            real money (PayPal LIVE) but the post-payment webhook
+            couldn't mint a product key, leaving the buyer paid-but-
+            keyless. Showing this notice INSTEAD of the plan cards +
+            flow closes that window. See fetchLivePricingStrict(). */}
+        {pricingUnavailable ? (
+          <div className="mb-6 rounded-2xl border border-destructive/30 bg-destructive/10 px-6 py-8 text-center">
+            <h2 className="text-lg font-semibold text-fg">
+              הרכישה אינה זמינה כרגע
+            </h2>
+            <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-fg-muted">
+              לא הצלחנו לטעון את פרטי המנוי מהשרת כרגע, כנראה עקב
+              עומס זמני. כדי לא לחייב אתכם לפני שהכול מוכן, חסמנו
+              את הרכישה לרגע. אנא נסו שוב בעוד מספר דקות.
+            </p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-6 inline-flex items-center justify-center rounded-md border border-border px-5 py-2.5 text-sm text-fg transition-colors hover:bg-bg-elevated"
+            >
+              נסו שוב
+            </button>
+          </div>
+        ) : (
+        <>
         {/* Plan toggle — two cards side by side, click to select.
             DOM order matters: in RTL, the first child renders on the
             right (where the reader's eye lands first), so the yearly
