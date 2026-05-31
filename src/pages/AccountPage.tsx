@@ -918,7 +918,13 @@ export default function AccountPage() {
                 dashboard without a second login. */}
             <div className="flex items-center justify-between gap-3 pt-2 text-[11px] text-fg-muted">
               <Link
-                to="/revisions"
+                // `?mode=signup` deep-links straight into the
+                // signup form on /revisions — without it the user
+                // lands on the login form and has to manually
+                // click "יצירת חשבון" to get to the actual signup
+                // flow, which the operator flagged as confusing
+                // ("שני קליקים לאותה משימה").
+                to="/revisions?mode=signup"
                 className="underline-offset-4 transition-colors hover:text-accent hover:underline"
               >
                 יצירת חשבון חדש

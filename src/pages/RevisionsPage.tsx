@@ -447,7 +447,18 @@ const EMPTY_SIGNUP_DRAFT: SignupDraft = {
 }
 
 function AuthShell({ onSignedIn }: { onSignedIn: () => void }) {
-  const [mode, setMode] = useState<AuthMode>('signin')
+  // Initial mode honors a `?mode=signup` query param so callers
+  // can deep-link straight into the signup flow instead of
+  // landing on the login form and forcing the user to click
+  // "יצירת חשבון" first. Today the only caller is /account's
+  // "יצירת חשבון חדש" link, but the same pattern works for any
+  // future entry point (e.g. an email banner offering signup).
+  // Only `signup` is honored — everything else falls through to
+  // the default `signin`, so the URL surface stays small.
+  const [searchParams] = useSearchParams()
+  const initialMode: AuthMode =
+    searchParams.get('mode') === 'signup' ? 'signup-details' : 'signin'
+  const [mode, setMode] = useState<AuthMode>(initialMode)
   const [signupDraft, setSignupDraft] = useState<SignupDraft>(EMPTY_SIGNUP_DRAFT)
 
   return (
