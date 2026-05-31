@@ -907,7 +907,22 @@ export default function AccountPage() {
                 email field first. The login authError gets cleared
                 on toggle because it's no longer relevant once the
                 user has decided they don't remember the password. */}
-            <div className="pt-2 text-center">
+            {/* Two secondary affordances under the login button:
+                "שכחתי סיסמה" stays inline (same page handles the
+                reset flow), and "יצירת חשבון חדש" goes out to
+                /revisions which already has the two-step signup
+                code flow built. The session JWT they get after
+                signup auto-shares with /account via the common
+                sessionStorage key, so once they finish signup
+                they can navigate to /account and see their
+                dashboard without a second login. */}
+            <div className="flex items-center justify-between gap-3 pt-2 text-[11px] text-fg-muted">
+              <Link
+                to="/revisions"
+                className="underline-offset-4 transition-colors hover:text-accent hover:underline"
+              >
+                יצירת חשבון חדש
+              </Link>
               <button
                 type="button"
                 onClick={() => {
@@ -917,7 +932,7 @@ export default function AccountPage() {
                   setForgotPasswordMode(true)
                 }}
                 disabled={authing}
-                className="text-[11px] text-fg-muted underline-offset-4 transition-colors hover:text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                className="underline-offset-4 transition-colors hover:text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-60"
               >
                 שכחתי סיסמה
               </button>

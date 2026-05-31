@@ -283,3 +283,31 @@ a:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+/* ============================================================
+ *  iOS Safari — kill the "tap on input → page zooms in" gesture
+ *  ────────────────────────────────────────────────────────────
+ *  iOS auto-zooms on focus when an input's computed font-size
+ *  is BELOW 16px, on the theory that the user must be on a
+ *  too-small form. Our inputs use Tailwind's `text-sm` (14px)
+ *  for visual rhythm with the rest of the UI, which trips that
+ *  threshold every time. The Hebrew labels above the inputs
+ *  also zoom along with them, and then the user has to manually
+ *  pinch back out — terrible on /account and /revisions where
+ *  signing in is the FIRST thing a user does.
+ *
+ *  Fix: force every form field to 16px on touch-pointer devices.
+ *  Using `pointer: coarse` instead of a max-width media query so
+ *  this applies to phones + tablets where the gesture exists,
+ *  without bloating desktop inputs (which look fine at 14px).
+ *  The override applies only inside form contexts (input,
+ *  textarea, select) so the rest of the body type scale stays
+ *  on its design rhythm. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
