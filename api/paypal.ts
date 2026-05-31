@@ -1113,6 +1113,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleGetPricing(req, res)
       case 'get-terms':
         return await handleGetTerms(req, res)
+      case 'get-privacy':
+        return await handleGetPrivacy(req, res)
       default:
         return res
           .status(400)
@@ -4716,6 +4718,56 @@ async function handleGetTerms(_req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({
       ok: false,
       error: 'לא הצלחנו לטעון את תנאי השימוש כרגע. נסו שוב.',
+    })
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  get-privacy — public read of appConfig/privacy for the website
+ *
+ *  Direct parallel to handleGetTerms. Same caching, same stub
+ *  fallback, same shape. Privacy is also public-by-design — there's
+ *  no point hiding the policy that explains what we do with user
+ *  data behind a login.
+ * ───────────────────────────────────────────────────────────── */
+async function handleGetPrivacy(_req: VercelRequest, res: VercelResponse) {
+  try {
+    const db = getDb()
+    const snap = await db.collection('appConfig').doc('privacy').get()
+    res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=600')
+    if (!snap.exists) {
+      return res.status(200).json({
+        ok: true,
+        version: 0,
+        lastUpdated: '',
+        sections: [
+          {
+            title: 'מדיניות הפרטיות טרם פורסמה',
+            paragraphs: [
+              'מדיניות הפרטיות המלאה זמינה בתוכנת ניהול הורדות פלוס לאחר התקנה.',
+              'בכל שאלה אפשר לפנות אלינו במייל: dyshalts@gmail.com',
+            ],
+          },
+        ],
+      })
+    }
+    const data = snap.data() as {
+      version?: number
+      lastUpdated?: string
+      sections?: Array<{ title: string; paragraphs: string[] }>
+    }
+    return res.status(200).json({
+      ok: true,
+      version: typeof data.version === 'number' ? data.version : 0,
+      lastUpdated:
+        typeof data.lastUpdated === 'string' ? data.lastUpdated : '',
+      sections: Array.isArray(data.sections) ? data.sections : [],
+    })
+  } catch (err) {
+    console.error('[paypal/get-privacy] failed:', err)
+    return res.status(500).json({
+      ok: false,
+      error: 'לא הצלחנו לטעון את מדיניות הפרטיות כרגע. נסו שוב.',
     })
   }
 }

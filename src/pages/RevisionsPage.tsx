@@ -665,6 +665,11 @@ function SignupDetailsForm({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [termsModalOpen, setTermsModalOpen] = useState(false)
+  // Privacy modal — opens when the user clicks the "מדיניות
+  // פרטיות" link inside the same checkbox row. A single checkbox
+  // confirms acceptance of both documents, mirroring the desktop
+  // LoginScreen pattern.
+  const [privacyModalOpen, setPrivacyModalOpen] = useState(false)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -709,6 +714,9 @@ function SignupDetailsForm({
   return (
     <>
     {termsModalOpen && <TermsModal onClose={() => setTermsModalOpen(false)} />}
+    {privacyModalOpen && (
+      <PrivacyModal onClose={() => setPrivacyModalOpen(false)} />
+    )}
     <form
       onSubmit={submit}
       method="post"
@@ -768,6 +776,17 @@ function SignupDetailsForm({
             className="text-accent underline underline-offset-2 transition-colors hover:text-fg"
           >
             תנאי השימוש
+          </button>{' '}
+          ואת{' '}
+          <button
+            type="button"
+            // Privacy policy modal — same in-place pattern as the
+            // terms link above so the user can read both without
+            // losing their half-filled form.
+            onClick={() => setPrivacyModalOpen(true)}
+            className="text-accent underline underline-offset-2 transition-colors hover:text-fg"
+          >
+            מדיניות הפרטיות
           </button>{' '}
           של ניהול הורדות פלוס.
         </span>
@@ -1234,6 +1253,145 @@ function TermsModal({ onClose }: { onClose: () => void }) {
               </p>
             ) : (
               state.terms.sections.map((section, i) => (
+                <section key={i}>
+                  <h3 className="mb-2 text-sm font-semibold text-fg">
+                    {section.title}
+                  </h3>
+                  <div className="space-y-2 text-xs leading-relaxed text-fg-muted">
+                    {section.paragraphs.map((p, j) => (
+                      <p key={j}>{p}</p>
+                    ))}
+                  </div>
+                </section>
+              ))
+            )}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-6 w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover"
+        >
+          סגירה
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Privacy modal — fetched on-demand from /api/paypal?action=get-privacy
+ *
+ *  Mirror of TermsModal. Same fetch-on-mount pattern, same backdrop
+ *  + close behaviour, same data shape — the only differences are
+ *  the endpoint and the displayed title. Kept as a parallel
+ *  component rather than a single parameterised one because the
+ *  copy-paste is small and lets each modal evolve independently
+ *  if we ever need to (e.g. privacy might add an "export my data"
+ *  CTA that doesn't apply to terms).
+ * ────────────────────────────────────────────────────────────── */
+function PrivacyModal({ onClose }: { onClose: () => void }) {
+  const [state, setState] = useState<
+    | { kind: 'loading' }
+    | { kind: 'ready'; privacy: TermsDoc }
+    | { kind: 'error'; message: string }
+  >({ kind: 'loading' })
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const r = await fetch('/api/paypal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'get-privacy' }),
+        })
+        const data = (await r.json()) as
+          | (TermsDoc & { ok: true })
+          | { ok: false; error: string }
+        if (cancelled) return
+        if (!data.ok) {
+          setState({ kind: 'error', message: data.error })
+          return
+        }
+        setState({ kind: 'ready', privacy: data })
+      } catch {
+        if (cancelled) return
+        setState({
+          kind: 'error',
+          message: 'בעיית רשת. נסו שוב בעוד רגע.',
+        })
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div className="relative w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl border border-border bg-bg-elevated p-6 md:p-8">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute left-3 top-3 rounded-md p-1.5 text-fg-muted transition-colors hover:bg-bg-card hover:text-fg"
+          aria-label="סגור"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-4 w-4"
+          >
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+
+        <h2 className="mb-1 text-xl font-medium text-fg">מדיניות פרטיות</h2>
+        {state.kind === 'ready' && state.privacy.lastUpdated && (
+          <div className="mb-5 text-xs text-fg-muted">
+            עודכן: {state.privacy.lastUpdated}
+          </div>
+        )}
+
+        {state.kind === 'loading' && (
+          <div className="py-8 text-center text-sm text-fg-muted">
+            טוען…
+          </div>
+        )}
+
+        {state.kind === 'error' && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            {state.message}
+          </div>
+        )}
+
+        {state.kind === 'ready' && (
+          <div className="space-y-5">
+            {state.privacy.sections.length === 0 ? (
+              <p className="text-sm text-fg-muted">
+                המדיניות טרם פורסמה.
+              </p>
+            ) : (
+              state.privacy.sections.map((section, i) => (
                 <section key={i}>
                   <h3 className="mb-2 text-sm font-semibold text-fg">
                     {section.title}
