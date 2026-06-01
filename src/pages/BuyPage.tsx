@@ -1474,6 +1474,8 @@ export function BuyPage() {
             />
           )}
         </motion.div>
+        </>
+        )}
       </div>
 
       {/* Renewal sign-in modal — full-screen overlay with backdrop
