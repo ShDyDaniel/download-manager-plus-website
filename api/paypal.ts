@@ -1166,6 +1166,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminReferralExport(req, res)
       case 'admin-set-referral-credentials':
         return await handleAdminSetReferralCredentials(req, res)
+      case 'admin-set-referral-commission':
+        return await handleAdminSetReferralCommission(req, res)
       case 'partner-login':
         return await handlePartnerLogin(req, res)
       case 'partner-stats':
@@ -5045,6 +5047,63 @@ interface ReferralPartnerDoc {
   createdAt: string
   createdBy: string
   signups: number
+  // Commission agreement (optional). 'percent' = commissionValue% of
+  // each charge (in the charge's currency). 'fixed' = commissionValue
+  // per charge in commissionCurrency (default ILS).
+  commissionType?: 'percent' | 'fixed'
+  commissionValue?: number
+  commissionCurrency?: string
+}
+
+/** Validate + normalise commission fields from a request body. Returns
+ *  null when no (valid) commission was provided. */
+function parseCommission(body: {
+  commissionType?: unknown
+  commissionValue?: unknown
+  commissionCurrency?: unknown
+}): { commissionType: 'percent' | 'fixed'; commissionValue: number; commissionCurrency: string } | null {
+  const type = body.commissionType
+  if (type !== 'percent' && type !== 'fixed') return null
+  const value = Number(body.commissionValue)
+  if (!isFinite(value) || value <= 0) return null
+  if (type === 'percent' && value > 100) return null
+  const currency = (String(body.commissionCurrency || 'ILS') || 'ILS')
+    .toUpperCase()
+    .slice(0, 8)
+  return { commissionType: type, commissionValue: value, commissionCurrency: currency }
+}
+
+/** Compute a partner's earnings from gross figures, per their
+ *  commission. percent → gross×%; fixed → count×value (single
+ *  currency). Returns { byCurrency, byMonth } of EARNINGS (not gross). */
+function computeEarnings(
+  commission: { commissionType: 'percent' | 'fixed'; commissionValue: number; commissionCurrency: string } | null,
+  grossByCurrency: Record<string, number>,
+  grossByMonth: Record<string, Record<string, number>>,
+  countByMonth: Record<string, number>,
+): { byCurrency: Record<string, number>; byMonth: Record<string, Record<string, number>> } {
+  if (!commission) return { byCurrency: {}, byMonth: {} }
+  if (commission.commissionType === 'percent') {
+    const f = commission.commissionValue / 100
+    const byCurrency: Record<string, number> = {}
+    for (const [c, v] of Object.entries(grossByCurrency)) byCurrency[c] = v * f
+    const byMonth: Record<string, Record<string, number>> = {}
+    for (const [m, rev] of Object.entries(grossByMonth)) {
+      byMonth[m] = {}
+      for (const [c, v] of Object.entries(rev)) byMonth[m][c] = v * f
+    }
+    return { byCurrency, byMonth }
+  }
+  // fixed: value per charge, in the commission currency.
+  const cur = commission.commissionCurrency
+  const val = commission.commissionValue
+  let totalCount = 0
+  const byMonth: Record<string, Record<string, number>> = {}
+  for (const [m, n] of Object.entries(countByMonth)) {
+    totalCount += n
+    byMonth[m] = { [cur]: n * val }
+  }
+  return { byCurrency: { [cur]: totalCount * val }, byMonth }
 }
 
 /** Verify the caller is an admin. Returns the admin email or null. */
@@ -5137,6 +5196,14 @@ async function handleAdminCreateReferral(
   }
   if (loginEmail) doc.loginEmail = loginEmail
   if (loginEmail && password) doc.passwordHash = hashPartnerPassword(password)
+  const commission = parseCommission(
+    req.body as { commissionType?: unknown; commissionValue?: unknown; commissionCurrency?: unknown },
+  )
+  if (commission) {
+    doc.commissionType = commission.commissionType
+    doc.commissionValue = commission.commissionValue
+    doc.commissionCurrency = commission.commissionCurrency
+  }
   await db.collection('referralPartners').doc(code).set(doc)
   return res.status(200).json({
     ok: true,
@@ -5211,6 +5278,7 @@ async function handleAdminReferralReport(
       .where('referredBy', '==', data.code)
       .get()
     let paidAccounts = 0
+    let paymentCount = 0
     const revenueByCurrency: Record<string, number> = {}
     for (const k of keysSnap.docs) {
       const kd = k.data() as {
@@ -5224,7 +5292,27 @@ async function handleAdminReferralReport(
         const amt = typeof h.amount === 'number' ? h.amount : 0
         const cur = (h.currency || 'ILS').toUpperCase()
         revenueByCurrency[cur] = (revenueByCurrency[cur] || 0) + amt
+        paymentCount++
       }
+    }
+    const commission =
+      data.commissionType && data.commissionValue
+        ? {
+            commissionType: data.commissionType,
+            commissionValue: data.commissionValue,
+            commissionCurrency: data.commissionCurrency || 'ILS',
+          }
+        : null
+    // Commission owed (what the admin pays the partner).
+    const earningsByCurrency: Record<string, number> = {}
+    if (commission?.commissionType === 'percent') {
+      const f = commission.commissionValue / 100
+      for (const [c, v] of Object.entries(revenueByCurrency)) {
+        earningsByCurrency[c] = v * f
+      }
+    } else if (commission?.commissionType === 'fixed') {
+      earningsByCurrency[commission.commissionCurrency] =
+        paymentCount * commission.commissionValue
     }
     rows.push({
       code: data.code,
@@ -5234,6 +5322,10 @@ async function handleAdminReferralReport(
       revenueByCurrency,
       loginEmail: data.loginEmail || '',
       hasLogin: Boolean(data.loginEmail),
+      commissionType: commission?.commissionType || null,
+      commissionValue: commission?.commissionValue || null,
+      commissionCurrency: commission?.commissionCurrency || null,
+      earningsByCurrency,
     })
   }
   return res.status(200).json({ ok: true, partners: rows })
@@ -5485,8 +5577,9 @@ async function computePartnerStats(code: string) {
     db.collection('productKeys').where('referredBy', '==', code).get(),
   ])
   const paidEmails = new Set<string>()
-  const revenueByCurrency: Record<string, number> = {}
-  const byMonth: Record<string, Record<string, number>> = {}
+  const grossByCurrency: Record<string, number> = {}
+  const grossByMonth: Record<string, Record<string, number>> = {}
+  const countByMonth: Record<string, number> = {}
   for (const k of keysSnap.docs) {
     const kd = k.data() as {
       nonPaidGrant?: boolean
@@ -5501,21 +5594,39 @@ async function computePartnerStats(code: string) {
     for (const h of hist) {
       const cur = (h.currency || 'ILS').toUpperCase()
       const amt = typeof h.amount === 'number' ? h.amount : 0
-      revenueByCurrency[cur] = (revenueByCurrency[cur] || 0) + amt
+      grossByCurrency[cur] = (grossByCurrency[cur] || 0) + amt
       const m = h.at ? h.at.slice(0, 7) : 'unknown'
-      byMonth[m] = byMonth[m] || {}
-      byMonth[m][cur] = (byMonth[m][cur] || 0) + amt
+      grossByMonth[m] = grossByMonth[m] || {}
+      grossByMonth[m][cur] = (grossByMonth[m][cur] || 0) + amt
+      countByMonth[m] = (countByMonth[m] || 0) + 1
     }
   }
-  const data = partnerSnap.data() as { name?: string } | undefined
+  const data = partnerSnap.data() as ReferralPartnerDoc | undefined
+  const commission =
+    data?.commissionType && data?.commissionValue
+      ? {
+          commissionType: data.commissionType,
+          commissionValue: data.commissionValue,
+          commissionCurrency: data.commissionCurrency || 'ILS',
+        }
+      : null
+  const earnings = computeEarnings(
+    commission,
+    grossByCurrency,
+    grossByMonth,
+    countByMonth,
+  )
+  // PARTNER-SAFE: returns the partner's EARNINGS only — never the gross
+  // revenue (so a partner can't infer total income).
   return {
     code,
     name: data?.name || code,
     link: `${REFERRAL_LINK_BASE}/?ref=${encodeURIComponent(code)}`,
     signups: usersSnap.size,
     paidAccounts: paidEmails.size,
-    revenueByCurrency,
-    byMonth,
+    commission, // { type, value, currency } | null — for the label
+    earningsByCurrency: earnings.byCurrency,
+    earningsByMonth: earnings.byMonth,
   }
 }
 
@@ -5607,6 +5718,47 @@ async function handleAdminSetReferralCredentials(
     return res.status(400).json({ ok: false, error: 'אין מה לעדכן' })
   }
   await ref.update(update)
+  return res.status(200).json({ ok: true })
+}
+
+/** POST { idToken, code, commissionType, commissionValue, commissionCurrency? }
+ *  — admin sets/updates a partner's commission agreement. Send
+ *  commissionType:'none' (or invalid) to clear it. */
+async function handleAdminSetReferralCommission(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { idToken?: string; code?: string }
+  const admin = await verifyAdminEmail(body.idToken || '')
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const code = (body.code || '').trim()
+  if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
+  const db = getDb()
+  const ref = db.collection('referralPartners').doc(code)
+  if (!(await ref.get()).exists) {
+    return res.status(404).json({ ok: false, error: 'שותף לא קיים' })
+  }
+  const commission = parseCommission(
+    req.body as {
+      commissionType?: unknown
+      commissionValue?: unknown
+      commissionCurrency?: unknown
+    },
+  )
+  if (commission) {
+    await ref.update({
+      commissionType: commission.commissionType,
+      commissionValue: commission.commissionValue,
+      commissionCurrency: commission.commissionCurrency,
+    })
+  } else {
+    // Clear the agreement.
+    await ref.update({
+      commissionType: FieldValue.delete(),
+      commissionValue: FieldValue.delete(),
+      commissionCurrency: FieldValue.delete(),
+    })
+  }
   return res.status(200).json({ ok: true })
 }
 

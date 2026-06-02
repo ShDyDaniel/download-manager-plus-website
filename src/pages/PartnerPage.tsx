@@ -23,15 +23,30 @@ interface PartnerStats {
   link: string
   signups: number
   paidAccounts: number
-  revenueByCurrency: Record<string, number>
-  byMonth: Record<string, Record<string, number>>
+  commission: {
+    commissionType: 'percent' | 'fixed'
+    commissionValue: number
+    commissionCurrency: string
+  } | null
+  earningsByCurrency: Record<string, number>
+  earningsByMonth: Record<string, Record<string, number>>
 }
 
+const CUR_SYMBOL: Record<string, string> = { ILS: '₪', USD: '$', EUR: '€' }
+function curSym(c: string): string {
+  return CUR_SYMBOL[c] || c
+}
 function fmtMoney(m: Record<string, number>): string {
   const parts = Object.entries(m || {})
     .filter(([, v]) => v > 0)
-    .map(([c, v]) => `${v.toFixed(2)} ${c}`)
+    .map(([c, v]) => `${v.toFixed(2)} ${curSym(c)}`)
   return parts.length ? parts.join(' · ') : '—'
+}
+function commissionLabel(c: PartnerStats['commission']): string {
+  if (!c) return 'ההסכם טרם הוגדר'
+  return c.commissionType === 'percent'
+    ? `${c.commissionValue}% מכל קנייה / חידוש`
+    : `${c.commissionValue} ${curSym(c.commissionCurrency)} לכל קנייה / חידוש`
 }
 
 async function api<T>(action: string, body: unknown): Promise<T> {
@@ -147,7 +162,7 @@ export default function PartnerPage() {
   }
 
   // ── Dashboard ──
-  const months = Object.entries(stats.byMonth)
+  const months = Object.entries(stats.earningsByMonth)
     .filter(([m]) => m !== 'unknown')
     .sort((a, b) => b[0].localeCompare(a[0]))
 
@@ -198,19 +213,27 @@ export default function PartnerPage() {
           </div>
         </div>
 
-        {/* Stats */}
+        {/* Commission agreement */}
+        <div className="mb-6 rounded-2xl border border-border/60 bg-white/[0.015] px-4 py-3 text-sm">
+          <span className="text-fg-muted">ההסכם שלך: </span>
+          <span className="font-medium text-fg">
+            {commissionLabel(stats.commission)}
+          </span>
+        </div>
+
+        {/* Stats — partner earnings only (never gross revenue) */}
         <div className="mb-6 grid grid-cols-3 gap-3">
-          <Stat value={fmtMoney(stats.revenueByCurrency)} label="סה״כ הכנסות" wide />
+          <Stat value={fmtMoney(stats.earningsByCurrency)} label="סך הרווח שלך" wide />
           <Stat value={String(stats.signups)} label="נרשמו" />
           <Stat value={String(stats.paidAccounts)} label="קנו" />
         </div>
 
-        {/* Revenue by month */}
+        {/* Earnings by month */}
         <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
-          <div className="mb-3 text-sm font-medium text-fg">הכנסות לפי חודש</div>
+          <div className="mb-3 text-sm font-medium text-fg">הרווח שלך לפי חודש</div>
           {months.length === 0 ? (
             <div className="py-6 text-center text-sm text-fg-muted">
-              עדיין אין הכנסות.
+              עדיין אין רווחים.
             </div>
           ) : (
             <div className="space-y-1.5">
