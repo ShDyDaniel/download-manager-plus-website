@@ -1233,6 +1233,15 @@ function loadLegalDoc(kind: LegalKind): Promise<TermsDoc> {
   return promise
 }
 
+/** Imperative prefetch — fire both legal-doc fetches now (idempotent;
+ *  shares any in-flight promise). Call this the moment a legal modal
+ *  becomes likely (e.g. a signup modal opening) so the docs are warm
+ *  in the cache and the modal renders instantly with no spinner. */
+export function prefetchLegalDocs(): void {
+  void loadLegalDoc('terms').catch(() => undefined)
+  void loadLegalDoc('privacy').catch(() => undefined)
+}
+
 /** Prefetch hook — call from any component that's likely a
  *  precursor to opening one of the legal modals (currently
  *  SignupDetailsForm). Fires both fetches in parallel; doesn't

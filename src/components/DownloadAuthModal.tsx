@@ -13,7 +13,11 @@ import {
   signIn,
   verifySignupCode,
 } from '../lib/webSession'
-import { TermsModal, PrivacyModal } from '../pages/RevisionsPage'
+import {
+  TermsModal,
+  PrivacyModal,
+  prefetchLegalDocs,
+} from '../pages/RevisionsPage'
 
 /**
  * DownloadAuthModal — gates the app download behind a website account.
@@ -56,6 +60,9 @@ export function DownloadAuthModal({
   // Reset on open so a re-open never shows stale state.
   useEffect(() => {
     if (!open) return
+    // Warm the terms/privacy docs now so clicking either link opens
+    // the modal instantly (no spinner / DB round-trip on click).
+    prefetchLegalDocs()
     setMode('signup')
     setEmail('')
     setPassword('')
