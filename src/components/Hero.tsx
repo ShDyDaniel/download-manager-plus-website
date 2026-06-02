@@ -3,7 +3,6 @@ import {
   Apple,
   Monitor,
   ArrowDown,
-  Cloud,
   Crown,
   Download,
   ChevronDown,
@@ -40,16 +39,6 @@ const DOWNLOAD_MAC_GITHUB =
   'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.7/Download.Manager.Plus-1.7.7-arm64.dmg'
 const DOWNLOAD_WIN_GITHUB =
   'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.7/Download.Manager.Plus-1.7.7-x64.exe'
-
-// Google Drive fallback links — for users on networks where GitHub
-// Releases is blocked (some corporate / school / region-restricted
-// networks block raw GitHub asset hosts but allow Drive). Both
-// platforms now get a Drive link surfaced via the dropdown CTA so
-// blocked Windows users aren't stranded.
-const DRIVE_DOWNLOAD_MAC =
-  'https://drive.google.com/file/d/18YIOAW8hqkAkCBwKQHFibJFijmV5TXhi/view?usp=drive_link'
-const DRIVE_DOWNLOAD_WIN =
-  'https://drive.google.com/file/d/10i5U42SZ5QdhHDbdW3XoPLmHcdPLVcmW/view?usp=drive_link'
 
 export function Hero() {
   // Live pricing for the Pro CTA's "starting from X ₪/month" line.
@@ -231,15 +220,9 @@ export function Hero() {
             transition={{ duration: 0.5, delay: 0.25 }}
             className="mt-7 flex w-full max-w-md flex-col items-stretch gap-2 md:mt-10 md:gap-4"
           >
-            {/* Download row — two equal-weight buttons that each
-                open an OS picker on click. `grid-cols-2` (not flex)
-                guarantees both buttons end up the same width
-                regardless of label length — previously "הורדה חינם"
-                and "דרך Google Drive" rendered at different widths
-                because flex was auto-sizing each one to its
-                content, which looked broken next to the Pro button
-                below. Stacked on mobile for 44pt touch targets. */}
-            <div className="flex flex-col items-stretch gap-3 sm:grid sm:grid-cols-2">
+            {/* Free download — single full-width button that opens an
+                OS picker (Mac / Windows) on click. */}
+            <div className="flex flex-col items-stretch">
               <DownloadPicker
                 label="הורדה חינם"
                 icon={
@@ -248,16 +231,6 @@ export function Hero() {
                 macUrl={DOWNLOAD_MAC_GITHUB}
                 winUrl={DOWNLOAD_WIN_GITHUB}
                 variant="primary"
-                onDownload={requestDownload}
-              />
-              <DownloadPicker
-                label="דרך Google Drive"
-                icon={
-                  <Cloud className="h-3.5 w-3.5 md:h-[18px] md:w-[18px]" />
-                }
-                macUrl={DRIVE_DOWNLOAD_MAC}
-                winUrl={DRIVE_DOWNLOAD_WIN}
-                variant="secondary"
                 onDownload={requestDownload}
               />
             </div>
