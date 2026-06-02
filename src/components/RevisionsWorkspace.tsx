@@ -1245,7 +1245,13 @@ function NewProjectModal({
     }
     // Defence-in-depth: file picker already validates on pick,
     // but a determined user could swap the file via devtools.
-    if (source.kind === 'upload' && source.file.size > MAX_UPLOAD_BYTES) {
+    const chosenSize =
+      source.kind === 'upload'
+        ? source.file.size
+        : source.kind === 'drive'
+          ? source.picked.sizeBytes
+          : 0
+    if (chosenSize > MAX_UPLOAD_BYTES) {
       setError(
         `הקובץ גדול מהמותר (מקסימום ${formatBytes(MAX_UPLOAD_BYTES)}). בחרו קובץ קטן יותר.`,
       )
@@ -1450,7 +1456,9 @@ function AddRoundModal({
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (busy || source.kind === 'none') return
-    if (source.kind === 'upload' && source.file.size > MAX_UPLOAD_BYTES) {
+    const chosenSize =
+      source.kind === 'upload' ? source.file.size : source.picked.sizeBytes
+    if (chosenSize > MAX_UPLOAD_BYTES) {
       setError(
         `הקובץ גדול מהמותר (מקסימום ${formatBytes(MAX_UPLOAD_BYTES)}). בחרו קובץ קטן יותר.`,
       )
@@ -2716,7 +2724,17 @@ function VideoSourceField({
       const at = await fetchDriveAccessToken()
       const picked = await pickVideoFromDrive(at.accessToken)
       // null = user cancelled the picker; leave the current state.
-      if (picked) onChange({ kind: 'drive', picked })
+      if (!picked) return
+      // Enforce the same 2 GB cap as the upload path. The Picker
+      // reports the file's real size, so we can reject oversize
+      // files before they're ever wired into a project.
+      if (picked.sizeBytes > 0 && picked.sizeBytes > MAX_UPLOAD_BYTES) {
+        onError(
+          `הקובץ גדול מהמותר (מקסימום ${formatBytes(MAX_UPLOAD_BYTES)}). בחרו קובץ קטן יותר.`,
+        )
+        return
+      }
+      onChange({ kind: 'drive', picked })
     } catch (err) {
       onError(
         err instanceof Error
