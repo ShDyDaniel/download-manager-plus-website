@@ -49,10 +49,7 @@ export async function ensureFirebaseSession(): Promise<string | null> {
   const auth = getClientAuth()
   if (auth.currentUser) {
     // Reuse the existing Firebase session ONLY if it's the same user.
-    if (auth.currentUser.uid === expectedUid) {
-      console.log('[LIVE] reusing firebase session uid=', auth.currentUser.uid)
-      return auth.currentUser.uid
-    }
+    if (auth.currentUser.uid === expectedUid) return auth.currentUser.uid
     // Account switched on the site — drop the stale Firebase session
     // so we don't read the previous user's data with their uid.
     try {
@@ -64,18 +61,12 @@ export async function ensureFirebaseSession(): Promise<string | null> {
   if (signInPromise) return signInPromise
   signInPromise = (async () => {
     try {
-      console.log('[LIVE] minting custom token…')
       const token = await fetchFirebaseCustomToken()
-      if (!token) {
-        console.warn('[LIVE] custom token empty')
-        return null
-      }
-      console.log('[LIVE] got custom token, signing in…')
+      if (!token) return null
       const cred = await signInWithCustomToken(auth, token)
-      console.log('[LIVE] signed in uid=', cred.user.uid)
       return cred.user.uid
     } catch (err) {
-      console.warn('[LIVE] firebase sign-in failed:', err)
+      console.warn('[revisionsLive] firebase sign-in failed:', err)
       return null
     } finally {
       signInPromise = null
@@ -105,10 +96,7 @@ export function watchOwnerRevisionsLive(
   let roundDocs: Record<string, unknown>[] | null = null
 
   const emit = () => {
-    if (groupDocs === null || roundDocs === null) {
-      console.log('[LIVE] emit skipped — groups?', groupDocs !== null, 'rounds?', roundDocs !== null)
-      return
-    }
+    if (groupDocs === null || roundDocs === null) return
 
     const activeGroups = groupDocs.filter((g) => g.status === 'active')
 
@@ -170,7 +158,6 @@ export function watchOwnerRevisionsLive(
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt)
 
-    console.log('[LIVE] emit:', groups.length, 'groups,', legacyProjects.length, 'legacy')
     cb({ groups, legacyProjects })
   }
 
@@ -178,16 +165,13 @@ export function watchOwnerRevisionsLive(
     const uid = await ensureFirebaseSession()
     if (cancelled) return
     if (!uid) {
-      console.warn('[LIVE] no firebase session — falling back')
       onError?.(new Error('no-firebase-session'))
       return
     }
-    console.log('[LIVE] attaching listeners for uid=', uid)
     const db = getClientDb()
     unsubGroups = onSnapshot(
       query(collection(db, 'revisionGroups'), where('ownerUid', '==', uid)),
       (snap: QuerySnapshot) => {
-        console.log('[LIVE] groups snapshot:', snap.size, 'docs')
         groupDocs = snap.docs.map((d) => {
           const data = d.data() as Record<string, unknown>
           return { ...data, id: data.id || d.id }
@@ -195,14 +179,13 @@ export function watchOwnerRevisionsLive(
         emit()
       },
       (err) => {
-        console.warn('[LIVE] groups listener error:', err)
+        console.warn('[revisionsLive] groups listener error:', err)
         onError?.(err)
       },
     )
     unsubRounds = onSnapshot(
       query(collection(db, 'revisionProjects'), where('ownerUid', '==', uid)),
       (snap: QuerySnapshot) => {
-        console.log('[LIVE] rounds snapshot:', snap.size, 'docs')
         roundDocs = snap.docs.map((d) => {
           const data = d.data() as Record<string, unknown>
           return { ...data, id: data.id || d.id }
@@ -210,7 +193,7 @@ export function watchOwnerRevisionsLive(
         emit()
       },
       (err) => {
-        console.warn('[LIVE] rounds listener error:', err)
+        console.warn('[revisionsLive] rounds listener error:', err)
         onError?.(err)
       },
     )

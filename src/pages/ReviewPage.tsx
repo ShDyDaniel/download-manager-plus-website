@@ -24,6 +24,7 @@ import {
   FolderClosed,
   FileVideo,
   Download as DownloadIcon,
+  RefreshCw,
 } from 'lucide-react'
 
 /**
@@ -2040,13 +2041,36 @@ function ReviewWorkspace({
 
         {/* Notes sidebar */}
         <aside className="rounded-2xl border border-white/5 bg-white/[0.02] p-4">
-          <div className="mb-3 flex items-center gap-2 border-b border-white/5 pb-3">
+          <div className="mb-1 flex items-center gap-2 border-b border-white/5 pb-3">
             <MessageSquare className="h-4 w-4 text-fg-muted" />
             <h2 className="text-sm font-medium text-fg">תיקונים</h2>
             <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-fg-muted">
               {notes.length}
             </span>
+            {/* Manual refresh of JUST the notes list (not a page
+                reload). The review page has no live listener — viewers
+                are anonymous and rounds can be password-gated — so
+                notes other people added since the page loaded only show
+                up on demand. This button pulls the latest list via the
+                server endpoint and swaps in only the notes state. */}
+            <button
+              type="button"
+              onClick={() => void refreshNotes({ showSpinner: true })}
+              disabled={notesLoading}
+              title="תיקונים שמשתמשים אחרים הוסיפו נטענים בלחיצה כאן (או ברענון הדף)"
+              className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-fg-muted transition-colors hover:bg-white/[0.08] hover:text-fg disabled:opacity-50"
+            >
+              <RefreshCw
+                className={`h-3 w-3 ${notesLoading ? 'animate-spin' : ''}`}
+              />
+              טען תיקונים חדשים
+            </button>
           </div>
+          {/* One-line hint so it's obvious WHY the button exists —
+              new notes from others aren't pushed automatically. */}
+          <p className="mb-3 text-[10px] leading-relaxed text-fg-faint">
+            תיקונים חדשים של אחרים לא מתעדכנים לבד — לחצו "טען תיקונים חדשים".
+          </p>
           {notesLoading ? (
             <div className="flex items-center justify-center py-10">
               <Loader2 className="h-4 w-4 animate-spin text-fg-muted" />
