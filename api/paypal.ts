@@ -1168,6 +1168,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSetReferralCredentials(req, res)
       case 'admin-set-referral-commission':
         return await handleAdminSetReferralCommission(req, res)
+      case 'admin-set-referral-visibility':
+        return await handleAdminSetReferralVisibility(req, res)
       case 'partner-login':
         return await handlePartnerLogin(req, res)
       case 'partner-stats':
@@ -5053,6 +5055,30 @@ interface ReferralPartnerDoc {
   commissionType?: 'percent' | 'fixed'
   commissionValue?: number
   commissionCurrency?: string
+  // What the partner sees on their dashboard (modular). Positive
+  // flags — if both money flags are off, the partner sees no money.
+  visibility?: { revenue?: boolean; earnings?: boolean; counts?: boolean }
+}
+
+interface PartnerVisibility {
+  revenue: boolean
+  earnings: boolean
+  counts: boolean
+}
+const DEFAULT_VISIBILITY: PartnerVisibility = {
+  revenue: false,
+  earnings: true,
+  counts: true,
+}
+function resolveVisibility(
+  v: { revenue?: boolean; earnings?: boolean; counts?: boolean } | undefined,
+): PartnerVisibility {
+  if (!v) return { ...DEFAULT_VISIBILITY }
+  return {
+    revenue: v.revenue === true,
+    earnings: v.earnings === true,
+    counts: v.counts === true,
+  }
 }
 
 /** Validate + normalise commission fields from a request body. Returns
@@ -5326,6 +5352,7 @@ async function handleAdminReferralReport(
       commissionValue: commission?.commissionValue || null,
       commissionCurrency: commission?.commissionCurrency || null,
       earningsByCurrency,
+      visibility: resolveVisibility(data.visibility),
     })
   }
   return res.status(200).json({ ok: true, partners: rows })
@@ -5616,17 +5643,23 @@ async function computePartnerStats(code: string) {
     grossByMonth,
     countByMonth,
   )
-  // PARTNER-SAFE: returns the partner's EARNINGS only — never the gross
-  // revenue (so a partner can't infer total income).
+  const vis = resolveVisibility(data?.visibility)
+
+  // MODULAR + PARTNER-SAFE: only the fields the admin allows this
+  // partner to see are returned. Gross revenue is included ONLY when
+  // visibility.revenue is on.
   return {
     code,
     name: data?.name || code,
     link: `${REFERRAL_LINK_BASE}/?ref=${encodeURIComponent(code)}`,
-    signups: usersSnap.size,
-    paidAccounts: paidEmails.size,
-    commission, // { type, value, currency } | null — for the label
-    earningsByCurrency: earnings.byCurrency,
-    earningsByMonth: earnings.byMonth,
+    visibility: vis,
+    signups: vis.counts ? usersSnap.size : null,
+    paidAccounts: vis.counts ? paidEmails.size : null,
+    commission: vis.earnings ? commission : null,
+    earningsByCurrency: vis.earnings ? earnings.byCurrency : null,
+    earningsByMonth: vis.earnings ? earnings.byMonth : null,
+    revenueByCurrency: vis.revenue ? grossByCurrency : null,
+    revenueByMonth: vis.revenue ? grossByMonth : null,
   }
 }
 
@@ -5759,6 +5792,29 @@ async function handleAdminSetReferralCommission(
       commissionCurrency: FieldValue.delete(),
     })
   }
+  return res.status(200).json({ ok: true })
+}
+
+/** POST { idToken, code, visibility:{revenue,earnings,counts} } — admin
+ *  sets what the partner sees on their dashboard. */
+async function handleAdminSetReferralVisibility(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as {
+    idToken?: string
+    code?: string
+    visibility?: { revenue?: boolean; earnings?: boolean; counts?: boolean }
+  }
+  const admin = await verifyAdminEmail(body.idToken || '')
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const code = (body.code || '').trim()
+  if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
+  const ref = getDb().collection('referralPartners').doc(code)
+  if (!(await ref.get()).exists) {
+    return res.status(404).json({ ok: false, error: 'שותף לא קיים' })
+  }
+  await ref.update({ visibility: resolveVisibility(body.visibility) })
   return res.status(200).json({ ok: true })
 }
 

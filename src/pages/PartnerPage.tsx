@@ -21,15 +21,18 @@ interface PartnerStats {
   code: string
   name: string
   link: string
-  signups: number
-  paidAccounts: number
+  visibility: { revenue: boolean; earnings: boolean; counts: boolean }
+  signups: number | null
+  paidAccounts: number | null
   commission: {
     commissionType: 'percent' | 'fixed'
     commissionValue: number
     commissionCurrency: string
   } | null
-  earningsByCurrency: Record<string, number>
-  earningsByMonth: Record<string, Record<string, number>>
+  earningsByCurrency: Record<string, number> | null
+  earningsByMonth: Record<string, Record<string, number>> | null
+  revenueByCurrency: Record<string, number> | null
+  revenueByMonth: Record<string, Record<string, number>> | null
 }
 
 const CUR_SYMBOL: Record<string, string> = { ILS: '₪', USD: '$', EUR: '€' }
@@ -162,9 +165,18 @@ export default function PartnerPage() {
   }
 
   // ── Dashboard ──
-  const months = Object.entries(stats.earningsByMonth)
-    .filter(([m]) => m !== 'unknown')
-    .sort((a, b) => b[0].localeCompare(a[0]))
+  // Which money breakdown to show by month (earnings preferred, else
+  // gross revenue) — only when the partner is allowed to see it.
+  const monthSource = stats.earningsByMonth || stats.revenueByMonth || null
+  const monthsTitle = stats.earningsByMonth
+    ? 'הרווח שלך לפי חודש'
+    : 'הכנסות לפי חודש'
+  const months = monthSource
+    ? Object.entries(monthSource)
+        .filter(([m]) => m !== 'unknown')
+        .sort((a, b) => b[0].localeCompare(a[0]))
+    : []
+  const showMoney = stats.visibility.earnings || stats.visibility.revenue
 
   return (
     <div className="min-h-dvh bg-bg px-5 py-10 md:py-16" dir="rtl">
@@ -213,47 +225,68 @@ export default function PartnerPage() {
           </div>
         </div>
 
-        {/* Commission agreement */}
-        <div className="mb-6 rounded-2xl border border-border/60 bg-white/[0.015] px-4 py-3 text-sm">
-          <span className="text-fg-muted">ההסכם שלך: </span>
-          <span className="font-medium text-fg">
-            {commissionLabel(stats.commission)}
-          </span>
-        </div>
+        {/* Commission agreement — only when earnings are shown */}
+        {stats.visibility.earnings && (
+          <div className="mb-6 rounded-2xl border border-border/60 bg-white/[0.015] px-4 py-3 text-sm">
+            <span className="text-fg-muted">ההסכם שלך: </span>
+            <span className="font-medium text-fg">
+              {commissionLabel(stats.commission)}
+            </span>
+          </div>
+        )}
 
-        {/* Stats — partner earnings only (never gross revenue) */}
-        <div className="mb-6 grid grid-cols-3 gap-3">
-          <Stat value={fmtMoney(stats.earningsByCurrency)} label="סך הרווח שלך" wide />
-          <Stat value={String(stats.signups)} label="נרשמו" />
-          <Stat value={String(stats.paidAccounts)} label="קנו" />
-        </div>
-
-        {/* Earnings by month */}
-        <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
-          <div className="mb-3 text-sm font-medium text-fg">הרווח שלך לפי חודש</div>
-          {months.length === 0 ? (
-            <div className="py-6 text-center text-sm text-fg-muted">
-              עדיין אין רווחים.
-            </div>
-          ) : (
-            <div className="space-y-1.5">
-              {months.map(([m, rev]) => (
-                <div
-                  key={m}
-                  className="flex items-center justify-between rounded-lg bg-white/[0.02] px-3 py-2 text-sm"
-                >
-                  <span className="text-fg">{fmtMoney(rev)}</span>
-                  <span className="text-fg-muted">
-                    {m.slice(5, 7)}/{m.slice(0, 4)}
-                  </span>
-                </div>
-              ))}
-            </div>
+        {/* Stats — each card only if allowed */}
+        <div className="mb-6 grid auto-cols-fr grid-flow-col gap-3">
+          {stats.visibility.earnings && stats.earningsByCurrency && (
+            <Stat
+              value={fmtMoney(stats.earningsByCurrency)}
+              label="סך הרווח שלך"
+              wide
+            />
+          )}
+          {stats.visibility.revenue && stats.revenueByCurrency && (
+            <Stat
+              value={fmtMoney(stats.revenueByCurrency)}
+              label="סך ההכנסות"
+              wide
+            />
+          )}
+          {stats.signups !== null && (
+            <Stat value={String(stats.signups)} label="נרשמו" />
+          )}
+          {stats.paidAccounts !== null && (
+            <Stat value={String(stats.paidAccounts)} label="קנו" />
           )}
         </div>
 
+        {/* Money by month — only when a money figure is visible */}
+        {showMoney && (
+          <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
+            <div className="mb-3 text-sm font-medium text-fg">{monthsTitle}</div>
+            {months.length === 0 ? (
+              <div className="py-6 text-center text-sm text-fg-muted">
+                עדיין אין נתונים.
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {months.map(([m, rev]) => (
+                  <div
+                    key={m}
+                    className="flex items-center justify-between rounded-lg bg-white/[0.02] px-3 py-2 text-sm"
+                  >
+                    <span className="text-fg">{fmtMoney(rev)}</span>
+                    <span className="text-fg-muted">
+                      {m.slice(5, 7)}/{m.slice(0, 4)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <p className="mt-6 text-center text-[11px] text-fg-faint">
-          הנתונים מתעדכנים אוטומטית. מוצגים סכומים מצטברים בלבד.
+          הנתונים מתעדכנים אוטומטית.
         </p>
       </div>
     </div>
