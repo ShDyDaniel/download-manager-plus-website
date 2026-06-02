@@ -63,7 +63,7 @@ export function RevisionsHighlight() {
               maxWidth: '760px',
             }}
           >
-            סבבי תיקונים <span className="accent-word">עם הלקוחות</span>.
+מערכת סבבי תיקונים <span className="accent-word">מלאה</span>
           </h2>
 
           <p
