@@ -28,13 +28,19 @@ declare global {
   }
 }
 
-// Public web API key for project n-plus-64549 (same value Firebase
-// uses — Google API keys are not secrets; access is gated by the
-// OAuth token + API enablement). Override via env if a dedicated
-// Picker key is ever created.
+// Dedicated browser API key for the Google Picker, restricted to the
+// Picker API in GCP project n-plus-64549. Google API keys are not
+// secrets (access is gated by the OAuth token + API restriction), but
+// it's still supplied via env so it can be rotated without a code
+// change. MUST be named with the `VITE_` prefix — Vite only exposes
+// VITE_-prefixed vars to the client bundle. Set it in Vercel and
+// redeploy (Vite inlines env at BUILD time).
+//
+// Note: the Firebase web key does NOT work here — Firebase restricts
+// it to Firebase APIs only, so the Picker rejects it as "invalid API
+// key". That's why this needs its own key.
 const PICKER_API_KEY =
-  (import.meta.env.VITE_GOOGLE_PICKER_KEY as string | undefined) ||
-  'AIzaSyAvQ1nNPZdstWp-Ws8HnlmqUvnHTZZoxic'
+  (import.meta.env.VITE_GOOGLE_PICKER_KEY as string | undefined)?.trim() || ''
 // GCP project NUMBER (not the ID) — required by the Picker.
 const PICKER_APP_ID = '1005271902300'
 
@@ -80,6 +86,11 @@ function loadPickerApi(): Promise<void> {
 export async function pickVideoFromDrive(
   oauthToken: string,
 ): Promise<PickedDriveFile | null> {
+  if (!PICKER_API_KEY) {
+    throw new Error(
+      'בחירה מ-Google Drive עדיין לא הוגדרה (חסר מפתח Picker). נסו שוב מאוחר יותר או השתמשו בהעלאת קובץ.',
+    )
+  }
   await loadPickerApi()
   const google = window.google
   if (!google?.picker) throw new Error('Google Picker לא זמין')
