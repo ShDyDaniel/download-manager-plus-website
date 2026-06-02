@@ -496,6 +496,24 @@ function ConnectedWorkspace({
             transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
             className="space-y-8"
           >
+            {/* Editorial header — mirrors the login/desktop voice:
+                tiny uppercase label + display headline, no card. */}
+            <div>
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-fg-muted">
+                — סבבי תיקונים
+              </div>
+              <h1
+                className="font-display text-fg"
+                style={{
+                  fontSize: 'clamp(26px, 4vw, 34px)',
+                  lineHeight: 1.05,
+                  letterSpacing: '-0.025em',
+                  fontWeight: 500,
+                }}
+              >
+                הפרויקטים שלך
+              </h1>
+            </div>
             <ActionBar
               onNewProject={() => setShowNewProject(true)}
               drive={drive}
@@ -651,7 +669,7 @@ function ActionBar({
 
 function EmptyProjectList({ onNew }: { onNew: () => void }) {
   return (
-    <div className="mx-auto max-w-md rounded-2xl border border-border bg-bg-card p-10 text-center">
+    <div className="mx-auto max-w-md rounded-2xl border border-border/60 bg-white/[0.015] p-10 text-center">
       <h2 className="text-lg font-medium text-fg">אין פרויקטים עדיין</h2>
       <p className="mt-3 text-sm text-fg-muted">
         העלו סרטון, צרו קישור לשליחה ללקוח, וקבלו את התיקונים שלו
@@ -765,7 +783,7 @@ function GroupCard({
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-bg-card transition-colors hover:border-fg/15">
+    <div className="overflow-hidden rounded-2xl border border-border/60 bg-white/[0.015] transition-colors hover:border-border">
       {/* Header — entire row is the expand affordance. We use a
           div with role=button (not a real <button>) because the
           row contains nested buttons (copy-link, edit, add-round),
@@ -979,7 +997,7 @@ function LegacyCard({
 }) {
   const shareUrl = buildShareUrl(project.shareToken)
   return (
-    <div className="rounded-xl border border-border bg-bg-card p-5">
+    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5 transition-colors hover:border-border">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -1091,7 +1109,7 @@ function DriveStorageFooter({
     ? Math.min(100, (storage.usageBytes / storage.limitBytes) * 100)
     : 0
   return (
-    <div className="rounded-xl border border-border bg-bg-card p-4 text-xs text-fg-muted">
+    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-xs text-fg-muted">
       <div className="mb-2 flex items-center justify-between">
         <span>
           Drive של{' '}
@@ -2588,14 +2606,16 @@ function LabelledField({
 }) {
   return (
     <div>
-      <label className="mb-1.5 block text-xs text-fg-muted">{label}</label>
+      <label className="mb-2 block text-[10px] font-medium uppercase tracking-[0.18em] text-fg-muted">
+        {label}
+      </label>
       <input
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         autoFocus={autoFocus}
-        className="w-full rounded-md border border-border bg-bg-card px-3 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-fg/30 focus:outline-none"
+        className="block w-full border-b border-border bg-transparent px-0 py-2 text-base text-fg placeholder:text-fg-faint/50 transition-colors focus:border-accent focus:outline-none"
       />
     </div>
   )
