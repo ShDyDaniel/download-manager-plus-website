@@ -3241,7 +3241,10 @@ async function firestoreMetricSum(
   params.set('aggregation.crossSeriesReducer', 'REDUCE_SUM')
   const url = `https://monitoring.googleapis.com/v3/projects/${projectId}/timeSeries?${params.toString()}`
   const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-  if (!r.ok) throw new Error(`monitoring ${r.status}`)
+  if (!r.ok) {
+    const body = await r.text().catch(() => '')
+    throw new Error(`monitoring ${r.status}: ${body.slice(0, 300)}`)
+  }
   const j = (await r.json()) as {
     timeSeries?: Array<{ points?: Array<{ value?: { int64Value?: string; doubleValue?: number } }> }>
   }
