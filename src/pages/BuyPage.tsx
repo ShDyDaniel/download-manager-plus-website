@@ -1061,36 +1061,6 @@ export function BuyPage() {
           </p>
         </motion.div>
 
-        {/* Self-service renewal entry point. Only shown when:
-            - we're NOT already in renewal mode from an email link
-              (no point offering it twice), and
-            - the buyer hasn't already paid / renewed in this session.
-            The actual sign-in form lives in the <RenewSigninModal/>
-            at the bottom of the page — this button just opens it. */}
-        {!renewInfo &&
-          !renewLoading &&
-          status.kind !== 'success' &&
-          status.kind !== 'renewed' && (
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4, delay: 0.08 }}
-              className="mb-6"
-            >
-              <button
-                type="button"
-                onClick={() => {
-                  setSigninOpen(true)
-                  setSigninError(null)
-                }}
-                className="group flex w-full items-center justify-center gap-2 rounded-2xl border border-accent/30 bg-accent/[0.06] px-4 py-3 text-sm font-medium text-accent transition-colors hover:border-accent/50 hover:bg-accent/[0.1]"
-              >
-                <RefreshCw className="h-4 w-4 text-accent transition-transform group-hover:rotate-180" />
-                כבר יש לכם מנוי? לחידוש לחצו כאן
-              </button>
-            </motion.div>
-          )}
-
         {/* Pricing-unavailable HARD BLOCK. When the strict pricing
             fetch failed (server / Firestore down) we refuse to show
             ANY checkout UI below — a purchase right now would charge
