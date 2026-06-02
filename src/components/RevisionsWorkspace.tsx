@@ -2750,109 +2750,126 @@ function VideoSourceField({
 
   return (
     <div>
-      {/* Segmented source toggle */}
-      <div className="mb-3 grid grid-cols-2 gap-1.5 rounded-md border border-border bg-bg-card p-1">
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => switchMode('upload')}
-          className={
-            'flex items-center justify-center gap-2 rounded px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed ' +
-            (mode === 'upload'
-              ? 'bg-primary text-bg'
-              : 'text-fg-muted hover:text-fg')
-          }
-        >
-          <Upload className="h-3.5 w-3.5" />
-          העלאת קובץ
-        </button>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => switchMode('drive')}
-          className={
-            'flex items-center justify-center gap-2 rounded px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed ' +
-            (mode === 'drive'
-              ? 'bg-primary text-bg'
-              : 'text-fg-muted hover:text-fg')
-          }
-        >
-          <HardDrive className="h-3.5 w-3.5" />
-          בחירה מ-Google Drive
-        </button>
+      {/* Segmented source toggle with a sliding copper indicator */}
+      <div className="relative mb-3 grid grid-cols-2 rounded-md border border-border bg-bg-card p-1">
+        {(['upload', 'drive'] as const).map((m) => {
+          const active = mode === m
+          return (
+            <button
+              key={m}
+              type="button"
+              disabled={disabled}
+              onClick={() => switchMode(m)}
+              className="relative flex items-center justify-center gap-2 rounded px-3 py-2 text-xs font-medium disabled:cursor-not-allowed"
+            >
+              {active && (
+                <motion.span
+                  layoutId="vs-tab-indicator"
+                  transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                  className="absolute inset-0 rounded bg-primary"
+                />
+              )}
+              <span
+                className={
+                  'relative z-10 flex items-center gap-2 transition-colors ' +
+                  (active ? 'text-bg' : 'text-fg-muted hover:text-fg')
+                }
+              >
+                {m === 'upload' ? (
+                  <Upload className="h-3.5 w-3.5" />
+                ) : (
+                  <HardDrive className="h-3.5 w-3.5" />
+                )}
+                {m === 'upload' ? 'העלאת קובץ' : 'בחירה מ-Google Drive'}
+              </span>
+            </button>
+          )
+        })}
       </div>
 
-      {mode === 'upload' ? (
-        <DropZone
-          file={value.kind === 'upload' ? value.file : null}
-          onPick={(f) => {
-            if (!f) {
-              onChange({ kind: 'none' })
-              return
-            }
-            if (f.size > MAX_UPLOAD_BYTES) {
-              onChange({ kind: 'none' })
-              onError(
-                `הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}. ` +
-                  'לקבצים גדולים יותר בחרו אותם ישירות מ-Google Drive.',
-              )
-              return
-            }
-            onError(null)
-            onChange({ kind: 'upload', file: f })
-          }}
-          inputRef={inputRef}
-          disabled={disabled}
-        />
-      ) : driveFile ? (
-        // Picked-from-Drive state — mirrors DropZone's picked layout.
-        <div className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-border bg-bg-card px-6 py-10 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
-            <VideoFileIcon className="h-6 w-6" />
-          </div>
-          <div className="min-w-0 max-w-full">
-            <div className="truncate text-sm font-medium text-fg">
-              {driveFile.name}
-            </div>
-            <div className="mt-1 text-xs text-fg-muted">
-              {driveFile.sizeBytes > 0 ? (
-                <bdi dir="ltr">{formatBytes(driveFile.sizeBytes)}</bdi>
-              ) : (
-                'מ-Google Drive'
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={mode}
+          initial={{ opacity: 0, x: mode === 'upload' ? -10 : 10 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: mode === 'upload' ? 10 : -10 }}
+          transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+        >
+          {mode === 'upload' ? (
+            <DropZone
+              file={value.kind === 'upload' ? value.file : null}
+              onPick={(f) => {
+                if (!f) {
+                  onChange({ kind: 'none' })
+                  return
+                }
+                if (f.size > MAX_UPLOAD_BYTES) {
+                  onChange({ kind: 'none' })
+                  onError(
+                    `הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}. ` +
+                      'לקבצים גדולים יותר בחרו אותם ישירות מ-Google Drive.',
+                  )
+                  return
+                }
+                onError(null)
+                onChange({ kind: 'upload', file: f })
+              }}
+              inputRef={inputRef}
+              disabled={disabled}
+            />
+          ) : driveFile ? (
+            // Picked-from-Drive state — mirrors DropZone's picked layout.
+            <div className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-border bg-bg-card px-6 py-10 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <VideoFileIcon className="h-6 w-6" />
+              </div>
+              <div className="min-w-0 max-w-full">
+                <div className="truncate text-sm font-medium text-fg">
+                  {driveFile.name}
+                </div>
+                <div className="mt-1 text-xs text-fg-muted">
+                  {driveFile.sizeBytes > 0 ? (
+                    <bdi dir="ltr">{formatBytes(driveFile.sizeBytes)}</bdi>
+                  ) : (
+                    'מ-Google Drive'
+                  )}
+                </div>
+              </div>
+              {!disabled && (
+                <button
+                  type="button"
+                  onClick={openPicker}
+                  className="text-xs text-fg-muted underline-offset-2 transition-colors hover:text-fg hover:underline"
+                >
+                  החלפת בחירה
+                </button>
               )}
             </div>
-          </div>
-          {!disabled && (
+          ) : (
+            // Empty Drive state — single CTA that opens the Picker.
             <button
               type="button"
+              disabled={disabled || picking}
               onClick={openPicker}
-              className="text-xs text-fg-muted underline-offset-2 transition-colors hover:text-fg hover:underline"
+              className="group flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-border bg-bg-card px-6 py-10 text-center transition-all hover:border-fg/30 hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
             >
-              החלפת בחירה
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-bg-elevated text-fg-muted transition-colors group-hover:bg-primary/10 group-hover:text-primary">
+                <HardDrive className="h-7 w-7" />
+              </div>
+              <div>
+                <div className="text-sm font-medium text-fg">
+                  {picking
+                    ? 'פותח את Google Drive…'
+                    : 'בחירת סרטון מ-Google Drive'}
+                </div>
+                <div className="mt-1 text-xs text-fg-muted">
+                  בוחרים קובץ קיים — בלי להעלות מחדש
+                </div>
+              </div>
             </button>
           )}
-        </div>
-      ) : (
-        // Empty Drive state — single CTA that opens the Picker.
-        <button
-          type="button"
-          disabled={disabled || picking}
-          onClick={openPicker}
-          className="group flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-border bg-bg-card px-6 py-10 text-center transition-all hover:border-fg/30 hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-bg-elevated text-fg-muted transition-colors group-hover:bg-primary/10 group-hover:text-primary">
-            <HardDrive className="h-7 w-7" />
-          </div>
-          <div>
-            <div className="text-sm font-medium text-fg">
-              {picking ? 'פותח את Google Drive…' : 'בחירת סרטון מ-Google Drive'}
-            </div>
-            <div className="mt-1 text-xs text-fg-muted">
-              בוחרים קובץ קיים — בלי להעלות מחדש
-            </div>
-          </div>
-        </button>
-      )}
+        </motion.div>
+      </AnimatePresence>
     </div>
   )
 }
