@@ -13,6 +13,7 @@ import {
   signIn,
   verifySignupCode,
 } from '../lib/webSession'
+import { TermsModal, PrivacyModal } from '../pages/RevisionsPage'
 
 /**
  * DownloadAuthModal — gates the app download behind a website account.
@@ -42,7 +43,10 @@ export function DownloadAuthModal({
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
+  const [terms, setTerms] = useState(false)
   const [marketingOptIn, setMarketingOptIn] = useState(false)
+  const [termsModalOpen, setTermsModalOpen] = useState(false)
+  const [privacyModalOpen, setPrivacyModalOpen] = useState(false)
   const [codeSent, setCodeSent] = useState(false)
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
@@ -56,7 +60,10 @@ export function DownloadAuthModal({
     setEmail('')
     setPassword('')
     setName('')
+    setTerms(false)
     setMarketingOptIn(false)
+    setTermsModalOpen(false)
+    setPrivacyModalOpen(false)
     setCodeSent(false)
     setCode('')
     setBusy(false)
@@ -102,8 +109,16 @@ export function DownloadAuthModal({
       setError('כתובת מייל לא תקינה')
       return
     }
+    if (!name.trim()) {
+      setError('יש להזין שם')
+      return
+    }
     if (password.length < 6) {
       setError('סיסמה חייבת להיות לפחות 6 תווים')
+      return
+    }
+    if (!terms) {
+      setError('יש לאשר את תנאי השימוש ומדיניות הפרטיות כדי להמשיך')
       return
     }
     setBusy(true)
@@ -206,13 +221,13 @@ export function DownloadAuthModal({
                   ? 'איפוס סיסמה'
                   : 'יצירת חשבון להורדה'}
             </h2>
-            <p className="mt-2 text-xs leading-relaxed text-fg-muted">
-              {mode === 'login'
-                ? 'התחברו כדי להוריד את התוכנה.'
-                : mode === 'forgot'
-                  ? 'נשלח אליכם קישור לאיפוס הסיסמה.'
-                  : 'חשבון חינמי נדרש כדי להוריד. לוקח פחות מדקה.'}
-            </p>
+            {(mode === 'login' || mode === 'forgot') && (
+              <p className="mt-2 text-xs leading-relaxed text-fg-muted">
+                {mode === 'login'
+                  ? 'התחברו כדי להוריד את התוכנה.'
+                  : 'נשלח אליכם קישור לאיפוס הסיסמה.'}
+              </p>
+            )}
           </div>
 
           {mode === 'login' && (
@@ -254,10 +269,9 @@ export function DownloadAuthModal({
                 autoFocus
               />
               <AuthInput
-                label="שם (אופציונלי)"
+                label="שם"
                 value={name}
                 onChange={setName}
-                required={false}
                 autoComplete="name"
               />
               <AuthInput
@@ -267,14 +281,44 @@ export function DownloadAuthModal({
                 onChange={setPassword}
                 autoComplete="new-password"
               />
-              <label className="flex cursor-pointer items-start gap-2 text-xs text-fg-muted">
+              <label className="flex cursor-pointer items-start gap-2 text-xs leading-relaxed text-fg-muted">
+                <input
+                  type="checkbox"
+                  checked={terms}
+                  onChange={(e) => setTerms(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+                />
+                <span>
+                  אני מאשר/ת את{' '}
+                  <button
+                    type="button"
+                    onClick={() => setTermsModalOpen(true)}
+                    className="text-accent underline underline-offset-2 transition-colors hover:text-fg"
+                  >
+                    תנאי השימוש
+                  </button>{' '}
+                  ואת{' '}
+                  <button
+                    type="button"
+                    onClick={() => setPrivacyModalOpen(true)}
+                    className="text-accent underline underline-offset-2 transition-colors hover:text-fg"
+                  >
+                    מדיניות הפרטיות
+                  </button>{' '}
+                  של ניהול הורדות פלוס.
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2 text-xs leading-relaxed text-fg-muted">
                 <input
                   type="checkbox"
                   checked={marketingOptIn}
                   onChange={(e) => setMarketingOptIn(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 accent-primary"
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
                 />
-                <span>אשמח לקבל עדכונים ומבצעים במייל (אופציונלי)</span>
+                <span>
+                  אני רוצה לקבל עדכונים על תוספות, הטבות וטיפים. ניתן
+                  להסיר את הסכמה בכל עת.
+                </span>
               </label>
               {error && <AuthError message={error} />}
               {notice && (
@@ -306,6 +350,9 @@ export function DownloadAuthModal({
                   {notice}
                 </div>
               )}
+              <p className="text-xs leading-relaxed text-fg-faint">
+                לא מצאתם את המייל? בדקו בתיקיית הספאם / קידומי מכירות.
+              </p>
               {error && <AuthError message={error} />}
               <AuthButton busy={busy}>אימות והורדה</AuthButton>
               <AuthModeLinks
@@ -342,6 +389,13 @@ export function DownloadAuthModal({
           )}
         </motion.div>
       </motion.div>
+
+      {/* Live terms / privacy docs — same modals the /revisions
+          sign-up uses, so the wording stays in one place. */}
+      {termsModalOpen && <TermsModal onClose={() => setTermsModalOpen(false)} />}
+      {privacyModalOpen && (
+        <PrivacyModal onClose={() => setPrivacyModalOpen(false)} />
+      )}
     </AnimatePresence>
   )
 }

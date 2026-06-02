@@ -1160,6 +1160,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminDeleteReferral(req, res)
       case 'admin-referral-report':
         return await handleAdminReferralReport(req, res)
+      case 'admin-referral-detail':
+        return await handleAdminReferralDetail(req, res)
       case 'admin-grant-pro':
         return await handleAdminGrantPro(req, res)
       case 'get-pricing':
@@ -5178,6 +5180,69 @@ async function handleAdminReferralReport(
     })
   }
   return res.status(200).json({ ok: true, partners: rows })
+}
+
+/** Full drill-down for one partner: every attributed account + the
+ *  revenue broken down by calendar month. */
+async function handleAdminReferralDetail(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { idToken?: string; code?: string }
+  const admin = await verifyAdminEmail(body.idToken || '')
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const code = (body.code || '').trim()
+  if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
+  const db = getDb()
+
+  const [usersSnap, keysSnap] = await Promise.all([
+    db.collection('users').where('referredBy', '==', code).get(),
+    db.collection('productKeys').where('referredBy', '==', code).get(),
+  ])
+
+  const paidEmails = new Set<string>()
+  const revenueByMonth: Record<string, Record<string, number>> = {}
+  for (const k of keysSnap.docs) {
+    const kd = k.data() as {
+      nonPaidGrant?: boolean
+      buyerEmail?: string
+      redeemedByEmail?: string
+      billingHistory?: Array<{ at?: string; amount?: number; currency?: string }>
+    }
+    if (kd.nonPaidGrant) continue
+    const email = (kd.buyerEmail || kd.redeemedByEmail || '').toLowerCase()
+    const hist = Array.isArray(kd.billingHistory) ? kd.billingHistory : []
+    if (hist.length > 0 && email) paidEmails.add(email)
+    for (const h of hist) {
+      const d = h.at ? new Date(h.at) : null
+      const month =
+        d && !isNaN(d.getTime())
+          ? `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+          : 'לא ידוע'
+      const cur = (h.currency || 'ILS').toUpperCase()
+      const amt = typeof h.amount === 'number' ? h.amount : 0
+      revenueByMonth[month] = revenueByMonth[month] || {}
+      revenueByMonth[month][cur] = (revenueByMonth[month][cur] || 0) + amt
+    }
+  }
+
+  const accounts = usersSnap.docs
+    .map((d) => {
+      const u = d.data() as {
+        email?: string
+        createdAt?: string
+        referredAt?: string
+      }
+      const email = (u.email || '').toLowerCase()
+      return {
+        email: u.email || '',
+        createdAt: u.createdAt || u.referredAt || '',
+        paid: paidEmails.has(email),
+      }
+    })
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+
+  return res.status(200).json({ ok: true, accounts, revenueByMonth })
 }
 
 /** Stamp a referral onto a freshly-created account. Best-effort —

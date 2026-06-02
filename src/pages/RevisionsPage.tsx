@@ -1244,7 +1244,7 @@ function usePrefetchLegalDocs(): void {
   }, [])
 }
 
-function TermsModal({ onClose }: { onClose: () => void }) {
+export function TermsModal({ onClose }: { onClose: () => void }) {
   // Initialise straight from the module cache so a prefetched
   // doc renders without ever showing a spinner. If the cache
   // already has a ready entry we land in `ready`; otherwise we
@@ -1400,7 +1400,7 @@ function TermsModal({ onClose }: { onClose: () => void }) {
  *  if we ever need to (e.g. privacy might add an "export my data"
  *  CTA that doesn't apply to terms).
  * ────────────────────────────────────────────────────────────── */
-function PrivacyModal({ onClose }: { onClose: () => void }) {
+export function PrivacyModal({ onClose }: { onClose: () => void }) {
   // Same prefetch-aware initial state as TermsModal — if the
   // signup form already pulled the doc into the cache, we
   // skip the spinner entirely.
