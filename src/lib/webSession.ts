@@ -96,6 +96,7 @@ export function subscribeSession(fn: () => void): () => void {
  *  read it during render without triggering a state-update
  *  warning. */
 export function getSession(): { token: string; claims: DecodedSession } | null {
+  hydrateFromStorage()
   return cached
 }
 
@@ -103,7 +104,33 @@ export function getSession(): { token: string; claims: DecodedSession } | null {
  *  consumer (API clients that need to send `sessionToken` in the
  *  request body). */
 export function getSessionToken(): string | null {
+  hydrateFromStorage()
   return cached?.token ?? null
+}
+
+/** Re-sync the in-memory cache from sessionStorage when it's empty.
+ *
+ *  WHY: `cached` is hydrated once at module load. But AccountPage
+ *  writes the session token DIRECTLY to sessionStorage (same key)
+ *  after a login/SSO, bypassing adoptToken — so this module's cache
+ *  never learns about it. On desktop the session was usually already
+ *  in storage at load (cache warm), but on mobile a user who logs in
+ *  during the page session leaves `cached` stale-null, so
+ *  getSessionToken() returned null and "redeem key" wrongly said
+ *  "you must log in". Re-reading storage here closes that gap. We
+ *  only re-read when cached is null (fast path stays in-memory), and
+ *  signOut() clears storage too so this can't resurrect a dead
+ *  session. */
+function hydrateFromStorage(): void {
+  if (cached) return
+  try {
+    const raw = sessionStorage.getItem(SESSION_STORAGE_KEY)
+    if (!raw) return
+    const claims = decodeJwtClaims(raw)
+    if (claims) cached = { token: raw, claims }
+  } catch {
+    /* private browsing / storage disabled — nothing to recover */
+  }
 }
 
 /** Wipe the session locally AND notify other tabs / hooks. We
