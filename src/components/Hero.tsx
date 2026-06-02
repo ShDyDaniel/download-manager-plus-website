@@ -16,6 +16,8 @@ import {
   minPricePerMonth,
   useLivePricing,
 } from '../lib/pricing'
+import { getSession } from '../lib/webSession'
+import { DownloadAuthModal } from './DownloadAuthModal'
 
 /**
  * Editorial-style hero. Asymmetric two-column layout (text right,
@@ -59,6 +61,25 @@ export function Hero() {
   const pricing = useLivePricing()
   const minPerMonth = pricing ? minPricePerMonth(pricing) : null
   const sym = pricing ? currencySymbol(pricing.currency) : ''
+
+  // Download gating: a website account is required before download so
+  // a partner referral (?ref=...) always binds to a real account. If
+  // already signed in, the download starts immediately; otherwise we
+  // pop the auth modal and resume the download on success.
+  const [authOpen, setAuthOpen] = useState(false)
+  const [pendingUrl, setPendingUrl] = useState<string | null>(null)
+
+  const startDownload = (url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+  const requestDownload = (url: string) => {
+    if (getSession()) {
+      startDownload(url)
+    } else {
+      setPendingUrl(url)
+      setAuthOpen(true)
+    }
+  }
 
   const scrollToFeatures = () => {
     document
@@ -227,6 +248,7 @@ export function Hero() {
                 macUrl={DOWNLOAD_MAC_GITHUB}
                 winUrl={DOWNLOAD_WIN_GITHUB}
                 variant="primary"
+                onDownload={requestDownload}
               />
               <DownloadPicker
                 label="דרך Google Drive"
@@ -236,6 +258,7 @@ export function Hero() {
                 macUrl={DRIVE_DOWNLOAD_MAC}
                 winUrl={DRIVE_DOWNLOAD_WIN}
                 variant="secondary"
+                onDownload={requestDownload}
               />
             </div>
 
@@ -299,6 +322,19 @@ export function Hero() {
           <HeroProductVisual />
         </motion.div>
       </div>
+
+      {/* Account gate for downloads — see requestDownload above. */}
+      <DownloadAuthModal
+        open={authOpen}
+        onClose={() => setAuthOpen(false)}
+        onAuthed={() => {
+          setAuthOpen(false)
+          if (pendingUrl) {
+            startDownload(pendingUrl)
+            setPendingUrl(null)
+          }
+        }}
+      />
     </section>
   )
 }
@@ -420,6 +456,7 @@ function DownloadPicker({
   macUrl,
   winUrl,
   variant,
+  onDownload,
 }: {
   label: string
   icon: React.ReactNode
@@ -427,6 +464,9 @@ function DownloadPicker({
   macUrl: string
   winUrl: string
   variant: 'primary' | 'secondary'
+  /** Called with the chosen OS URL. The parent gates it behind a
+   *  website account before the download actually starts. */
+  onDownload: (url: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -505,34 +545,36 @@ function DownloadPicker({
             role="menu"
             className="absolute right-0 z-30 mt-2 w-full min-w-[220px] overflow-hidden rounded-xl border border-border bg-bg-card p-1 shadow-2xl shadow-black/40 sm:right-auto sm:left-0"
           >
-            <a
-              href={macUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => setOpen(false)}
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                onDownload(macUrl)
+              }}
               role="menuitem"
-              className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-fg transition-colors hover:bg-bg-elevated"
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-fg transition-colors hover:bg-bg-elevated"
             >
               <Apple className="h-4 w-4 text-fg-secondary" />
               <span className="flex-1 text-right">macOS</span>
               <span className="text-[10px] uppercase tracking-wider text-fg-faint">
                 .dmg
               </span>
-            </a>
-            <a
-              href={winUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => setOpen(false)}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                onDownload(winUrl)
+              }}
               role="menuitem"
-              className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-fg transition-colors hover:bg-bg-elevated"
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-fg transition-colors hover:bg-bg-elevated"
             >
               <Monitor className="h-4 w-4 text-fg-secondary" />
               <span className="flex-1 text-right">Windows</span>
               <span className="text-[10px] uppercase tracking-wider text-fg-faint">
                 .exe
               </span>
-            </a>
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
