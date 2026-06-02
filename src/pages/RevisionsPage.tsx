@@ -475,28 +475,30 @@ function AuthShell({ onSignedIn }: { onSignedIn: () => void }) {
 
   return (
     <div className="mx-auto mt-8 max-w-md">
-      <div className="rounded-2xl border border-border bg-bg-card p-8">
-        <div className="text-center">
-          {!cameFromAccountSignup && (
-            <div className="text-xs uppercase tracking-[0.18em] text-fg-muted">
-              סבבי תיקונים
-            </div>
-          )}
-          <h1
-            className={
-              'text-xl font-medium text-fg ' +
-              (cameFromAccountSignup ? '' : 'mt-2')
-            }
-          >
-            {mode === 'signin'
-              ? 'התחברות'
-              : mode === 'signup-details' || mode === 'signup-verify'
-                ? 'יצירת חשבון'
-                : 'איפוס סיסמה'}
-          </h1>
-        </div>
+      <div className="mb-8">
+        {!cameFromAccountSignup && (
+          <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-fg-muted">
+            — סבבי תיקונים
+          </div>
+        )}
+        <h1
+          className="font-display text-fg"
+          style={{
+            fontSize: 'clamp(26px, 4vw, 34px)',
+            lineHeight: 1.05,
+            letterSpacing: '-0.025em',
+            fontWeight: 500,
+          }}
+        >
+          {mode === 'signin'
+            ? 'התחברות'
+            : mode === 'signup-details' || mode === 'signup-verify'
+              ? 'יצירת חשבון'
+              : 'איפוס סיסמה'}
+        </h1>
+      </div>
 
-        <div className="mt-6">
+      <div>
           {mode === 'signin' && (
             <SignInForm
               onSignedIn={onSignedIn}
@@ -543,7 +545,6 @@ function AuthShell({ onSignedIn }: { onSignedIn: () => void }) {
             />
           )}
         </div>
-      </div>
     </div>
   )
 }
@@ -1092,7 +1093,7 @@ function Field(props: {
     <div>
       <label
         htmlFor={id}
-        className="mb-1.5 block text-xs text-fg-muted"
+        className="mb-2 block text-[10px] font-medium uppercase tracking-[0.18em] text-fg-muted"
       >
         {props.label}
       </label>
@@ -1106,8 +1107,10 @@ function Field(props: {
         dir={props.dir}
         value={props.value}
         onChange={(e) => props.onChange(e.target.value)}
+        // Editorial underline-only input — matches the desktop app's
+        // login fields so the website sign-in looks identical.
         className={
-          'w-full rounded-md border border-border bg-bg-elevated px-3 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-white/30 focus:outline-none ' +
+          'block w-full border-b border-border bg-transparent px-0 py-2 text-base text-fg placeholder:text-fg-faint/50 transition-colors focus:border-accent focus:outline-none ' +
           (props.className || '')
         }
       />

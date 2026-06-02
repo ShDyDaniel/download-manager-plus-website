@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
+import { AuthInput, AuthButton, AuthError } from '../components/authUi'
 import { offerCredentialSave } from '../lib/webSession'
 import {
   ArrowRight,
-  LogIn,
   Loader2,
   CheckCircle2,
   AlertTriangle,
@@ -724,7 +724,7 @@ export default function AccountPage() {
               setResetError(null)
               void handleSendResetEmail(cleanEmail)
             }}
-            className="card-elevated mx-auto max-w-md space-y-4 rounded-2xl border-border p-6 md:p-8"
+            className="mx-auto max-w-md space-y-7"
           >
             <div className="flex items-center gap-2 text-sm font-semibold text-fg">
               <Lock className="h-4 w-4 text-accent" />
@@ -766,42 +766,18 @@ export default function AccountPage() {
                   הזן את האימייל שאיתו נרשמת — נשלח אליו קישור לאיפוס
                   הסיסמה.
                 </p>
-                <label className="block">
-                  <span className="mb-1 block text-[11px] text-fg-muted">
-                    אימייל
-                  </span>
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@example.com"
-                    autoComplete="email"
-                    disabled={resetSending}
-                    // Inherit dir="rtl" from <html> — same RTL
-                    // alignment treatment as the login form's
-                    // email input.
-                    className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
-                    autoFocus
-                  />
-                </label>
-                {resetError && (
-                  <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                    {resetError}
-                  </div>
-                )}
-                <button
-                  type="submit"
+                <AuthInput
+                  label="אימייל"
+                  type="email"
+                  value={email}
+                  onChange={setEmail}
+                  placeholder="you@example.com"
+                  autoComplete="email"
                   disabled={resetSending}
-                  className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {resetSending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Lock className="h-4 w-4" />
-                  )}
-                  שלח לי קישור איפוס
-                </button>
+                  autoFocus
+                />
+                {resetError && <AuthError message={resetError} />}
+                <AuthButton busy={resetSending}>שלח לי קישור איפוס</AuthButton>
                 <button
                   type="button"
                   onClick={() => {
@@ -828,76 +804,37 @@ export default function AccountPage() {
             // picture Chrome's save-password heuristic walks.
             method="post"
             action="/api/paypal?action=session"
-            className="card-elevated mx-auto max-w-md space-y-4 rounded-2xl border-border p-6 md:p-8"
+            className="mx-auto max-w-md space-y-7"
           >
-            <div className="flex items-center gap-2 text-sm font-semibold text-fg">
-              <LogIn className="h-4 w-4 text-accent" />
-              התחבר עם החשבון שלך
-            </div>
             <p className="text-xs text-fg-muted">
               השתמש באותם פרטי גישה שאיתם נכנסת לתוכנת ניהול הורדות פלוס.
             </p>
             {ssoState === 'failed' && ssoError && (
-              <div className="rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-accent">
-                התחברות אוטומטית נכשלה ({ssoError}) — התחבר עם סיסמה.
-              </div>
-            )}
-            <label className="block">
-              <span className="mb-1 block text-[11px] text-fg-muted">אימייל</span>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                // `username` is the autocomplete token Chrome's
-                // "save password" detector looks for; `email`
-                // enables value autofill from the browser's
-                // contact list. Dual-token enables both.
-                autoComplete="username email"
-                name="email"
-                disabled={authing}
-                // No explicit dir — inherits dir="rtl" from <html lang="he">.
-                // The latin characters of the email still render LTR
-                // because of Unicode bidi, but the field's text anchor
-                // is on the right edge so the placeholder and typed
-                // content align with the Hebrew label above. The old
-                // dir="ltr" override was left-aligning the email
-                // visually, which looked wrong next to the right-
-                // aligned "אימייל" label.
-                className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
+              <AuthError
+                message={`התחברות אוטומטית נכשלה (${ssoError}) — התחבר עם סיסמה.`}
               />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-[11px] text-fg-muted">סיסמה</span>
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                name="password"
-                disabled={authing}
-                className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
-              />
-            </label>
-            {authError && (
-              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                {authError}
-              </div>
             )}
-            <button
-              type="submit"
+            <AuthInput
+              label="אימייל"
+              type="email"
+              value={email}
+              onChange={setEmail}
+              placeholder="you@example.com"
+              autoComplete="username email"
+              name="email"
               disabled={authing}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {authing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <LogIn className="h-4 w-4" />
-              )}
-              התחברות
-            </button>
+            />
+            <AuthInput
+              label="סיסמה"
+              type="password"
+              value={password}
+              onChange={setPassword}
+              autoComplete="current-password"
+              name="password"
+              disabled={authing}
+            />
+            {authError && <AuthError message={authError} />}
+            <AuthButton busy={authing}>התחברות</AuthButton>
             {/* Toggle to forgot-password mode. Just flips the
                 forgotPasswordMode flag — the email-entry +
                 send-reset flow lives in its own form block above
