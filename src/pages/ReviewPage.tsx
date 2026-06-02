@@ -261,6 +261,13 @@ async function fetchNoteMediaSrc(
   passwordToken: string | null,
   roundId: string | null,
 ): Promise<string> {
+  // Prefer the Cloudflare Worker (Drive → Cloudflare → browser). We
+  // fetch the bytes as a blob (not a bare <img src>) so we can FALL
+  // BACK to the legacy Vercel byte endpoint if anything fails —
+  // including the case where the Worker hasn't been redeployed yet
+  // and doesn't understand `?m=`. This keeps media from ever
+  // breaking during rollout. Returned object URLs are revoked by the
+  // caller (NoteItem) on unmount.
   try {
     const r = await fetch(`${API}?action=note-media-url`, {
       method: 'POST',
@@ -275,12 +282,20 @@ async function fetchNoteMediaSrc(
     })
     if (r.ok) {
       const j = (await r.json()) as { ok: boolean; url?: string }
-      if (j.ok && j.url) return j.url
+      if (j.ok && j.url) {
+        const media = await fetch(j.url)
+        if (media.ok) return URL.createObjectURL(await media.blob())
+      }
     }
   } catch {
     /* fall through to legacy */
   }
-  return noteMediaUrl(shareToken, noteId, kind, passwordToken, roundId)
+  // Legacy fallback — bytes straight from Vercel.
+  const legacy = await fetch(
+    noteMediaUrl(shareToken, noteId, kind, passwordToken, roundId),
+  )
+  if (!legacy.ok) throw new Error(`media ${legacy.status}`)
+  return URL.createObjectURL(await legacy.blob())
 }
 /** localStorage flag — true once the viewer has seen the "how this
  *  works" onboarding for this specific share token + viewer email.
@@ -2418,30 +2433,33 @@ function NoteItem({
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   useEffect(() => {
     let alive = true
+    const created: string[] = []
+    const revoke = (u: string) => {
+      if (u.startsWith('blob:')) URL.revokeObjectURL(u)
+    }
     if (note.screenshotDriveFileId) {
-      void fetchNoteMediaSrc(
-        shareToken,
-        note.id,
-        'image',
-        passwordToken,
-        roundId,
-      ).then((u) => {
-        if (alive) setScreenshotUrl(u)
-      })
+      void fetchNoteMediaSrc(shareToken, note.id, 'image', passwordToken, roundId)
+        .then((u) => {
+          if (alive) {
+            created.push(u)
+            setScreenshotUrl(u)
+          } else revoke(u)
+        })
+        .catch(() => undefined)
     }
     if (note.audioDriveFileId) {
-      void fetchNoteMediaSrc(
-        shareToken,
-        note.id,
-        'audio',
-        passwordToken,
-        roundId,
-      ).then((u) => {
-        if (alive) setAudioUrl(u)
-      })
+      void fetchNoteMediaSrc(shareToken, note.id, 'audio', passwordToken, roundId)
+        .then((u) => {
+          if (alive) {
+            created.push(u)
+            setAudioUrl(u)
+          } else revoke(u)
+        })
+        .catch(() => undefined)
     }
     return () => {
       alive = false
+      created.forEach(revoke)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note.id, note.screenshotDriveFileId, note.audioDriveFileId, shareToken, roundId])
