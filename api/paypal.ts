@@ -1162,6 +1162,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminReferralReport(req, res)
       case 'admin-referral-detail':
         return await handleAdminReferralDetail(req, res)
+      case 'admin-referral-export':
+        return await handleAdminReferralExport(req, res)
       case 'admin-grant-pro':
         return await handleAdminGrantPro(req, res)
       case 'get-pricing':
@@ -5249,6 +5251,88 @@ async function handleAdminReferralDetail(
     .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
 
   return res.status(200).json({ ok: true, accounts, revenueByMonth })
+}
+
+/** Payment-level export for one partner — every individual charge
+ *  (initial + each recurring renewal) within an optional date range,
+ *  with the buyer, their plan type, amount and timestamp. The desktop
+ *  turns this into a CSV. */
+async function handleAdminReferralExport(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as {
+    idToken?: string
+    code?: string
+    fromMs?: number
+    toMs?: number
+  }
+  const admin = await verifyAdminEmail(body.idToken || '')
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const code = (body.code || '').trim()
+  if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
+  const fromMs = typeof body.fromMs === 'number' ? body.fromMs : null
+  const toMs = typeof body.toMs === 'number' ? body.toMs : null
+  const db = getDb()
+
+  const [partnerSnap, usersSnap, keysSnap] = await Promise.all([
+    db.collection('referralPartners').doc(code).get(),
+    db.collection('users').where('referredBy', '==', code).get(),
+    db.collection('productKeys').where('referredBy', '==', code).get(),
+  ])
+
+  const emailToName: Record<string, string> = {}
+  for (const u of usersSnap.docs) {
+    const d = u.data() as { email?: string; name?: string }
+    if (d.email) emailToName[d.email.toLowerCase()] = d.name || ''
+  }
+
+  const payments: Array<{
+    at: string
+    email: string
+    name: string
+    planType: 'monthly' | 'yearly'
+    amount: number
+    currency: string
+  }> = []
+
+  for (const k of keysSnap.docs) {
+    const kd = k.data() as {
+      nonPaidGrant?: boolean
+      buyerEmail?: string
+      redeemedByEmail?: string
+      subscriptionPlanDays?: number
+      planDays?: number
+      billingHistory?: Array<{ at?: string; amount?: number; currency?: string }>
+    }
+    if (kd.nonPaidGrant) continue
+    const email = (kd.buyerEmail || kd.redeemedByEmail || '').toLowerCase()
+    const days = kd.subscriptionPlanDays || kd.planDays || 30
+    const planType: 'monthly' | 'yearly' = days >= 365 ? 'yearly' : 'monthly'
+    for (const h of kd.billingHistory || []) {
+      if (!h.at) continue
+      const ms = Date.parse(h.at)
+      if (isNaN(ms)) continue
+      if (fromMs !== null && ms < fromMs) continue
+      if (toMs !== null && ms > toMs) continue
+      payments.push({
+        at: h.at,
+        email,
+        name: emailToName[email] || '',
+        planType,
+        amount: typeof h.amount === 'number' ? h.amount : 0,
+        currency: (h.currency || 'ILS').toUpperCase(),
+      })
+    }
+  }
+
+  payments.sort((a, b) => a.at.localeCompare(b.at))
+
+  const partnerName =
+    (partnerSnap.data() as { name?: string } | undefined)?.name || code
+  return res
+    .status(200)
+    .json({ ok: true, partner: { code, name: partnerName }, payments })
 }
 
 /** Stamp a referral onto a freshly-created account. Best-effort —
