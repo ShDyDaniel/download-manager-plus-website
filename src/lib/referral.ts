@@ -1,25 +1,24 @@
 /**
  * Referral capture — when a visitor lands via a partner link
  * (dmplus.net/?ref=<code>), we remember the code so it can be stamped
- * onto their account when they sign up. The account is the attribution
- * anchor: once `referredBy` is on the account, every later purchase is
- * attributable to the partner.
+ * onto their account when they sign up, and kept sticky in the URL
+ * while they browse.
  *
- * Stored in localStorage (survives across tabs + reloads, unlike
- * sessionStorage) with a 60-day TTL. Last-write-wins: a fresh ?ref
- * overrides an older stored one.
+ * Storage choice: sessionStorage (NOT localStorage). The referral is
+ * scoped to the BROWSING SESSION you arrived in:
+ *   - It survives navigation between pages and a page refresh (same
+ *     tab), so the ?ref stays in the address bar everywhere you go.
+ *   - It is cleared when the tab is closed. So if you later open the
+ *     plain dmplus.net link in a fresh tab, you stay on the plain link
+ *     — a previous partner visit doesn't "stick" forever.
+ * This matches the operator's intent: the link you came in with is the
+ * one you keep, until you close the tab.
  */
 
 const REF_KEY = 'dmplus.ref.v1'
-const REF_TTL_MS = 60 * 24 * 60 * 60 * 1000 // 60 days
 
-interface StoredRef {
-  code: string
-  at: number
-}
-
-/** Read ?ref from the current URL and persist it. Call once on app
- *  load. Safe to call repeatedly. */
+/** Read ?ref from the current URL and persist it for this session.
+ *  Call on app load and on each navigation. Safe to call repeatedly. */
 export function captureRefFromUrl(): void {
   try {
     const code = new URLSearchParams(window.location.search)
@@ -27,36 +26,25 @@ export function captureRefFromUrl(): void {
       ?.trim()
       .slice(0, 40)
     if (!code) return
-    const payload: StoredRef = { code, at: Date.now() }
-    localStorage.setItem(REF_KEY, JSON.stringify(payload))
+    sessionStorage.setItem(REF_KEY, code)
   } catch {
     /* private mode / storage disabled — referral just won't persist */
   }
 }
 
-/** The stored referral code, or undefined if none / expired. */
+/** The referral code for this session, or undefined if none. */
 export function getStoredRef(): string | undefined {
   try {
-    const raw = localStorage.getItem(REF_KEY)
-    if (!raw) return undefined
-    const parsed = JSON.parse(raw) as StoredRef
-    if (!parsed?.code || typeof parsed.at !== 'number') return undefined
-    if (Date.now() - parsed.at > REF_TTL_MS) {
-      localStorage.removeItem(REF_KEY)
-      return undefined
-    }
-    return parsed.code
+    return sessionStorage.getItem(REF_KEY)?.trim() || undefined
   } catch {
     return undefined
   }
 }
 
-/** Clear the stored referral (e.g. after it's been bound to an
- *  account, to avoid mis-attributing a second account on the same
- *  browser). */
+/** Clear the stored referral for this session. */
 export function clearStoredRef(): void {
   try {
-    localStorage.removeItem(REF_KEY)
+    sessionStorage.removeItem(REF_KEY)
   } catch {
     /* ignore */
   }
