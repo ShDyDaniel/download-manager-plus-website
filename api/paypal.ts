@@ -259,6 +259,51 @@ async function loadCurrentPricing(): Promise<LivePricingLocal> {
   }
 }
 
+/** STRICT pricing load for the BUY path (display + actual charge).
+ *
+ *  Unlike loadCurrentPricing (which falls back to PRICING_DEFAULTS_LOCAL
+ *  so admin tooling never breaks), this returns null on ANY problem:
+ *  the appConfig/pricing doc is missing, Firestore is unreachable, or
+ *  the stored numbers aren't valid positive prices. The /buy page and
+ *  create-subscription use this so we NEVER show or charge a hardcoded
+ *  price — the amount comes net from the database, and if we can't
+ *  confirm it, checkout is blocked instead of falling back to 9/60. */
+async function loadCurrentPricingStrict(): Promise<LivePricingLocal | null> {
+  try {
+    const db = getDb()
+    const snap = await db.collection('appConfig').doc('pricing').get()
+    if (!snap.exists) return null
+    const data = snap.data() as {
+      monthly?: { regular?: unknown; sale?: unknown }
+      yearly?: { regular?: unknown; sale?: unknown }
+      currency?: unknown
+      saleLabel?: unknown
+    }
+    const pos = (v: unknown): number | null =>
+      typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+    const monthlyRegular = pos(data.monthly?.regular)
+    const yearlyRegular = pos(data.yearly?.regular)
+    const currency =
+      typeof data.currency === 'string' && data.currency ? data.currency : null
+    // A real, sellable price requires both regular prices + a currency.
+    if (monthlyRegular === null || yearlyRegular === null || !currency) {
+      return null
+    }
+    return {
+      monthly: { regular: monthlyRegular, sale: pos(data.monthly?.sale) },
+      yearly: { regular: yearlyRegular, sale: pos(data.yearly?.sale) },
+      currency,
+      saleLabel:
+        typeof data.saleLabel === 'string' && data.saleLabel.trim()
+          ? data.saleLabel.trim()
+          : undefined,
+    }
+  } catch (err) {
+    console.error('[paypal] loadCurrentPricingStrict failed:', err)
+    return null
+  }
+}
+
 const PAYPAL_PRODUCT_DOC = 'paypal'
 const PAYPAL_PRODUCT_NAME = 'ניהול הורדות פלוס Pro'
 const PAYPAL_PRODUCT_DESCRIPTION =
@@ -2000,7 +2045,17 @@ async function handleCreateSubscription(
   // PayPal themselves throttle subscription creation at the
   // account level and fraud-score risky cards, so the unbounded
   // path here is fenced by their infrastructure too.
-  const pricing = await loadCurrentPricing()
+  // STRICT: never charge a hardcoded fallback price. The amount must
+  // come net from the DB; if we can't confirm it (doc missing /
+  // Firestore down), refuse the purchase rather than create a PayPal
+  // plan at the default 9/60 — a charge at the wrong price is worse
+  // than a blocked sale the buyer can retry later.
+  const pricing = await loadCurrentPricingStrict()
+  if (!pricing) {
+    return res
+      .status(503)
+      .json({ ok: false, error: 'המחיר אינו זמין כרגע, נסו שוב מאוחר יותר' })
+  }
   const usingSale = pricing[plan].sale != null
   const lockedPrice = usingSale ? pricing[plan].sale! : pricing[plan].regular
   const plans = await syncPlansForPricing(pricing)
@@ -4663,7 +4718,16 @@ async function handleMintRenewToken(req: VercelRequest, res: VercelResponse) {
  *  so admin price changes propagate within a minute.
  * ───────────────────────────────────────────────────────────── */
 async function handleGetPricing(_req: VercelRequest, res: VercelResponse) {
-  const pricing = await loadCurrentPricing()
+  // STRICT: the price must come net from the database. If we can't
+  // confirm a real DB price, return ok:false (no hardcoded fallback)
+  // so the /buy page blocks checkout instead of selling at a default.
+  const pricing = await loadCurrentPricingStrict()
+  if (!pricing) {
+    // Don't cache a failure — a transient Firestore blip shouldn't
+    // pin "unavailable" for 60s at the edge.
+    res.setHeader('Cache-Control', 'no-store')
+    return res.status(200).json({ ok: false, error: 'pricing_unavailable' })
+  }
   res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=3600')
   // Shape matches the legacy /api/pricing response (with `ok` flag)
   // so fetchLivePricing on the client doesn't need any branching

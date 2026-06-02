@@ -15,11 +15,9 @@ import {
 } from 'lucide-react'
 import {
   currencySymbol,
-  DEFAULT_PRICING,
   effectivePrice,
   fetchLivePricingStrict,
   formatPrice,
-  readPricingCache,
   writePricingCache,
   type LivePricing,
 } from '../lib/pricing'
@@ -324,9 +322,11 @@ export function BuyPage() {
   // flash of the hardcoded DEFAULT_PRICING that the user saw under
   // the old "always start with null" approach. First-ever visitors
   // still get null + skeleton until the fetch resolves.
-  const [pricing, setPricing] = useState<LivePricing | null>(() =>
-    readPricingCache(),
-  )
+  // Start null — we do NOT seed from any cache or hardcoded default.
+  // The price shown on the buy page must come net from the database
+  // (a fresh strict fetch); until it resolves we render a loading
+  // state, and if it fails we block checkout entirely.
+  const [pricing, setPricing] = useState<LivePricing | null>(null)
   // Hard-block flag. Set true when the STRICT pricing fetch fails
   // (server/Firestore down) — the page then refuses to show any
   // checkout button and renders a "service unavailable" notice
@@ -335,8 +335,6 @@ export function BuyPage() {
   // couldn't mint a product key — money in, nothing out. See
   // fetchLivePricingStrict() for the full rationale.
   const [pricingUnavailable, setPricingUnavailable] = useState(false)
-  const pricingRef = useRef<LivePricing>(DEFAULT_PRICING)
-  pricingRef.current = pricing ?? DEFAULT_PRICING
 
   // ── Subscription flow state (NEW, replaces the per-purchase
   //    capture flow for non-renewal mode) ────────────────────────
@@ -383,34 +381,24 @@ export function BuyPage() {
   // popup/inline-card UI rather than navigating away.)
 
 
-  // Fetch pricing once on mount. The shared `fetchLivePricing` +
-  // localStorage cache is in src/lib/pricing.ts; using it directly
-  // here (instead of inline fetch) means returning visitors get the
-  // cached value rendered on the FIRST PAINT — no flash of the
-  // hardcoded DEFAULT_PRICING. First-ever visitors with no cache
-  // still see the skeleton state in the plan cards (`pricing=null`)
-  // until the network response lands.
+  // Fetch the price once on mount — NET FROM THE DATABASE, with no
+  // cache seed and no hardcoded fallback. While the strict fetch is in
+  // flight `pricing` stays null and the page shows a loading state; on
+  // success we show the real price; on failure we block checkout with
+  // a "try again later" notice. A stale cache can never enable a sale.
   useEffect(() => {
     let alive = true
-    // Synchronous cache read for first-paint freshness — lets a
-    // returning visitor see plausible prices instantly. But the
-    // cache is NOT trusted for the actual sale: the strict fetch
-    // below must confirm a live price before checkout is allowed,
-    // so a stale cache can't enable a purchase during an outage.
-    const cached = readPricingCache()
-    if (cached) setPricing(cached)
     void fetchLivePricingStrict().then((p) => {
       if (!alive) return
       if (p) {
-        // Server confirmed a real price — safe to sell.
+        // Server confirmed a real DB price — safe to sell.
         setPricing(p)
         setPricingUnavailable(false)
         writePricingCache(p)
       } else {
-        // Could NOT confirm the price (server/Firestore down).
-        // Block checkout. We deliberately do NOT fall back to the
-        // cached value or DEFAULT_PRICING for the SALE — showing a
-        // buy button now risks a charge with no key minted.
+        // Could NOT confirm the price (doc missing / Firestore down).
+        // Block checkout — a buy button now risks a charge with no key
+        // minted, and we refuse to show a hardcoded default.
         setPricingUnavailable(true)
       }
     })
@@ -652,6 +640,9 @@ export function BuyPage() {
       setSdkReady(true)
       return
     }
+    // Wait for the real DB price before loading the SDK — its currency
+    // param must be the live one, never a hardcoded default.
+    if (!pricing) return
     const clientId = import.meta.env.VITE_PAYPAL_CLIENT_ID as
       | string
       | undefined
@@ -697,7 +688,7 @@ export function BuyPage() {
     // leaving for paypal.com.
     const params = new URLSearchParams({
       'client-id': clientId,
-      currency: pricingRef.current.currency,
+      currency: pricing.currency,
       vault: 'true',
       intent: 'subscription',
       'disable-funding': 'credit',
@@ -716,7 +707,9 @@ export function BuyPage() {
       { once: true },
     )
     document.head.appendChild(s)
-  }, [])
+    // Depends on `pricing` so the SDK loads once the live price (and
+    // its currency) is confirmed — never before, never with a default.
+  }, [pricing])
 
   // Renewal-mode PayPal Buttons (createOrder, one-shot capture):
   // historically this is where we rendered a "Pay" button for users
@@ -1123,6 +1116,14 @@ export function BuyPage() {
               נסו שוב
             </button>
           </div>
+        ) : pricing === null ? (
+          /* Loading — the strict DB price fetch hasn't resolved yet.
+             We show NO price (not even a skeleton number) until the
+             real database price arrives. */
+          <div className="mb-6 flex flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-card px-6 py-16 text-center">
+            <Loader2 className="h-6 w-6 animate-spin text-fg-muted" />
+            <p className="text-sm text-fg-muted">טוען את פרטי המנוי…</p>
+          </div>
         ) : (
         <>
         {/* Plan toggle — two cards side by side, click to select.
@@ -1149,15 +1150,15 @@ export function BuyPage() {
             active={plan === 'yearly'}
             onSelect={() => setPlan('yearly')}
             title="שנתי"
-            regularPrice={pricingRef.current.yearly.regular}
-            salePrice={pricingRef.current.yearly.sale}
-            currency={pricingRef.current.currency}
-            saleLabel={pricingRef.current.saleLabel}
+            regularPrice={pricing.yearly.regular}
+            salePrice={pricing.yearly.sale}
+            currency={pricing.currency}
+            saleLabel={pricing.saleLabel}
             cycle="לשנה"
             monthlyEquivalent
-            comparisonMonthly={pricingRef.current.monthly}
+            comparisonMonthly={pricing.monthly}
             recommended
-            loading={pricing === null}
+            loading={false}
             // Plan-switch flow: when user is switching TO monthly,
             // their current plan is yearly — this card needs the
             // "המנוי הנוכחי" badge + non-clickable styling so they
@@ -1169,13 +1170,13 @@ export function BuyPage() {
             active={plan === 'monthly'}
             onSelect={() => setPlan('monthly')}
             title="חודשי"
-            regularPrice={pricingRef.current.monthly.regular}
-            salePrice={pricingRef.current.monthly.sale}
-            currency={pricingRef.current.currency}
-            saleLabel={pricingRef.current.saleLabel}
+            regularPrice={pricing.monthly.regular}
+            salePrice={pricing.monthly.sale}
+            currency={pricing.currency}
+            saleLabel={pricing.saleLabel}
             cycle="לחודש"
             note="מתחדש אוטומטית מדי 30 יום"
-            loading={pricing === null}
+            loading={false}
             // Mirror of the yearly card: switching TO yearly =
             // current is monthly = this card locks.
             currentPlanBadge={switchTo === 'yearly'}
@@ -1431,8 +1432,8 @@ export function BuyPage() {
                 >
                   <Crown className="h-5 w-5" />
                   המשך לחידוש —{' '}
-                  {formatPrice(effectivePrice(pricingRef.current[plan]))}{' '}
-                  {currencySymbol(pricingRef.current.currency)}
+                  {formatPrice(effectivePrice(pricing[plan]))}{' '}
+                  {currencySymbol(pricing.currency)}
                 </button>
               </form>
             ) : (
@@ -1463,7 +1464,7 @@ export function BuyPage() {
               email={email}
               setEmail={setEmail}
               plan={plan}
-              pricing={pricingRef.current}
+              pricing={pricing}
               autoRenewAccepted={autoRenewAccepted}
               setAutoRenewAccepted={setAutoRenewAccepted}
               error={subError}
