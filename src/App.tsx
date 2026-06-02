@@ -11,6 +11,7 @@ import AccountPage from './pages/AccountPage'
 import AuthActionPage from './pages/AuthActionPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { RevisionsPage } from './pages/RevisionsPage'
+import DrivePickerPage from './pages/DrivePickerPage'
 
 // Top-level layout. The marketing site is the default route (`/`);
 // the purchase flow lives at `/buy` so the URL is shareable, deep-
@@ -67,13 +68,18 @@ function AnimatedRoutes() {
   // routes so they render instantly with no enter animation.
   const isStandalone =
     location.pathname.startsWith('/review') ||
-    location.pathname.startsWith('/auth-action')
+    location.pathname.startsWith('/auth-action') ||
+    location.pathname.startsWith('/drive-picker')
 
   if (isStandalone) {
     return (
       <Routes location={location}>
         <Route path="/auth-action" element={<AuthActionPage />} />
         <Route path="/review/:token" element={<ReviewPage />} />
+        {/* Chromeless surface the DESKTOP app opens in a frameless
+            modal window to run the Google Picker. Not linked from
+            anywhere in the site UI — it's an app integration point. */}
+        <Route path="/drive-picker" element={<DrivePickerPage />} />
       </Routes>
     )
   }
