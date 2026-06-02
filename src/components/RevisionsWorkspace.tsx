@@ -41,11 +41,14 @@ import { AnimatePresence, motion } from 'framer-motion'
 import {
   Copy,
   ExternalLink,
+  HardDrive,
   MessageSquare,
   Pencil,
   Plus,
   Trash2,
+  Upload,
 } from 'lucide-react'
+import { pickVideoFromDrive, type PickedDriveFile } from '../lib/drivePicker'
 import {
   addRoundToGroup,
   buildOauthStartUrl,
@@ -1209,7 +1212,7 @@ function NewProjectModal({
   const [watermark, setWatermark] = useState(true)
   const [allowDownload, setAllowDownload] = useState(false)
   const [openInDrive, setOpenInDrive] = useState(false)
-  const [file, setFile] = useState<File | null>(null)
+  const [source, setSource] = useState<VideoSource>({ kind: 'none' })
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<UploadProgress | null>(null)
@@ -1242,7 +1245,7 @@ function NewProjectModal({
     }
     // Defence-in-depth: file picker already validates on pick,
     // but a determined user could swap the file via devtools.
-    if (file && file.size > MAX_UPLOAD_BYTES) {
+    if (source.kind === 'upload' && source.file.size > MAX_UPLOAD_BYTES) {
       setError(
         `הקובץ גדול מהמותר (מקסימום ${formatBytes(MAX_UPLOAD_BYTES)}). בחרו קובץ קטן יותר.`,
       )
@@ -1257,7 +1260,7 @@ function NewProjectModal({
     try {
       // If the user didn't pick a video, create an empty group
       // (they can add a round later via the project card).
-      if (!file) {
+      if (source.kind === 'none') {
         await createEmptyProjectGroup({
           title: title.trim(),
           password: password || undefined,
@@ -1270,28 +1273,48 @@ function NewProjectModal({
       }
 
       // Got a video — full flow: access token → ensure folder →
-      // upload chunks → set permissions → create group with the
-      // resulting driveFileId. Each step checks abort so a click
-      // on cancel exits at the next yield point.
+      // (upload OR reuse a Drive-picked file) → set permissions →
+      // create group with the resulting driveFileId. Each step
+      // checks abort so a click on cancel exits at the next yield.
       const at = await fetchDriveAccessToken()
       if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
       const folders = await ensureProjectFolders(at.accessToken)
       if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
-      const upload = await uploadFileToDrive({
-        accessToken: at.accessToken,
-        file,
-        folderId: folders.videosFolderId,
-        onProgress: setProgress,
-        signal: controller.signal,
-      })
-      await setShareablePermissions(at.accessToken, upload.driveFileId)
+
+      let driveFileId: string
+      let videoFileName: string
+      let videoSizeBytes: number
+      let videoMime: string
+      if (source.kind === 'upload') {
+        const upload = await uploadFileToDrive({
+          accessToken: at.accessToken,
+          file: source.file,
+          folderId: folders.videosFolderId,
+          onProgress: setProgress,
+          signal: controller.signal,
+        })
+        await setShareablePermissions(at.accessToken, upload.driveFileId)
+        driveFileId = upload.driveFileId
+        videoFileName = source.file.name
+        videoSizeBytes = source.file.size
+        videoMime = source.file.type || 'video/mp4'
+      } else {
+        // Drive-picked: reuse the existing file, nothing uploaded.
+        await setShareablePermissions(at.accessToken, source.picked.id)
+        if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
+        driveFileId = source.picked.id
+        videoFileName = source.picked.name
+        videoSizeBytes = source.picked.sizeBytes
+        videoMime = source.picked.mimeType || 'video/mp4'
+      }
+
       await createProjectGroup({
-        driveFileId: upload.driveFileId,
+        driveFileId,
         driveFolderId: folders.videosFolderId,
         title: title.trim(),
-        videoFileName: file.name,
-        videoSizeBytes: file.size,
-        videoMime: file.type || 'video/mp4',
+        videoFileName,
+        videoSizeBytes,
+        videoMime,
         password: password || undefined,
         roundNumber: 1,
         watermark,
@@ -1331,24 +1354,12 @@ function NewProjectModal({
           type="text"
           placeholder="ריק = ללא סיסמה"
         />
-        <FileFieldPicker
-          file={file}
-          onPick={(f) => {
-            // Validate size on pick so the error shows up before
-            // the user clicks "create" — much better UX than
-            // letting them fill out the form and only failing on
-            // submit.
-            if (f && f.size > MAX_UPLOAD_BYTES) {
-              setFile(null)
-              setError(
-                `הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}.`,
-              )
-              return
-            }
-            setError(null)
-            setFile(f)
-          }}
+        <VideoSourceField
+          value={source}
+          onChange={setSource}
+          onError={setError}
           inputRef={fileInputRef}
+          disabled={busy}
         />
         <ToggleRow
           label="חתימת מים על הסרטון"
@@ -1369,7 +1380,10 @@ function NewProjectModal({
           onChange={setOpenInDrive}
         />
         {progress && (
-          <UploadProgressBar progress={progress} fileName={file?.name || ''} />
+          <UploadProgressBar
+            progress={progress}
+            fileName={source.kind === 'upload' ? source.file.name : ''}
+          />
         )}
         {error && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -1393,9 +1407,11 @@ function NewProjectModal({
               ? progress
                 ? `מעלה ${Math.round(progress.fraction * 100)}%`
                 : 'יוצר…'
-              : file
+              : source.kind === 'upload'
                 ? 'יצירה והעלאה'
-                : 'יצירת פרויקט ריק'}
+                : source.kind === 'drive'
+                  ? 'יצירת פרויקט'
+                  : 'יצירת פרויקט ריק'}
           </button>
         </div>
       </form>
@@ -1416,7 +1432,7 @@ function AddRoundModal({
   onClose: () => void
   onAdded: () => void
 }) {
-  const [file, setFile] = useState<File | null>(null)
+  const [source, setSource] = useState<VideoSource>({ kind: 'none' })
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<UploadProgress | null>(null)
@@ -1433,8 +1449,8 @@ function AddRoundModal({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    if (busy || !file) return
-    if (file.size > MAX_UPLOAD_BYTES) {
+    if (busy || source.kind === 'none') return
+    if (source.kind === 'upload' && source.file.size > MAX_UPLOAD_BYTES) {
       setError(
         `הקובץ גדול מהמותר (מקסימום ${formatBytes(MAX_UPLOAD_BYTES)}). בחרו קובץ קטן יותר.`,
       )
@@ -1449,21 +1465,45 @@ function AddRoundModal({
       if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
       const folders = await ensureProjectFolders(at.accessToken)
       if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
-      const upload = await uploadFileToDrive({
-        accessToken: at.accessToken,
-        file,
-        folderId: folders.videosFolderId,
-        onProgress: setProgress,
-        signal: controller.signal,
-      })
-      await setShareablePermissions(at.accessToken, upload.driveFileId)
+
+      // Resolve the round's video — either upload a fresh file, or
+      // reuse an existing Drive file the editor picked (no upload).
+      let driveFileId: string
+      let videoFileName: string
+      let videoSizeBytes: number
+      let videoMime: string
+      if (source.kind === 'upload') {
+        const upload = await uploadFileToDrive({
+          accessToken: at.accessToken,
+          file: source.file,
+          folderId: folders.videosFolderId,
+          onProgress: setProgress,
+          signal: controller.signal,
+        })
+        await setShareablePermissions(at.accessToken, upload.driveFileId)
+        driveFileId = upload.driveFileId
+        videoFileName = source.file.name
+        videoSizeBytes = source.file.size
+        videoMime = source.file.type || 'video/mp4'
+      } else {
+        // Drive-picked: the file already lives in the user's Drive.
+        // Just make it shareable so the streaming worker can serve it
+        // and record the existing id — nothing is re-uploaded.
+        await setShareablePermissions(at.accessToken, source.picked.id)
+        if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
+        driveFileId = source.picked.id
+        videoFileName = source.picked.name
+        videoSizeBytes = source.picked.sizeBytes
+        videoMime = source.picked.mimeType || 'video/mp4'
+      }
+
       await addRoundToGroup({
         groupId: group.id,
-        driveFileId: upload.driveFileId,
+        driveFileId,
         driveFolderId: folders.videosFolderId,
-        videoFileName: file.name,
-        videoSizeBytes: file.size,
-        videoMime: file.type || 'video/mp4',
+        videoFileName,
+        videoSizeBytes,
+        videoMime,
       })
       onAdded()
     } catch (err) {
@@ -1486,24 +1526,18 @@ function AddRoundModal({
       onClose={handleClose}
     >
       <form onSubmit={submit} className="space-y-4">
-        <DropZone
-          file={file}
-          onPick={(f) => {
-            if (f && f.size > MAX_UPLOAD_BYTES) {
-              setFile(null)
-              setError(
-                `הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}.`,
-              )
-              return
-            }
-            setError(null)
-            setFile(f)
-          }}
+        <VideoSourceField
+          value={source}
+          onChange={setSource}
+          onError={setError}
           inputRef={fileInputRef}
           disabled={busy}
         />
         {progress && (
-          <UploadProgressBar progress={progress} fileName={file?.name || ''} />
+          <UploadProgressBar
+            progress={progress}
+            fileName={source.kind === 'upload' ? source.file.name : ''}
+          />
         )}
         {error && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -1520,14 +1554,18 @@ function AddRoundModal({
           </button>
           <button
             type="submit"
-            disabled={busy || !file}
+            disabled={busy || source.kind === 'none'}
             className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
           >
             {busy
               ? progress
                 ? `מעלה ${Math.round(progress.fraction * 100)}%`
-                : 'מעלה…'
-              : 'העלאת סבב'}
+                : source.kind === 'drive'
+                  ? 'יוצר…'
+                  : 'מעלה…'
+              : source.kind === 'drive'
+                ? 'הוספת סבב'
+                : 'העלאת סבב'}
           </button>
         </div>
       </form>
@@ -2621,54 +2659,182 @@ function LabelledField({
   )
 }
 
-function FileFieldPicker({
-  file,
-  onPick,
+/**
+ * VideoSource — the unified result of the video chooser. The editor
+ * either uploads a fresh file from their computer, OR picks one that
+ * already lives in their Google Drive (via the Google Picker). The
+ * Drive path is far cheaper: nothing is uploaded — we just record the
+ * existing driveFileId and let the streaming worker serve it.
+ */
+export type VideoSource =
+  | { kind: 'none' }
+  | { kind: 'upload'; file: File }
+  | { kind: 'drive'; picked: PickedDriveFile }
+
+/**
+ * VideoSourceField — two-way video chooser used by the new-project and
+ * add-round modals. A segmented toggle switches between:
+ *   - "העלאת קובץ": the existing drag-and-drop uploader (DropZone).
+ *   - "בחירה מ-Google Drive": opens the Google Picker so the editor
+ *     can select a video that's ALREADY in their Drive — no re-upload,
+ *     no 2 GB cap (the cap only protects browser memory during an
+ *     upload, which the Drive path skips entirely).
+ *
+ * Switching tabs clears the current selection so the submit button
+ * never acts on a stale value from the other source.
+ */
+function VideoSourceField({
+  value,
+  onChange,
+  onError,
+  disabled = false,
   inputRef,
-  required = false,
 }: {
-  file: File | null
-  onPick: (f: File | null) => void
+  value: VideoSource
+  onChange: (v: VideoSource) => void
+  onError: (msg: string | null) => void
+  disabled?: boolean
   inputRef: React.RefObject<HTMLInputElement>
-  required?: boolean
 }) {
+  const [mode, setMode] = useState<'upload' | 'drive'>('upload')
+  const [picking, setPicking] = useState(false)
+
+  function switchMode(next: 'upload' | 'drive') {
+    if (next === mode || disabled) return
+    setMode(next)
+    onError(null)
+    // Drop any cross-mode selection so the parent's submit logic
+    // only ever sees a source that matches the visible tab.
+    if (value.kind !== 'none') onChange({ kind: 'none' })
+  }
+
+  async function openPicker() {
+    if (disabled || picking) return
+    setPicking(true)
+    onError(null)
+    try {
+      const at = await fetchDriveAccessToken()
+      const picked = await pickVideoFromDrive(at.accessToken)
+      // null = user cancelled the picker; leave the current state.
+      if (picked) onChange({ kind: 'drive', picked })
+    } catch (err) {
+      onError(
+        err instanceof Error
+          ? err.message
+          : 'בחירת קובץ מ-Google Drive נכשלה',
+      )
+    } finally {
+      setPicking(false)
+    }
+  }
+
+  const driveFile = value.kind === 'drive' ? value.picked : null
+
   return (
     <div>
-      <label className="mb-1.5 flex items-center justify-between text-xs text-fg-muted">
-        <span>
-          קובץ וידאו{' '}
-          {required && <span className="text-destructive">*</span>}
-        </span>
-        {/* Display the size cap inline so the user knows the
-            constraint BEFORE they pick a giant file and get an
-            error toast. Same surface, less surprise. */}
-        <span className="text-fg-faint">
-          עד <bdi dir="ltr">{formatBytes(MAX_UPLOAD_BYTES)}</bdi>
-        </span>
-      </label>
-      <div className="flex items-center gap-3">
+      {/* Segmented source toggle */}
+      <div className="mb-3 grid grid-cols-2 gap-1.5 rounded-md border border-border bg-bg-card p-1">
         <button
           type="button"
-          onClick={() => inputRef.current?.click()}
-          className="rounded-md border border-border px-4 py-2 text-xs text-fg transition-colors hover:bg-bg-card"
+          disabled={disabled}
+          onClick={() => switchMode('upload')}
+          className={
+            'flex items-center justify-center gap-2 rounded px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed ' +
+            (mode === 'upload'
+              ? 'bg-primary text-bg'
+              : 'text-fg-muted hover:text-fg')
+          }
         >
-          בחירת קובץ
+          <Upload className="h-3.5 w-3.5" />
+          העלאת קובץ
         </button>
-        <span className="min-w-0 flex-1 truncate text-xs text-fg-muted">
-          {file
-            ? `${file.name} (${formatBytes(file.size)})`
-            : required
-              ? 'חובה לבחור קובץ'
-              : 'לא נבחר קובץ (אפשר להוסיף סבב אחר כך)'}
-        </span>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => switchMode('drive')}
+          className={
+            'flex items-center justify-center gap-2 rounded px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed ' +
+            (mode === 'drive'
+              ? 'bg-primary text-bg'
+              : 'text-fg-muted hover:text-fg')
+          }
+        >
+          <HardDrive className="h-3.5 w-3.5" />
+          בחירה מ-Google Drive
+        </button>
       </div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="video/*"
-        className="sr-only"
-        onChange={(e) => onPick(e.target.files?.[0] || null)}
-      />
+
+      {mode === 'upload' ? (
+        <DropZone
+          file={value.kind === 'upload' ? value.file : null}
+          onPick={(f) => {
+            if (!f) {
+              onChange({ kind: 'none' })
+              return
+            }
+            if (f.size > MAX_UPLOAD_BYTES) {
+              onChange({ kind: 'none' })
+              onError(
+                `הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}. ` +
+                  'לקבצים גדולים יותר בחרו אותם ישירות מ-Google Drive.',
+              )
+              return
+            }
+            onError(null)
+            onChange({ kind: 'upload', file: f })
+          }}
+          inputRef={inputRef}
+          disabled={disabled}
+        />
+      ) : driveFile ? (
+        // Picked-from-Drive state — mirrors DropZone's picked layout.
+        <div className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-border bg-bg-card px-6 py-10 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <VideoFileIcon className="h-6 w-6" />
+          </div>
+          <div className="min-w-0 max-w-full">
+            <div className="truncate text-sm font-medium text-fg">
+              {driveFile.name}
+            </div>
+            <div className="mt-1 text-xs text-fg-muted">
+              {driveFile.sizeBytes > 0 ? (
+                <bdi dir="ltr">{formatBytes(driveFile.sizeBytes)}</bdi>
+              ) : (
+                'מ-Google Drive'
+              )}
+            </div>
+          </div>
+          {!disabled && (
+            <button
+              type="button"
+              onClick={openPicker}
+              className="text-xs text-fg-muted underline-offset-2 transition-colors hover:text-fg hover:underline"
+            >
+              החלפת בחירה
+            </button>
+          )}
+        </div>
+      ) : (
+        // Empty Drive state — single CTA that opens the Picker.
+        <button
+          type="button"
+          disabled={disabled || picking}
+          onClick={openPicker}
+          className="group flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-border bg-bg-card px-6 py-10 text-center transition-all hover:border-fg/30 hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-bg-elevated text-fg-muted transition-colors group-hover:bg-primary/10 group-hover:text-primary">
+            <HardDrive className="h-7 w-7" />
+          </div>
+          <div>
+            <div className="text-sm font-medium text-fg">
+              {picking ? 'פותח את Google Drive…' : 'בחירת סרטון מ-Google Drive'}
+            </div>
+            <div className="mt-1 text-xs text-fg-muted">
+              בוחרים קובץ קיים — בלי להעלות מחדש
+            </div>
+          </div>
+        </button>
+      )}
     </div>
   )
 }
