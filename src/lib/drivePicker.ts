@@ -102,12 +102,31 @@ export async function pickVideoFromDrive(
         .setIncludeFolders(false)
         .setSelectFolderEnabled(false)
         .setOwnedByMe(true)
-      const picker = new google.picker.PickerBuilder()
+      // Grid of thumbnails reads much cleaner than the sparse list
+      // default. Guarded — older Picker builds may lack DocsViewMode.
+      try {
+        if (google.picker.DocsViewMode?.GRID) {
+          view.setMode(google.picker.DocsViewMode.GRID)
+        }
+      } catch {
+        /* setMode unsupported — fall back to the default list view */
+      }
+      const builder = new google.picker.PickerBuilder()
         .addView(view)
         .setOAuthToken(oauthToken)
         .setDeveloperKey(PICKER_API_KEY)
         .setAppId(PICKER_APP_ID)
         .setLocale('he')
+      // We only expose a single view, so the navigation/tab strip is
+      // dead weight — hiding it makes the dialog feel less cluttered.
+      try {
+        if (google.picker.Feature?.NAV_HIDDEN) {
+          builder.enableFeature(google.picker.Feature.NAV_HIDDEN)
+        }
+      } catch {
+        /* feature unsupported — leave the nav strip visible */
+      }
+      const picker = builder
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .setCallback((data: any) => {
           const action = data?.[google.picker.Response.ACTION]
