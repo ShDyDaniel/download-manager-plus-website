@@ -3259,6 +3259,21 @@ async function firestoreMetricSum(
 }
 
 async function fetchFirestoreUsage() {
+  // Surface WHICH service account + project the code is actually using,
+  // so a 403 can be diagnosed (e.g. the role was granted to a different
+  // SA than the one in FIREBASE_SERVICE_ACCOUNT).
+  let saEmail = '?'
+  let saProject = '?'
+  try {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT
+    if (raw) {
+      const sa = JSON.parse(raw) as { client_email?: string; project_id?: string }
+      saEmail = sa.client_email || '?'
+      saProject = sa.project_id || '?'
+    }
+  } catch {
+    /* ignore */
+  }
   try {
     const { token, projectId } = await googleAccessToken(
       'https://www.googleapis.com/auth/monitoring.read',
@@ -3275,7 +3290,10 @@ async function fetchFirestoreUsage() {
       writesLimit: 20000,
     }
   } catch (err) {
-    return { configured: false, error: String((err as Error)?.message || err) }
+    return {
+      configured: false,
+      error: `${String((err as Error)?.message || err)} | SA=${saEmail} | project=${saProject}`,
+    }
   }
 }
 
