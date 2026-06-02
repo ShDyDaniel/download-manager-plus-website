@@ -26,6 +26,8 @@
  * /revisions and vice versa.
  */
 
+import { getStoredRef } from './referral'
+
 /** sessionStorage key — MUST match the one used by AccountPage and
  *  BuyPage so a sign-in done on either /account or /buy carries
  *  over to /revisions without a second login. */
@@ -397,6 +399,9 @@ export async function verifySignupCode(args: {
     password: args.password,
     name: args.name?.trim() || undefined,
     marketingOptIn: args.marketingOptIn === true,
+    // Partner attribution: if this visitor arrived via a ?ref link,
+    // stamp the new account so later purchases credit the partner.
+    ref: getStoredRef(),
   })
   if (!r.ok) return { ok: false, error: r.error }
   return { ok: true }

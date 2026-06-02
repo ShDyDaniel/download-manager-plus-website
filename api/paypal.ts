@@ -1152,6 +1152,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleUpdateMarketingOptIn(req, res)
       case 'mint-renew-token':
         return await handleMintRenewToken(req, res)
+      case 'admin-create-referral':
+        return await handleAdminCreateReferral(req, res)
+      case 'admin-list-referrals':
+        return await handleAdminListReferrals(req, res)
       case 'admin-grant-pro':
         return await handleAdminGrantPro(req, res)
       case 'get-pricing':
@@ -3522,6 +3526,7 @@ async function handleSignupVerifyCode(req: VercelRequest, res: VercelResponse) {
     password?: string
     name?: string
     marketingOptIn?: boolean
+    ref?: string
   }
   const email = (body.email || '').trim().toLowerCase()
   const code = (body.code || '').trim()
@@ -3656,6 +3661,10 @@ async function handleSignupVerifyCode(req: VercelRequest, res: VercelResponse) {
         err,
       )
     }
+    // Attribute this new account to a referral partner if the buyer
+    // arrived through a partner link (?ref=...). Best-effort — never
+    // fails the signup.
+    await stampReferralOnSignup(createdUid, body.ref)
   }
 
   return res.status(200).json({ ok: true })
@@ -4968,4 +4977,135 @@ async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {
     expiresAt: expiresAt.toISOString(),
     replacedPriorKeys,
   })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Referral partners — attribute signups to a promoter.
+ *
+ *  Each partner has a short URL-safe code; the share link is
+ *  dmplus.net/?ref=<code>. The code is captured in the browser and
+ *  stamped onto the ACCOUNT at signup (see signup-verify-code), so
+ *  any later purchase by that account is attributable to the partner
+ *  (the account is the anchor — not the purchase).
+ * ────────────────────────────────────────────────────────────── */
+
+const REFERRAL_LINK_BASE = 'https://dmplus.net'
+
+interface ReferralPartnerDoc {
+  name: string
+  code: string
+  createdAt: string
+  createdBy: string
+  signups: number
+}
+
+/** Verify the caller is an admin. Returns the admin email or null. */
+async function verifyAdminEmail(idToken: string): Promise<string | null> {
+  if (!idToken) return null
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken.trim())
+    const email = (decoded.email || '').toLowerCase()
+    return ADMIN_EMAILS.includes(email) ? email : null
+  } catch {
+    return null
+  }
+}
+
+/** Latin slug from a partner name (non-latin → empty → random base). */
+function slugifyRefCode(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24)
+}
+
+async function handleAdminCreateReferral(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { idToken?: string; name?: string }
+  const admin = await verifyAdminEmail(body.idToken || '')
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const name = (body.name || '').trim().slice(0, 80)
+  if (!name) return res.status(400).json({ ok: false, error: 'יש להזין שם' })
+
+  const db = getDb()
+  const base =
+    slugifyRefCode(name) || `ref-${crypto.randomBytes(3).toString('hex')}`
+  let code = base
+  for (let i = 0; i < 5; i++) {
+    const exists = (await db.collection('referralPartners').doc(code).get())
+      .exists
+    if (!exists) break
+    code = `${base}-${crypto.randomBytes(2).toString('hex')}`
+  }
+  const doc: ReferralPartnerDoc = {
+    name,
+    code,
+    createdAt: new Date().toISOString(),
+    createdBy: admin,
+    signups: 0,
+  }
+  await db.collection('referralPartners').doc(code).set(doc)
+  return res.status(200).json({
+    ok: true,
+    code,
+    name,
+    link: `${REFERRAL_LINK_BASE}/?ref=${encodeURIComponent(code)}`,
+  })
+}
+
+async function handleAdminListReferrals(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { idToken?: string }
+  const admin = await verifyAdminEmail(body.idToken || '')
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const db = getDb()
+  const snap = await db
+    .collection('referralPartners')
+    .orderBy('createdAt', 'desc')
+    .get()
+  const partners = snap.docs.map((d) => {
+    const data = d.data() as ReferralPartnerDoc
+    return {
+      code: data.code,
+      name: data.name,
+      signups: typeof data.signups === 'number' ? data.signups : 0,
+      createdAt: data.createdAt,
+      link: `${REFERRAL_LINK_BASE}/?ref=${encodeURIComponent(data.code)}`,
+    }
+  })
+  return res.status(200).json({ ok: true, partners })
+}
+
+/** Stamp a referral onto a freshly-created account. Best-effort —
+ *  an unknown code is silently ignored, and any error never fails
+ *  the signup. */
+async function stampReferralOnSignup(
+  uid: string,
+  rawRef: string | undefined,
+): Promise<void> {
+  const code = (rawRef || '').trim().slice(0, 40)
+  if (!code) return
+  try {
+    const db = getDb()
+    const partnerRef = db.collection('referralPartners').doc(code)
+    if (!(await partnerRef.get()).exists) return // unknown code → ignore
+    await db
+      .collection('users')
+      .doc(uid)
+      .set(
+        { referredBy: code, referredAt: new Date().toISOString() },
+        { merge: true },
+      )
+    await partnerRef
+      .update({ signups: FieldValue.increment(1) })
+      .catch(() => undefined)
+  } catch (err) {
+    console.warn('[referral] stamp on signup failed (continuing):', err)
+  }
 }
