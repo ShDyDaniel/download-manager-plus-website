@@ -694,7 +694,7 @@ export default function AccountPage() {
 
         {ssoState === 'exchanging' ? (
           /* ── SSO bootstrap in progress ── */
-          <div className="card-elevated mx-auto flex max-w-md flex-col items-center gap-3 rounded-2xl border-border p-8 text-center">
+          <div className="mx-auto flex max-w-md flex-col items-center gap-3 rounded-2xl border border-border/60 bg-white/[0.015] p-8 text-center">
             <Loader2 className="h-6 w-6 animate-spin text-primary" />
             <div className="text-sm font-medium text-fg">
               מתחבר אוטומטית לחשבון שלך…
@@ -883,7 +883,7 @@ export default function AccountPage() {
           /* ── Authenticated dashboard ── */
           <div className="space-y-6">
             {/* Profile card */}
-            <section className="card-elevated rounded-2xl border-border p-6 md:p-8">
+            <section className="rounded-2xl border border-border/60 bg-white/[0.015] p-6 md:p-8">
               <div className="mb-5 flex items-center justify-between gap-3">
                 <h2 className="flex items-center gap-2 text-lg font-bold text-fg">
                   <Crown className="h-4 w-4 text-accent" />
@@ -1000,7 +1000,7 @@ export default function AccountPage() {
             </section>
 
             {/* Subscriptions */}
-            <section className="card-elevated rounded-2xl border-border p-6 md:p-8">
+            <section className="rounded-2xl border border-border/60 bg-white/[0.015] p-6 md:p-8">
               <h2 className="mb-5 flex items-center gap-2 text-lg font-bold text-fg">
                 <Shield className="h-4 w-4 text-accent" />
                 המנוי שלך
@@ -1050,7 +1050,7 @@ export default function AccountPage() {
             </section>
 
             {/* Billing history (collapsed by default) */}
-            <section className="card-elevated rounded-2xl border-border p-6 md:p-8">
+            <section className="rounded-2xl border border-border/60 bg-white/[0.015] p-6 md:p-8">
               <button
                 onClick={toggleBilling}
                 className="flex w-full items-center justify-between gap-3 text-right"
