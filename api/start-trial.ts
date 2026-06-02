@@ -41,7 +41,7 @@ import { getFirestore } from 'firebase-admin/firestore'
  *   FIREBASE_SERVICE_ACCOUNT
  */
 
-const TRIAL_DAYS = 30
+const TRIAL_DAYS = 14
 
 let firebaseApp: App | null = null
 
