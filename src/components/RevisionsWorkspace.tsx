@@ -460,6 +460,23 @@ function ConnectedWorkspace({
           >
             <RoundDetailView
               target={viewingRound}
+              liveNotesCount={(() => {
+                // Live note count for THIS round, read from the
+                // push-updated projects state. When a viewer adds a
+                // note the rounds listener bumps this, and the detail
+                // view re-fetches its notes so the new one appears
+                // without a manual refresh.
+                if (!projects) return undefined
+                if ('legacy' in viewingRound) {
+                  return projects.legacy.find(
+                    (p) => p.id === viewingRound.legacy.id,
+                  )?.notesCount
+                }
+                return projects.groups
+                  .find((g) => g.id === viewingRound.group.id)
+                  ?.rounds.find((r) => r.id === viewingRound.round.id)
+                  ?.notesCount
+              })()}
               onBack={() => setViewingRound(null)}
               onLockChanged={() => {
                 reload()
@@ -1992,6 +2009,7 @@ function ConfirmDeleteModal({
 
 function RoundDetailView({
   target,
+  liveNotesCount,
   onBack,
   onLockChanged,
   onRequestReplaceVideo,
@@ -1999,6 +2017,10 @@ function RoundDetailView({
   target:
     | { group: RevisionGroup; round: GroupRoundSummary }
     | { legacy: LegacyProjectSummary }
+  /** Live note count for this round from the push listener. When it
+   *  changes (a viewer added a note), we re-fetch the notes so the
+   *  new one shows without a manual refresh. */
+  liveNotesCount: number | undefined
   onBack: () => void
   onLockChanged: () => void
   /** Pop the Replace-Video modal for the round currently being
@@ -2043,6 +2065,24 @@ function RoundDetailView({
       cancelled = true
     }
   }, [projectId, refreshKey])
+
+  // Live re-fetch: when the push listener reports a different note
+  // count for this round (a viewer just added/removed one), reload
+  // the notes so the new content appears without a manual refresh.
+  // The ref skips the first observed value so we don't double-fetch
+  // on mount (the effect above already did the initial load).
+  const prevLiveCountRef = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (liveNotesCount === undefined) return
+    if (prevLiveCountRef.current === undefined) {
+      prevLiveCountRef.current = liveNotesCount
+      return
+    }
+    if (liveNotesCount !== prevLiveCountRef.current) {
+      prevLiveCountRef.current = liveNotesCount
+      setRefreshKey((k) => k + 1)
+    }
+  }, [liveNotesCount])
 
   // Esc → back to project list. Same shortcut the editor expects
   // from any "drill-into" surface across the app.
