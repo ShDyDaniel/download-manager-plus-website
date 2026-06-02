@@ -1172,7 +1172,6 @@ export function BuyPage() {
               'דחיסת וידאו למשקל מדויק',
               'מערכת הצעות מחיר מלאה',
               'ניהול תשלומים והכנסות',
-              'עדכונים אוטומטיים ותמיכה מועדפת',
             ].map((t) => (
               <li key={t} className="flex items-start gap-2 text-fg-secondary">
                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" />
