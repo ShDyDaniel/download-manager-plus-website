@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { AuthInput, AuthButton, AuthError } from '../components/authUi'
-import { offerCredentialSave } from '../lib/webSession'
+import { offerCredentialSave, redeemProductKey } from '../lib/webSession'
 import {
   ArrowRight,
   Loader2,
@@ -206,6 +206,36 @@ export default function AccountPage() {
   // webhook auto-redeems a new key to this account).
   const [going, setGoing] = useState(false)
   const [goError, setGoError] = useState<string | null>(null)
+
+  // Redeem-product-key flow (for users who have a key but no active
+  // subscription — they can activate it on their account here).
+  const [redeemOpen, setRedeemOpen] = useState(false)
+  const [redeemKey, setRedeemKey] = useState('')
+  const [redeeming, setRedeeming] = useState(false)
+  const [redeemError, setRedeemError] = useState<string | null>(null)
+  const [redeemDone, setRedeemDone] = useState(false)
+
+  async function handleRedeem(e: React.FormEvent) {
+    e.preventDefault()
+    if (redeeming) return
+    const key = redeemKey.trim()
+    if (!key) {
+      setRedeemError('הזן מפתח מוצר')
+      return
+    }
+    setRedeeming(true)
+    setRedeemError(null)
+    const r = await redeemProductKey(key)
+    setRedeeming(false)
+    if (!r.ok) {
+      setRedeemError(r.error)
+      return
+    }
+    // Success — the account is now Pro. Reload so the dashboard
+    // re-fetches entitlement and shows the active license.
+    setRedeemDone(true)
+    setTimeout(() => window.location.reload(), 1200)
+  }
 
   // "Switch plan" (שינוי תוכנית) state. Same renewToken-based flow
   // as the renew button, but redirects to /buy with a `switchTo`
@@ -1011,7 +1041,7 @@ export default function AccountPage() {
                   {goError && (
                     <div className="mt-2 text-xs text-destructive">{goError}</div>
                   )}
-                  <div className="mt-3">
+                  <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
                     <button
                       type="button"
                       disabled={going}
@@ -1025,7 +1055,41 @@ export default function AccountPage() {
                       )}
                       {profile?.keyLast8 ? 'חידוש המנוי שלי' : 'לקניית רישיון'}
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRedeemOpen((o) => !o)
+                        setRedeemError(null)
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-bg-elevated"
+                    >
+                      <KeyIcon className="h-3 w-3" />
+                      מימוש מפתח מוצר
+                    </button>
                   </div>
+                  {redeemDone ? (
+                    <div className="mt-4 flex items-center justify-center gap-1.5 text-xs text-success">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      המפתח הופעל! מרעננים את החשבון…
+                    </div>
+                  ) : (
+                    redeemOpen && (
+                      <form
+                        onSubmit={handleRedeem}
+                        className="mx-auto mt-4 max-w-xs space-y-3 text-right"
+                      >
+                        <AuthInput
+                          label="מפתח מוצר"
+                          value={redeemKey}
+                          onChange={(v) => setRedeemKey(v.toUpperCase())}
+                          placeholder="XXXX-XXXX-XXXX-XXXX"
+                          autoFocus
+                        />
+                        {redeemError && <AuthError message={redeemError} />}
+                        <AuthButton busy={redeeming}>הפעלת מפתח</AuthButton>
+                      </form>
+                    )
+                  )}
                 </div>
               ) : (
                 <ul className="space-y-3">
