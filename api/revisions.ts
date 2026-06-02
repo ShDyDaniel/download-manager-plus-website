@@ -3166,6 +3166,179 @@ async function handleAuthStream(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: admin-usage  (ADMIN ONLY)
+ *
+ *  Live infrastructure quota dashboard for the admin panel. Pulls
+ *  real usage from the two platforms that expose it cleanly:
+ *    - Firestore: Google Cloud Monitoring API (document read/write
+ *      counts, last 24h) vs the 50K read / 20K write free daily caps.
+ *    - Cloudflare: GraphQL Analytics API (Worker requests, last 24h)
+ *      vs the 100K/day free cap.
+ *  Vercel has no clean usage API on Hobby, so the client just links
+ *  out to the Vercel dashboard.
+ *
+ *  Every source is independently try/caught and reports
+ *  { configured:false } when its env/credentials aren't set, so the
+ *  dashboard degrades gracefully instead of erroring as a whole.
+ * ────────────────────────────────────────────────────────────── */
+
+/** Mint a Google OAuth access token for the given scope from the
+ *  service-account creds in FIREBASE_SERVICE_ACCOUNT (RS256 JWT
+ *  assertion → token exchange). No extra deps — Node crypto signs. */
+async function googleAccessToken(scope: string): Promise<{ token: string; projectId: string }> {
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT
+  if (!raw) throw new Error('FIREBASE_SERVICE_ACCOUNT not set')
+  const sa = JSON.parse(raw) as {
+    client_email: string
+    private_key: string
+    project_id: string
+  }
+  const now = Math.floor(Date.now() / 1000)
+  const header = b64url(Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })))
+  const claims = b64url(
+    Buffer.from(
+      JSON.stringify({
+        iss: sa.client_email,
+        scope,
+        aud: 'https://oauth2.googleapis.com/token',
+        iat: now,
+        exp: now + 3600,
+      }),
+    ),
+  )
+  const sig = crypto
+    .createSign('RSA-SHA256')
+    .update(`${header}.${claims}`)
+    .sign(sa.private_key)
+  const assertion = `${header}.${claims}.${b64url(sig)}`
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion,
+    }),
+  })
+  const j = (await r.json()) as { access_token?: string }
+  if (!j.access_token) throw new Error('google token exchange failed')
+  return { token: j.access_token, projectId: sa.project_id }
+}
+
+/** Sum a Firestore Monitoring metric over the last 24h. */
+async function firestoreMetricSum(
+  projectId: string,
+  token: string,
+  metricType: string,
+): Promise<number> {
+  const end = new Date()
+  const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
+  const params = new URLSearchParams()
+  params.set('filter', `metric.type="${metricType}"`)
+  params.set('interval.startTime', start.toISOString())
+  params.set('interval.endTime', end.toISOString())
+  params.set('aggregation.alignmentPeriod', '86400s')
+  params.set('aggregation.perSeriesAligner', 'ALIGN_SUM')
+  params.set('aggregation.crossSeriesReducer', 'REDUCE_SUM')
+  const url = `https://monitoring.googleapis.com/v3/projects/${projectId}/timeSeries?${params.toString()}`
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  if (!r.ok) throw new Error(`monitoring ${r.status}`)
+  const j = (await r.json()) as {
+    timeSeries?: Array<{ points?: Array<{ value?: { int64Value?: string; doubleValue?: number } }> }>
+  }
+  let sum = 0
+  for (const ts of j.timeSeries || []) {
+    for (const p of ts.points || []) {
+      const v = p.value?.int64Value != null ? Number(p.value.int64Value) : p.value?.doubleValue || 0
+      sum += v
+    }
+  }
+  return sum
+}
+
+async function fetchFirestoreUsage() {
+  try {
+    const { token, projectId } = await googleAccessToken(
+      'https://www.googleapis.com/auth/monitoring.read',
+    )
+    const [reads, writes] = await Promise.all([
+      firestoreMetricSum(projectId, token, 'firestore.googleapis.com/document/read_count'),
+      firestoreMetricSum(projectId, token, 'firestore.googleapis.com/document/write_count'),
+    ])
+    return {
+      configured: true,
+      reads: Math.round(reads),
+      readsLimit: 50000,
+      writes: Math.round(writes),
+      writesLimit: 20000,
+    }
+  } catch (err) {
+    return { configured: false, error: String((err as Error)?.message || err) }
+  }
+}
+
+async function fetchCloudflareUsage() {
+  const apiToken = (process.env.CF_API_TOKEN || '').trim()
+  const accountId = (process.env.CF_ACCOUNT_ID || '').trim()
+  if (!apiToken || !accountId) {
+    return { configured: false, error: 'CF_API_TOKEN / CF_ACCOUNT_ID not set' }
+  }
+  try {
+    const end = new Date()
+    const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
+    const query = `query($acc:String!,$start:Time!,$end:Time!){
+      viewer { accounts(filter:{accountTag:$acc}) {
+        workersInvocationsAdaptive(limit:10000, filter:{datetime_geq:$start, datetime_leq:$end}) {
+          sum { requests }
+        }
+      } }
+    }`
+    const r = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        query,
+        variables: { acc: accountId, start: start.toISOString(), end: end.toISOString() },
+      }),
+    })
+    if (!r.ok) throw new Error(`cf ${r.status}`)
+    const j = (await r.json()) as {
+      data?: { viewer?: { accounts?: Array<{ workersInvocationsAdaptive?: Array<{ sum?: { requests?: number } }> }> } }
+      errors?: unknown
+    }
+    if (j.errors) throw new Error('cf graphql error')
+    const rows = j.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive || []
+    const requests = rows.reduce((acc, row) => acc + (row.sum?.requests || 0), 0)
+    return { configured: true, requests, requestsLimit: 100000 }
+  } catch (err) {
+    return { configured: false, error: String((err as Error)?.message || err) }
+  }
+}
+
+async function handleAdminUsage(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  // Admin only — same allowlist as the Firestore rules' isAdmin().
+  if (verified.email !== 'dyshalts@gmail.com') {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const [firestore, cloudflare] = await Promise.all([
+    fetchFirestoreUsage(),
+    fetchCloudflareUsage(),
+  ])
+  res.setHeader('Cache-Control', 'no-store')
+  return res.status(200).json({
+    ok: true,
+    firestore,
+    cloudflare,
+    vercel: { configured: false, dashboardUrl: 'https://vercel.com/dashboard/usage' },
+    fetchedAt: Date.now(),
+  })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Note-media via Cloudflare Worker (zero Vercel egress)
  *
  *  Same model as the video stream proxy: the heavy bytes
@@ -4665,6 +4838,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleNoteMediaOwnerUrl(req, res)
       case 'auth-media':
         return await handleAuthMedia(req, res)
+      case 'admin-usage':
+        return await handleAdminUsage(req, res)
       case 'get-stream-token':
         return await handleGetStreamToken(req, res)
       case 'stream-video':
