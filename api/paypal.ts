@@ -5067,21 +5067,41 @@ async function handleAdminCreateReferral(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  const body = req.body as { idToken?: string; name?: string }
+  const body = req.body as { idToken?: string; name?: string; code?: string }
   const admin = await verifyAdminEmail(body.idToken || '')
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const name = (body.name || '').trim().slice(0, 80)
   if (!name) return res.status(400).json({ ok: false, error: 'יש להזין שם' })
 
   const db = getDb()
-  const base =
-    slugifyRefCode(name) || `ref-${crypto.randomBytes(3).toString('hex')}`
-  let code = base
-  for (let i = 0; i < 5; i++) {
-    const exists = (await db.collection('referralPartners').doc(code).get())
+  // Explicit code (admin-chosen) takes precedence; otherwise derive a
+  // slug from the name. The code is what appears in the share link.
+  const requestedCode = slugifyRefCode(body.code || '')
+  let code: string
+  if (requestedCode) {
+    if (requestedCode.length < 2) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'הקוד חייב להכיל לפחות 2 תווים (אותיות/ספרות)' })
+    }
+    const taken = (await db.collection('referralPartners').doc(requestedCode).get())
       .exists
-    if (!exists) break
-    code = `${base}-${crypto.randomBytes(2).toString('hex')}`
+    if (taken) {
+      return res
+        .status(409)
+        .json({ ok: false, error: 'הקוד הזה כבר תפוס — בחרו קוד אחר' })
+    }
+    code = requestedCode
+  } else {
+    const base =
+      slugifyRefCode(name) || `ref-${crypto.randomBytes(3).toString('hex')}`
+    code = base
+    for (let i = 0; i < 5; i++) {
+      const exists = (await db.collection('referralPartners').doc(code).get())
+        .exists
+      if (!exists) break
+      code = `${base}-${crypto.randomBytes(2).toString('hex')}`
+    }
   }
   const doc: ReferralPartnerDoc = {
     name,
@@ -5295,6 +5315,10 @@ async function handleAdminReferralExport(
     amount: number
     currency: string
   }> = []
+  // Map each buyer email → their plan type (from their key) so the
+  // accounts roster can show "חודשי/שנתי" even for users whose
+  // payments fall outside the selected date range.
+  const emailToPlan: Record<string, 'monthly' | 'yearly'> = {}
 
   for (const k of keysSnap.docs) {
     const kd = k.data() as {
@@ -5309,6 +5333,7 @@ async function handleAdminReferralExport(
     const email = (kd.buyerEmail || kd.redeemedByEmail || '').toLowerCase()
     const days = kd.subscriptionPlanDays || kd.planDays || 30
     const planType: 'monthly' | 'yearly' = days >= 365 ? 'yearly' : 'monthly'
+    if (email) emailToPlan[email] = planType
     for (const h of kd.billingHistory || []) {
       if (!h.at) continue
       const ms = Date.parse(h.at)
@@ -5328,11 +5353,31 @@ async function handleAdminReferralExport(
 
   payments.sort((a, b) => a.at.localeCompare(b.at))
 
+  // Full roster: every account that came from this partner, paid or
+  // not. The CSV lists these even with zero revenue.
+  const accounts = usersSnap.docs
+    .map((u) => {
+      const d = u.data() as {
+        email?: string
+        name?: string
+        createdAt?: string
+        referredAt?: string
+      }
+      const email = (d.email || '').toLowerCase()
+      return {
+        email: d.email || '',
+        name: d.name || '',
+        createdAt: d.createdAt || d.referredAt || '',
+        planType: emailToPlan[email] || null,
+      }
+    })
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+
   const partnerName =
     (partnerSnap.data() as { name?: string } | undefined)?.name || code
   return res
     .status(200)
-    .json({ ok: true, partner: { code, name: partnerName }, payments })
+    .json({ ok: true, partner: { code, name: partnerName }, payments, accounts })
 }
 
 /** Stamp a referral onto a freshly-created account. Best-effort —
