@@ -1164,6 +1164,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminReferralDetail(req, res)
       case 'admin-referral-export':
         return await handleAdminReferralExport(req, res)
+      case 'admin-set-referral-credentials':
+        return await handleAdminSetReferralCredentials(req, res)
+      case 'partner-login':
+        return await handlePartnerLogin(req, res)
+      case 'partner-stats':
+        return await handlePartnerStats(req, res)
       case 'admin-grant-pro':
         return await handleAdminGrantPro(req, res)
       case 'get-pricing':
@@ -5067,11 +5073,27 @@ async function handleAdminCreateReferral(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  const body = req.body as { idToken?: string; name?: string; code?: string }
+  const body = req.body as {
+    idToken?: string
+    name?: string
+    code?: string
+    loginEmail?: string
+    password?: string
+  }
   const admin = await verifyAdminEmail(body.idToken || '')
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const name = (body.name || '').trim().slice(0, 80)
   if (!name) return res.status(400).json({ ok: false, error: 'יש להזין שם' })
+  const loginEmail = (body.loginEmail || '').trim().toLowerCase()
+  const password = body.password || ''
+  if (loginEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginEmail)) {
+    return res.status(400).json({ ok: false, error: 'מייל כניסה לא תקין' })
+  }
+  if (password && password.length < 6) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'סיסמה חייבת להיות לפחות 6 תווים' })
+  }
 
   const db = getDb()
   // Explicit code (admin-chosen) takes precedence; otherwise derive a
@@ -5103,13 +5125,18 @@ async function handleAdminCreateReferral(
       code = `${base}-${crypto.randomBytes(2).toString('hex')}`
     }
   }
-  const doc: ReferralPartnerDoc = {
+  const doc: ReferralPartnerDoc & {
+    loginEmail?: string
+    passwordHash?: string
+  } = {
     name,
     code,
     createdAt: new Date().toISOString(),
     createdBy: admin,
     signups: 0,
   }
+  if (loginEmail) doc.loginEmail = loginEmail
+  if (loginEmail && password) doc.passwordHash = hashPartnerPassword(password)
   await db.collection('referralPartners').doc(code).set(doc)
   return res.status(200).json({
     ok: true,
@@ -5177,7 +5204,7 @@ async function handleAdminReferralReport(
 
   const rows = []
   for (const d of partnersSnap.docs) {
-    const data = d.data() as ReferralPartnerDoc
+    const data = d.data() as ReferralPartnerDoc & { loginEmail?: string }
     // Keys attributed to this partner (revenue source).
     const keysSnap = await db
       .collection('productKeys')
@@ -5205,6 +5232,8 @@ async function handleAdminReferralReport(
       signups: typeof data.signups === 'number' ? data.signups : 0,
       paidAccounts,
       revenueByCurrency,
+      loginEmail: data.loginEmail || '',
+      hasLogin: Boolean(data.loginEmail),
     })
   }
   return res.status(200).json({ ok: true, partners: rows })
@@ -5378,6 +5407,207 @@ async function handleAdminReferralExport(
   return res
     .status(200)
     .json({ ok: true, partner: { code, name: partnerName }, payments, accounts })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Partner self-serve dashboard auth.
+ *
+ *  A partner logs in at /partner with an email + password the admin
+ *  set on their referralPartners doc. They see ONLY aggregate stats
+ *  for their own code — never individual customer emails (privacy).
+ * ────────────────────────────────────────────────────────────── */
+
+/** scrypt password hash → "scrypt:<salt>:<hash>". */
+function hashPartnerPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex')
+  const hash = crypto.scryptSync(password, salt, 32).toString('hex')
+  return `scrypt:${salt}:${hash}`
+}
+function verifyPartnerPassword(password: string, stored: string): boolean {
+  try {
+    const [scheme, salt, hash] = (stored || '').split(':')
+    if (scheme !== 'scrypt' || !salt || !hash) return false
+    const calc = crypto.scryptSync(password, salt, 32)
+    const want = Buffer.from(hash, 'hex')
+    return calc.length === want.length && crypto.timingSafeEqual(calc, want)
+  } catch {
+    return false
+  }
+}
+
+interface PartnerClaims {
+  code: string
+  use: 'partner'
+  iat: number
+  exp: number
+}
+function signPartnerToken(code: string): string {
+  const iat = Math.floor(Date.now() / 1000)
+  const exp = iat + 30 * 24 * 60 * 60 // 30 days
+  const header = b64urlEncode(
+    Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT', use: 'partner' })),
+  )
+  const payload = b64urlEncode(
+    Buffer.from(JSON.stringify({ code, use: 'partner', iat, exp })),
+  )
+  const sig = b64urlEncode(
+    crypto.createHmac('sha256', tokenSecret()).update(`${header}.${payload}`).digest(),
+  )
+  return `${header}.${payload}.${sig}`
+}
+function verifyPartnerToken(token: string): PartnerClaims | null {
+  try {
+    const parts = (token || '').split('.')
+    if (parts.length !== 3) return null
+    const [h, p, s] = parts
+    const expected = crypto
+      .createHmac('sha256', tokenSecret())
+      .update(`${h}.${p}`)
+      .digest()
+    const actual = b64urlDecode(s)
+    if (expected.length !== actual.length) return null
+    if (!crypto.timingSafeEqual(expected, actual)) return null
+    const claims = JSON.parse(b64urlDecode(p).toString('utf8')) as PartnerClaims
+    if (claims.use !== 'partner' || !claims.code) return null
+    if (claims.exp && claims.exp < Math.floor(Date.now() / 1000)) return null
+    return claims
+  } catch {
+    return null
+  }
+}
+
+/** Aggregate stats for one partner code (no customer PII). */
+async function computePartnerStats(code: string) {
+  const db = getDb()
+  const [partnerSnap, usersSnap, keysSnap] = await Promise.all([
+    db.collection('referralPartners').doc(code).get(),
+    db.collection('users').where('referredBy', '==', code).get(),
+    db.collection('productKeys').where('referredBy', '==', code).get(),
+  ])
+  const paidEmails = new Set<string>()
+  const revenueByCurrency: Record<string, number> = {}
+  const byMonth: Record<string, Record<string, number>> = {}
+  for (const k of keysSnap.docs) {
+    const kd = k.data() as {
+      nonPaidGrant?: boolean
+      buyerEmail?: string
+      redeemedByEmail?: string
+      billingHistory?: Array<{ at?: string; amount?: number; currency?: string }>
+    }
+    if (kd.nonPaidGrant) continue
+    const email = (kd.buyerEmail || kd.redeemedByEmail || '').toLowerCase()
+    const hist = Array.isArray(kd.billingHistory) ? kd.billingHistory : []
+    if (hist.length > 0 && email) paidEmails.add(email)
+    for (const h of hist) {
+      const cur = (h.currency || 'ILS').toUpperCase()
+      const amt = typeof h.amount === 'number' ? h.amount : 0
+      revenueByCurrency[cur] = (revenueByCurrency[cur] || 0) + amt
+      const m = h.at ? h.at.slice(0, 7) : 'unknown'
+      byMonth[m] = byMonth[m] || {}
+      byMonth[m][cur] = (byMonth[m][cur] || 0) + amt
+    }
+  }
+  const data = partnerSnap.data() as { name?: string } | undefined
+  return {
+    code,
+    name: data?.name || code,
+    link: `${REFERRAL_LINK_BASE}/?ref=${encodeURIComponent(code)}`,
+    signups: usersSnap.size,
+    paidAccounts: paidEmails.size,
+    revenueByCurrency,
+    byMonth,
+  }
+}
+
+/** POST { email, password } → { ok, token, partner } */
+async function handlePartnerLogin(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { email?: string; password?: string }
+  const email = (body.email || '').trim().toLowerCase()
+  const password = body.password || ''
+  if (!email || !password) {
+    return res.status(400).json({ ok: false, error: 'יש להזין מייל וסיסמה' })
+  }
+  const snap = await getDb()
+    .collection('referralPartners')
+    .where('loginEmail', '==', email)
+    .limit(1)
+    .get()
+  if (snap.empty) {
+    return res.status(401).json({ ok: false, error: 'מייל או סיסמה שגויים' })
+  }
+  const doc = snap.docs[0]
+  const data = doc.data() as { passwordHash?: string }
+  if (!data.passwordHash || !verifyPartnerPassword(password, data.passwordHash)) {
+    return res.status(401).json({ ok: false, error: 'מייל או סיסמה שגויים' })
+  }
+  const token = signPartnerToken(doc.id)
+  const stats = await computePartnerStats(doc.id)
+  return res.status(200).json({ ok: true, token, partner: stats })
+}
+
+/** POST { token } → { ok, partner } (fresh aggregates) */
+async function handlePartnerStats(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { token?: string }
+  const claims = verifyPartnerToken(body.token || '')
+  if (!claims) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const stats = await computePartnerStats(claims.code)
+  return res.status(200).json({ ok: true, partner: stats })
+}
+
+/** POST { idToken, code, loginEmail, password? } — admin sets/updates a
+ *  partner's dashboard credentials. Empty password keeps the existing
+ *  one (lets the admin change just the email). */
+async function handleAdminSetReferralCredentials(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as {
+    idToken?: string
+    code?: string
+    loginEmail?: string
+    password?: string
+  }
+  const admin = await verifyAdminEmail(body.idToken || '')
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const code = (body.code || '').trim()
+  const loginEmail = (body.loginEmail || '').trim().toLowerCase()
+  const password = body.password || ''
+  if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
+  if (loginEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginEmail)) {
+    return res.status(400).json({ ok: false, error: 'מייל לא תקין' })
+  }
+  const db = getDb()
+  const ref = db.collection('referralPartners').doc(code)
+  if (!(await ref.get()).exists) {
+    return res.status(404).json({ ok: false, error: 'שותף לא קיים' })
+  }
+  // Email must be unique across partners (login looks up by it).
+  if (loginEmail) {
+    const dup = await db
+      .collection('referralPartners')
+      .where('loginEmail', '==', loginEmail)
+      .get()
+    if (dup.docs.some((d) => d.id !== code)) {
+      return res
+        .status(409)
+        .json({ ok: false, error: 'המייל הזה כבר משויך לשותף אחר' })
+    }
+  }
+  const update: Record<string, unknown> = {}
+  if (loginEmail) update.loginEmail = loginEmail
+  if (password) {
+    if (password.length < 6) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'סיסמה חייבת להיות לפחות 6 תווים' })
+    }
+    update.passwordHash = hashPartnerPassword(password)
+  }
+  if (Object.keys(update).length === 0) {
+    return res.status(400).json({ ok: false, error: 'אין מה לעדכן' })
+  }
+  await ref.update(update)
+  return res.status(200).json({ ok: true })
 }
 
 /** Stamp a referral onto a freshly-created account. Best-effort —

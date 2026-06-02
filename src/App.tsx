@@ -20,6 +20,7 @@ import AuthActionPage from './pages/AuthActionPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { RevisionsPage } from './pages/RevisionsPage'
 import DrivePickerPage from './pages/DrivePickerPage'
+import PartnerPage from './pages/PartnerPage'
 
 // Top-level layout. The marketing site is the default route (`/`);
 // the purchase flow lives at `/buy` so the URL is shareable, deep-
@@ -106,7 +107,8 @@ function AnimatedRoutes() {
   const isStandalone =
     location.pathname.startsWith('/review') ||
     location.pathname.startsWith('/auth-action') ||
-    location.pathname.startsWith('/drive-picker')
+    location.pathname.startsWith('/drive-picker') ||
+    location.pathname.startsWith('/partner')
 
   if (isStandalone) {
     return (
@@ -117,6 +119,8 @@ function AnimatedRoutes() {
             modal window to run the Google Picker. Not linked from
             anywhere in the site UI — it's an app integration point. */}
         <Route path="/drive-picker" element={<DrivePickerPage />} />
+        {/* Self-serve partner dashboard (referral stats). */}
+        <Route path="/partner" element={<PartnerPage />} />
       </Routes>
     )
   }
