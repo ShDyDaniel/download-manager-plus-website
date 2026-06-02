@@ -9,6 +9,7 @@ import {
 } from 'react-router-dom'
 import { captureRefFromUrl, getStoredRef } from './lib/referral'
 import { Hero } from './components/Hero'
+import { RevisionsHighlight } from './components/RevisionsHighlight'
 import { Features } from './components/Features'
 import { QuickStart } from './components/QuickStart'
 import { FAQ } from './components/FAQ'
@@ -142,6 +143,7 @@ function AnimatedRoutes() {
             element={
               <div className="relative">
                 <Hero />
+                <RevisionsHighlight />
                 <Features />
                 <QuickStart />
                 <FAQ />
