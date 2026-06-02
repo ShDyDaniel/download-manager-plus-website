@@ -882,6 +882,150 @@ async function handleAccessToken(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Drive Picker hand-off (desktop ⇄ system browser)
+ *
+ *  Google blocks its Picker / OAuth sign-in inside embedded Electron
+ *  windows ("disallowed_useragent" / "this browser may not be
+ *  secure"), so the desktop runs the Picker in the user's REAL
+ *  browser — where they already have a Google session — and the
+ *  chosen file is relayed back through a short-lived session doc,
+ *  exactly like the OAuth flow returns via the browser.
+ *
+ *  Flow:
+ *    1. desktop  → picker-open   {idToken}            → {nonce}
+ *    2. desktop opens browser at /drive-picker?session=<nonce>
+ *    3. browser  → picker-token  ?session=<nonce>     → {accessToken}
+ *    4. browser runs the Picker, then
+ *       browser  → picker-result {session,file|canceled}
+ *    5. desktop  → picker-poll   {idToken,session}    → {status,file?}
+ *
+ *  The nonce is a 256-bit capability with a 10-minute TTL; the Drive
+ *  token is minted on demand and never stored.
+ * ────────────────────────────────────────────────────────────── */
+const PICKER_SESSION_TTL_MS = 10 * 60 * 1000
+
+interface PickedFile {
+  id: string
+  name: string
+  sizeBytes: number
+  mimeType: string
+}
+interface PickerSessionDoc {
+  uid: string
+  status: 'pending' | 'done' | 'canceled'
+  createdAt: number
+  file?: PickedFile
+}
+
+function pickerSessionRef(nonce: string) {
+  return getDb().collection('pickerSessions').doc(nonce)
+}
+
+/** POST { idToken } → { ok, nonce } */
+async function handlePickerOpen(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
+  const snap = await integrationDocRef(verified.uid).get()
+  if (!snap.exists) {
+    return res.status(404).json({ ok: false, error: 'Drive לא מחובר' })
+  }
+  const nonce = crypto.randomBytes(32).toString('base64url')
+  const doc: PickerSessionDoc = {
+    uid: verified.uid,
+    status: 'pending',
+    createdAt: Date.now(),
+  }
+  await pickerSessionRef(nonce).set(doc)
+  return res.status(200).json({ ok: true, nonce })
+}
+
+/** GET/POST ?session=<nonce> → { ok, accessToken }
+ *  Called by the browser picker page. The nonce is the capability —
+ *  it only mints a drive.file-scoped, short-lived token while the
+ *  session is still pending and unexpired. */
+async function handlePickerToken(req: VercelRequest, res: VercelResponse) {
+  const nonce = String(
+    req.query.session || (req.body as { session?: string })?.session || '',
+  )
+  if (!nonce) return res.status(400).json({ ok: false, error: 'missing session' })
+  const snap = await pickerSessionRef(nonce).get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'session not found' })
+  const data = snap.data() as PickerSessionDoc
+  if (Date.now() - data.createdAt > PICKER_SESSION_TTL_MS) {
+    return res.status(410).json({ ok: false, error: 'session expired' })
+  }
+  if (data.status !== 'pending') {
+    return res.status(409).json({ ok: false, error: 'session already used' })
+  }
+  const intSnap = await integrationDocRef(data.uid).get()
+  if (!intSnap.exists) return res.status(404).json({ ok: false, error: 'drive not connected' })
+  const intData = intSnap.data() as IntegrationDoc
+  try {
+    const fresh = await refreshAccessToken(decryptToken(intData.refreshTokenEnc))
+    return res.status(200).json({ ok: true, accessToken: fresh.accessToken })
+  } catch {
+    return res.status(401).json({ ok: false, error: 'drive token refresh failed' })
+  }
+}
+
+/** POST { session, file } | { session, canceled:true } → { ok } */
+async function handlePickerResult(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    session?: string
+    canceled?: boolean
+    file?: Partial<PickedFile>
+  }
+  const nonce = String(body.session || '')
+  if (!nonce) return res.status(400).json({ ok: false, error: 'missing session' })
+  const ref = pickerSessionRef(nonce)
+  const snap = await ref.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'session not found' })
+  const data = snap.data() as PickerSessionDoc
+  if (Date.now() - data.createdAt > PICKER_SESSION_TTL_MS) {
+    return res.status(410).json({ ok: false, error: 'session expired' })
+  }
+  if (body.canceled) {
+    await ref.update({ status: 'canceled' })
+    return res.status(200).json({ ok: true })
+  }
+  const f = body.file
+  if (!f || !f.id) return res.status(400).json({ ok: false, error: 'missing file' })
+  const file: PickedFile = {
+    id: String(f.id),
+    name: String(f.name || 'video'),
+    sizeBytes: Number(f.sizeBytes) || 0,
+    mimeType: String(f.mimeType || 'video/mp4'),
+  }
+  await ref.update({ status: 'done', file })
+  return res.status(200).json({ ok: true })
+}
+
+/** POST { idToken, session } → { ok, status: 'pending'|'done'|'canceled'|'expired', file? } */
+async function handlePickerPoll(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const body = (req.body || {}) as { session?: string }
+  const nonce = String(body.session || '')
+  if (!nonce) return res.status(400).json({ ok: false, error: 'missing session' })
+  const ref = pickerSessionRef(nonce)
+  const snap = await ref.get()
+  if (!snap.exists) return res.status(200).json({ ok: true, status: 'expired' })
+  const data = snap.data() as PickerSessionDoc
+  if (data.uid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  if (data.status === 'done' || data.status === 'canceled') {
+    void ref.delete().catch(() => undefined)
+    return res.status(200).json({ ok: true, status: data.status, file: data.file })
+  }
+  if (Date.now() - data.createdAt > PICKER_SESSION_TTL_MS) {
+    return res.status(200).json({ ok: true, status: 'expired' })
+  }
+  return res.status(200).json({ ok: true, status: 'pending' })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Action: oauth-status
  * ────────────────────────────────────────────────────────────── */
 async function handleOauthStatus(req: VercelRequest, res: VercelResponse) {
@@ -4793,6 +4937,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleOauthStart(req, res)
       case 'oauth-callback':
         return await handleOauthCallback(req, res)
+      case 'picker-open':
+        return await handlePickerOpen(req, res)
+      case 'picker-token':
+        return await handlePickerToken(req, res)
+      case 'picker-result':
+        return await handlePickerResult(req, res)
+      case 'picker-poll':
+        return await handlePickerPoll(req, res)
       case 'access-token':
         return await handleAccessToken(req, res)
       case 'oauth-status':
