@@ -1,7 +1,13 @@
 import { useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
-import { captureRefFromUrl } from './lib/referral'
+import {
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from 'react-router-dom'
+import { captureRefFromUrl, getStoredRef } from './lib/referral'
 import { Hero } from './components/Hero'
 import { Features } from './components/Features'
 import { QuickStart } from './components/QuickStart'
@@ -62,14 +68,35 @@ function App() {
  */
 function AnimatedRoutes() {
   const location = useLocation()
+  const navigate = useNavigate()
 
-  // Re-capture the partner ref on every navigation. The code is kept
-  // in localStorage (survives across pages + reloads), so it's never
-  // lost once captured — this just also picks it up if a ?ref appears
-  // on any later route, not only the first load.
+  // Keep the partner ref sticky in the URL across navigation.
+  //
+  // The attribution itself runs off localStorage (survives anywhere),
+  // but the operator wants the ?ref to STAY visible in the address bar
+  // no matter where you click — so once you arrive via a partner link
+  // it's re-appended to every in-app route until the browser closes.
   useEffect(() => {
     captureRefFromUrl()
-  }, [location.search])
+    const ref = getStoredRef()
+    if (!ref) return
+    // Leave standalone / external-handoff surfaces untouched.
+    const p = location.pathname
+    if (
+      p.startsWith('/review') ||
+      p.startsWith('/auth-action') ||
+      p.startsWith('/drive-picker')
+    ) {
+      return
+    }
+    const params = new URLSearchParams(location.search)
+    if (params.get('ref') === ref) return // already present → no loop
+    params.set('ref', ref)
+    navigate(
+      { pathname: p, search: `?${params.toString()}`, hash: location.hash },
+      { replace: true },
+    )
+  }, [location.pathname, location.search, location.hash, navigate])
 
   // /review/:token is the public client-review surface — clients
   // who land there shouldn't see a transition animation flash from

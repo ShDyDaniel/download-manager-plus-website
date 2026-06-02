@@ -1156,6 +1156,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminCreateReferral(req, res)
       case 'admin-list-referrals':
         return await handleAdminListReferrals(req, res)
+      case 'admin-delete-referral':
+        return await handleAdminDeleteReferral(req, res)
+      case 'admin-referral-report':
+        return await handleAdminReferralReport(req, res)
       case 'admin-grant-pro':
         return await handleAdminGrantPro(req, res)
       case 'get-pricing':
@@ -1655,6 +1659,33 @@ async function ensureKeyForSubscription(
     }
   }
 
+  // Referral attribution: copy the buyer's account-level referredBy
+  // onto the key so the partner revenue report can sum payments by
+  // partner. Resolve the buyer's uid from the auto-redeem hint, or by
+  // their email (download-gating means referred buyers have an
+  // account). Best-effort — never blocks key creation.
+  let keyReferredBy: string | null = null
+  try {
+    let buyerUid: string | null = linkToUid
+    if (!buyerUid && buyerEmail) {
+      try {
+        const { getAuth } = await import('firebase-admin/auth')
+        const rec = await getAuth(getFirebase()).getUserByEmail(buyerEmail)
+        buyerUid = rec.uid
+      } catch {
+        /* no account for this email (guest) — leave unattributed */
+      }
+    }
+    if (buyerUid) {
+      const uSnap = await db.collection('users').doc(buyerUid).get()
+      const rb = (uSnap.data() as { referredBy?: string } | undefined)
+        ?.referredBy
+      if (rb) keyReferredBy = rb
+    }
+  } catch (err) {
+    console.warn('[webhook/sale-completed] referral lookup failed:', err)
+  }
+
   const baseKeyDoc = {
     key,
     tier: 'pro',
@@ -1662,6 +1693,7 @@ async function ensureKeyForSubscription(
     createdAt: new Date().toISOString(),
     createdBy: `paypal-subscription-${planDays === 30 ? 'monthly' : 'yearly'}`,
     buyerEmail,
+    ...(keyReferredBy ? { referredBy: keyReferredBy } : {}),
     subscriptionId,
     planId: sub.plan_id,
     subscriptionPrice: planPrice,
@@ -5080,6 +5112,72 @@ async function handleAdminListReferrals(
     }
   })
   return res.status(200).json({ ok: true, partners })
+}
+
+async function handleAdminDeleteReferral(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { idToken?: string; code?: string }
+  const admin = await verifyAdminEmail(body.idToken || '')
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const code = (body.code || '').trim()
+  if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
+  // Delete only the partner record. Existing users/keys keep their
+  // referredBy stamp for historical accuracy — the report still shows
+  // the code even if the partner was removed.
+  await getDb().collection('referralPartners').doc(code).delete()
+  return res.status(200).json({ ok: true })
+}
+
+/** Per-partner report: signups, paying accounts, and total revenue
+ *  (summed from each attributed key's billingHistory). */
+async function handleAdminReferralReport(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { idToken?: string }
+  const admin = await verifyAdminEmail(body.idToken || '')
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const db = getDb()
+  const partnersSnap = await db
+    .collection('referralPartners')
+    .orderBy('createdAt', 'desc')
+    .get()
+
+  const rows = []
+  for (const d of partnersSnap.docs) {
+    const data = d.data() as ReferralPartnerDoc
+    // Keys attributed to this partner (revenue source).
+    const keysSnap = await db
+      .collection('productKeys')
+      .where('referredBy', '==', data.code)
+      .get()
+    let paidAccounts = 0
+    const revenueByCurrency: Record<string, number> = {}
+    for (const k of keysSnap.docs) {
+      const kd = k.data() as {
+        nonPaidGrant?: boolean
+        billingHistory?: Array<{ amount?: number; currency?: string }>
+      }
+      if (kd.nonPaidGrant) continue
+      const hist = Array.isArray(kd.billingHistory) ? kd.billingHistory : []
+      if (hist.length > 0) paidAccounts++
+      for (const h of hist) {
+        const amt = typeof h.amount === 'number' ? h.amount : 0
+        const cur = (h.currency || 'ILS').toUpperCase()
+        revenueByCurrency[cur] = (revenueByCurrency[cur] || 0) + amt
+      }
+    }
+    rows.push({
+      code: data.code,
+      name: data.name,
+      signups: typeof data.signups === 'number' ? data.signups : 0,
+      paidAccounts,
+      revenueByCurrency,
+    })
+  }
+  return res.status(200).json({ ok: true, partners: rows })
 }
 
 /** Stamp a referral onto a freshly-created account. Best-effort —
