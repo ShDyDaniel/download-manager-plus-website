@@ -3166,6 +3166,172 @@ async function handleAuthStream(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Note-media via Cloudflare Worker (zero Vercel egress)
+ *
+ *  Same model as the video stream proxy: the heavy bytes
+ *  (screenshots + audio of notes) flow Drive → Cloudflare → browser,
+ *  NEVER through Vercel. Vercel only mints a tiny signed URL and,
+ *  separately, hands the Worker a Drive access token.
+ *
+ *  Flow:
+ *    1. Client (review page OR owner workspace/desktop) calls
+ *       note-media-url / note-media-owner-url. Vercel authenticates
+ *       (share token + password, or owner auth), resolves the note's
+ *       Drive fileId + owner uid, and returns an ENCRYPTED, short-
+ *       lived token packed into a Worker URL: `${CF}/?m=<token>`.
+ *    2. Client points <img>/<audio> (or fetch) at that Worker URL.
+ *    3. Worker calls auth-media (X-Worker-Secret) with the token →
+ *       Vercel decrypts it, mints a Drive access token for the owner,
+ *       returns { accessToken, driveFileId }.
+ *    4. Worker streams Drive bytes back. Vercel never touches them.
+ *
+ *  The token is ENCRYPTED (not just signed) so the owner uid + Drive
+ *  fileId are never exposed in a URL — only Vercel can read them.
+ *  A 15-minute exp limits replay of a leaked URL.
+ * ────────────────────────────────────────────────────────────── */
+
+interface MediaTokenClaims {
+  uid: string
+  fid: string
+  exp: number
+}
+
+/** Pack the AES-GCM parts into one URL-safe string: iv.tag.ct */
+function packMediaToken(uid: string, fid: string): string {
+  const exp = Math.floor(Date.now() / 1000) + 15 * 60
+  const enc = encryptToken(JSON.stringify({ uid, fid, exp } as MediaTokenClaims))
+  return [
+    b64url(Buffer.from(enc.iv, 'base64')),
+    b64url(Buffer.from(enc.tag, 'base64')),
+    b64url(Buffer.from(enc.ct, 'base64')),
+  ].join('.')
+}
+
+function unpackMediaToken(token: string): MediaTokenClaims | null {
+  try {
+    const [iv, tag, ct] = token.split('.')
+    if (!iv || !tag || !ct) return null
+    const plain = decryptToken({
+      iv: b64urlDecode(iv).toString('base64'),
+      tag: b64urlDecode(tag).toString('base64'),
+      ct: b64urlDecode(ct).toString('base64'),
+    })
+    const claims = JSON.parse(plain) as MediaTokenClaims
+    if (!claims.uid || !claims.fid || typeof claims.exp !== 'number') return null
+    if (claims.exp < Math.floor(Date.now() / 1000)) return null
+    return claims
+  } catch {
+    return null
+  }
+}
+
+/** Build the Worker media URL for a resolved (owner, fileId) pair.
+ *  Returns null if no Cloudflare base is configured (caller then
+ *  falls back to the byte-streaming endpoint). */
+function mintMediaWorkerUrl(ownerUid: string, driveFileId: string): string | null {
+  const cfBase = (process.env.CLOUDFLARE_STREAM_BASE || '').trim()
+  if (!cfBase) return null
+  const tok = packMediaToken(ownerUid, driveFileId)
+  return `${cfBase.replace(/\/$/, '')}/?m=${encodeURIComponent(tok)}`
+}
+
+/* Action: note-media-url  (PUBLIC — gated by share token + password)
+ * Returns { ok, url } — a Cloudflare Worker URL for the note's media.
+ * Mirrors handleNoteMedia's auth but streams ZERO bytes through us. */
+async function handleNoteMediaUrl(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+    roundId?: string
+    noteId?: string
+    kind?: 'image' | 'audio'
+  }
+  const shareToken = String(body.shareToken || '').trim()
+  const noteId = String(body.noteId || '').trim()
+  const kind = body.kind
+  if (!shareToken || !noteId) return res.status(400).json({ ok: false, error: 'shareToken + noteId required' })
+  if (kind !== 'image' && kind !== 'audio') return res.status(400).json({ ok: false, error: 'bad kind' })
+
+  const resolved = await resolvePublicRound(shareToken, body.roundId || null, body.passwordToken || '')
+  if (!resolved.ok) return res.status(resolved.status).json({ ok: false, error: resolved.error })
+  const { roundRef, roundData, group } = resolved
+  const ownerUid = String(group?.ownerUid || roundData.ownerUid || '')
+
+  const noteSnap = await roundRef.collection('notes').doc(noteId).get()
+  if (!noteSnap.exists) return res.status(404).json({ ok: false, error: 'note not found' })
+  const note = noteSnap.data() as { screenshotDriveFileId?: string | null; audioDriveFileId?: string | null }
+  const driveFileId = kind === 'image' ? note.screenshotDriveFileId : note.audioDriveFileId
+  if (!driveFileId) return res.status(404).json({ ok: false, error: 'media not attached' })
+
+  const url = mintMediaWorkerUrl(ownerUid, String(driveFileId))
+  if (!url) return res.status(500).json({ ok: false, error: 'media worker not configured' })
+  return res.status(200).json({ ok: true, url })
+}
+
+/* Action: note-media-owner-url  (auth required — owner only)
+ * Owner twin of note-media-url. */
+async function handleNoteMediaOwnerUrl(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    sessionToken?: string
+    projectId?: string
+    noteId?: string
+    kind?: 'image' | 'audio'
+  }
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const projectId = String(body.projectId || '').trim()
+  const noteId = String(body.noteId || '').trim()
+  const kind = body.kind
+  if (!projectId || !noteId) return res.status(400).json({ ok: false, error: 'projectId + noteId required' })
+  if (kind !== 'image' && kind !== 'audio') return res.status(400).json({ ok: false, error: 'bad kind' })
+
+  const projectRef = getDb().collection('revisionProjects').doc(projectId)
+  const projectSnap = await projectRef.get()
+  if (!projectSnap.exists) return res.status(404).json({ ok: false, error: 'project not found' })
+  const project = projectSnap.data() as { ownerUid: string }
+  if (project.ownerUid !== verified.uid) return res.status(403).json({ ok: false, error: 'forbidden' })
+
+  const noteSnap = await projectRef.collection('notes').doc(noteId).get()
+  if (!noteSnap.exists) return res.status(404).json({ ok: false, error: 'note not found' })
+  const note = noteSnap.data() as { screenshotDriveFileId?: string | null; audioDriveFileId?: string | null }
+  const driveFileId = kind === 'image' ? note.screenshotDriveFileId : note.audioDriveFileId
+  if (!driveFileId) return res.status(404).json({ ok: false, error: 'media not attached' })
+
+  const url = mintMediaWorkerUrl(project.ownerUid, String(driveFileId))
+  if (!url) return res.status(500).json({ ok: false, error: 'media worker not configured' })
+  return res.status(200).json({ ok: true, url })
+}
+
+/* Action: auth-media  (Cloudflare Worker ↔ Vercel handshake)
+ * Header: X-Worker-Secret. Body: { m: <packed token> }.
+ * Returns { ok, accessToken, driveFileId }. The Worker uses these to
+ * fetch the file from Drive and stream it — bytes never touch Vercel. */
+async function handleAuthMedia(req: VercelRequest, res: VercelResponse) {
+  const expected = (process.env.WORKER_SHARED_SECRET || '').trim()
+  if (!expected) return res.status(500).json({ ok: false, error: 'WORKER_SHARED_SECRET not set' })
+  const got = req.headers['x-worker-secret']
+  if (typeof got !== 'string' || got !== expected) {
+    return res.status(403).json({ ok: false, error: 'invalid worker secret' })
+  }
+  const body = (req.body || {}) as { m?: string }
+  const claims = unpackMediaToken(String(body.m || ''))
+  if (!claims) return res.status(403).json({ ok: false, error: 'bad or expired media token' })
+
+  const integrationSnap = await integrationDocRef(claims.uid).get()
+  if (!integrationSnap.exists) return res.status(500).json({ ok: false, error: 'drive not connected' })
+  const integration = integrationSnap.data() as IntegrationDoc
+  const refreshToken = decryptToken(integration.refreshTokenEnc)
+  try {
+    const r = await refreshAccessToken(refreshToken)
+    res.setHeader('Cache-Control', 'no-store')
+    return res.status(200).json({ ok: true, accessToken: r.accessToken, driveFileId: claims.fid })
+  } catch {
+    return res.status(401).json({ ok: false, error: 'drive auth expired' })
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Action: check-video-status
  *
  *  POST /api/revisions?action=check-video-status  { idToken, projectId }
@@ -4493,6 +4659,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleNoteMedia(req, res)
       case 'note-media-owner':
         return await handleNoteMediaOwner(req, res)
+      case 'note-media-url':
+        return await handleNoteMediaUrl(req, res)
+      case 'note-media-owner-url':
+        return await handleNoteMediaOwnerUrl(req, res)
+      case 'auth-media':
+        return await handleAuthMedia(req, res)
       case 'get-stream-token':
         return await handleGetStreamToken(req, res)
       case 'stream-video':

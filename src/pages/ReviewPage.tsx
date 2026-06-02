@@ -247,6 +247,41 @@ function noteMediaUrl(
   if (roundId) params.set('r', roundId)
   return `${API}?${params.toString()}`
 }
+
+/** Resolve a note's media to a Cloudflare Worker URL (Drive →
+ *  Cloudflare → browser, ZERO Vercel egress). Asks Vercel for a
+ *  short-lived signed Worker URL (tiny JSON), and the returned URL is
+ *  used directly as <img>/<audio> src. Falls back to the legacy Vercel
+ *  byte URL if the worker action is unavailable (e.g. CLOUDFLARE_
+ *  STREAM_BASE not configured), so nothing breaks during rollout. */
+async function fetchNoteMediaSrc(
+  shareToken: string,
+  noteId: string,
+  kind: 'image' | 'audio',
+  passwordToken: string | null,
+  roundId: string | null,
+): Promise<string> {
+  try {
+    const r = await fetch(`${API}?action=note-media-url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shareToken,
+        noteId,
+        kind,
+        passwordToken: passwordToken || undefined,
+        roundId: roundId || undefined,
+      }),
+    })
+    if (r.ok) {
+      const j = (await r.json()) as { ok: boolean; url?: string }
+      if (j.ok && j.url) return j.url
+    }
+  } catch {
+    /* fall through to legacy */
+  }
+  return noteMediaUrl(shareToken, noteId, kind, passwordToken, roundId)
+}
 /** localStorage flag — true once the viewer has seen the "how this
  *  works" onboarding for this specific share token + viewer email.
  *  We don't show it again on subsequent visits because the second
@@ -2374,12 +2409,42 @@ function NoteItem({
   // for new notes; fall back to the inline data URL for legacy notes
   // created before the Drive migration. Both display the same way.
   const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + shareToken)
-  const screenshotUrl = note.screenshotDriveFileId
-    ? noteMediaUrl(shareToken, note.id, 'image', passwordToken, roundId)
-    : note.screenshotDataUrl || null
-  const audioUrl = note.audioDriveFileId
-    ? noteMediaUrl(shareToken, note.id, 'audio', passwordToken, roundId)
-    : null
+  // Media src now resolves (async) to a Cloudflare Worker URL so the
+  // bytes flow Drive → Cloudflare → browser, never through Vercel.
+  // Legacy notes carry an inline data URL — used directly, no fetch.
+  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(
+    note.screenshotDataUrl || null,
+  )
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    if (note.screenshotDriveFileId) {
+      void fetchNoteMediaSrc(
+        shareToken,
+        note.id,
+        'image',
+        passwordToken,
+        roundId,
+      ).then((u) => {
+        if (alive) setScreenshotUrl(u)
+      })
+    }
+    if (note.audioDriveFileId) {
+      void fetchNoteMediaSrc(
+        shareToken,
+        note.id,
+        'audio',
+        passwordToken,
+        roundId,
+      ).then((u) => {
+        if (alive) setAudioUrl(u)
+      })
+    }
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note.id, note.screenshotDriveFileId, note.audioDriveFileId, shareToken, roundId])
 
   // Border + bg color per status — picked so the four states are
   // distinguishable at a glance when scrolling a long list. Per

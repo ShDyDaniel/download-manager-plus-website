@@ -27,6 +27,13 @@
 const VERCEL_AUTH_URL =
   'https://dmplus.net/api/revisions?action=auth-stream'
 
+// Note-media handshake: same secret, different payload. The browser
+// hits the Worker with `?m=<encrypted token>`; we exchange the token
+// for a Drive access token + fileId and stream the bytes — exactly
+// like video, so screenshots/audio also bypass Vercel egress.
+const VERCEL_AUTH_MEDIA_URL =
+  'https://dmplus.net/api/revisions?action=auth-media'
+
 // In-memory cache: key = `${shareToken}|${passwordToken}` → entry.
 // Lives only within a single Worker isolate; cold starts re-auth.
 // Drive access tokens live ~60 min; we cache for 50 min so a token
@@ -133,6 +140,65 @@ export default {
     }
 
     const url = new URL(request.url)
+
+    // ── Note-media path (?m=<encrypted token>) ──────────────────
+    // Screenshots + audio of notes. The token is opaque (encrypted
+    // by Vercel); we hand it back to Vercel's auth-media to get a
+    // Drive access token + fileId, then stream the bytes. Zero Vercel
+    // egress — same as the video path below.
+    const mediaToken = url.searchParams.get('m')
+    if (mediaToken) {
+      let authR
+      try {
+        authR = await fetch(VERCEL_AUTH_MEDIA_URL, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-worker-secret': env.WORKER_SECRET || '',
+          },
+          body: JSON.stringify({ m: mediaToken }),
+        })
+      } catch (err) {
+        return new Response(`auth fetch failed: ${err}`, {
+          status: 502,
+          headers: corsHeaders(),
+        })
+      }
+      if (!authR.ok) {
+        const t = await authR.text().catch(() => '')
+        return new Response(`media auth ${authR.status}: ${t.slice(0, 200)}`, {
+          status: 403,
+          headers: corsHeaders(),
+        })
+      }
+      const authJson = await authR.json().catch(() => null)
+      if (!authJson || !authJson.ok || !authJson.accessToken || !authJson.driveFileId) {
+        return new Response('media auth malformed', {
+          status: 403,
+          headers: corsHeaders(),
+        })
+      }
+      const driveResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${authJson.driveFileId}?alt=media`,
+        { headers: { authorization: `Bearer ${authJson.accessToken}` } },
+      )
+      const respHeaders = corsHeaders({
+        // Note media is immutable once uploaded; let the browser cache
+        // it so re-views don't even re-hit the Worker.
+        'cache-control': 'private, max-age=3600',
+        'content-disposition': 'inline',
+      })
+      for (const h of ['content-type', 'content-length', 'last-modified', 'etag']) {
+        const v = driveResp.headers.get(h)
+        if (v) respHeaders[h] = v
+      }
+      return new Response(driveResp.body, {
+        status: driveResp.status,
+        statusText: driveResp.statusText,
+        headers: respHeaders,
+      })
+    }
+
     const shareToken = url.searchParams.get('token')
     const passwordToken = url.searchParams.get('t') || ''
     // roundId — required for new-style project-group share tokens
