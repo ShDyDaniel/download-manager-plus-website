@@ -685,7 +685,7 @@ export default function AccountPage() {
             החשבון שלי
           </div>
           <h1 className="text-3xl font-bold font-display text-fg md:text-4xl">
-            {profile?.email ? 'הפרופיל שלך' : 'התחבר לחשבון שלך'}
+            {profile?.email ? 'הפרופיל שלך' : 'התחברות לחשבון שלך'}
           </h1>
           <p className="mx-auto mt-3 max-w-xl text-sm text-fg-muted md:text-base">
             פרטי החשבון, המנוי, וההיסטוריית התשלומים שלך — במקום אחד.
@@ -771,7 +771,6 @@ export default function AccountPage() {
                   type="email"
                   value={email}
                   onChange={setEmail}
-                  placeholder="you@example.com"
                   autoComplete="email"
                   disabled={resetSending}
                   autoFocus
@@ -819,7 +818,6 @@ export default function AccountPage() {
               type="email"
               value={email}
               onChange={setEmail}
-              placeholder="you@example.com"
               autoComplete="username email"
               name="email"
               disabled={authing}

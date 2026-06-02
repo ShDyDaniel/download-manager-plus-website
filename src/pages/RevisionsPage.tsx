@@ -474,7 +474,7 @@ function AuthShell({ onSignedIn }: { onSignedIn: () => void }) {
   const cameFromAccountSignup = searchParams.get('mode') === 'signup'
 
   return (
-    <div className="mx-auto mt-8 max-w-md">
+    <div className="mx-auto mt-20 max-w-md md:mt-28">
       <div className="mb-8">
         {!cameFromAccountSignup && (
           <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-fg-muted">
@@ -491,7 +491,7 @@ function AuthShell({ onSignedIn }: { onSignedIn: () => void }) {
           }}
         >
           {mode === 'signin'
-            ? 'התחברות'
+            ? 'התחברות לחשבון שלך'
             : mode === 'signup-details' || mode === 'signup-verify'
               ? 'יצירת חשבון'
               : 'איפוס סיסמה'}
