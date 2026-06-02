@@ -248,6 +248,21 @@ export async function listGroupsForOwner(): Promise<{
   }
 }
 
+/** Mint a short-lived Firebase custom auth token for the current
+ *  session owner. The website logs in with the HMAC session JWT and
+ *  has no Firebase Auth session of its own, but the live revisions
+ *  listener (onSnapshot) needs one so the Firestore read rules pass.
+ *  The client signs in with this token, then opens the listener.
+ *  Costs nothing against the Firestore read quota — it's an Auth
+ *  operation only. */
+export async function fetchFirebaseCustomToken(): Promise<string> {
+  const r = await postAction<{ ok: true; token: string }>(
+    'firebase-custom-token',
+    authBody(),
+  )
+  return r.token
+}
+
 export interface CreateGroupInput {
   driveFileId: string
   driveFolderId: string

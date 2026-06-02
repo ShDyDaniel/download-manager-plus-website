@@ -1734,6 +1734,38 @@ async function handleListRoundsForGroup(
  *  inline (rather than a second roundtrip per card) cuts the
  *  initial paint down to a single request.
  * ────────────────────────────────────────────────────────────── */
+/* ──────────────────────────────────────────────────────────────
+ *  Action: firebase-custom-token  (auth required)
+ *
+ *  Mints a short-lived Firebase custom auth token for the verified
+ *  owner. The website authenticates via the HMAC session JWT and has
+ *  NO password-based Firebase sign-in, but the live revisions
+ *  listener (onSnapshot) needs a real Firebase Auth session so the
+ *  Firestore read rules (request.auth.uid == resource.data.ownerUid)
+ *  pass. The web client calls this once, signs in with
+ *  signInWithCustomToken, then opens the listener.
+ *
+ *  Cost: ZERO Firestore reads — createCustomToken is purely an Auth
+ *  operation, so the live model stays as cheap on the web as on the
+ *  desktop. The session JWT remains the single source of truth; this
+ *  just derives a Firebase session from it on demand.
+ * ────────────────────────────────────────────────────────────── */
+async function handleFirebaseCustomToken(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const token = await getAuth(getFirebase()).createCustomToken(verified.uid)
+    return res.status(200).json({ ok: true, token })
+  } catch (err) {
+    console.warn('[revisions] createCustomToken failed:', err)
+    return res.status(500).json({ ok: false, error: 'token_mint_failed' })
+  }
+}
+
 async function handleListGroupsOwner(
   req: VercelRequest,
   res: VercelResponse,
@@ -4421,6 +4453,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleListRoundsForGroup(req, res)
       case 'list-groups-owner':
         return await handleListGroupsOwner(req, res)
+      case 'firebase-custom-token':
+        return await handleFirebaseCustomToken(req, res)
       case 'get-project':
         return await handleGetProject(req, res)
       case 'verify-password':

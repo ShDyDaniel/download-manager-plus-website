@@ -342,18 +342,62 @@ function ConnectedWorkspace({
 
   const reload = useCallback(() => setRefreshTick((n) => n + 1), [])
 
+  // ── Project list — real-time PUSH listener ────────────────────
+  //
+  // Mirrors the desktop: one read on attach (tab entry), one read per
+  // changed doc, zero at idle. No polling. A viewer adding a note or
+  // a round being added pushes straight here. If the live session
+  // can't be established (custom-token mint failed, etc.) we fall
+  // back to a single fetch so the list still loads. Keyed on
+  // refreshTick so the error-retry button + post-mutation reload()
+  // re-attach with fresh data.
   useEffect(() => {
     let cancelled = false
+    let gotLive = false
+    let unsub: (() => void) | null = null
+    // Dynamically import the live layer so the Firebase Web SDK is
+    // code-split into its own chunk — it loads only when the editor
+    // opens the workspace, keeping every other page (home, /buy, …)
+    // free of the ~110KB Firebase weight.
     void (async () => {
-      try {
-        const data = await listGroupsForOwner()
-        if (cancelled) return
-        setProjects({ groups: data.groups, legacy: data.legacyProjects })
-      } catch (err) {
-        if (cancelled) return
-        setError(err instanceof Error ? err.message : 'טעינה נכשלה')
-      }
+      const { watchOwnerRevisionsLive } = await import('../lib/revisionsLive')
+      if (cancelled) return
+      unsub = watchOwnerRevisionsLive(
+        (data) => {
+          if (cancelled) return
+          gotLive = true
+          setError(null)
+          setProjects({ groups: data.groups, legacy: data.legacyProjects })
+        },
+        (err) => {
+          // Live unavailable — one-shot fetch fallback (unless a live
+          // snapshot already landed before the error).
+          console.warn('[workspace] live unavailable, falling back to fetch:', err)
+          if (cancelled || gotLive) return
+          void (async () => {
+            try {
+              const data = await listGroupsForOwner()
+              if (cancelled) return
+              setProjects({ groups: data.groups, legacy: data.legacyProjects })
+            } catch (e) {
+              if (cancelled) return
+              setError(e instanceof Error ? e.message : 'טעינה נכשלה')
+            }
+          })()
+        },
+      )
     })()
+    return () => {
+      cancelled = true
+      if (unsub) unsub()
+    }
+  }, [refreshTick])
+
+  // ── Drive storage number ──────────────────────────────────────
+  // Fetched on mount + after mutations (reload bumps refreshTick).
+  // Not on the live listener — it only changes on upload/delete.
+  useEffect(() => {
+    let cancelled = false
     void (async () => {
       const s = await fetchDriveStorage()
       if (!cancelled) setStorage(s)
