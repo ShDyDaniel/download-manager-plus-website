@@ -3683,6 +3683,12 @@ async function handleSignupVerifyCode(req: VercelRequest, res: VercelResponse) {
         .set(
           {
             email,
+            // Persist the display name to the user doc too — the admin
+            // panel + other reads use `users/{uid}.name`. Previously we
+            // only set it on the Firebase Auth user, so web signups
+            // showed no name. Only write when provided so we never
+            // clobber an existing name with empty.
+            ...(displayName ? { name: displayName } : {}),
             marketingOptIn,
             marketingOptInAt: marketingOptIn ? new Date().toISOString() : null,
             createdAt: new Date().toISOString(),
