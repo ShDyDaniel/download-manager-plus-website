@@ -1186,6 +1186,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminGetIpAllowlist(req, res)
       case 'admin-set-ip-allowlist':
         return await handleAdminSetIpAllowlist(req, res)
+      case 'admin-list-users':
+        return await handleAdminListUsers(req, res)
+      case 'admin-set-user-blocked':
+        return await handleAdminSetUserBlocked(req, res)
+      case 'admin-set-user-role':
+        return await handleAdminSetUserRole(req, res)
+      case 'admin-set-user-subscription':
+        return await handleAdminSetUserSubscription(req, res)
+      case 'admin-clear-user-device':
+        return await handleAdminClearUserDevice(req, res)
+      case 'admin-approve-trial':
+        return await handleAdminApproveTrial(req, res)
       case 'get-pricing':
         return await handleGetPricing(req, res)
       case 'get-terms':
@@ -5370,6 +5382,168 @@ function isValidIp(ip: string): boolean {
   }
   // IPv6 (loose — accepts the common forms; we only string-compare).
   return /^[0-9a-f:]+$/.test(ip) && ip.includes(':')
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Admin → Users tab. All gated by verifyAdmin2FA (Firebase admin
+ *  idToken + email-code 2FA token + IP allowlist). These mirror the
+ *  desktop firestore.ts admin helpers, but run server-side via the
+ *  Admin SDK so the browser never holds a privileged Firestore
+ *  session.
+ * ────────────────────────────────────────────────────────────── */
+
+/** Read all users + a uid→redeemed-key index in one shot. */
+async function handleAdminListUsers(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const db = getDb()
+  const [usersSnap, keysSnap] = await Promise.all([
+    db.collection('users').get(),
+    db.collection('productKeys').get(),
+  ])
+
+  const users = usersSnap.docs.map((d) => ({
+    ...(d.data() as Record<string, unknown>),
+    uid: d.id,
+  }))
+
+  // uid → the key they've redeemed (for the Pro badge + key chip).
+  const keysByUid: Record<string, unknown> = {}
+  for (const k of keysSnap.docs) {
+    const data = k.data() as { redeemedBy?: string | null }
+    if (data.redeemedBy) {
+      keysByUid[data.redeemedBy] = { ...(data as object), id: k.id }
+    }
+  }
+
+  return res.status(200).json({ ok: true, users, keysByUid })
+}
+
+async function handleAdminSetUserBlocked(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { uid?: string; blocked?: boolean }
+  const uid = String(body.uid || '').trim()
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
+  await getDb()
+    .collection('users')
+    .doc(uid)
+    .update({ blocked: body.blocked === true })
+  return res.status(200).json({ ok: true })
+}
+
+async function handleAdminSetUserRole(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { uid?: string; role?: string }
+  const uid = String(body.uid || '').trim()
+  const role = body.role === 'admin' ? 'admin' : 'user'
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
+  await getDb().collection('users').doc(uid).update({ role })
+  return res.status(200).json({ ok: true })
+}
+
+/** Free/Pro flip. On demote to free we ALSO release every product
+ *  key this user redeemed + reject any active trial — otherwise the
+ *  demotion is cosmetic (key/trial would still grant Pro). Mirrors
+ *  setUserSubscription in the desktop firestore.ts. */
+async function handleAdminSetUserSubscription(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { uid?: string; subscription?: string }
+  const uid = String(body.uid || '').trim()
+  const sub = body.subscription === 'pro' ? 'pro' : 'free'
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
+  const db = getDb()
+
+  if (sub === 'free') {
+    try {
+      const keysSnap = await db
+        .collection('productKeys')
+        .where('redeemedBy', '==', uid)
+        .get()
+      await Promise.all(
+        keysSnap.docs.map((k) =>
+          k.ref.update({
+            redeemedBy: null,
+            redeemedByEmail: null,
+            redeemedAt: null,
+          }),
+        ),
+      )
+    } catch (err) {
+      console.warn('[admin] release keys on demote failed:', err)
+    }
+  }
+
+  const patch: Record<string, unknown> = { subscription: sub }
+  if (sub === 'free') patch.trialStatus = 'rejected'
+  await db.collection('users').doc(uid).update(patch)
+  return res.status(200).json({ ok: true })
+}
+
+async function handleAdminClearUserDevice(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { uid?: string }
+  const uid = String(body.uid || '').trim()
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
+  await getDb()
+    .collection('users')
+    .doc(uid)
+    .update({ deviceId: null, deviceLockedAt: null })
+  return res.status(200).json({ ok: true })
+}
+
+/** Manually grant a trial (the "ניסיון" plan chip). Demote a Pro
+ *  user to free first so the trial state is actually visible. */
+async function handleAdminApproveTrial(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const body = (req.body || {}) as {
+    uid?: string
+    days?: number
+    demoteFirst?: boolean
+  }
+  const uid = String(body.uid || '').trim()
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
+  const days = Math.max(1, Math.min(365, Math.floor(Number(body.days) || 14)))
+  const db = getDb()
+
+  if (body.demoteFirst) {
+    await db
+      .collection('users')
+      .doc(uid)
+      .update({ subscription: 'free' })
+      .catch(() => undefined)
+  }
+
+  const now = new Date()
+  const expires = new Date(now.getTime() + days * 24 * 60 * 60 * 1000)
+  await db.collection('users').doc(uid).update({
+    trialStatus: 'approved',
+    trialApprovedAt: now.toISOString(),
+    trialExpiresAt: expires.toISOString(),
+    trialApprovedBy: admin,
+  })
+  return res.status(200).json({ ok: true })
 }
 
 async function handleAdmin2faRequest(req: VercelRequest, res: VercelResponse) {

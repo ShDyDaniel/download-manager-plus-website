@@ -20,11 +20,13 @@ import {
   adminSignIn,
   adminSignOut,
   checkAdminIpAllowed,
+  clearAdminToken,
   getAdminEmail,
   getStoredAdminToken,
   requestAdminCode,
   verifyAdminCode,
 } from '../lib/adminApi'
+import UsersTab from '../components/admin/UsersTab'
 
 /**
  * Website admin panel (/admin) — the web twin of the desktop
@@ -132,6 +134,12 @@ export default function AdminPage() {
       onLogout={async () => {
         await adminSignOut()
         setPhase('login')
+      }}
+      // 2FA token expired/rejected mid-session → drop just the token
+      // (keep the Firebase session) and re-prompt for a fresh code.
+      onAuthExpired={() => {
+        clearAdminToken()
+        setPhase('code')
       }}
     />
   )
@@ -297,10 +305,12 @@ function AdminShell({
   tab,
   onTab,
   onLogout,
+  onAuthExpired,
 }: {
   tab: AdminTabKey
   onTab: (t: AdminTabKey) => void
   onLogout: () => void
+  onAuthExpired: () => void
 }) {
   return (
     <div className="min-h-dvh bg-bg" dir="rtl">
@@ -363,7 +373,11 @@ function AdminShell({
 
         {/* Content */}
         <main className="min-w-0 flex-1">
-          <TabPlaceholder tab={tab} />
+          {tab === 'users' ? (
+            <UsersTab onAuthExpired={onAuthExpired} />
+          ) : (
+            <TabPlaceholder tab={tab} />
+          )}
         </main>
       </div>
     </div>
