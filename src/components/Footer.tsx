@@ -75,6 +75,13 @@ export function Footer() {
                 ביטול מנוי
               </Link>
               <span aria-hidden>·</span>
+              <Link
+                to="/accessibility"
+                className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
+              >
+                הצהרת נגישות
+              </Link>
+              <span aria-hidden>·</span>
               <span>
                 © <span className="tabular">{year}</span> · כל הזכויות שמורות
               </span>

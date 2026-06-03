@@ -311,3 +311,82 @@ a:focus-visible {
   }
 }
 
+
+/* ============================================================
+ *  Accessibility adjustments (תפריט נגישות) — IS 5568 / WCAG 2.0
+ *  Toggled by the floating AccessibilityWidget, which adds these
+ *  classes to <html>. Because the whole palette is driven by CSS
+ *  variables, "high contrast" just overrides the tokens and every
+ *  component follows automatically.
+ * ============================================================ */
+
+/* High contrast — push text to pure white + strengthen borders. */
+html.a11y-contrast {
+  --fg: #ffffff;
+  --fg-secondary: #f0ece4;
+  --fg-muted: #d8d2c6;
+  --fg-faint: #b8b2a4;
+  --border: rgba(255, 255, 255, 0.45);
+  --border-strong: rgba(255, 255, 255, 0.7);
+  --accent: #f0c896;
+  --primary: #d99a63;
+}
+
+/* Grayscale + invert (applied to the root element). */
+html.a11y-grayscale {
+  filter: grayscale(100%);
+}
+html.a11y-invert {
+  filter: invert(100%) hue-rotate(180deg);
+}
+html.a11y-grayscale.a11y-invert {
+  filter: grayscale(100%) invert(100%) hue-rotate(180deg);
+}
+
+/* Underline + emphasise every link. */
+html.a11y-links a {
+  text-decoration: underline !important;
+  text-underline-offset: 2px;
+  font-weight: 600 !important;
+}
+
+/* Readable font — drop the display face for a plain high-legibility
+ * sans on everything. */
+html.a11y-readable,
+html.a11y-readable * {
+  font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif !important;
+  letter-spacing: normal !important;
+}
+
+/* Generous spacing for readers who need it. */
+html.a11y-spacing * {
+  line-height: 1.9 !important;
+  letter-spacing: 0.04em !important;
+  word-spacing: 0.12em !important;
+}
+
+/* Stop all motion (independent of the OS reduced-motion setting). */
+html.a11y-stopmotion *,
+html.a11y-stopmotion *::before,
+html.a11y-stopmotion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Big cursor — a large SVG arrow so the pointer is easy to track. */
+html.a11y-bigcursor,
+html.a11y-bigcursor * {
+  cursor:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24'%3E%3Cpath d='M5 2l14 9-6 1 4 8-3 1-4-8-5 4z' fill='white' stroke='black' stroke-width='1.2'/%3E%3C/svg%3E")
+      4 2,
+    auto !important;
+}
+
+/* Always-visible focus ring while the a11y menu is in use — helps
+ * keyboard users see where they are. */
+html.a11y-focus *:focus {
+  outline: 3px solid #f0c896 !important;
+  outline-offset: 2px !important;
+}

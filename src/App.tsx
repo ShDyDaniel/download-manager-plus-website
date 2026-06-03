@@ -15,6 +15,8 @@ import { QuickStart } from './components/QuickStart'
 import { FAQ } from './components/FAQ'
 import { Footer } from './components/Footer'
 import { SiteHeader } from './components/SiteHeader'
+import { AccessibilityWidget } from './components/AccessibilityWidget'
+import AccessibilityStatementPage from './pages/AccessibilityStatementPage'
 import { BuyPage } from './pages/BuyPage'
 import AccountPage from './pages/AccountPage'
 import AuthActionPage from './pages/AuthActionPage'
@@ -64,6 +66,9 @@ function App() {
           overlaps their UI (cramped + overlapping on mobile). */}
       {!isChromelessRoute(location.pathname) && <SiteHeader />}
       <AnimatedRoutes />
+      {/* Accessibility menu — required for Israeli sites (IS 5568).
+          Rendered globally so it's reachable from every page. */}
+      <AccessibilityWidget />
     </div>
   )
 }
@@ -179,6 +184,10 @@ function AnimatedRoutes() {
             }
           />
           <Route path="/buy" element={<BuyPage />} />
+          <Route
+            path="/accessibility"
+            element={<AccessibilityStatementPage />}
+          />
           <Route path="/account" element={<AccountPage />} />
           {/* Web /revisions workspace — full editor-side of the
               Revisions feature ported from the desktop app. Lets
