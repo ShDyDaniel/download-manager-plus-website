@@ -63,37 +63,15 @@ export function Footer() {
             </div>
           </div>
 
-          {/* Meta — credit, year, version, plus the legally-required
-              cancellation affordance. Tabular for the year so it
-              aligns nicely if the layout shifts. The cancellation
-              link is the muted-secondary treatment instead of the
-              destructive red of the old card — it stays discoverable
-              (same font-size, same row) without dominating the
-              footer. */}
+          {/* Meta — legal links + copyright. RTL flex orders DOM
+              children right→left, so the visual order matches the DOM
+              order requested by the user:
+                תנאי שימוש · מדיניות פרטיות · הצהרת נגישות · ביטול מנוי
+              with the copyright trailing on the far visual left.
+              Terms + Privacy open on-demand modals (no navigation, no
+              eager DB read); the others are page links. */}
           <div className="flex flex-col items-start gap-1 md:items-end">
-            <div className="label">— Made in Israel —</div>
             <div className="flex flex-wrap items-center gap-x-1.5 text-sm text-fg-muted">
-              {/* RTL flex orders DOM right→left visually. Putting
-                  the cancel link FIRST in the DOM means it sits on
-                  the visual RIGHT, with copyright trailing on the
-                  visual LEFT — matches the user's requested order. */}
-              <Link
-                to="/account"
-                className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
-              >
-                ביטול מנוי
-              </Link>
-              <span aria-hidden>·</span>
-              <Link
-                to="/accessibility"
-                className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
-              >
-                הצהרת נגישות
-              </Link>
-              <span aria-hidden>·</span>
-              {/* Terms + Privacy open as on-demand modals (no page
-                  navigation, no eager DB read). They use a button
-                  styled to match the sibling text links. */}
               <button
                 type="button"
                 onClick={() => setTermsOpen(true)}
@@ -110,8 +88,31 @@ export function Footer() {
                 מדיניות פרטיות
               </button>
               <span aria-hidden>·</span>
-              <span>
-                © <span className="tabular">{year}</span> · כל הזכויות שמורות
+              <Link
+                to="/accessibility"
+                className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
+              >
+                הצהרת נגישות
+              </Link>
+              <span aria-hidden>·</span>
+              <Link
+                to="/account"
+                className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
+              >
+                ביטול מנוי
+              </Link>
+              <span aria-hidden>·</span>
+              {/* Copyright as its own RTL inline-flex so each segment is
+                  a positioned flex item — this avoids the bidi mess
+                  where the neutral "©"/year digits jumped to the wrong
+                  side of the Hebrew text. Visual right→left:
+                  "© 2026 · כל הזכויות שמורות". */}
+              <span dir="rtl" className="inline-flex items-center gap-x-1.5">
+                <span dir="ltr" className="tabular">
+                  © {year}
+                </span>
+                <span aria-hidden>·</span>
+                כל הזכויות שמורות
               </span>
             </div>
           </div>
