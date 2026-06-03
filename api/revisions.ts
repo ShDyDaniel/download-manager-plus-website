@@ -1982,12 +1982,25 @@ async function handleListRoundsOwner(
  *  desktop. The session JWT remains the single source of truth; this
  *  just derives a Firebase session from it on demand.
  * ────────────────────────────────────────────────────────────── */
+/** Record a WEBSITE "last seen" timestamp for the owner. Entering the
+ *  revisions workspace on the site counts as a web login, kept
+ *  separate from the desktop's `lastSeenAt`. Fire-and-forget — never
+ *  blocks the caller and never throws. */
+function stampWebSeen(uid: string): void {
+  void getDb()
+    .collection('users')
+    .doc(uid)
+    .update({ lastSeenWebAt: new Date().toISOString() })
+    .catch(() => undefined)
+}
+
 async function handleFirebaseCustomToken(
   req: VercelRequest,
   res: VercelResponse,
 ) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  stampWebSeen(verified.uid)
   try {
     const { getAuth } = await import('firebase-admin/auth')
     const token = await getAuth(getFirebase()).createCustomToken(verified.uid)
@@ -2005,6 +2018,7 @@ async function handleListGroupsOwner(
   const body = (req.body || {}) as { idToken?: string }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  stampWebSeen(verified.uid)
 
   // `.limit(500)` is a pure runaway guard — it does NOT change
   // behavior for any real user (nobody in beta has 500 projects),

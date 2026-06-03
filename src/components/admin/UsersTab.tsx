@@ -57,6 +57,9 @@ interface UserDoc {
   lastSeenPlatform?: string | null
   trialStatus?: string
   trialExpiresAt?: string
+  /** Website last-seen (stamped when entering the web revisions
+   *  workspace) — separate from lastSeenAt which is the desktop app. */
+  lastSeenWebAt?: string
 }
 
 function isKeyActive(key: KeySummary | null): boolean {
@@ -341,15 +344,18 @@ function UserRow({
             {user.email}
           </div>
           <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-fg-faint">
-            <span>כניסה אחרונה: {relTime(user.lastSeenAt)}</span>
-            <span>·</span>
-            <span dir="ltr">{platform}</span>
-            {user.lastSeenVersion && (
+            <span>תוכנה: {relTime(user.lastSeenAt)}</span>
+            {user.lastSeenAt && (
               <>
                 <span>·</span>
-                <span dir="ltr">v{user.lastSeenVersion}</span>
+                <span dir="ltr">{platform}</span>
+                {user.lastSeenVersion && (
+                  <span dir="ltr"> · v{user.lastSeenVersion}</span>
+                )}
               </>
             )}
+            <span>·</span>
+            <span>אתר: {relTime(user.lastSeenWebAt)}</span>
             {redeemedKey && (
               <>
                 <span>·</span>
