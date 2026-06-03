@@ -1218,6 +1218,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminListUsageStats(req, res)
       case 'admin-issue-usage-pull':
         return await handleAdminIssueUsagePull(req, res)
+      case 'admin-list-feedback':
+        return await handleAdminListFeedback(req, res)
+      case 'admin-set-feedback-resolved':
+        return await handleAdminSetFeedbackResolved(req, res)
+      case 'admin-delete-feedback':
+        return await handleAdminDeleteFeedback(req, res)
       case 'get-pricing':
         return await handleGetPricing(req, res)
       case 'get-terms':
@@ -5793,6 +5799,61 @@ async function handleAdminIssueUsagePull(
     .collection('appConfig')
     .doc('usagePullCommand')
     .set({ issuedAt: new Date().toISOString(), issuedBy: admin })
+  return res.status(200).json({ ok: true })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Admin → Feedback tab. (Screenshot images are served separately by
+ *  /api/feedback?fileId=… which proxies Telegram.)
+ * ────────────────────────────────────────────────────────────── */
+
+async function handleAdminListFeedback(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const snap = await getDb()
+    .collection('feedback')
+    .orderBy('createdAt', 'desc')
+    .limit(1000)
+    .get()
+  const items = snap.docs.map((d) => ({
+    ...(d.data() as Record<string, unknown>),
+    id: d.id,
+  }))
+  return res.status(200).json({ ok: true, items })
+}
+
+async function handleAdminSetFeedbackResolved(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { id?: string; resolved?: boolean }
+  const id = String(body.id || '').trim()
+  if (!id) return res.status(400).json({ ok: false, error: 'id' })
+  await getDb()
+    .collection('feedback')
+    .doc(id)
+    .update({ resolved: body.resolved === true })
+  return res.status(200).json({ ok: true })
+}
+
+async function handleAdminDeleteFeedback(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { id?: string }
+  const id = String(body.id || '').trim()
+  if (!id) return res.status(400).json({ ok: false, error: 'id' })
+  await getDb().collection('feedback').doc(id).delete()
   return res.status(200).json({ ok: true })
 }
 

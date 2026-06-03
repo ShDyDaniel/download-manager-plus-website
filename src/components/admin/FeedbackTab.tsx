@@ -1,0 +1,336 @@
+import { useEffect, useState } from 'react'
+import {
+  RefreshCw,
+  Loader2,
+  AlertTriangle,
+  Bug,
+  Lightbulb,
+  Check,
+  Trash2,
+  Undo2,
+  ImageIcon,
+} from 'lucide-react'
+import { adminApi, getAdminIdToken } from '../../lib/adminApi'
+
+interface FeedbackDoc {
+  id: string
+  kind: 'bug' | 'feature'
+  message: string
+  userEmail?: string | null
+  userName?: string | null
+  appVersion?: string
+  platform?: string | null
+  resolved?: boolean
+  createdAt?: string
+  telegramFileId?: string
+  telegramFileIds?: string[]
+}
+
+export default function FeedbackTab({
+  onAuthExpired,
+}: {
+  onAuthExpired: () => void
+}) {
+  const [items, setItems] = useState<FeedbackDoc[] | null>(null)
+  const [view, setView] = useState<'open' | 'handled'>('open')
+  const [error, setError] = useState('')
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  function handleErr(e: unknown) {
+    const err = e as Error & { code?: string }
+    if (err.code === 'auth') return onAuthExpired()
+    setError(err.message || 'שגיאה')
+  }
+
+  async function load() {
+    setError('')
+    try {
+      const r = await adminApi<{ items: FeedbackDoc[] }>('admin-list-feedback')
+      setItems(r.items)
+    } catch (e) {
+      handleErr(e)
+    }
+  }
+
+  useEffect(() => {
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function toggleResolved(it: FeedbackDoc) {
+    if (busyId) return
+    setBusyId(it.id)
+    try {
+      await adminApi('admin-set-feedback-resolved', {
+        id: it.id,
+        resolved: !it.resolved,
+      })
+      await load()
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function del(it: FeedbackDoc) {
+    if (busyId) return
+    if (!window.confirm('למחוק את הדיווח לצמיתות?')) return
+    setBusyId(it.id)
+    try {
+      await adminApi('admin-delete-feedback', { id: it.id })
+      await load()
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const list = (items ?? []).filter((it) =>
+    view === 'open' ? !it.resolved : it.resolved,
+  )
+  const openCount = (items ?? []).filter((it) => !it.resolved).length
+
+  return (
+    <div className="space-y-5">
+      <header className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="font-display text-2xl font-medium text-fg">דיווחים והצעות</h2>
+          <p className="mt-1 text-sm text-fg-muted">באגים ובקשות פיצ׳רים ממשתמשים.</p>
+        </div>
+        <button
+          type="button"
+          onClick={load}
+          className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+        >
+          <RefreshCw className="h-3.5 w-3.5" /> רענן
+        </button>
+      </header>
+
+      <div className="flex gap-2">
+        <Tab active={view === 'open'} onClick={() => setView('open')}>
+          פתוחים ({openCount})
+        </Tab>
+        <Tab active={view === 'handled'} onClick={() => setView('handled')}>
+          טופלו
+        </Tab>
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <AlertTriangle className="h-4 w-4" /> {error}
+        </div>
+      )}
+
+      {items === null ? (
+        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border/60 py-10 text-sm text-fg-muted">
+          <Loader2 className="h-4 w-4 animate-spin" /> טוען…
+        </div>
+      ) : list.length === 0 ? (
+        <div className="rounded-2xl border border-border/60 py-10 text-center text-sm text-fg-muted">
+          {view === 'open' ? 'אין דיווחים פתוחים 🎉' : 'אין דיווחים שטופלו'}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {list.map((it) => (
+            <FeedbackRow
+              key={it.id}
+              it={it}
+              busy={busyId === it.id}
+              onToggle={() => toggleResolved(it)}
+              onDelete={() => del(it)}
+              onAuthExpired={onAuthExpired}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Tab({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        'rounded-lg border px-3 py-1.5 text-xs transition-colors ' +
+        (active
+          ? 'border-primary/40 bg-primary/10 text-primary'
+          : 'border-border text-fg-muted hover:text-fg')
+      }
+    >
+      {children}
+    </button>
+  )
+}
+
+function FeedbackRow({
+  it,
+  busy,
+  onToggle,
+  onDelete,
+  onAuthExpired,
+}: {
+  it: FeedbackDoc
+  busy: boolean
+  onToggle: () => void
+  onDelete: () => void
+  onAuthExpired: () => void
+}) {
+  const [images, setImages] = useState<string[] | null>(null)
+  const [loadingImg, setLoadingImg] = useState(false)
+  const fileIds =
+    it.telegramFileIds && it.telegramFileIds.length
+      ? it.telegramFileIds
+      : it.telegramFileId
+        ? [it.telegramFileId]
+        : []
+
+  async function loadImages() {
+    if (loadingImg || images) return
+    setLoadingImg(true)
+    try {
+      const idToken = await getAdminIdToken()
+      if (!idToken) return onAuthExpired()
+      const urls: string[] = []
+      for (const fid of fileIds) {
+        const r = await fetch(
+          `/api/feedback?fileId=${encodeURIComponent(fid)}`,
+          { headers: { Authorization: `Bearer ${idToken}` } },
+        )
+        if (r.ok) {
+          const blob = await r.blob()
+          urls.push(URL.createObjectURL(blob))
+        }
+      }
+      setImages(urls)
+    } finally {
+      setLoadingImg(false)
+    }
+  }
+
+  const isBug = it.kind === 'bug'
+  return (
+    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4">
+      <div className="flex items-start gap-3">
+        <span
+          className={
+            'mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ' +
+            (isBug ? 'bg-destructive/10 text-destructive' : 'bg-accent/10 text-accent')
+          }
+        >
+          {isBug ? <Bug className="h-3.5 w-3.5" /> : <Lightbulb className="h-3.5 w-3.5" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={
+                'rounded-full border px-1.5 py-0.5 text-[9px] font-bold ' +
+                (isBug
+                  ? 'border-destructive/30 text-destructive'
+                  : 'border-accent/30 text-accent')
+              }
+            >
+              {isBug ? 'באג' : 'הצעה'}
+            </span>
+            {it.userName && (
+              <span className="text-xs font-medium text-fg">{it.userName}</span>
+            )}
+            {it.userEmail && (
+              <span className="text-[11px] text-fg-muted" dir="ltr">
+                {it.userEmail}
+              </span>
+            )}
+          </div>
+          <p className="mt-1.5 whitespace-pre-wrap text-sm text-fg">{it.message}</p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[10px] text-fg-faint">
+            {it.createdAt && (
+              <span>{new Date(it.createdAt).toLocaleString('he-IL')}</span>
+            )}
+            {it.appVersion && (
+              <>
+                <span>·</span>
+                <span dir="ltr">v{it.appVersion}</span>
+              </>
+            )}
+            {it.platform && (
+              <>
+                <span>·</span>
+                <span dir="ltr">{it.platform}</span>
+              </>
+            )}
+          </div>
+
+          {fileIds.length > 0 && (
+            <div className="mt-2">
+              {images ? (
+                <div className="flex flex-wrap gap-2">
+                  {images.map((u, i) => (
+                    <a key={i} href={u} target="_blank" rel="noreferrer">
+                      <img
+                        src={u}
+                        alt=""
+                        className="h-20 w-20 rounded-lg border border-border object-cover"
+                      />
+                    </a>
+                  ))}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={loadImages}
+                  disabled={loadingImg}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[11px] text-fg-muted hover:text-fg disabled:opacity-50"
+                >
+                  {loadingImg ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <ImageIcon className="h-3 w-3" />
+                  )}
+                  הצג {fileIds.length} צילומי מסך
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={onToggle}
+            disabled={busy}
+            title={it.resolved ? 'החזר לפתוח' : 'סמן כטופל'}
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-border text-fg-muted transition-colors hover:text-fg disabled:opacity-50"
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : it.resolved ? (
+              <Undo2 className="h-3.5 w-3.5" />
+            ) : (
+              <Check className="h-3.5 w-3.5" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={busy}
+            title="מחק"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-border text-fg-muted transition-colors hover:text-destructive disabled:opacity-50"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

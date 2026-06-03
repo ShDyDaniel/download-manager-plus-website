@@ -40,6 +40,8 @@ import KeysTab from '../components/admin/KeysTab'
 import TrialsTab from '../components/admin/TrialsTab'
 import DashboardTab from '../components/admin/DashboardTab'
 import DataTab from '../components/admin/DataTab'
+import ReferralsTab from '../components/admin/ReferralsTab'
+import FeedbackTab from '../components/admin/FeedbackTab'
 
 /**
  * Website admin panel (/admin) — the web twin of the desktop
@@ -453,6 +455,10 @@ function AdminShell({
             <DashboardTab onAuthExpired={onAuthExpired} />
           ) : tab === 'data' ? (
             <DataTab onAuthExpired={onAuthExpired} />
+          ) : tab === 'referrals' ? (
+            <ReferralsTab onAuthExpired={onAuthExpired} />
+          ) : tab === 'feedback' ? (
+            <FeedbackTab onAuthExpired={onAuthExpired} />
           ) : (
             <TabPlaceholder tab={tab} />
           )}
