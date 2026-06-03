@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   Navigate,
@@ -22,6 +22,10 @@ import { ReviewPage } from './pages/ReviewPage'
 import { RevisionsPage } from './pages/RevisionsPage'
 import DrivePickerPage from './pages/DrivePickerPage'
 import PartnerPage from './pages/PartnerPage'
+// Lazy — AdminPage pulls in Firebase Auth (signInWithEmailAndPassword).
+// Keeping it out of the main bundle means visitors who never open
+// /admin don't download the Firebase weight.
+const AdminPage = lazy(() => import('./pages/AdminPage'))
 
 // Top-level layout. The marketing site is the default route (`/`);
 // the purchase flow lives at `/buy` so the URL is shareable, deep-
@@ -40,7 +44,8 @@ function isChromelessRoute(pathname: string): boolean {
     pathname.startsWith('/review') ||
     pathname.startsWith('/auth-action') ||
     pathname.startsWith('/drive-picker') ||
-    pathname.startsWith('/partner')
+    pathname.startsWith('/partner') ||
+    pathname.startsWith('/admin')
   )
 }
 
@@ -131,6 +136,7 @@ function AnimatedRoutes() {
 
   if (isStandalone) {
     return (
+      <Suspense fallback={null}>
       <Routes location={location}>
         <Route path="/auth-action" element={<AuthActionPage />} />
         <Route path="/review/:token" element={<ReviewPage />} />
@@ -140,7 +146,10 @@ function AnimatedRoutes() {
         <Route path="/drive-picker" element={<DrivePickerPage />} />
         {/* Self-serve partner dashboard (referral stats). */}
         <Route path="/partner" element={<PartnerPage />} />
+        {/* Admin panel — 2FA-gated web twin of the desktop panel. */}
+        <Route path="/admin" element={<AdminPage />} />
       </Routes>
+      </Suspense>
     )
   }
 

@@ -1176,6 +1176,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handlePartnerStats(req, res)
       case 'admin-grant-pro':
         return await handleAdminGrantPro(req, res)
+      case 'admin-2fa-request':
+        return await handleAdmin2faRequest(req, res)
+      case 'admin-2fa-verify':
+        return await handleAdmin2faVerify(req, res)
       case 'get-pricing':
         return await handleGetPricing(req, res)
       case 'get-terms':
@@ -5143,6 +5147,201 @@ async function verifyAdminEmail(idToken: string): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Admin 2FA — email-code second factor for the website /admin panel
+ *
+ *  The desktop admin panel has no 2FA (the Firebase password is the
+ *  only gate). The website surface is a PUBLIC URL, so we add a
+ *  per-login email code on top:
+ *
+ *    1. Admin signs into Firebase (email/password) in the browser →
+ *       gets a real idToken (the same token every admin endpoint
+ *       already verifies).
+ *    2. /admin calls admin-2fa-request {idToken} → we confirm the
+ *       email is in ADMIN_EMAILS, generate a 6-digit code, store it
+ *       hashed in adminLoginCodes/{emailKey} (10-min TTL), email it.
+ *    3. Admin enters the code → admin-2fa-verify {idToken, code} →
+ *       on success we mint a short-lived admin token (HMAC JWT,
+ *       use:'admin', 12h). The panel sends BOTH idToken AND this
+ *       admin token on every data call; verifyAdmin2FA() requires
+ *       both, so the email code is a real server-enforced boundary
+ *       (not merely a UI gate) for all the new admin data endpoints.
+ * ────────────────────────────────────────────────────────────── */
+
+const ADMIN_2FA_TTL_SECONDS = 12 * 60 * 60
+
+interface AdminTokenClaims {
+  email: string
+  use: 'admin'
+  iat: number
+  exp: number
+}
+
+function signAdminToken(email: string): string {
+  const iat = Math.floor(Date.now() / 1000)
+  const exp = iat + ADMIN_2FA_TTL_SECONDS
+  const claims: AdminTokenClaims = { email, use: 'admin', iat, exp }
+  const header = b64urlEncode(
+    Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT', use: 'admin' })),
+  )
+  const payload = b64urlEncode(Buffer.from(JSON.stringify(claims)))
+  const sig = b64urlEncode(
+    crypto
+      .createHmac('sha256', tokenSecret())
+      .update(`${header}.${payload}`)
+      .digest(),
+  )
+  return `${header}.${payload}.${sig}`
+}
+
+function verifyAdminToken(token: string): AdminTokenClaims | null {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    const [h, p, s] = parts
+    const expected = crypto
+      .createHmac('sha256', tokenSecret())
+      .update(`${h}.${p}`)
+      .digest()
+    const actual = b64urlDecode(s)
+    if (expected.length !== actual.length) return null
+    if (!crypto.timingSafeEqual(expected, actual)) return null
+    const claims = JSON.parse(b64urlDecode(p).toString('utf8')) as AdminTokenClaims
+    if (claims.use !== 'admin') return null
+    if (!claims.email || !ADMIN_EMAILS.includes(claims.email.toLowerCase())) {
+      return null
+    }
+    const now = Math.floor(Date.now() / 1000)
+    if (claims.exp && claims.exp < now) return null
+    return claims
+  } catch {
+    return null
+  }
+}
+
+/** Gate for all NEW web-admin data endpoints. Requires BOTH a valid
+ *  Firebase admin idToken AND a valid 2FA admin token for the SAME
+ *  email. Returns the admin email, or null (caller should 403). */
+async function verifyAdmin2FA(req: VercelRequest): Promise<string | null> {
+  const body = (req.body || {}) as { idToken?: string; adminToken?: string }
+  const email = await verifyAdminEmail(body.idToken || '')
+  if (!email) return null
+  const claims = verifyAdminToken((body.adminToken || '').trim())
+  if (!claims) return null
+  if (claims.email.toLowerCase() !== email.toLowerCase()) return null
+  return email
+}
+
+async function handleAdmin2faRequest(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { idToken?: string }
+  const email = await verifyAdminEmail(body.idToken || '')
+  if (!email) return res.status(403).json({ ok: false, error: 'admin only' })
+
+  // Rate-limit: a logged-in admin shouldn't need many codes.
+  const allowed = await tryRateLimit(
+    `admin-2fa_${sanitizeEmailKey(email)}`,
+    8,
+    60 * 60,
+  )
+  if (!allowed) {
+    return res
+      .status(429)
+      .json({ ok: false, error: 'יותר מדי בקשות. נסה שוב מאוחר יותר.' })
+  }
+
+  const code = String(Math.floor(100000 + Math.random() * 900000))
+  const ttlSecs = 10 * 60
+  const salt = process.env.RENEW_TOKEN_SECRET || 'unset'
+  await getDb()
+    .collection('adminLoginCodes')
+    .doc(sanitizeEmailKey(email))
+    .set({
+      email,
+      codeHash: hashCode(code, salt),
+      expiresAt: Date.now() + ttlSecs * 1000,
+      attempts: 0,
+      createdAt: Date.now(),
+    })
+
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) {
+    return res
+      .status(500)
+      .json({ ok: false, error: 'שירות שליחת המייל לא מוגדר.' })
+  }
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth: { user, pass },
+  })
+  const html = renderEmail({
+    heading: 'קוד כניסה לפאנל הניהול',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
+        מישהו מנסה להיכנס לפאנל הניהול. הזן את הקוד הזה כדי לאשר את הכניסה:
+      </p>
+      <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#D4A574;">${code}</div>
+      </div>
+      <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
+        הקוד תקף ל-10 דקות. אם זה לא אתה — מישהו יודע את הסיסמה שלך; החלף אותה מיד.
+      </p>
+    `,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: email,
+    subject: `קוד כניסה לאדמין: ${code} — ניהול הורדות פלוס`,
+    html,
+    text: `קוד הכניסה לפאנל הניהול: ${code}\nתקף ל-10 דקות.`,
+  })
+
+  return res.status(200).json({ ok: true })
+}
+
+async function handleAdmin2faVerify(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { idToken?: string; code?: string }
+  const email = await verifyAdminEmail(body.idToken || '')
+  if (!email) return res.status(403).json({ ok: false, error: 'admin only' })
+  const code = (body.code || '').trim()
+  if (!/^\d{6}$/.test(code)) {
+    return res.status(400).json({ ok: false, error: 'קוד לא תקין' })
+  }
+
+  const db = getDb()
+  const ref = db.collection('adminLoginCodes').doc(sanitizeEmailKey(email))
+  const snap = await ref.get()
+  if (!snap.exists) {
+    return res.status(400).json({ ok: false, error: 'לא נמצא קוד. בקש קוד חדש.' })
+  }
+  const data = snap.data() as {
+    codeHash: string
+    expiresAt: number
+    attempts: number
+  }
+  if (Date.now() > data.expiresAt) {
+    await ref.delete().catch(() => undefined)
+    return res.status(400).json({ ok: false, error: 'הקוד פג תוקף. בקש קוד חדש.' })
+  }
+  if ((data.attempts || 0) >= 6) {
+    await ref.delete().catch(() => undefined)
+    return res
+      .status(429)
+      .json({ ok: false, error: 'יותר מדי ניסיונות. בקש קוד חדש.' })
+  }
+  const salt = process.env.RENEW_TOKEN_SECRET || 'unset'
+  if (hashCode(code, salt) !== data.codeHash) {
+    await ref.update({ attempts: (data.attempts || 0) + 1 }).catch(() => undefined)
+    return res.status(400).json({ ok: false, error: 'קוד שגוי.' })
+  }
+
+  // Success — burn the code, mint the 12h admin token.
+  await ref.delete().catch(() => undefined)
+  return res.status(200).json({ ok: true, adminToken: signAdminToken(email) })
 }
 
 /** Latin slug from a partner name (non-latin → empty → random base). */
