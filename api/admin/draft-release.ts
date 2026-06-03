@@ -161,9 +161,15 @@ export default async function handler(
     const latestRef = db.collection('appReleases').doc(RELEASE_LATEST)
 
     if (action === 'load') {
-      const snap = await draftRef.get()
-      if (!snap.exists) return res.status(200).json({ ok: true, draft: null })
-      return res.status(200).json({ ok: true, draft: snap.data() })
+      const [snap, latestSnap] = await Promise.all([
+        draftRef.get(),
+        latestRef.get(),
+      ])
+      return res.status(200).json({
+        ok: true,
+        draft: snap.exists ? snap.data() : null,
+        latest: latestSnap.exists ? latestSnap.data() : null,
+      })
     }
 
     if (action === 'save') {

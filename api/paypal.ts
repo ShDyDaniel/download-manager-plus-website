@@ -1218,6 +1218,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminListUsageStats(req, res)
       case 'admin-issue-usage-pull':
         return await handleAdminIssueUsagePull(req, res)
+      case 'admin-get-app-config':
+        return await handleAdminGetAppConfig(req, res)
+      case 'admin-set-app-config':
+        return await handleAdminSetAppConfig(req, res)
+      case 'admin-set-terms':
+        return await handleAdminSetTerms(req, res)
+      case 'admin-set-privacy':
+        return await handleAdminSetPrivacy(req, res)
       case 'admin-list-feedback':
         return await handleAdminListFeedback(req, res)
       case 'admin-set-feedback-resolved':
@@ -5806,6 +5814,102 @@ async function handleAdminIssueUsagePull(
  *  Admin → Feedback tab. (Screenshot images are served separately by
  *  /api/feedback?fileId=… which proxies Telegram.)
  * ────────────────────────────────────────────────────────────── */
+
+/* ──────────────────────────────────────────────────────────────
+ *  Admin → Settings. App config (beta/plan mode) + terms/privacy.
+ *  (Pricing edits stay desktop-only — they touch PayPal plan sync.)
+ * ────────────────────────────────────────────────────────────── */
+
+async function handleAdminGetAppConfig(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const snap = await getDb().collection('appConfig').doc('global').get()
+  const d = (snap.exists ? snap.data() : {}) as {
+    betaMode?: boolean
+    planMode?: string
+  }
+  return res.status(200).json({
+    ok: true,
+    betaMode: d.betaMode === true,
+    planMode: d.planMode === 'subscription' ? 'subscription' : 'hybrid',
+  })
+}
+
+async function handleAdminSetAppConfig(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { betaMode?: boolean; planMode?: string }
+  const patch: Record<string, unknown> = {}
+  if (typeof body.betaMode === 'boolean') patch.betaMode = body.betaMode
+  if (body.planMode === 'hybrid' || body.planMode === 'subscription') {
+    patch.planMode = body.planMode
+  }
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ ok: false, error: 'no fields' })
+  }
+  await getDb()
+    .collection('appConfig')
+    .doc('global')
+    .set(patch, { merge: true })
+  return res.status(200).json({ ok: true })
+}
+
+interface LegalSection {
+  title: string
+  paragraphs: string[]
+}
+function cleanSections(input: unknown): LegalSection[] {
+  if (!Array.isArray(input)) return []
+  return input
+    .map((s) => {
+      const sec = (s || {}) as { title?: unknown; paragraphs?: unknown }
+      return {
+        title: String(sec.title || '').slice(0, 300),
+        paragraphs: Array.isArray(sec.paragraphs)
+          ? sec.paragraphs.map((p) => String(p || '').slice(0, 5000))
+          : [],
+      }
+    })
+    .filter((s) => s.title || s.paragraphs.length)
+}
+
+async function handleAdminSetTerms(req: VercelRequest, res: VercelResponse) {
+  return setLegalDoc(req, res, 'terms')
+}
+async function handleAdminSetPrivacy(req: VercelRequest, res: VercelResponse) {
+  return setLegalDoc(req, res, 'privacy')
+}
+async function setLegalDoc(
+  req: VercelRequest,
+  res: VercelResponse,
+  doc: 'terms' | 'privacy',
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { version?: number; sections?: unknown }
+  const sections = cleanSections(body.sections)
+  if (!sections.length) {
+    return res.status(400).json({ ok: false, error: 'אין תוכן' })
+  }
+  const version = Math.max(0, Math.floor(Number(body.version) || 0))
+  await getDb()
+    .collection('appConfig')
+    .doc(doc)
+    .set(
+      { version, sections, lastUpdated: new Date().toISOString() },
+      { merge: true },
+    )
+  return res.status(200).json({ ok: true })
+}
 
 async function handleAdminListFeedback(
   req: VercelRequest,
