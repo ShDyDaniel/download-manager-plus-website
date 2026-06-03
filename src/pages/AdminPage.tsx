@@ -66,6 +66,11 @@ type Phase = 'checking' | 'blocked' | 'loading' | 'login' | 'code' | 'ready'
 export default function AdminPage() {
   const [phase, setPhase] = useState<Phase>('checking')
   const [tab, setTab] = useState<AdminTabKey>('users')
+  // When we land on the code step WITHOUT having just sent a code
+  // (a page refresh while signed-in, or an expired 2FA token), the
+  // code screen must request one itself. After the login step it must
+  // NOT — login already sent it (that was the double-email bug).
+  const [codeAutoReq, setCodeAutoReq] = useState(false)
 
   // STEP 0 — IP gate. Before anything else (even before showing a
   // login form), ask the server whether this IP is allowed. If not,
@@ -90,7 +95,13 @@ export default function AdminPage() {
           setPhase('login')
           return
         }
-        setPhase(getStoredAdminToken() ? 'ready' : 'code')
+        if (getStoredAdminToken()) {
+          setPhase('ready')
+        } else {
+          // Direct landing on the code step → it must send a code.
+          setCodeAutoReq(true)
+          setPhase('code')
+        }
       })
     })()
     return () => {
@@ -114,12 +125,21 @@ export default function AdminPage() {
   }
 
   if (phase === 'login') {
-    return <AdminLogin onNeedCode={() => setPhase('code')} />
+    return (
+      <AdminLogin
+        onNeedCode={() => {
+          // Login already sent the code — don't double-send.
+          setCodeAutoReq(false)
+          setPhase('code')
+        }}
+      />
+    )
   }
 
   if (phase === 'code') {
     return (
       <AdminCode
+        autoRequest={codeAutoReq}
         onVerified={() => setPhase('ready')}
         onCancel={async () => {
           await adminSignOut()
@@ -141,6 +161,7 @@ export default function AdminPage() {
       // (keep the Firebase session) and re-prompt for a fresh code.
       onAuthExpired={() => {
         clearAdminToken()
+        setCodeAutoReq(true)
         setPhase('code')
       }}
     />
@@ -219,9 +240,11 @@ function AdminLogin({ onNeedCode }: { onNeedCode: () => void }) {
 
 /* ── Step 2: email code ───────────────────────────────────────── */
 function AdminCode({
+  autoRequest,
   onVerified,
   onCancel,
 }: {
+  autoRequest: boolean
   onVerified: () => void
   onCancel: () => void
 }) {
@@ -229,14 +252,15 @@ function AdminCode({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [resent, setResent] = useState(false)
-  // If we landed here on a refresh (signed in, no token), make sure a
-  // code actually got sent.
+  // Only request a code here when we arrived WITHOUT one already being
+  // sent (refresh / expired token). After the login step, login sent
+  // it — requesting again is the double-email bug.
   const requestedRef = useRef(false)
   useEffect(() => {
-    if (requestedRef.current) return
+    if (!autoRequest || requestedRef.current) return
     requestedRef.current = true
     void requestAdminCode()
-  }, [])
+  }, [autoRequest])
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
