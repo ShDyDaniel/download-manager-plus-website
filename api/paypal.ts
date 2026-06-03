@@ -1198,6 +1198,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminClearUserDevice(req, res)
       case 'admin-approve-trial':
         return await handleAdminApproveTrial(req, res)
+      case 'admin-revoke-trial':
+        return await handleAdminRevokeTrial(req, res)
+      case 'admin-list-keys':
+        return await handleAdminListKeys(req, res)
+      case 'admin-create-key':
+        return await handleAdminCreateKey(req, res)
+      case 'admin-delete-key':
+        return await handleAdminDeleteKey(req, res)
+      case 'admin-set-key-expiry':
+        return await handleAdminSetKeyExpiry(req, res)
       case 'get-pricing':
         return await handleGetPricing(req, res)
       case 'get-terms':
@@ -5543,6 +5553,103 @@ async function handleAdminApproveTrial(
     trialExpiresAt: expires.toISOString(),
     trialApprovedBy: admin,
   })
+  return res.status(200).json({ ok: true })
+}
+
+async function handleAdminRevokeTrial(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { uid?: string }
+  const uid = String(body.uid || '').trim()
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
+  // Keep trialExpiresAt for the audit trail, just flip the status.
+  await getDb().collection('users').doc(uid).update({ trialStatus: 'rejected' })
+  return res.status(200).json({ ok: true })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Admin → Keys tab. Mirrors the desktop createKeys / deleteKey /
+ *  setKeyExpiry helpers, server-side via the Admin SDK.
+ * ────────────────────────────────────────────────────────────── */
+
+async function handleAdminListKeys(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const snap = await getDb().collection('productKeys').get()
+  const keys = snap.docs.map((d) => ({
+    ...(d.data() as Record<string, unknown>),
+    id: d.id,
+  }))
+  return res.status(200).json({ ok: true, keys })
+}
+
+async function handleAdminCreateKey(req: VercelRequest, res: VercelResponse) {
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const body = (req.body || {}) as { expiresAt?: string | null }
+  // Validate expiry: null (perpetual) or a future ISO string.
+  let expiresAt: string | null = null
+  if (body.expiresAt) {
+    const ms = new Date(body.expiresAt).getTime()
+    if (!Number.isFinite(ms) || ms <= Date.now()) {
+      return res.status(400).json({ ok: false, error: 'תוקף לא תקין' })
+    }
+    expiresAt = new Date(body.expiresAt).toISOString()
+  }
+  const db = getDb()
+  // Retry on the astronomically-unlikely collision.
+  let keyString = generateKeyString()
+  for (let i = 0; i < 5; i++) {
+    const exists = await db.collection('productKeys').doc(keyString).get()
+    if (!exists.exists) break
+    keyString = generateKeyString()
+  }
+  const data = {
+    key: keyString,
+    tier: 'pro' as const,
+    redeemedBy: null,
+    redeemedByEmail: null,
+    redeemedAt: null,
+    expiresAt,
+    createdAt: new Date().toISOString(),
+    createdBy: `admin-web:${admin}`,
+  }
+  await db.collection('productKeys').doc(keyString).set(data)
+  return res.status(200).json({ ok: true, key: { ...data, id: keyString } })
+}
+
+async function handleAdminDeleteKey(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { keyId?: string }
+  const keyId = String(body.keyId || '').trim()
+  if (!keyId) return res.status(400).json({ ok: false, error: 'keyId' })
+  await getDb().collection('productKeys').doc(keyId).delete()
+  return res.status(200).json({ ok: true })
+}
+
+async function handleAdminSetKeyExpiry(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { keyId?: string; expiresAt?: string | null }
+  const keyId = String(body.keyId || '').trim()
+  if (!keyId) return res.status(400).json({ ok: false, error: 'keyId' })
+  let expiresAt: string | null = null
+  if (body.expiresAt) {
+    const ms = new Date(body.expiresAt).getTime()
+    if (!Number.isFinite(ms) || ms <= Date.now()) {
+      return res.status(400).json({ ok: false, error: 'תאריך לא תקין' })
+    }
+    expiresAt = new Date(body.expiresAt).toISOString()
+  }
+  await getDb().collection('productKeys').doc(keyId).update({ expiresAt })
   return res.status(200).json({ ok: true })
 }
 

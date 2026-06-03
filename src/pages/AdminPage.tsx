@@ -27,6 +27,8 @@ import {
   verifyAdminCode,
 } from '../lib/adminApi'
 import UsersTab from '../components/admin/UsersTab'
+import KeysTab from '../components/admin/KeysTab'
+import TrialsTab from '../components/admin/TrialsTab'
 
 /**
  * Website admin panel (/admin) — the web twin of the desktop
@@ -375,6 +377,10 @@ function AdminShell({
         <main className="min-w-0 flex-1">
           {tab === 'users' ? (
             <UsersTab onAuthExpired={onAuthExpired} />
+          ) : tab === 'keys' ? (
+            <KeysTab onAuthExpired={onAuthExpired} />
+          ) : tab === 'trials' ? (
+            <TrialsTab onAuthExpired={onAuthExpired} />
           ) : (
             <TabPlaceholder tab={tab} />
           )}
