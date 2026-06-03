@@ -41,7 +41,6 @@ import { AnimatePresence, motion } from 'framer-motion'
 import {
   Copy,
   ExternalLink,
-  FolderClosed,
   HardDrive,
   MessageSquare,
   Pencil,
@@ -504,21 +503,18 @@ function ConnectedWorkspace({
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 24 }}
             transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-            className="mx-auto w-full max-w-3xl space-y-7"
+            className="space-y-8"
           >
-            {/* Centered editorial header — icon badge + tiny uppercase
-                label + display headline + one-line subtitle. */}
-            <div className="flex flex-col items-center text-center">
-              <span className="mb-4 inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-border/60 bg-white/[0.02] text-primary">
-                <MessageSquare className="h-5 w-5" strokeWidth={1.8} />
-              </span>
-              <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-fg-muted">
-                סבבי תיקונים
+            {/* Editorial header — mirrors the login/desktop voice:
+                tiny uppercase label + display headline, no card. */}
+            <div>
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-fg-muted">
+                — סבבי תיקונים
               </div>
               <h1
                 className="font-display text-fg"
                 style={{
-                  fontSize: 'clamp(28px, 4vw, 38px)',
+                  fontSize: 'clamp(26px, 4vw, 34px)',
                   lineHeight: 1.05,
                   letterSpacing: '-0.025em',
                   fontWeight: 500,
@@ -526,10 +522,6 @@ function ConnectedWorkspace({
               >
                 הפרויקטים שלך
               </h1>
-              <p className="mt-3 max-w-md text-sm leading-relaxed text-fg-muted">
-                העלו סרטון, שלחו קישור ללקוח, וקבלו את כל התיקונים שלו
-                בזמן אמת.
-              </p>
             </div>
             <ActionBar
               onNewProject={() => setShowNewProject(true)}
@@ -654,27 +646,24 @@ function ActionBar({
   onDisconnect: () => void
 }) {
   return (
-    <div className="flex flex-col items-center gap-3">
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <button
         type="button"
         onClick={onNewProject}
-        className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-6 py-2.5 text-sm font-semibold text-bg shadow-sm shadow-primary/20 transition-colors hover:bg-primary-hover"
+        className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover"
       >
-        <Plus className="h-4 w-4" strokeWidth={2.5} />
+        <Plus className="h-4 w-4" />
         פרויקט חדש
       </button>
-      {/* Drive connection — a subtle pill so it reads as status, not
-          a competing action. */}
-      <div className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-white/[0.015] px-3 py-1 text-[11px] text-fg-muted">
-        <DriveIcon className="h-3 w-3 text-primary" />
-        <span dir="ltr" className="max-w-[200px] truncate">
+      <div className="flex items-center gap-3 text-xs text-fg-muted">
+        <DriveIcon className="h-3.5 w-3.5 text-primary" />
+        <span dir="ltr" className="truncate">
           {drive.email}
         </span>
-        <span className="text-fg-faint">·</span>
         <button
           type="button"
           onClick={onDisconnect}
-          className="text-fg-muted underline-offset-2 transition-colors hover:text-fg hover:underline"
+          className="text-fg-muted underline-offset-2 hover:text-fg hover:underline"
         >
           ניתוק
         </button>
@@ -878,14 +867,9 @@ function GroupCard({
               (expanded ? 'rotate-180' : '')
             }
           />
-          {/* Project icon avatar — gives every card a consistent
-              visual anchor on the start (right, in RTL) edge. */}
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-            <FolderClosed className="h-[18px] w-[18px]" strokeWidth={1.8} />
-          </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h3 className="truncate text-[15px] font-semibold text-fg">
+              <h3 className="truncate text-base font-medium text-fg">
                 {group.title || 'ללא שם'}
               </h3>
               {group.hasPassword && (
@@ -894,14 +878,17 @@ function GroupCard({
                 </span>
               )}
             </div>
-            <div className="mt-1 flex items-center gap-2 text-xs text-fg-muted">
+            <div className="mt-1.5 flex items-center gap-3 text-xs text-fg-muted">
               {/* `<bdi dir="ltr">` isolates pure-LTR fragments
                   (numbers + dates) from the surrounding RTL
-                  document direction. */}
-              <span className="rounded-full bg-white/[0.04] px-2 py-0.5 text-[11px] text-fg-secondary">
+                  document direction. Without isolation the
+                  bidi algorithm reorders "25.6 MB · 27.05.2026"
+                  into something like "MB 25.6 27.05.2026 ·"
+                  because punctuation flips direction. */}
+              <span>
                 <bdi dir="ltr">{roundCount}</bdi> סבבים
               </span>
-              <span className="text-fg-faint">·</span>
+              <span>·</span>
               <bdi dir="ltr">{formatDateShort(group.updatedAt)}</bdi>
             </div>
           </div>
