@@ -143,6 +143,9 @@ export function signOut(): void {
   cached = null
   try {
     sessionStorage.removeItem(SESSION_STORAGE_KEY)
+    // Clear the once-per-session "web seen" guard so the NEXT login
+    // re-stamps lastSeenWebAt (each login = a fresh entrance).
+    sessionStorage.removeItem('dmplus.webseen.v1')
   } catch {
     // ignore — private browsing
   }
@@ -162,6 +165,22 @@ function adoptToken(token: string): DecodedSession {
   }
   cached = { token, claims }
   emit()
+  // Stamp the website "last seen" once per session on login / signup
+  // auto-login. Inlined (not imported from revisionsApi) to avoid a
+  // circular import; shares the same sessionStorage guard key so it
+  // and the revisions-workspace ping fire at most once together.
+  try {
+    if (!sessionStorage.getItem('dmplus.webseen.v1')) {
+      sessionStorage.setItem('dmplus.webseen.v1', '1')
+      void fetch('/api/revisions?action=touch-web-seen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'touch-web-seen', sessionToken: token }),
+      }).catch(() => undefined)
+    }
+  } catch {
+    /* ignore */
+  }
   return claims
 }
 

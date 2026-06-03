@@ -1982,16 +1982,23 @@ async function handleListRoundsOwner(
  *  desktop. The session JWT remains the single source of truth; this
  *  just derives a Firebase session from it on demand.
  * ────────────────────────────────────────────────────────────── */
-/** Record a WEBSITE "last seen" timestamp for the owner. Entering the
- *  revisions workspace on the site counts as a web login, kept
- *  separate from the desktop's `lastSeenAt`. Fire-and-forget — never
- *  blocks the caller and never throws. */
-function stampWebSeen(uid: string): void {
-  void getDb()
-    .collection('users')
-    .doc(uid)
-    .update({ lastSeenWebAt: new Date().toISOString() })
-    .catch(() => undefined)
+/** Record a WEBSITE "last seen" timestamp for the owner. The client
+ *  calls this ONCE per visit (on login / entering revisions, guarded
+ *  by sessionStorage) — NOT on every data request — so it's a true
+ *  "last entered the site" marker, kept separate from the desktop's
+ *  `lastSeenAt`. */
+async function handleTouchWebSeen(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  try {
+    await getDb()
+      .collection('users')
+      .doc(verified.uid)
+      .update({ lastSeenWebAt: new Date().toISOString() })
+  } catch {
+    // Non-critical — never fail the caller over a presence ping.
+  }
+  return res.status(200).json({ ok: true })
 }
 
 async function handleFirebaseCustomToken(
@@ -2000,7 +2007,6 @@ async function handleFirebaseCustomToken(
 ) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  stampWebSeen(verified.uid)
   try {
     const { getAuth } = await import('firebase-admin/auth')
     const token = await getAuth(getFirebase()).createCustomToken(verified.uid)
@@ -2018,7 +2024,6 @@ async function handleListGroupsOwner(
   const body = (req.body || {}) as { idToken?: string }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  stampWebSeen(verified.uid)
 
   // `.limit(500)` is a pure runaway guard — it does NOT change
   // behavior for any real user (nobody in beta has 500 projects),
@@ -5085,6 +5090,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleUpdateGroup(req, res)
       case 'replace-project-video':
         return await handleReplaceProjectVideo(req, res)
+      case 'touch-web-seen':
+        return await handleTouchWebSeen(req, res)
       case 'list-rounds-owner':
         return await handleListRoundsOwner(req, res)
       case 'list-notes-owner':

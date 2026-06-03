@@ -73,6 +73,31 @@ async function postAction<T>(
   return json as T
 }
 
+/**
+ * Stamp the owner's WEBSITE "last seen" — ONCE per tab session.
+ * Fire-and-forget, guarded by sessionStorage so it fires on the first
+ * authenticated entry (login / opening revisions) and NOT on every
+ * data request. signOut() clears the guard so the next login re-stamps.
+ */
+const WEB_SEEN_GUARD = 'dmplus.webseen.v1'
+export function touchWebSeenOnce(): void {
+  try {
+    if (sessionStorage.getItem(WEB_SEEN_GUARD)) return
+    const token = getSessionToken()
+    if (!token) return
+    sessionStorage.setItem(WEB_SEEN_GUARD, '1')
+    // Raw fetch (not postAction) so a transient error never triggers
+    // the auth-expired signOut side effect — it's only a presence ping.
+    void fetch(`${API_BASE}?action=touch-web-seen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'touch-web-seen', sessionToken: token }),
+    }).catch(() => undefined)
+  } catch {
+    /* ignore */
+  }
+}
+
 /* ──────────────────────────────────────────────────────────────
  *  Drive integration
  * ────────────────────────────────────────────────────────────── */

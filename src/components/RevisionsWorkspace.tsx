@@ -67,6 +67,7 @@ import {
   listGroupsForOwner,
   listRoundsForOwner,
   listNotesAsOwner,
+  touchWebSeenOnce,
   replaceProjectVideo,
   updateGroup,
   updateNoteStatus,
@@ -348,6 +349,13 @@ function ConnectedWorkspace({
 
   // ── Project list — real-time PUSH listener ────────────────────
   //
+  // Stamp the website "last seen" once on entering the workspace
+  // (covers users already logged in who just open revisions). The
+  // helper itself is guarded to fire at most once per tab session.
+  useEffect(() => {
+    touchWebSeenOnce()
+  }, [])
+
   // Mirrors the desktop: one read on attach (tab entry), one read per
   // changed doc, zero at idle. No polling. A viewer adding a note or
   // a round being added pushes straight here. If the live session
