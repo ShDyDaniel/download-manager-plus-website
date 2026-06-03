@@ -11,7 +11,6 @@ import { getSession } from './webSession'
 import {
   fetchFirebaseCustomToken,
   type RevisionGroup,
-  type GroupRoundSummary,
   type LegacyProjectSummary,
 } from './revisionsApi'
 
@@ -24,13 +23,15 @@ import {
  *      site's session JWT (one Auth round-trip, ZERO Firestore reads)
  *      and signs the Firebase Web SDK in, so request.auth.uid matches
  *      the owner and the read rules pass.
- *   2. Two onSnapshot listeners (revisionGroups + revisionProjects,
- *      filtered to the owner) push deltas: one read on attach, one
- *      read per changed doc, zero at idle. No polling.
+ *   2. ONE onSnapshot listener on revisionGroups (filtered to the
+ *      owner) pushes deltas: one read on attach, one read per changed
+ *      group, zero at idle. No polling.
  *
- * The combine logic is byte-for-byte the same as the server's
- * handleListGroupsOwner / the desktop watcher, so the shape the
- * workspace renders is identical to what listGroupsForOwner returned.
+ * LAZY-LOAD: we deliberately do NOT listen to revisionProjects here.
+ * The list only needs each group's denormalised `roundCount`; the
+ * actual round docs are fetched (listRoundsForOwner) only when a
+ * project is opened. This keeps tab entry to "groups only" reads
+ * instead of "every group + every round the user owns".
  */
 
 // Dedupe concurrent sign-in attempts — many callers may race on first
@@ -88,75 +89,36 @@ export function watchOwnerRevisionsLive(
 ): () => void {
   let cancelled = false
   let unsubGroups: (() => void) | null = null
-  let unsubRounds: (() => void) | null = null
 
-  // Raw docs per collection; hold off emitting until both first
-  // snapshots are in so the list is never half-built.
+  // Raw group docs from the single live listener.
   let groupDocs: Record<string, unknown>[] | null = null
-  let roundDocs: Record<string, unknown>[] | null = null
 
   const emit = () => {
-    if (groupDocs === null || roundDocs === null) return
+    if (groupDocs === null) return
 
     const activeGroups = groupDocs.filter((g) => g.status === 'active')
 
-    const roundsByGroup = new Map<string, Record<string, unknown>[]>()
-    const legacyRoundDocs: Record<string, unknown>[] = []
-    for (const r of roundDocs) {
-      if (r.status !== 'active') continue
-      const gid = String(r.groupId || '')
-      if (gid) {
-        if (!roundsByGroup.has(gid)) roundsByGroup.set(gid, [])
-        roundsByGroup.get(gid)!.push(r)
-      } else {
-        legacyRoundDocs.push(r)
-      }
-    }
-
     const groups: RevisionGroup[] = activeGroups
-      .map((g) => {
-        const gid = String(g.id || '')
-        const rounds: GroupRoundSummary[] = (roundsByGroup.get(gid) || [])
-          .map((r) => ({
-            id: String(r.id || ''),
-            roundNumber: Number(r.roundNumber) || 1,
-            videoFileName: String(r.videoFileName || ''),
-            videoSizeBytes: Number(r.videoSizeBytes) || 0,
-            locked: r.locked === true,
-            notesCount: Number(r.notesCount) || 0,
-            createdAt: Number(r.createdAt) || 0,
-          }))
-          .sort((a, b) => a.roundNumber - b.roundNumber)
-        return {
-          id: gid,
-          title: String(g.title || ''),
-          shareToken: String(g.shareToken || ''),
-          hasPassword: Boolean(g.passwordHash),
-          watermark: g.watermark !== false,
-          allowDownload: g.allowDownload === true,
-          openInDrive: g.openInDrive === true,
-          createdAt: Number(g.createdAt) || 0,
-          updatedAt: Number(g.updatedAt) || 0,
-          rounds,
-        }
-      })
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-
-    const legacyProjects: LegacyProjectSummary[] = legacyRoundDocs
-      .map((r) => ({
-        id: String(r.id || ''),
-        title: String(r.title || ''),
-        shareToken: String(r.shareToken || ''),
-        hasPassword: Boolean(r.passwordHash),
-        videoFileName: String(r.videoFileName || ''),
-        videoSizeBytes: Number(r.videoSizeBytes) || 0,
-        roundNumber: Number(r.roundNumber) || 1,
-        locked: r.locked === true,
-        notesCount: Number(r.notesCount) || 0,
-        createdAt: Number(r.createdAt) || 0,
-        updatedAt: Number(r.updatedAt) || 0,
+      .map((g) => ({
+        id: String(g.id || ''),
+        title: String(g.title || ''),
+        shareToken: String(g.shareToken || ''),
+        hasPassword: Boolean(g.passwordHash),
+        watermark: g.watermark !== false,
+        allowDownload: g.allowDownload === true,
+        openInDrive: g.openInDrive === true,
+        roundCount: Number(g.roundCount) || 0,
+        createdAt: Number(g.createdAt) || 0,
+        updatedAt: Number(g.updatedAt) || 0,
+        // Rounds load on demand when the project is opened.
+        rounds: undefined,
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt)
+
+    // Legacy single-round projects are no longer surfaced in the live
+    // list (this user has none, and scanning for them would defeat the
+    // lazy-load). Always emit an empty array for shape compatibility.
+    const legacyProjects: LegacyProjectSummary[] = []
 
     cb({ groups, legacyProjects })
   }
@@ -183,25 +145,10 @@ export function watchOwnerRevisionsLive(
         onError?.(err)
       },
     )
-    unsubRounds = onSnapshot(
-      query(collection(db, 'revisionProjects'), where('ownerUid', '==', uid)),
-      (snap: QuerySnapshot) => {
-        roundDocs = snap.docs.map((d) => {
-          const data = d.data() as Record<string, unknown>
-          return { ...data, id: data.id || d.id }
-        })
-        emit()
-      },
-      (err) => {
-        console.warn('[revisionsLive] rounds listener error:', err)
-        onError?.(err)
-      },
-    )
   })()
 
   return () => {
     cancelled = true
     if (unsubGroups) unsubGroups()
-    if (unsubRounds) unsubRounds()
   }
 }

@@ -212,7 +212,13 @@ export interface RevisionGroup {
   openInDrive: boolean
   createdAt: number
   updatedAt: number
-  rounds: GroupRoundSummary[]
+  /** Number of active rounds — denormalised on the group so the list
+   *  renders the count without reading any round docs (lazy-load). */
+  roundCount: number
+  /** Rounds are loaded on demand when the project is opened
+   *  (listRoundsForOwner). Empty until then; `undefined` means
+   *  "not loaded yet", `[]` means "loaded, no rounds". */
+  rounds?: GroupRoundSummary[]
 }
 
 export interface LegacyProjectSummary {
@@ -246,6 +252,20 @@ export async function listGroupsForOwner(): Promise<{
     groups: r.groups,
     legacyProjects: r.legacyProjects || [],
   }
+}
+
+/** Lazy-load the rounds of a single project, on demand when the user
+ *  opens it. The list view (live listener / listGroupsForOwner) only
+ *  carries each group's roundCount, so opening a project is the only
+ *  thing that reads round docs — and only for that one project. */
+export async function listRoundsForOwner(
+  groupId: string,
+): Promise<GroupRoundSummary[]> {
+  const r = await postAction<{ ok: true; rounds: GroupRoundSummary[] }>(
+    'list-rounds-owner',
+    { ...authBody(), groupId },
+  )
+  return r.rounds || []
 }
 
 /** Mint a short-lived Firebase custom auth token for the current

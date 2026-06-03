@@ -65,6 +65,7 @@ import {
   fetchNoteMediaAsObjectUrl,
   formatBytes,
   listGroupsForOwner,
+  listRoundsForOwner,
   listNotesAsOwner,
   replaceProjectVideo,
   updateGroup,
@@ -475,9 +476,14 @@ function ConnectedWorkspace({
                     (p) => p.id === viewingRound.legacy.id,
                   )?.notesCount
                 }
+                // The list listener is groups-only now (lazy-load), so
+                // the group object usually has no loaded rounds. When it
+                // does (a recently opened card), use the live count;
+                // otherwise undefined → the detail view keeps the count
+                // it fetched on open.
                 return projects.groups
                   .find((g) => g.id === viewingRound.group.id)
-                  ?.rounds.find((r) => r.id === viewingRound.round.id)
+                  ?.rounds?.find((r) => r.id === viewingRound.round.id)
                   ?.notesCount
               })()}
               onBack={() => setViewingRound(null)}
@@ -776,6 +782,48 @@ function GroupCard({
   const [expanded, setExpanded] = useState(false)
   const shareUrl = buildShareUrl(group.shareToken)
 
+  // LAZY-LOAD: the list listener delivers groups WITHOUT their rounds
+  // (only a denormalised `group.roundCount`). We fetch this project's
+  // rounds the first time it's expanded, and re-fetch whenever the
+  // group's updatedAt changes while open (add-round / delete-round
+  // bump it) so the list never shows a stale round.
+  const [rounds, setRounds] = useState<GroupRoundSummary[] | null>(
+    group.rounds ?? null,
+  )
+  const [loadingRounds, setLoadingRounds] = useState(false)
+  const [roundsError, setRoundsError] = useState<string | null>(null)
+  const loadedForRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!expanded) return
+    // Already have the rounds for this exact group revision — skip.
+    if (rounds !== null && loadedForRef.current === group.updatedAt) return
+    let cancelled = false
+    setLoadingRounds(true)
+    setRoundsError(null)
+    void (async () => {
+      try {
+        const rs = await listRoundsForOwner(group.id)
+        if (cancelled) return
+        setRounds(rs)
+        loadedForRef.current = group.updatedAt
+      } catch (e) {
+        if (cancelled) return
+        setRoundsError(e instanceof Error ? e.message : 'טעינת הסבבים נכשלה')
+      } finally {
+        if (!cancelled) setLoadingRounds(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, group.id, group.updatedAt])
+
+  // Count for the header: prefer the freshly loaded rounds, fall back
+  // to the denormalised count the list already carries.
+  const roundCount = rounds?.length ?? group.roundCount
+
   // `stopActionPropagation` — wrap the inline action buttons so a
   // click on them doesn't ALSO toggle the expand state. The whole
   // header is a button (for keyboard + screen-reader friendliness)
@@ -836,7 +884,7 @@ function GroupCard({
                   into something like "MB 25.6 27.05.2026 ·"
                   because punctuation flips direction. */}
               <span>
-                <bdi dir="ltr">{group.rounds.length}</bdi> סבבים
+                <bdi dir="ltr">{roundCount}</bdi> סבבים
               </span>
               <span>·</span>
               <bdi dir="ltr">{formatDateShort(group.updatedAt)}</bdi>
@@ -907,13 +955,21 @@ function GroupCard({
           className="overflow-hidden"
         >
         <div className="border-t border-border bg-bg/40">
-          {group.rounds.length === 0 ? (
+          {loadingRounds && rounds === null ? (
+            <div className="p-4 text-center text-xs text-fg-muted">
+              טוען סבבים…
+            </div>
+          ) : roundsError ? (
+            <div className="p-4 text-center text-xs text-destructive">
+              {roundsError}
+            </div>
+          ) : (rounds ?? []).length === 0 ? (
             <div className="p-4 text-center text-xs text-fg-muted">
               עדיין אין סבבים. לחץ "+ סבב חדש" כדי להעלות סרטון.
             </div>
           ) : (
             <ul className="divide-y divide-border">
-              {group.rounds.map((round) => (
+              {(rounds ?? []).map((round) => (
                 <li
                   key={round.id}
                   className="flex items-center justify-between gap-3 px-5 py-3"

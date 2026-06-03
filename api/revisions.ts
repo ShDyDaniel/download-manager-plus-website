@@ -1399,6 +1399,12 @@ interface RevisionGroupDoc {
   watermark?: boolean
   allowDownload?: boolean
   openInDrive?: boolean
+  /** Denormalised count of active rounds in this group. Maintained
+   *  by add-round / delete-round so the project LIST can render the
+   *  round count without reading every round doc (lazy-load). Older
+   *  groups created before this field exists get it backfilled the
+   *  first time list-groups-owner runs. */
+  roundCount?: number
   createdAt: number
   updatedAt: number
 }
@@ -1666,6 +1672,10 @@ async function handleCreateProjectGroup(
       typeof body.allowDownload === 'boolean' ? body.allowDownload : false,
     openInDrive:
       typeof body.openInDrive === 'boolean' ? body.openInDrive : false,
+    // Denormalised count of active rounds — lets the project list
+    // render the card (with its round count) WITHOUT reading every
+    // round doc. Maintained on add-round / delete-round.
+    roundCount: driveFileId ? 1 : 0,
     createdAt: now,
     updatedAt: now,
   })
@@ -1799,9 +1809,17 @@ async function handleAddRoundToGroup(
     createdAt: now,
     updatedAt: now,
   })
-  // Bump group's updatedAt so editor-side queries that sort by
-  // recency reflect the new activity.
-  await groupRef.update({ updatedAt: now })
+  // Bump group's updatedAt + refresh the denormalised roundCount to
+  // the true active-round count (also self-heals legacy groups that
+  // predate the field). One small per-group read on an infrequent op.
+  const sibSnap = await db
+    .collection('revisionProjects')
+    .where('groupId', '==', groupId)
+    .get()
+  const activeCount = sibSnap.docs.filter(
+    (d) => (d.data() as { status?: string }).status === 'active',
+  ).length
+  await groupRef.update({ updatedAt: now, roundCount: activeCount })
 
   return res.status(200).json({ ok: true, roundId: roundRef.id })
 }
@@ -1868,6 +1886,76 @@ async function handleListRoundsForGroup(
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: list-rounds-owner  (auth required — owner only)
+ *
+ *  POST /api/revisions?action=list-rounds-owner
+ *  Body: { idToken, groupId }
+ *  Returns: { ok, rounds: [...] }
+ *
+ *  The owner-side counterpart to list-rounds-for-group (which is
+ *  public + share-token-gated). This powers LAZY-LOAD: the project
+ *  list (list-groups-owner / the live listener) returns groups only,
+ *  and the editor calls this the moment a project is opened to pull
+ *  just that one group's rounds. Reads scale with "rounds in the
+ *  opened project", not "every round the user owns".
+ * ────────────────────────────────────────────────────────────── */
+async function handleListRoundsOwner(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as { idToken?: string; groupId?: string }
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const groupId = String(body.groupId || '').trim()
+  if (!groupId) return res.status(400).json({ ok: false, error: 'groupId' })
+
+  const db = getDb()
+  // Confirm the caller actually owns this group before handing back
+  // its rounds — the share-token gate doesn't apply on the owner path.
+  const groupSnap = await db.collection('revisionGroups').doc(groupId).get()
+  if (!groupSnap.exists) {
+    return res.status(404).json({ ok: false, error: 'הפרויקט לא נמצא' })
+  }
+  const group = groupSnap.data() as RevisionGroupDoc
+  if (group.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+
+  const roundsSnap = await db
+    .collection('revisionProjects')
+    .where('groupId', '==', groupId)
+    .get()
+  const rounds = roundsSnap.docs
+    .map((d) => d.data() as Record<string, unknown>)
+    .filter((r) => r.status === 'active')
+    .map((r) => ({
+      id: r.id as string,
+      roundNumber: Number(r.roundNumber) || 1,
+      videoFileName: String(r.videoFileName || ''),
+      videoSizeBytes: Number(r.videoSizeBytes) || 0,
+      locked: r.locked === true,
+      notesCount: Number(r.notesCount) || 0,
+      createdAt: Number(r.createdAt) || 0,
+    }))
+    .sort((a, b) => a.roundNumber - b.roundNumber)
+
+  // Self-heal: if the denormalised count drifted from reality, fix it
+  // so the (rounds-free) list shows the right number next time.
+  if (Number(group.roundCount) !== rounds.length) {
+    try {
+      await db
+        .collection('revisionGroups')
+        .doc(groupId)
+        .update({ roundCount: rounds.length })
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  return res.status(200).json({ ok: true, rounds })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Action: list-groups-owner  (auth required)
  *
  *  POST /api/revisions?action=list-groups-owner  { idToken }
@@ -1927,7 +2015,8 @@ async function handleListGroupsOwner(
   // and break the list. (We deliberately did NOT add a second
   // `.where('status','==','active')` filter — that WOULD require a
   // composite index. Status is still filtered in JS below.)
-  const groupsSnap = await getDb()
+  const db = getDb()
+  const groupsSnap = await db
     .collection('revisionGroups')
     .where('ownerUid', '==', verified.uid)
     .limit(500)
@@ -1936,88 +2025,70 @@ async function handleListGroupsOwner(
     .map((d) => d.data() as RevisionGroupDoc)
     .filter((g) => g.status === 'active')
 
-  // Pull all rounds in one go, then bucket client-side. One query
-  // per editor is cheaper than one query per group on Firestore's
-  // billing. Rounds with a groupId belong inside a group card;
-  // rounds without one are legacy single-round projects from
-  // before the group refactor — we surface them in a separate
-  // array so the desktop can render them as standalone cards.
-  // `.limit(2000)`: same runaway guard — 500 projects × a few rounds
-  // stays well under 2000, so no real user is affected. Single-field
-  // equality + limit → no composite index needed.
-  const roundsSnap = await getDb()
-    .collection('revisionProjects')
-    .where('ownerUid', '==', verified.uid)
-    .limit(2000)
-    .get()
-  const roundsByGroup = new Map<string, Record<string, unknown>[]>()
-  const legacyRoundDocs: Record<string, unknown>[] = []
-  for (const doc of roundsSnap.docs) {
-    const r = doc.data() as Record<string, unknown>
-    if (r.status !== 'active') continue
-    const gid = String(r.groupId || '')
-    if (gid) {
-      if (!roundsByGroup.has(gid)) roundsByGroup.set(gid, [])
-      roundsByGroup.get(gid)!.push(r)
-    } else {
-      legacyRoundDocs.push(r)
-    }
+  // LAZY-LOAD: the project list no longer reads any round docs. Each
+  // group carries a denormalised `roundCount`, kept in sync by
+  // add-round / delete-round. The actual rounds are fetched only when
+  // the user opens a project, via list-rounds-owner. This collapses
+  // the per-tab-entry cost from "all groups + all rounds" down to
+  // "groups only".
+  //
+  // Backfill: groups created before roundCount existed have no value.
+  // We compute it once here (a small per-group read, only for those
+  // groups) and persist it, so subsequent loads stay rounds-free.
+  const needBackfill = activeGroups.filter(
+    (g) => typeof g.roundCount !== 'number',
+  )
+  if (needBackfill.length) {
+    await Promise.all(
+      needBackfill.map(async (g) => {
+        const sib = await db
+          .collection('revisionProjects')
+          .where('groupId', '==', g.id)
+          .get()
+        const cnt = sib.docs.filter(
+          (d) => (d.data() as { status?: string }).status === 'active',
+        ).length
+        g.roundCount = cnt
+        try {
+          await db
+            .collection('revisionGroups')
+            .doc(g.id)
+            .update({ roundCount: cnt })
+        } catch {
+          /* best-effort persist; the in-memory value is still returned */
+        }
+      }),
+    )
   }
 
   const out = activeGroups
-    .map((g) => {
-      const rounds = (roundsByGroup.get(g.id) || [])
-        .map((r) => ({
-          id: r.id as string,
-          roundNumber: Number(r.roundNumber) || 1,
-          videoFileName: String(r.videoFileName || ''),
-          videoSizeBytes: Number(r.videoSizeBytes) || 0,
-          locked: r.locked === true,
-          notesCount: Number(r.notesCount) || 0,
-          createdAt: Number(r.createdAt) || 0,
-        }))
-        .sort((a, b) => a.roundNumber - b.roundNumber)
-      return {
-        id: g.id,
-        title: g.title,
-        shareToken: g.shareToken,
-        hasPassword: Boolean(g.passwordHash),
-        // Public-review-page toggles. Legacy groups that don't
-        // have these fields fall back to the original ship
-        // behavior (watermark on, download off, Drive link off)
-        // so the desktop UI shows the right toggle states even
-        // for projects created before the feature existed.
-        watermark: g.watermark !== false,
-        allowDownload: g.allowDownload === true,
-        openInDrive: g.openInDrive === true,
-        createdAt: g.createdAt,
-        updatedAt: g.updatedAt,
-        rounds,
-      }
-    })
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-
-  // Shape the legacy projects in a flat array. Their fields
-  // overlap with rounds-inside-a-group (videoFileName, locked,
-  // notesCount) but they also have their own shareToken +
-  // hasPassword (groups own those for new-style projects).
-  const legacyProjects = legacyRoundDocs
-    .map((r) => ({
-      id: String(r.id || ''),
-      title: String(r.title || ''),
-      shareToken: String(r.shareToken || ''),
-      hasPassword: Boolean(r.passwordHash),
-      videoFileName: String(r.videoFileName || ''),
-      videoSizeBytes: Number(r.videoSizeBytes) || 0,
-      roundNumber: Number(r.roundNumber) || 1,
-      locked: r.locked === true,
-      notesCount: Number(r.notesCount) || 0,
-      createdAt: Number(r.createdAt) || 0,
-      updatedAt: Number(r.updatedAt) || 0,
+    .map((g) => ({
+      id: g.id,
+      title: g.title,
+      shareToken: g.shareToken,
+      hasPassword: Boolean(g.passwordHash),
+      // Public-review-page toggles. Legacy groups that don't
+      // have these fields fall back to the original ship
+      // behavior (watermark on, download off, Drive link off)
+      // so the desktop UI shows the right toggle states even
+      // for projects created before the feature existed.
+      watermark: g.watermark !== false,
+      allowDownload: g.allowDownload === true,
+      openInDrive: g.openInDrive === true,
+      roundCount: Number(g.roundCount) || 0,
+      createdAt: g.createdAt,
+      updatedAt: g.updatedAt,
+      // Rounds are loaded on demand (list-rounds-owner). Kept as an
+      // empty array so existing clients that read `.rounds` don't
+      // crash before they adopt the lazy fetch.
+      rounds: [],
     }))
     .sort((a, b) => b.updatedAt - a.updatedAt)
 
-  return res.status(200).json({ ok: true, groups: out, legacyProjects })
+  // Legacy single-round projects (no groupId) are no longer surfaced
+  // in the live list — this user has none, and listing them would
+  // require the very all-rounds scan we're removing.
+  return res.status(200).json({ ok: true, groups: out, legacyProjects: [] })
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -4053,6 +4124,15 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
     return r.status === 'active' && d.id !== roundId
   }).length
 
+  // Keep the denormalised count on the group in sync with reality so
+  // the (rounds-free) project list shows the right number.
+  if (round.groupId) {
+    await getDb()
+      .collection('revisionGroups')
+      .doc(round.groupId)
+      .update({ roundCount: remaining, updatedAt: Date.now() })
+  }
+
   return res.status(200).json({
     ok: true,
     driveDeleted,
@@ -4991,6 +5071,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleUpdateGroup(req, res)
       case 'replace-project-video':
         return await handleReplaceProjectVideo(req, res)
+      case 'list-rounds-owner':
+        return await handleListRoundsOwner(req, res)
       case 'list-notes-owner':
         return await handleListNotesOwner(req, res)
       case 'check-owner-email':
