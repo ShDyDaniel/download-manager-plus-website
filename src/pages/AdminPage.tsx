@@ -19,6 +19,7 @@ import { AuthButton, AuthError, AuthHeader, AuthInput } from '../components/auth
 import {
   adminSignIn,
   adminSignOut,
+  checkAdminIpAllowed,
   getAdminEmail,
   getStoredAdminToken,
   requestAdminCode,
@@ -56,28 +57,49 @@ const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
   { key: 'settings', label: 'הגדרות', icon: SettingsIcon },
 ]
 
-type Phase = 'loading' | 'login' | 'code' | 'ready'
+type Phase = 'checking' | 'blocked' | 'loading' | 'login' | 'code' | 'ready'
 
 export default function AdminPage() {
-  const [phase, setPhase] = useState<Phase>('loading')
+  const [phase, setPhase] = useState<Phase>('checking')
   const [tab, setTab] = useState<AdminTabKey>('users')
 
-  // Resolve the initial state from the Firebase auth session (it
-  // persists across refreshes) + the sessionStorage 2FA token (does
-  // not — dies with the tab).
+  // STEP 0 — IP gate. Before anything else (even before showing a
+  // login form), ask the server whether this IP is allowed. If not,
+  // the page renders nothing at all — no hint that an admin panel
+  // exists here. Only if allowed do we wire up the auth listener.
   useEffect(() => {
-    const unsub = onAuthStateChanged(getClientAuth(), (user) => {
-      if (!user) {
-        setPhase('login')
+    let cancelled = false
+    let unsub: (() => void) | null = null
+    void (async () => {
+      const { allowed } = await checkAdminIpAllowed()
+      if (cancelled) return
+      if (!allowed) {
+        setPhase('blocked')
         return
       }
-      // Signed in. If we still hold a 2FA token from this tab session,
-      // go straight in (data calls will bounce us back on a 403 if it
-      // turns out to be expired). Otherwise require the email code.
-      setPhase(getStoredAdminToken() ? 'ready' : 'code')
-    })
-    return () => unsub()
+      setPhase('loading')
+      // IP ok → resolve auth state (Firebase session persists across
+      // refreshes; the 2FA token in sessionStorage does not).
+      unsub = onAuthStateChanged(getClientAuth(), (user) => {
+        if (cancelled) return
+        if (!user) {
+          setPhase('login')
+          return
+        }
+        setPhase(getStoredAdminToken() ? 'ready' : 'code')
+      })
+    })()
+    return () => {
+      cancelled = true
+      if (unsub) unsub()
+    }
   }, [])
+
+  // IP not allowed (or still probing) → render nothing. A bare dark
+  // screen, indistinguishable from an empty/non-existent page.
+  if (phase === 'checking' || phase === 'blocked') {
+    return <div className="min-h-dvh bg-bg" />
+  }
 
   if (phase === 'loading') {
     return (
@@ -282,7 +304,7 @@ function AdminShell({
 }) {
   return (
     <div className="min-h-dvh bg-bg" dir="rtl">
-      <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8 md:flex-row md:py-12">
+      <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 pt-14 pb-10 md:flex-row md:pt-20 md:pb-16">
         {/* Sidebar */}
         <aside className="shrink-0 md:w-56">
           <div className="mb-5 flex items-center justify-between md:block">

@@ -87,6 +87,26 @@ export async function adminAuthCall<T>(
   return (await r.json()) as ApiResult<T>
 }
 
+/** Public IP-gate probe — the /admin page renders nothing at all if
+ *  the caller's IP isn't on the allowlist (configured from desktop).
+ *  Fails CLOSED (allowed:false) on any network error. */
+export async function checkAdminIpAllowed(): Promise<{
+  allowed: boolean
+  ip: string
+}> {
+  try {
+    const r = await fetch('/api/paypal?action=admin-ip-allowed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    const j = (await r.json()) as { allowed?: boolean; ip?: string }
+    return { allowed: Boolean(j.allowed), ip: String(j.ip || '') }
+  } catch {
+    return { allowed: false, ip: '' }
+  }
+}
+
 /** Request a fresh email login code (requires Firebase admin session). */
 export async function requestAdminCode(): Promise<ApiResult<unknown>> {
   const idToken = await getAdminIdToken()
