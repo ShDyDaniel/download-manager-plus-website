@@ -345,17 +345,20 @@ function UserRow({
           </div>
           <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-fg-faint">
             <span>תוכנה: {relTime(user.lastSeenAt)}</span>
+            <span>·</span>
+            <span>אתר: {relTime(user.lastSeenWebAt)}</span>
+            {user.lastSeenAt && user.lastSeenVersion && (
+              <>
+                <span>·</span>
+                <span dir="ltr">v{user.lastSeenVersion}</span>
+              </>
+            )}
             {user.lastSeenAt && (
               <>
                 <span>·</span>
                 <span dir="ltr">{platform}</span>
-                {user.lastSeenVersion && (
-                  <span dir="ltr"> · v{user.lastSeenVersion}</span>
-                )}
               </>
             )}
-            <span>·</span>
-            <span>אתר: {relTime(user.lastSeenWebAt)}</span>
             {redeemedKey && (
               <>
                 <span>·</span>
