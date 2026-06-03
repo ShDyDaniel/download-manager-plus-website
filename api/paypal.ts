@@ -1385,6 +1385,9 @@ async function handleSaleCompleted(
         id: string
         amount: { total: string; currency: string }
         billing_agreement_id?: string
+        /** PayPal's actual fee for THIS transaction — exact, not an
+         *  estimate. Present on PAYMENT.SALE.COMPLETED. */
+        transaction_fee?: { value?: string; currency?: string }
       }
     | undefined
   if (!resource?.billing_agreement_id) {
@@ -1443,6 +1446,8 @@ async function handleSaleCompleted(
       eventId: event.id,
       amount: paidAmount,
       currency: resource.amount.currency,
+      // Exact PayPal fee for this charge (0 if PayPal omitted it).
+      fee: parseFloat(resource.transaction_fee?.value || '0') || 0,
       at: new Date().toISOString(),
     }),
   })
@@ -6537,12 +6542,22 @@ async function computePartnerStats(code: string) {
   const grossByCurrency: Record<string, number> = {}
   const grossByMonth: Record<string, Record<string, number>> = {}
   const countByMonth: Record<string, number> = {}
+  // NET = gross minus PayPal's actual per-transaction fee. feeByCurrency
+  // is the total PayPal fee on this partner's attributed sales.
+  const netByCurrency: Record<string, number> = {}
+  const netByMonth: Record<string, Record<string, number>> = {}
+  const feeByCurrency: Record<string, number> = {}
   for (const k of keysSnap.docs) {
     const kd = k.data() as {
       nonPaidGrant?: boolean
       buyerEmail?: string
       redeemedByEmail?: string
-      billingHistory?: Array<{ at?: string; amount?: number; currency?: string }>
+      billingHistory?: Array<{
+        at?: string
+        amount?: number
+        currency?: string
+        fee?: number
+      }>
     }
     if (kd.nonPaidGrant) continue
     const email = (kd.buyerEmail || kd.redeemedByEmail || '').toLowerCase()
@@ -6551,10 +6566,16 @@ async function computePartnerStats(code: string) {
     for (const h of hist) {
       const cur = (h.currency || 'ILS').toUpperCase()
       const amt = typeof h.amount === 'number' ? h.amount : 0
-      grossByCurrency[cur] = (grossByCurrency[cur] || 0) + amt
+      const fee = typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0
+      const net = Math.max(0, amt - fee)
       const m = h.at ? h.at.slice(0, 7) : 'unknown'
+      grossByCurrency[cur] = (grossByCurrency[cur] || 0) + amt
       grossByMonth[m] = grossByMonth[m] || {}
       grossByMonth[m][cur] = (grossByMonth[m][cur] || 0) + amt
+      netByCurrency[cur] = (netByCurrency[cur] || 0) + net
+      netByMonth[m] = netByMonth[m] || {}
+      netByMonth[m][cur] = (netByMonth[m][cur] || 0) + net
+      feeByCurrency[cur] = (feeByCurrency[cur] || 0) + fee
       countByMonth[m] = (countByMonth[m] || 0) + 1
     }
   }
@@ -6567,12 +6588,30 @@ async function computePartnerStats(code: string) {
           commissionCurrency: data.commissionCurrency || 'ILS',
         }
       : null
-  const earnings = computeEarnings(
+  // Gross earnings (before PayPal fee) + NET earnings (after fee).
+  // For fixed commissions both are identical (a flat per-charge payout
+  // isn't reduced by the sale fee); for percent, net rides on the
+  // post-fee revenue.
+  const grossEarnings = computeEarnings(
     commission,
     grossByCurrency,
     grossByMonth,
     countByMonth,
   )
+  const netEarnings = computeEarnings(
+    commission,
+    netByCurrency,
+    netByMonth,
+    countByMonth,
+  )
+  // The portion of the partner's earnings that PayPal's fee shaved off
+  // = gross earnings − net earnings (per currency).
+  const earningsFeeByCurrency: Record<string, number> = {}
+  for (const c of Object.keys(grossEarnings.byCurrency)) {
+    const diff =
+      (grossEarnings.byCurrency[c] || 0) - (netEarnings.byCurrency[c] || 0)
+    if (diff > 0.0001) earningsFeeByCurrency[c] = diff
+  }
   const vis = resolveVisibility(data?.visibility)
 
   // MODULAR + PARTNER-SAFE: only the fields the admin allows this
@@ -6586,8 +6625,13 @@ async function computePartnerStats(code: string) {
     signups: vis.counts ? usersSnap.size : null,
     paidAccounts: vis.counts ? paidEmails.size : null,
     commission: vis.earnings ? commission : null,
-    earningsByCurrency: vis.earnings ? earnings.byCurrency : null,
-    earningsByMonth: vis.earnings ? earnings.byMonth : null,
+    // Main figure shown to the partner = NET (after PayPal fee).
+    earningsByCurrency: vis.earnings ? netEarnings.byCurrency : null,
+    earningsByMonth: vis.earnings ? netEarnings.byMonth : null,
+    // For the "אחרי עמלה" breakdown: what it would've been with no
+    // fee, and how much the fee shaved off the partner's earnings.
+    earningsGrossByCurrency: vis.earnings ? grossEarnings.byCurrency : null,
+    earningsFeeByCurrency: vis.earnings ? earningsFeeByCurrency : null,
     revenueByCurrency: vis.revenue ? grossByCurrency : null,
     revenueByMonth: vis.revenue ? grossByMonth : null,
   }

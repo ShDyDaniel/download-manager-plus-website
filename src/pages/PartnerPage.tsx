@@ -31,6 +31,10 @@ interface PartnerStats {
   } | null
   earningsByCurrency: Record<string, number> | null
   earningsByMonth: Record<string, Record<string, number>> | null
+  /** What the earnings would have been WITHOUT PayPal's fee. */
+  earningsGrossByCurrency?: Record<string, number> | null
+  /** How much PayPal's fee shaved off the partner's earnings. */
+  earningsFeeByCurrency?: Record<string, number> | null
   revenueByCurrency: Record<string, number> | null
   revenueByMonth: Record<string, Record<string, number>> | null
 }
@@ -238,10 +242,10 @@ export default function PartnerPage() {
         {/* Stats — each card only if allowed */}
         <div className="mb-6 grid auto-cols-fr grid-flow-col gap-3">
           {stats.visibility.earnings && stats.earningsByCurrency && (
-            <Stat
-              value={fmtMoney(stats.earningsByCurrency)}
-              label="סך הרווח שלך"
-              wide
+            <EarningsStat
+              net={stats.earningsByCurrency}
+              gross={stats.earningsGrossByCurrency}
+              fee={stats.earningsFeeByCurrency}
             />
           )}
           {stats.visibility.revenue && stats.revenueByCurrency && (
@@ -289,6 +293,55 @@ export default function PartnerPage() {
           הנתונים מתעדכנים אוטומטית.
         </p>
       </div>
+    </div>
+  )
+}
+
+/** Earnings card — shows the NET payout (after PayPal's fee) as the
+ *  headline, with a clickable "אחרי עמלה" breakdown that reveals the
+ *  fee PayPal took and what the earnings would have been without it. */
+function EarningsStat({
+  net,
+  gross,
+  fee,
+}: {
+  net: Record<string, number>
+  gross?: Record<string, number> | null
+  fee?: Record<string, number> | null
+}) {
+  const [open, setOpen] = useState(false)
+  const hasFee = !!fee && Object.values(fee).some((v) => v > 0)
+  return (
+    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-center">
+      <div className="text-base font-semibold text-fg">{fmtMoney(net)}</div>
+      <div className="mt-1 text-[11px] uppercase tracking-wide text-fg-muted">
+        סך הרווח שלך
+      </div>
+      {hasFee ? (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            className="mt-1 text-[10px] text-primary underline-offset-2 hover:underline"
+          >
+            אחרי עמלה {open ? '▴' : '▾'}
+          </button>
+          {open && (
+            <div className="mt-2 space-y-1 rounded-lg bg-white/[0.02] p-2 text-[11px] text-fg-muted">
+              <div>
+                בלי עמלת PayPal:{' '}
+                <span className="text-fg">{fmtMoney(gross || {})}</span>
+              </div>
+              <div>
+                עמלת PayPal:{' '}
+                <span className="text-fg">{fmtMoney(fee || {})}</span>
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="mt-1 text-[10px] text-fg-faint">אחרי עמלה</div>
+      )}
     </div>
   )
 }
