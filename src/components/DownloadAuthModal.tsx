@@ -17,7 +17,7 @@ import {
   TermsModal,
   PrivacyModal,
   prefetchLegalDocs,
-} from '../pages/RevisionsPage'
+} from './LegalModals'
 
 /**
  * DownloadAuthModal — gates the app download behind a website account.

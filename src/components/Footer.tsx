@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { TermsModal, PrivacyModal } from './LegalModals'
 
 /**
  * Footer — minimal, three-column on desktop, stacked on mobile.
@@ -26,6 +28,13 @@ import { Link } from 'react-router-dom'
  */
 export function Footer() {
   const year = new Date().getFullYear()
+  // Legal docs open on demand only. We deliberately do NOT prefetch
+  // them here — the footer renders on every page, and these docs are
+  // rarely read, so reading them from the DB eagerly would waste a
+  // Firestore read on every visit. The modal fetches on click (and
+  // caches per session, so a second open is free). See LegalModals.
+  const [termsOpen, setTermsOpen] = useState(false)
+  const [privacyOpen, setPrivacyOpen] = useState(false)
 
   return (
     <footer className="border-t border-border px-6 py-12 md:py-16">
@@ -82,6 +91,25 @@ export function Footer() {
                 הצהרת נגישות
               </Link>
               <span aria-hidden>·</span>
+              {/* Terms + Privacy open as on-demand modals (no page
+                  navigation, no eager DB read). They use a button
+                  styled to match the sibling text links. */}
+              <button
+                type="button"
+                onClick={() => setTermsOpen(true)}
+                className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
+              >
+                תנאי שימוש
+              </button>
+              <span aria-hidden>·</span>
+              <button
+                type="button"
+                onClick={() => setPrivacyOpen(true)}
+                className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
+              >
+                מדיניות פרטיות
+              </button>
+              <span aria-hidden>·</span>
               <span>
                 © <span className="tabular">{year}</span> · כל הזכויות שמורות
               </span>
@@ -89,6 +117,9 @@ export function Footer() {
           </div>
         </div>
       </div>
+
+      {termsOpen && <TermsModal onClose={() => setTermsOpen(false)} />}
+      {privacyOpen && <PrivacyModal onClose={() => setPrivacyOpen(false)} />}
     </footer>
   )
 }
