@@ -239,14 +239,16 @@ export default function PartnerPage() {
           </div>
         )}
 
-        {/* Stats — each card only if allowed */}
+        {/* Stats — RTL order (right→left): נרשמו · קנו · סך הכנסות ·
+            סך הרווח שלך. In RTL the first DOM child renders on the
+            right, so the DOM order below is the visual order. Each
+            card shows only if the partner is allowed to see it. */}
         <div className="mb-6 grid auto-cols-fr grid-flow-col gap-3">
-          {stats.visibility.earnings && stats.earningsByCurrency && (
-            <EarningsStat
-              net={stats.earningsByCurrency}
-              gross={stats.earningsGrossByCurrency}
-              fee={stats.earningsFeeByCurrency}
-            />
+          {stats.signups !== null && (
+            <Stat value={String(stats.signups)} label="נרשמו" />
+          )}
+          {stats.paidAccounts !== null && (
+            <Stat value={String(stats.paidAccounts)} label="קנו" />
           )}
           {stats.visibility.revenue && stats.revenueByCurrency && (
             <Stat
@@ -255,11 +257,8 @@ export default function PartnerPage() {
               wide
             />
           )}
-          {stats.signups !== null && (
-            <Stat value={String(stats.signups)} label="נרשמו" />
-          )}
-          {stats.paidAccounts !== null && (
-            <Stat value={String(stats.paidAccounts)} label="קנו" />
+          {stats.visibility.earnings && stats.earningsByCurrency && (
+            <EarningsStat net={stats.earningsByCurrency} />
           )}
         </div>
 
@@ -297,51 +296,18 @@ export default function PartnerPage() {
   )
 }
 
-/** Earnings card — shows the NET payout (after PayPal's fee) as the
- *  headline, with a clickable "אחרי עמלה" breakdown that reveals the
- *  fee PayPal took and what the earnings would have been without it. */
-function EarningsStat({
-  net,
-  gross,
-  fee,
-}: {
-  net: Record<string, number>
-  gross?: Record<string, number> | null
-  fee?: Record<string, number> | null
-}) {
-  const [open, setOpen] = useState(false)
-  const hasFee = !!fee && Object.values(fee).some((v) => v > 0)
+/** Earnings card — shows the NET payout (after PayPal's fee), labelled
+ *  with a plain "(אחרי עמלה של פייפאל)" note. */
+function EarningsStat({ net }: { net: Record<string, number> }) {
   return (
     <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-center">
       <div className="text-base font-semibold text-fg">{fmtMoney(net)}</div>
       <div className="mt-1 text-[11px] uppercase tracking-wide text-fg-muted">
         סך הרווח שלך
       </div>
-      {hasFee ? (
-        <>
-          <button
-            type="button"
-            onClick={() => setOpen((o) => !o)}
-            className="mt-1 text-[10px] text-primary underline-offset-2 hover:underline"
-          >
-            אחרי עמלה {open ? '▴' : '▾'}
-          </button>
-          {open && (
-            <div className="mt-2 space-y-1 rounded-lg bg-white/[0.02] p-2 text-[11px] text-fg-muted">
-              <div>
-                בלי עמלת PayPal:{' '}
-                <span className="text-fg">{fmtMoney(gross || {})}</span>
-              </div>
-              <div>
-                עמלת PayPal:{' '}
-                <span className="text-fg">{fmtMoney(fee || {})}</span>
-              </div>
-            </div>
-          )}
-        </>
-      ) : (
-        <div className="mt-1 text-[10px] text-fg-faint">אחרי עמלה</div>
-      )}
+      <div className="mt-0.5 text-[10px] text-fg-faint">
+        (אחרי עמלה של פייפאל)
+      </div>
     </div>
   )
 }
