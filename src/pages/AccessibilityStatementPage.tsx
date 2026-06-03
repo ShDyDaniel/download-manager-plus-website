@@ -70,24 +70,15 @@ export default function AccessibilityStatementPage() {
         </Section>
 
         <Section title="פנייה בנושא נגישות">
-          נתקלתם בבעיית נגישות, או שיש לכם הצעה לשיפור? נשמח לקבל פנייה —
-          נטפל בה בהקדם.
-          <div className="mt-3 space-y-1.5 rounded-xl border border-border/60 bg-white/[0.015] p-4 text-fg">
-            <div>
-              <span className="text-fg-muted">רכז הנגישות: </span>
-              דניאל שלץ
-            </div>
-            <div>
-              <span className="text-fg-muted">דוא"ל: </span>
-              <a
-                href="mailto:dyshalts@gmail.com"
-                className="text-primary hover:underline"
-                dir="ltr"
-              >
-                dyshalts@gmail.com
-              </a>
-            </div>
-          </div>
+          נתקלתם בבעיית נגישות, או שיש לכם הצעה לשיפור? נשמח לקבל פנייה בכתובת{' '}
+          <a
+            href="mailto:help.dm.plus@gmail.com"
+            className="text-primary hover:underline"
+            dir="ltr"
+          >
+            help.dm.plus@gmail.com
+          </a>{' '}
+          — ונטפל בה בהקדם.
         </Section>
 
         <p className="border-t border-border/60 pt-6 text-xs text-fg-muted">
