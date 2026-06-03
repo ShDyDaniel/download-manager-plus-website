@@ -20,7 +20,6 @@ import {
   A11Y_MOTION_EVENT,
   readStopMotion,
 } from './components/AccessibilityWidget'
-import AccessibilityStatementPage from './pages/AccessibilityStatementPage'
 import { BuyPage } from './pages/BuyPage'
 import AccountPage from './pages/AccountPage'
 import AuthActionPage from './pages/AuthActionPage'
@@ -196,10 +195,6 @@ function AnimatedRoutes() {
             }
           />
           <Route path="/buy" element={<BuyPage />} />
-          <Route
-            path="/accessibility"
-            element={<AccessibilityStatementPage />}
-          />
           <Route path="/account" element={<AccountPage />} />
           {/* Web /revisions workspace — full editor-side of the
               Revisions feature ported from the desktop app. Lets

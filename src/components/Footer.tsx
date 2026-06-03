@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { TermsModal, PrivacyModal } from './LegalModals'
-import { AccessibilityModal } from '../pages/AccessibilityStatementPage'
+import { AccessibilityModal } from './AccessibilityModal'
 
 /**
  * Footer — minimal, three-column on desktop, stacked on mobile.

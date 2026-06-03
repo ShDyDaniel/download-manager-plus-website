@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
 import {
   Accessibility,
   X,
@@ -8,6 +7,7 @@ import {
   RotateCcw,
   Check,
 } from 'lucide-react'
+import { AccessibilityModal } from './AccessibilityModal'
 
 /**
  * AccessibilityWidget — a self-hosted accessibility menu, as required
@@ -108,6 +108,7 @@ function apply(state: A11yState) {
 
 export function AccessibilityWidget() {
   const [open, setOpen] = useState(false)
+  const [statementOpen, setStatementOpen] = useState(false)
   const [state, setState] = useState<A11yState>(DEFAULT_STATE)
   const panelRef = useRef<HTMLDivElement>(null)
 
@@ -277,16 +278,23 @@ export function AccessibilityWidget() {
             </div>
 
             <div className="border-t border-border px-4 py-3 text-center">
-              <Link
-                to="/accessibility"
-                onClick={() => setOpen(false)}
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  setStatementOpen(true)
+                }}
                 className="text-xs text-primary underline-offset-2 hover:underline"
               >
                 הצהרת הנגישות שלנו
-              </Link>
+              </button>
             </div>
           </div>
         </>
+      )}
+
+      {statementOpen && (
+        <AccessibilityModal onClose={() => setStatementOpen(false)} />
       )}
     </>
   )
