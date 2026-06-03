@@ -188,19 +188,24 @@ function WorkspaceHeader() {
   const session = getSession()
   return (
     <header className="sticky top-0 z-20 border-b border-border bg-bg/85 backdrop-blur">
-      <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-4 md:px-8">
-        <Link
-          to="/"
-          className="text-xs uppercase tracking-[0.18em] text-fg-muted transition-colors hover:text-fg"
-        >
-          ← דף הבית
-        </Link>
-        <div className="flex items-center gap-4 text-xs">
+      {/* 3-column grid so the centre title is TRULY centered
+          regardless of how wide the side groups are (justify-between
+          pushed it off-centre because the left group is wider). */}
+      <div className="mx-auto grid w-full max-w-6xl grid-cols-3 items-center px-5 py-4 md:px-8">
+        <div className="flex justify-start">
+          <Link
+            to="/"
+            className="text-xs uppercase tracking-[0.18em] text-fg-muted transition-colors hover:text-fg"
+          >
+            ← דף הבית
+          </Link>
+        </div>
+        <div className="flex items-center justify-center text-xs">
           <span className="font-medium tracking-tight text-fg">
             סבבי תיקונים
           </span>
         </div>
-        <div className="flex items-center gap-4 text-xs text-fg-muted">
+        <div className="flex items-center justify-end gap-4 text-xs text-fg-muted">
           {session ? (
             <>
               <span dir="ltr" className="hidden truncate sm:inline">
