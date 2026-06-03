@@ -1160,6 +1160,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminDeleteReferral(req, res)
       case 'admin-referral-report':
         return await handleAdminReferralReport(req, res)
+      case 'admin-revenue-report':
+        return await handleAdminRevenueReport(req, res)
       case 'admin-referral-detail':
         return await handleAdminReferralDetail(req, res)
       case 'admin-referral-export':
@@ -5191,6 +5193,166 @@ function computeEarnings(
     byMonth[m] = { [cur]: n * val }
   }
   return { byCurrency: { [cur]: totalCount * val }, byMonth }
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Admin → Revenue report. Every paid charge, aggregated by month:
+ *  gross, PayPal fees, net (gross−fee), each partner's payout (net for
+ *  percent, flat for fixed — matching what the partner sees), and the
+ *  owner's final take (net − all payouts). idToken-gated so BOTH the
+ *  website and desktop admin panels can call it.
+ * ────────────────────────────────────────────────────────────── */
+type RevMoney = Record<string, number>
+function revAdd(obj: RevMoney, cur: string, v: number): void {
+  if (!v) return
+  obj[cur] = (obj[cur] || 0) + v
+}
+function revSub(a: RevMoney, b: RevMoney): RevMoney {
+  const out: RevMoney = { ...a }
+  for (const [c, v] of Object.entries(b)) out[c] = (out[c] || 0) - v
+  return out
+}
+
+async function handleAdminRevenueReport(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as { idToken?: string }
+  const admin = await verifyAdminEmail(body.idToken || '')
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+
+  const db = getDb()
+  const [keysSnap, partnersSnap] = await Promise.all([
+    db.collection('productKeys').get(),
+    db.collection('referralPartners').get(),
+  ])
+
+  const partners = new Map<
+    string,
+    {
+      name: string
+      type?: 'percent' | 'fixed'
+      value?: number
+      currency: string
+    }
+  >()
+  for (const p of partnersSnap.docs) {
+    const d = p.data() as ReferralPartnerDoc
+    partners.set(p.id, {
+      name: d.name || p.id,
+      type: d.commissionType || undefined,
+      value: typeof d.commissionValue === 'number' ? d.commissionValue : undefined,
+      currency: (d.commissionCurrency || 'ILS').toUpperCase(),
+    })
+  }
+
+  interface MonthAgg {
+    gross: RevMoney
+    fee: RevMoney
+    net: RevMoney
+    payouts: Record<string, RevMoney> // partner code → money
+  }
+  const months = new Map<string, MonthAgg>()
+  const ensureMonth = (m: string): MonthAgg => {
+    let cur = months.get(m)
+    if (!cur) {
+      cur = { gross: {}, fee: {}, net: {}, payouts: {} }
+      months.set(m, cur)
+    }
+    return cur
+  }
+
+  for (const k of keysSnap.docs) {
+    const kd = k.data() as {
+      nonPaidGrant?: boolean
+      referredBy?: string
+      billingHistory?: Array<{
+        at?: string
+        amount?: number
+        currency?: string
+        fee?: number
+      }>
+    }
+    if (kd.nonPaidGrant) continue
+    const refCode = typeof kd.referredBy === 'string' ? kd.referredBy : ''
+    const partner = refCode ? partners.get(refCode) : undefined
+    const hist = Array.isArray(kd.billingHistory) ? kd.billingHistory : []
+    for (const h of hist) {
+      const cur = (h.currency || 'ILS').toUpperCase()
+      const amt = typeof h.amount === 'number' ? h.amount : 0
+      const fee = typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0
+      const net = Math.max(0, amt - fee)
+      const m = h.at ? String(h.at).slice(0, 7) : 'unknown'
+      const M = ensureMonth(m)
+      revAdd(M.gross, cur, amt)
+      revAdd(M.fee, cur, fee)
+      revAdd(M.net, cur, net)
+      if (partner && partner.type && (partner.value || 0) > 0) {
+        M.payouts[refCode] = M.payouts[refCode] || {}
+        if (partner.type === 'percent') {
+          revAdd(M.payouts[refCode], cur, net * ((partner.value || 0) / 100))
+        } else {
+          // fixed: a flat amount per charge, in the partner's currency.
+          revAdd(M.payouts[refCode], partner.currency, partner.value || 0)
+        }
+      }
+    }
+  }
+
+  // Shape output, newest month first, with per-partner payouts +
+  // owner's final take (net − all payouts).
+  const totalGross: RevMoney = {}
+  const totalFee: RevMoney = {}
+  const totalNet: RevMoney = {}
+  const totalPayoutByPartner: Record<string, RevMoney> = {}
+
+  const monthsOut = [...months.entries()]
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([month, M]) => {
+      const payoutTotal: RevMoney = {}
+      const partnerRows = Object.entries(M.payouts).map(([code, money]) => {
+        for (const [c, v] of Object.entries(money)) revAdd(payoutTotal, c, v)
+        totalPayoutByPartner[code] = totalPayoutByPartner[code] || {}
+        for (const [c, v] of Object.entries(money))
+          revAdd(totalPayoutByPartner[code], c, v)
+        return {
+          code,
+          name: partners.get(code)?.name || code,
+          amount: money,
+        }
+      })
+      for (const [c, v] of Object.entries(M.gross)) revAdd(totalGross, c, v)
+      for (const [c, v] of Object.entries(M.fee)) revAdd(totalFee, c, v)
+      for (const [c, v] of Object.entries(M.net)) revAdd(totalNet, c, v)
+      return {
+        month,
+        gross: M.gross,
+        fee: M.fee,
+        net: M.net,
+        partners: partnerRows.sort((a, b) => a.name.localeCompare(b.name)),
+        ownerFinal: revSub(M.net, payoutTotal),
+      }
+    })
+
+  const totalPayoutAll: RevMoney = {}
+  const partnerTotals = Object.entries(totalPayoutByPartner).map(
+    ([code, money]) => {
+      for (const [c, v] of Object.entries(money)) revAdd(totalPayoutAll, c, v)
+      return { code, name: partners.get(code)?.name || code, amount: money }
+    },
+  )
+
+  return res.status(200).json({
+    ok: true,
+    months: monthsOut,
+    totals: {
+      gross: totalGross,
+      fee: totalFee,
+      net: totalNet,
+      partners: partnerTotals.sort((a, b) => a.name.localeCompare(b.name)),
+      ownerFinal: revSub(totalNet, totalPayoutAll),
+    },
+  })
 }
 
 /** Verify the caller is an admin. Returns the admin email or null. */
