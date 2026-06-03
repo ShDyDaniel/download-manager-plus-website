@@ -258,7 +258,11 @@ export default function PartnerPage() {
             />
           )}
           {stats.visibility.earnings && stats.earningsByCurrency && (
-            <EarningsStat net={stats.earningsByCurrency} />
+            <EarningsStat
+              net={stats.earningsByCurrency}
+              gross={stats.earningsGrossByCurrency}
+              fee={stats.earningsFeeByCurrency}
+            />
           )}
         </div>
 
@@ -296,18 +300,43 @@ export default function PartnerPage() {
   )
 }
 
-/** Earnings card — shows the NET payout (after PayPal's fee), labelled
- *  with a plain "(אחרי עמלה של פייפאל)" note. */
-function EarningsStat({ net }: { net: Record<string, number> }) {
+/** Earnings card — shows the NET payout (after PayPal's fee). The
+ *  "(אחרי עמלה של פייפאל)" line is always clickable and toggles a
+ *  breakdown: the pre-fee amount + the PayPal fee that was taken. */
+function EarningsStat({
+  net,
+  gross,
+  fee,
+}: {
+  net: Record<string, number>
+  gross?: Record<string, number> | null
+  fee?: Record<string, number> | null
+}) {
+  const [open, setOpen] = useState(false)
   return (
     <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-center">
       <div className="text-base font-semibold text-fg">{fmtMoney(net)}</div>
       <div className="mt-1 text-[11px] uppercase tracking-wide text-fg-muted">
         סך הרווח שלך
       </div>
-      <div className="mt-0.5 text-[10px] text-fg-faint">
-        (אחרי עמלה של פייפאל)
-      </div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="mt-0.5 text-[10px] text-primary underline-offset-2 hover:underline"
+      >
+        (אחרי עמלה של פייפאל) {open ? '▴' : '▾'}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1 rounded-lg bg-white/[0.02] p-2 text-[11px] text-fg-muted">
+          <div>
+            בלי עמלת PayPal:{' '}
+            <span className="text-fg">{fmtMoney(gross || {})}</span>
+          </div>
+          <div>
+            עמלת PayPal: <span className="text-fg">{fmtMoney(fee || {})}</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
