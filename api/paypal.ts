@@ -1214,6 +1214,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminDeleteKey(req, res)
       case 'admin-set-key-expiry':
         return await handleAdminSetKeyExpiry(req, res)
+      case 'admin-list-usage-stats':
+        return await handleAdminListUsageStats(req, res)
+      case 'admin-issue-usage-pull':
+        return await handleAdminIssueUsagePull(req, res)
       case 'get-pricing':
         return await handleGetPricing(req, res)
       case 'get-terms':
@@ -5754,6 +5758,41 @@ async function handleAdminSetKeyExpiry(
     expiresAt = new Date(body.expiresAt).toISOString()
   }
   await getDb().collection('productKeys').doc(keyId).update({ expiresAt })
+  return res.status(200).json({ ok: true })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Admin → Data tab. Per-user feature-usage analytics.
+ * ────────────────────────────────────────────────────────────── */
+
+async function handleAdminListUsageStats(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const snap = await getDb()
+    .collection('usageStats')
+    .orderBy('date', 'desc')
+    .limit(2000)
+    .get()
+  const stats = snap.docs.map((d) => d.data() as Record<string, unknown>)
+  return res.status(200).json({ ok: true, stats })
+}
+
+/** Broadcast a "flush your local usage now" command to online
+ *  clients (they listen on appConfig/usagePullCommand). */
+async function handleAdminIssueUsagePull(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
+  await getDb()
+    .collection('appConfig')
+    .doc('usagePullCommand')
+    .set({ issuedAt: new Date().toISOString(), issuedBy: admin })
   return res.status(200).json({ ok: true })
 }
 
