@@ -23,6 +23,10 @@ import { getClientAuth } from './firebaseClient'
  */
 
 const ADMIN_TOKEN_KEY = 'dmplus.admin.v1'
+// The secret access key lives in localStorage (persists across tabs +
+// restarts on this trusted device) so the operator only has to open
+// the special link once per device.
+const GATE_KEY = 'dmplus.admin.gate.v1'
 
 export function getStoredAdminToken(): string | null {
   return sessionStorage.getItem(ADMIN_TOKEN_KEY)
@@ -32,6 +36,74 @@ export function storeAdminToken(token: string): void {
 }
 export function clearAdminToken(): void {
   sessionStorage.removeItem(ADMIN_TOKEN_KEY)
+}
+
+export function getGateKey(): string {
+  try {
+    return localStorage.getItem(GATE_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+export function storeGateKey(key: string): void {
+  try {
+    localStorage.setItem(GATE_KEY, key)
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Pull the secret key out of the URL (`#k=…` preferred — fragments
+ *  never reach the server; `?k=…` also accepted), persist it, then
+ *  scrub it from the address bar so it doesn't linger in history. */
+export function captureGateKeyFromUrl(): void {
+  try {
+    const hash = window.location.hash || ''
+    const search = window.location.search || ''
+    let key = ''
+    const hm = hash.match(/(?:^#|&)k=([^&]+)/)
+    if (hm) key = decodeURIComponent(hm[1])
+    if (!key) {
+      const sm = search.match(/(?:^\?|&)k=([^&]+)/)
+      if (sm) key = decodeURIComponent(sm[1])
+    }
+    if (key) {
+      storeGateKey(key)
+      // Strip both the query key and the fragment from the URL.
+      const url = new URL(window.location.href)
+      url.searchParams.delete('k')
+      url.hash = ''
+      window.history.replaceState(null, '', url.toString())
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Public probe — is the gate open for the key we hold? */
+export async function checkAdminGate(): Promise<boolean> {
+  try {
+    const r = await fetch('/api/paypal?action=admin-gate-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gateKey: getGateKey() }),
+    })
+    const j = (await r.json()) as { open?: boolean }
+    return Boolean(j.open)
+  } catch {
+    return false
+  }
+}
+
+/** Generate a fresh high-entropy key (~150 bits, URL-safe). */
+export function generateGateKey(): string {
+  const bytes = new Uint8Array(24)
+  crypto.getRandomValues(bytes)
+  const alpha =
+    'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'
+  let s = ''
+  for (const b of bytes) s += alpha[b % alpha.length]
+  return s
 }
 
 /** Current admin's Firebase id token, or null if not signed in. */
@@ -111,7 +183,7 @@ export async function checkAdminIpAllowed(): Promise<{
 export async function requestAdminCode(): Promise<ApiResult<unknown>> {
   const idToken = await getAdminIdToken()
   if (!idToken) return { ok: false, error: 'לא מחובר' }
-  return adminAuthCall('admin-2fa-request', { idToken })
+  return adminAuthCall('admin-2fa-request', { idToken, gateKey: getGateKey() })
 }
 
 /** Verify the email code → returns + stores the 12h admin token. */
@@ -123,9 +195,23 @@ export async function verifyAdminCode(
   const r = await adminAuthCall<{ adminToken: string }>('admin-2fa-verify', {
     idToken,
     code,
+    gateKey: getGateKey(),
   })
   if (r.ok) storeAdminToken(r.adminToken)
   return r
+}
+
+/** Is a gate key currently configured server-side? */
+export async function getGateStatus(): Promise<boolean> {
+  const r = await adminApi<{ hasKey: boolean }>('admin-gate-status')
+  return r.hasKey
+}
+
+/** Set/rotate the gate key (empty string clears it). Also persists
+ *  the new key locally so this device keeps access. */
+export async function setGateKey(newKey: string): Promise<void> {
+  await adminApi('admin-set-gate-key', { newKey })
+  storeGateKey(newKey)
 }
 
 /**
@@ -148,7 +234,7 @@ export async function adminApi<T>(
   const r = await fetch(`/api/paypal?action=${action}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...body, idToken, adminToken }),
+    body: JSON.stringify({ ...body, idToken, adminToken, gateKey: getGateKey() }),
   })
   const json = (await r.json()) as ApiResult<T>
   if (!json.ok) {

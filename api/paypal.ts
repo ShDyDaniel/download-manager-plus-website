@@ -1182,6 +1182,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdmin2faVerify(req, res)
       case 'admin-ip-allowed':
         return await handleAdminIpAllowed(req, res)
+      case 'admin-gate-check':
+        return await handleAdminGateCheck(req, res)
+      case 'admin-gate-status':
+        return await handleAdminGateStatus(req, res)
+      case 'admin-set-gate-key':
+        return await handleAdminSetGateKey(req, res)
       case 'admin-get-ip-allowlist':
         return await handleAdminGetIpAllowlist(req, res)
       case 'admin-set-ip-allowlist':
@@ -5253,9 +5259,13 @@ function verifyAdminToken(token: string): AdminTokenClaims | null {
  *  Firebase admin idToken AND a valid 2FA admin token for the SAME
  *  email. Returns the admin email, or null (caller should 403). */
 async function verifyAdmin2FA(req: VercelRequest): Promise<string | null> {
-  const body = (req.body || {}) as { idToken?: string; adminToken?: string }
-  // IP allowlist is the OUTERMOST gate for the web admin surface.
-  if (!(await isAdminIpAllowed(getClientIp(req)))) return null
+  const body = (req.body || {}) as {
+    idToken?: string
+    adminToken?: string
+    gateKey?: string
+  }
+  // Secret access key is the OUTERMOST gate for the web admin surface.
+  if (!(await isAdminGateOpen(body.gateKey))) return null
   const email = await verifyAdminEmail(body.idToken || '')
   if (!email) return null
   const claims = verifyAdminToken((body.adminToken || '').trim())
@@ -5392,6 +5402,100 @@ function isValidIp(ip: string): boolean {
   }
   // IPv6 (loose — accepts the common forms; we only string-compare).
   return /^[0-9a-f:]+$/.test(ip) && ip.includes(':')
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Admin secret access key — the location-independent gate that
+ *  replaced the IP allowlist (consumer IPs are dynamic, so an IP
+ *  allowlist couldn't work for mobile/home).
+ *
+ *  - A high-entropy key is generated in the browser and handed to the
+ *    operator as a link `…/admin#k=<key>`. The fragment never reaches
+ *    the server (no logs / no Referer).
+ *  - The server stores ONLY the key's HMAC hash (adminSecurity/config
+ *    .gateKeyHash) — never the plaintext. A leaked DB reveals nothing.
+ *  - Every web-admin call carries the key; isAdminGateOpen() compares
+ *    its hash. Wrong/absent key → the whole surface is dark.
+ *  - NO key set ⇒ gate OPEN (so the operator can log in once and set
+ *    a key). The login still requires password + email code, so this
+ *    bootstrap window is auth-protected, not a breach. Set a key to
+ *    make the page vanish for anyone who doesn't hold the link.
+ * ────────────────────────────────────────────────────────────── */
+
+function hashGateKey(key: string): string {
+  return crypto
+    .createHmac('sha256', tokenSecret())
+    .update(key)
+    .digest('hex')
+}
+
+async function getGateKeyHash(): Promise<string | null> {
+  try {
+    const snap = await getDb().collection('adminSecurity').doc('config').get()
+    if (!snap.exists) return null
+    const h = (snap.data() as { gateKeyHash?: unknown }).gateKeyHash
+    return typeof h === 'string' && h.length > 0 ? h : null
+  } catch {
+    // Fail CLOSED on read error — but distinguish from "no key set":
+    // return a sentinel so isAdminGateOpen treats it as blocked.
+    return '__read_error__'
+  }
+}
+
+async function isAdminGateOpen(providedKey?: string): Promise<boolean> {
+  const stored = await getGateKeyHash()
+  if (stored === '__read_error__') return false
+  if (!stored) return true // no key configured → open (bootstrap)
+  const key = (providedKey || '').trim()
+  if (!key) return false
+  const a = Buffer.from(hashGateKey(key), 'utf8')
+  const b = Buffer.from(stored, 'utf8')
+  if (a.length !== b.length) return false
+  return crypto.timingSafeEqual(a, b)
+}
+
+/** Public probe — the /admin page renders nothing unless this says
+ *  the gate is open for the supplied key. Reveals only a boolean. */
+async function handleAdminGateCheck(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { gateKey?: string }
+  return res
+    .status(200)
+    .json({ ok: true, open: await isAdminGateOpen(body.gateKey) })
+}
+
+/** Whether a gate key is currently configured. Admin-only. */
+async function handleAdminGateStatus(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const h = await getGateKeyHash()
+  return res
+    .status(200)
+    .json({ ok: true, hasKey: !!h && h !== '__read_error__' })
+}
+
+/** Set/rotate (or clear) the gate key. Stores only the hash. Admin-
+ *  only. Passing an empty newKey clears the gate (page becomes
+ *  open again). */
+async function handleAdminSetGateKey(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { newKey?: string }
+  const newKey = (body.newKey || '').trim()
+  const ref = getDb().collection('adminSecurity').doc('config')
+  if (!newKey) {
+    await ref.set({ gateKeyHash: null, updatedAt: Date.now() }, { merge: true })
+    return res.status(200).json({ ok: true, hasKey: false })
+  }
+  if (newKey.length < 16) {
+    return res.status(400).json({ ok: false, error: 'מפתח קצר מדי' })
+  }
+  await ref.set(
+    { gateKeyHash: hashGateKey(newKey), updatedAt: Date.now() },
+    { merge: true },
+  )
+  return res.status(200).json({ ok: true, hasKey: true })
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -5654,8 +5758,8 @@ async function handleAdminSetKeyExpiry(
 }
 
 async function handleAdmin2faRequest(req: VercelRequest, res: VercelResponse) {
-  const body = (req.body || {}) as { idToken?: string }
-  if (!(await isAdminIpAllowed(getClientIp(req)))) {
+  const body = (req.body || {}) as { idToken?: string; gateKey?: string }
+  if (!(await isAdminGateOpen(body.gateKey))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const email = await verifyAdminEmail(body.idToken || '')
@@ -5726,8 +5830,12 @@ async function handleAdmin2faRequest(req: VercelRequest, res: VercelResponse) {
 }
 
 async function handleAdmin2faVerify(req: VercelRequest, res: VercelResponse) {
-  const body = (req.body || {}) as { idToken?: string; code?: string }
-  if (!(await isAdminIpAllowed(getClientIp(req)))) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    code?: string
+    gateKey?: string
+  }
+  if (!(await isAdminGateOpen(body.gateKey))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const email = await verifyAdminEmail(body.idToken || '')

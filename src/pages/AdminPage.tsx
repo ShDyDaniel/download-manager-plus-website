@@ -12,6 +12,11 @@ import {
   Settings as SettingsIcon,
   LogOut,
   ShieldCheck,
+  KeyRound,
+  Copy,
+  Check,
+  X,
+  Loader2,
   type LucideIcon,
 } from 'lucide-react'
 import { getClientAuth } from '../lib/firebaseClient'
@@ -19,11 +24,15 @@ import { AuthButton, AuthError, AuthHeader, AuthInput } from '../components/auth
 import {
   adminSignIn,
   adminSignOut,
-  checkAdminIpAllowed,
+  captureGateKeyFromUrl,
+  checkAdminGate,
   clearAdminToken,
+  generateGateKey,
   getAdminEmail,
+  getGateStatus,
   getStoredAdminToken,
   requestAdminCode,
+  setGateKey,
   verifyAdminCode,
 } from '../lib/adminApi'
 import UsersTab from '../components/admin/UsersTab'
@@ -79,10 +88,13 @@ export default function AdminPage() {
   useEffect(() => {
     let cancelled = false
     let unsub: (() => void) | null = null
+    // Capture a secret key handed in via the link (…/admin#k=…) before
+    // probing the gate.
+    captureGateKeyFromUrl()
     void (async () => {
-      const { allowed } = await checkAdminIpAllowed()
+      const open = await checkAdminGate()
       if (cancelled) return
-      if (!allowed) {
+      if (!open) {
         setPhase('blocked')
         return
       }
@@ -338,6 +350,7 @@ function AdminShell({
   onLogout: () => void
   onAuthExpired: () => void
 }) {
+  const [gateModal, setGateModal] = useState(false)
   return (
     <div className="min-h-dvh bg-bg" dir="rtl">
       <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 pt-14 pb-10 md:flex-row md:pt-20 md:pb-16">
@@ -387,14 +400,24 @@ function AdminShell({
             })}
           </nav>
 
-          <button
-            type="button"
-            onClick={onLogout}
-            className="mt-5 hidden items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg md:flex"
-          >
-            <LogOut className="h-3.5 w-3.5" />
-            התנתקות
-          </button>
+          <div className="mt-5 hidden flex-col gap-2 md:flex">
+            <button
+              type="button"
+              onClick={() => setGateModal(true)}
+              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+            >
+              <KeyRound className="h-3.5 w-3.5" />
+              מפתח גישה לדף
+            </button>
+            <button
+              type="button"
+              onClick={onLogout}
+              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              התנתקות
+            </button>
+          </div>
         </aside>
 
         {/* Content */}
@@ -409,6 +432,165 @@ function AdminShell({
             <TabPlaceholder tab={tab} />
           )}
         </main>
+      </div>
+      {gateModal && <GateKeyModal onClose={() => setGateModal(false)} />}
+    </div>
+  )
+}
+
+/* ── Secret-access-key management ──────────────────────────────── */
+function GateKeyModal({ onClose }: { onClose: () => void }) {
+  const [hasKey, setHasKey] = useState<boolean | null>(null)
+  const [newLink, setNewLink] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setHasKey(await getGateStatus())
+      } catch {
+        setHasKey(null)
+      }
+    })()
+  }, [])
+
+  async function rotate() {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const key = generateGateKey()
+      await setGateKey(key)
+      setNewLink(`${window.location.origin}/admin#k=${key}`)
+      setHasKey(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'הפעולה נכשלה')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function clearKey() {
+    if (busy) return
+    if (!window.confirm('לבטל את מפתח הגישה? הדף יהפוך נגיש ללא קישור מיוחד.'))
+      return
+    setBusy(true)
+    setError(null)
+    try {
+      await setGateKey('')
+      setHasKey(false)
+      setNewLink(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'הפעולה נכשלה')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      dir="rtl"
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="relative w-full max-w-md rounded-xl border border-border bg-bg-elevated p-6">
+        <button
+          onClick={onClose}
+          className="absolute left-4 top-4 rounded-md p-1 text-fg-muted hover:text-fg"
+        >
+          <X className="h-4 w-4" />
+        </button>
+        <div className="mb-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/15">
+            <KeyRound className="h-5 w-5 text-primary" />
+          </div>
+          <h2 className="text-base font-bold text-fg">מפתח גישה לדף הניהול</h2>
+        </div>
+
+        <p className="mb-4 text-xs leading-relaxed text-fg-muted">
+          מפתח סודי שמסתיר את הדף לחלוטין. מי שאין לו את הקישור עם המפתח —
+          רואה דף ריק. בשרת נשמר רק טביעת-אצבע מוצפנת של המפתח, לא המפתח
+          עצמו. שמור את הקישור החדש (סימנייה) בכל מכשיר שתרצה לגשת ממנו.
+        </p>
+
+        <div className="mb-4 rounded-lg border border-border bg-white/[0.02] px-3 py-2 text-sm">
+          <span className="text-fg-muted">מצב נוכחי: </span>
+          <span className="font-medium text-fg">
+            {hasKey === null
+              ? '—'
+              : hasKey
+                ? 'מוגדר מפתח — הדף מוסתר'
+                : 'אין מפתח — הדף נגיש (מומלץ להגדיר)'}
+          </span>
+        </div>
+
+        {newLink && (
+          <div className="mb-4 rounded-lg border border-success/30 bg-success/5 p-3">
+            <div className="mb-1.5 text-xs text-success">
+              הקישור החדש שלך — שמור אותו עכשיו:
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                readOnly
+                value={newLink}
+                dir="ltr"
+                onFocus={(e) => e.currentTarget.select()}
+                className="flex-1 truncate rounded-md border border-border bg-transparent px-2 py-1.5 text-xs text-fg"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(newLink)
+                  setCopied(true)
+                  setTimeout(() => setCopied(false), 1500)
+                }}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-bg"
+              >
+                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                {copied ? 'הועתק' : 'העתק'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div className="mb-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {error}
+          </div>
+        )}
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={rotate}
+            disabled={busy}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-50"
+          >
+            {busy ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <KeyRound className="h-4 w-4" />
+            )}
+            {hasKey ? 'הפק מפתח חדש' : 'הפק מפתח'}
+          </button>
+          {hasKey && (
+            <button
+              type="button"
+              onClick={clearKey}
+              disabled={busy}
+              className="rounded-lg border border-destructive/30 px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+            >
+              בטל מפתח
+            </button>
+          )}
+        </div>
+        {hasKey && !newLink && (
+          <p className="mt-3 text-[11px] text-fg-faint">
+            הפקת מפתח חדש תבטל את הקישורים הישנים.
+          </p>
+        )}
       </div>
     </div>
   )
