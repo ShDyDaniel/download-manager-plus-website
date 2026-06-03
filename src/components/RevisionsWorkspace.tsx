@@ -787,8 +787,10 @@ function GroupCard({
   // rounds the first time it's expanded, and re-fetch whenever the
   // group's updatedAt changes while open (add-round / delete-round
   // bump it) so the list never shows a stale round.
+  // Start "not loaded" — the list ships groups WITHOUT real rounds
+  // (live: undefined, REST: []), so we always fetch on first expand.
   const [rounds, setRounds] = useState<GroupRoundSummary[] | null>(
-    group.rounds ?? null,
+    group.rounds && group.rounds.length > 0 ? group.rounds : null,
   )
   const [loadingRounds, setLoadingRounds] = useState(false)
   const [roundsError, setRoundsError] = useState<string | null>(null)
