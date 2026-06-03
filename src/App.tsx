@@ -15,7 +15,6 @@ import { QuickStart } from './components/QuickStart'
 import { FAQ } from './components/FAQ'
 import { Footer } from './components/Footer'
 import { SiteHeader } from './components/SiteHeader'
-import { AmbientGlows } from './components/AmbientGlows'
 import { BuyPage } from './pages/BuyPage'
 import AccountPage from './pages/AccountPage'
 import AuthActionPage from './pages/AuthActionPage'
@@ -59,8 +58,6 @@ function App() {
     // the SiteHeader scrolls out of view with the rest of the
     // page; it reappears only when scrolling back to the top.
     <div className="relative">
-      {/* Global warm-glow atmosphere on every route. */}
-      <AmbientGlows />
       {/* The header belongs to the marketing/app shell only. Standalone
           surfaces (partner dashboard, client review, picker) render
           their own chrome — showing the global nav on top of them

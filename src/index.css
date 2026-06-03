@@ -117,14 +117,31 @@ body,
 
 body {
   background-color: var(--bg);
-  /* Base espresso canvas. The visible warm glows now live in the
-   * <AmbientGlows> layer (rendered globally in App.tsx) so every route
-   * gets them; the body just keeps one very faint blob as a fallback
-   * for routes/states that render before React mounts. */
+  /* Ambient atmosphere — several soft warm radial glows scattered
+   * across the viewport (anchored via background-attachment: fixed so
+   * they sit consistently on EVERY page, not just the home hero). The
+   * brightest sits top-center, echoing the hero glow the rest of the
+   * site is built around; the others are quieter accents that give
+   * the deep espresso some depth instead of a flat static colour. */
   background-image:
     radial-gradient(
-      ellipse 80% 60% at 50% 0%,
-      rgba(184, 121, 79, 0.06) 0%,
+      ellipse 70% 50% at 50% -5%,
+      rgba(184, 121, 79, 0.13) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 45% 40% at 85% 25%,
+      rgba(212, 165, 116, 0.07) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 50% 45% at 12% 60%,
+      rgba(184, 121, 79, 0.07) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 60% 40% at 60% 105%,
+      rgba(212, 165, 116, 0.06) 0%,
       transparent 60%
     );
   background-attachment: fixed;
