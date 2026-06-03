@@ -9,14 +9,23 @@ import { Accessibility, ArrowRight } from 'lucide-react'
  */
 export default function AccessibilityStatementPage() {
   return (
-    <div dir="rtl" className="mx-auto max-w-2xl px-5 py-16 md:py-24">
-      <Link
-        to="/"
-        className="mb-8 inline-flex items-center gap-1.5 text-xs uppercase tracking-[0.16em] text-fg-muted transition-colors hover:text-fg"
-      >
-        דף הבית
-        <ArrowRight className="h-3.5 w-3.5" />
-      </Link>
+    <div dir="rtl">
+      {/* Back-to-home sits on the SiteHeader's max-w-6xl rail (not the
+          narrower max-w-2xl article column), so its right edge reaches
+          the same far-right position as the rest of the top chrome —
+          mirroring the left-anchored "סבבי תיקונים · החשבון שלי" nav
+          on the opposite side. */}
+      <div className="mx-auto max-w-6xl px-5 pt-12 md:px-6 md:pt-[5.5rem]">
+        <Link
+          to="/"
+          className="inline-flex items-center gap-1.5 text-xs uppercase tracking-[0.16em] text-fg-muted transition-colors hover:text-fg"
+        >
+          דף הבית
+          <ArrowRight className="h-3.5 w-3.5" />
+        </Link>
+      </div>
+
+      <div className="mx-auto max-w-2xl px-5 pb-16 pt-10 md:pb-24 md:pt-14">
 
       <div className="mb-6 flex items-center gap-3">
         <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
@@ -84,6 +93,7 @@ export default function AccessibilityStatementPage() {
         <p className="border-t border-border/60 pt-6 text-xs text-fg-muted">
           הצהרת הנגישות עודכנה לאחרונה ביוני 2026.
         </p>
+      </div>
       </div>
     </div>
   )
