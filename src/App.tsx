@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { AnimatePresence, motion, MotionConfig } from 'framer-motion'
 import {
   Navigate,
   Route,
@@ -15,7 +15,11 @@ import { QuickStart } from './components/QuickStart'
 import { FAQ } from './components/FAQ'
 import { Footer } from './components/Footer'
 import { SiteHeader } from './components/SiteHeader'
-import { AccessibilityWidget } from './components/AccessibilityWidget'
+import {
+  AccessibilityWidget,
+  A11Y_MOTION_EVENT,
+  readStopMotion,
+} from './components/AccessibilityWidget'
 import AccessibilityStatementPage from './pages/AccessibilityStatementPage'
 import { BuyPage } from './pages/BuyPage'
 import AccountPage from './pages/AccountPage'
@@ -53,23 +57,31 @@ function isChromelessRoute(pathname: string): boolean {
 
 function App() {
   const location = useLocation()
+  // Drive framer-motion's reduced-motion from the accessibility menu's
+  // "stop animations" toggle (CSS alone can't stop JS animations).
+  const [reduceMotion, setReduceMotion] = useState(readStopMotion)
+  useEffect(() => {
+    const h = (e: Event) =>
+      setReduceMotion(Boolean((e as CustomEvent).detail))
+    window.addEventListener(A11Y_MOTION_EVENT, h)
+    return () => window.removeEventListener(A11Y_MOTION_EVENT, h)
+  }, [])
   return (
-    // `relative` here anchors the absolute-positioned SiteHeader to
-    // the top of the page content (NOT the viewport — the user
-    // doesn't want a sticky element). When the user scrolls down,
-    // the SiteHeader scrolls out of view with the rest of the
-    // page; it reappears only when scrolling back to the top.
-    <div className="relative">
-      {/* The header belongs to the marketing/app shell only. Standalone
-          surfaces (partner dashboard, client review, picker) render
-          their own chrome — showing the global nav on top of them
-          overlaps their UI (cramped + overlapping on mobile). */}
-      {!isChromelessRoute(location.pathname) && <SiteHeader />}
-      <AnimatedRoutes />
-      {/* Accessibility menu — required for Israeli sites (IS 5568).
-          Rendered globally so it's reachable from every page. */}
-      <AccessibilityWidget />
-    </div>
+    // `relative` anchors the absolute-positioned SiteHeader to the top
+    // of the page content. MotionConfig lets the accessibility menu's
+    // "stop animations" toggle reduce framer-motion animation globally.
+    <MotionConfig reducedMotion={reduceMotion ? 'always' : 'never'}>
+      <div className="relative">
+        {/* The header belongs to the marketing/app shell only.
+            Standalone surfaces (partner dashboard, client review,
+            picker) render their own chrome. */}
+        {!isChromelessRoute(location.pathname) && <SiteHeader />}
+        <AnimatedRoutes />
+        {/* Accessibility menu — required for Israeli sites (IS 5568).
+            Rendered globally so it's reachable from every page. */}
+        <AccessibilityWidget />
+      </div>
+    </MotionConfig>
   )
 }
 

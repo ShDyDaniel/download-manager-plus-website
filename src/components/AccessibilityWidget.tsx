@@ -76,6 +76,20 @@ function load(): A11yState {
   }
 }
 
+/** Event the app root listens to so it can drive framer-motion's
+ *  MotionConfig — CSS alone can't stop JS-driven animations. */
+export const A11Y_MOTION_EVENT = 'dmplus-a11y-motion'
+
+export function readStopMotion(): boolean {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return false
+    return (JSON.parse(raw) as A11yState)?.toggles?.stopmotion === true
+  } catch {
+    return false
+  }
+}
+
 function apply(state: A11yState) {
   const html = document.documentElement
   for (const { key } of TOGGLE_LABELS) {
@@ -86,6 +100,10 @@ function apply(state: A11yState) {
   } else {
     html.style.removeProperty('font-size')
   }
+  // Tell the app root whether to reduce motion in framer-motion.
+  window.dispatchEvent(
+    new CustomEvent(A11Y_MOTION_EVENT, { detail: state.toggles.stopmotion }),
+  )
 }
 
 export function AccessibilityWidget() {
