@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { TermsModal, PrivacyModal } from './LegalModals'
+import { AccessibilityModal } from '../pages/AccessibilityStatementPage'
 
 /**
  * Footer — minimal, three-column on desktop, stacked on mobile.
@@ -35,6 +36,7 @@ export function Footer() {
   // caches per session, so a second open is free). See LegalModals.
   const [termsOpen, setTermsOpen] = useState(false)
   const [privacyOpen, setPrivacyOpen] = useState(false)
+  const [a11yOpen, setA11yOpen] = useState(false)
 
   return (
     <footer className="border-t border-border px-6 py-12 md:py-16">
@@ -88,12 +90,13 @@ export function Footer() {
                 מדיניות פרטיות
               </button>
               <span aria-hidden>·</span>
-              <Link
-                to="/accessibility"
+              <button
+                type="button"
+                onClick={() => setA11yOpen(true)}
                 className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
               >
                 הצהרת נגישות
-              </Link>
+              </button>
               <span aria-hidden>·</span>
               <Link
                 to="/account"
@@ -121,6 +124,7 @@ export function Footer() {
 
       {termsOpen && <TermsModal onClose={() => setTermsOpen(false)} />}
       {privacyOpen && <PrivacyModal onClose={() => setPrivacyOpen(false)} />}
+      {a11yOpen && <AccessibilityModal onClose={() => setA11yOpen(false)} />}
     </footer>
   )
 }

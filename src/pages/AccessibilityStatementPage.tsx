@@ -1,11 +1,18 @@
+import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Accessibility, ArrowRight } from 'lucide-react'
 
 /**
- * הצהרת נגישות — accessibility statement page, required for Israeli
- * websites under the Equal Rights for Persons with Disabilities
- * regulations (תקנות שוויון זכויות לאנשים עם מוגבלות). Reachable from
- * the footer and from the accessibility widget.
+ * הצהרת נגישות — accessibility statement, required for Israeli websites
+ * under the Equal Rights for Persons with Disabilities regulations
+ * (תקנות שוויון זכויות לאנשים עם מוגבלות).
+ *
+ * Shipped in two shells that share ONE body (AccessibilityStatementBody):
+ *   - the standalone /accessibility page (default export) — reached from
+ *     the accessibility widget and via direct URL, with a back-to-home
+ *     link on the wide rail.
+ *   - AccessibilityModal — opened from the footer so the statement
+ *     behaves like the Terms / Privacy modals (in-place, no navigation).
  */
 export default function AccessibilityStatementPage() {
   return (
@@ -26,17 +33,28 @@ export default function AccessibilityStatementPage() {
       </div>
 
       <div className="mx-auto max-w-2xl px-5 pb-16 pt-10 md:pb-24 md:pt-14">
+        <AccessibilityStatementBody />
+      </div>
+    </div>
+  )
+}
 
+/* Shared statement content — title + sections + "last updated" line.
+ * Rendered identically on the page and inside the modal so the legal
+ * text lives in exactly one place. */
+function AccessibilityStatementBody() {
+  return (
+    <>
       <div className="mb-6 flex items-center gap-3">
         <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
           <Accessibility className="h-5 w-5" />
         </span>
-        <h1
+        <h2
           className="font-display text-fg"
-          style={{ fontSize: 'clamp(26px,4vw,34px)', fontWeight: 500 }}
+          style={{ fontSize: 'clamp(24px,4vw,32px)', fontWeight: 500 }}
         >
           הצהרת נגישות
-        </h1>
+        </h2>
       </div>
 
       <div className="space-y-7 text-sm leading-relaxed text-fg-secondary">
@@ -94,6 +112,60 @@ export default function AccessibilityStatementPage() {
           הצהרת הנגישות עודכנה לאחרונה ביוני 2026.
         </p>
       </div>
+    </>
+  )
+}
+
+/* Modal shell — same content as the page, opened from the footer so the
+ * statement behaves like the Terms / Privacy modals. Backdrop click +
+ * Esc close, body scrolls inside an 85vh panel. */
+export function AccessibilityModal({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      dir="rtl"
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div className="relative w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl border border-border bg-bg-elevated p-6 md:p-8">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute left-3 top-3 rounded-md p-1.5 text-fg-muted transition-colors hover:bg-bg-card hover:text-fg"
+          aria-label="סגור"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-4 w-4"
+          >
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+
+        <AccessibilityStatementBody />
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-6 w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover"
+        >
+          סגירה
+        </button>
       </div>
     </div>
   )
@@ -108,7 +180,7 @@ function Section({
 }) {
   return (
     <section>
-      <h2 className="mb-2 text-base font-semibold text-fg">{title}</h2>
+      <h3 className="mb-2 text-base font-semibold text-fg">{title}</h3>
       <div>{children}</div>
     </section>
   )
