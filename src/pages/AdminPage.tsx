@@ -131,12 +131,12 @@ export default function AdminPage() {
   // IP not allowed (or still probing) → render nothing. A bare dark
   // screen, indistinguishable from an empty/non-existent page.
   if (phase === 'checking' || phase === 'blocked') {
-    return <div className="min-h-dvh" />
+    return <div className="min-h-dvh bg-bg" />
   }
 
   if (phase === 'loading') {
     return (
-      <div className="flex min-h-dvh items-center justify-center text-sm text-fg-muted">
+      <div className="flex min-h-dvh items-center justify-center bg-bg text-sm text-fg-muted">
         טוען…
       </div>
     )
@@ -221,7 +221,7 @@ function AdminLogin({ onNeedCode }: { onNeedCode: () => void }) {
   }
 
   return (
-    <div className="flex min-h-dvh items-center justify-center px-5" dir="rtl">
+    <div className="flex min-h-dvh items-center justify-center bg-bg px-5" dir="rtl">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex justify-center">
           <span className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
@@ -320,7 +320,7 @@ function AdminCode({
   }
 
   return (
-    <div className="flex min-h-dvh items-center justify-center px-5" dir="rtl">
+    <div className="flex min-h-dvh items-center justify-center bg-bg px-5" dir="rtl">
       <div className="w-full max-w-sm">
         <AuthHeader label="— אימות דו-שלבי" title="הזן את קוד הכניסה" />
         <p className="mb-5 text-center text-xs text-fg-muted">
@@ -377,7 +377,7 @@ function AdminShell({
 }) {
   const [gateModal, setGateModal] = useState(false)
   return (
-    <div className="min-h-dvh" dir="rtl">
+    <div className="min-h-dvh bg-bg" dir="rtl">
       <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 pt-14 pb-10 md:flex-row md:pt-20 md:pb-16">
         {/* Sidebar */}
         <aside className="shrink-0 md:w-56">

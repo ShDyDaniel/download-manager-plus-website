@@ -125,7 +125,7 @@ export default function PartnerPage() {
 
   if (booting) {
     return (
-      <div className="flex min-h-dvh items-center justify-center text-sm text-fg-muted">
+      <div className="flex min-h-dvh items-center justify-center bg-bg text-sm text-fg-muted">
         טוען…
       </div>
     )
@@ -134,7 +134,7 @@ export default function PartnerPage() {
   // ── Login ──
   if (!stats) {
     return (
-      <div className="flex min-h-dvh items-center justify-center px-5" dir="rtl">
+      <div className="flex min-h-dvh items-center justify-center bg-bg px-5" dir="rtl">
         <div className="w-full max-w-sm">
           <AuthHeader label="— שותפים" title="כניסת שותפים" />
           <form onSubmit={handleLogin} className="space-y-5">
@@ -179,7 +179,7 @@ export default function PartnerPage() {
   const showMoney = stats.visibility.earnings || stats.visibility.revenue
 
   return (
-    <div className="min-h-dvh px-5 py-10 md:py-16" dir="rtl">
+    <div className="min-h-dvh bg-bg px-5 py-10 md:py-16" dir="rtl">
       <div className="mx-auto max-w-2xl">
         <div className="mb-8 flex items-start justify-between gap-4">
           <div>
