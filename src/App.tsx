@@ -27,7 +27,25 @@ import PartnerPage from './pages/PartnerPage'
 // the purchase flow lives at `/buy` so the URL is shareable, deep-
 // linkable, and Google-indexable. Vercel's `vercel.json` rewrites
 // non-/api requests to index.html so deep links survive refresh.
+/** Routes that render their own chrome (or are intentionally
+ *  chromeless) and must NOT show the marketing SiteHeader:
+ *    - /review        public client-review surface
+ *    - /auth-action   Firebase password-reset landing
+ *    - /drive-picker  frameless picker the desktop app opens
+ *    - /partner       self-serve partner dashboard (own header)
+ *  Used both to hide the global header and to bypass the page
+ *  transition wrapper, so the two stay in sync. */
+function isChromelessRoute(pathname: string): boolean {
+  return (
+    pathname.startsWith('/review') ||
+    pathname.startsWith('/auth-action') ||
+    pathname.startsWith('/drive-picker') ||
+    pathname.startsWith('/partner')
+  )
+}
+
 function App() {
+  const location = useLocation()
   return (
     // `relative` here anchors the absolute-positioned SiteHeader to
     // the top of the page content (NOT the viewport — the user
@@ -35,7 +53,11 @@ function App() {
     // the SiteHeader scrolls out of view with the rest of the
     // page; it reappears only when scrolling back to the top.
     <div className="relative">
-      <SiteHeader />
+      {/* The header belongs to the marketing/app shell only. Standalone
+          surfaces (partner dashboard, client review, picker) render
+          their own chrome — showing the global nav on top of them
+          overlaps their UI (cramped + overlapping on mobile). */}
+      {!isChromelessRoute(location.pathname) && <SiteHeader />}
       <AnimatedRoutes />
     </div>
   )
@@ -105,11 +127,7 @@ function AnimatedRoutes() {
   // a page they never visited. Same for /auth-action which gets
   // hit by Firebase from a fresh tab. Bypass the wrapper for those
   // routes so they render instantly with no enter animation.
-  const isStandalone =
-    location.pathname.startsWith('/review') ||
-    location.pathname.startsWith('/auth-action') ||
-    location.pathname.startsWith('/drive-picker') ||
-    location.pathname.startsWith('/partner')
+  const isStandalone = isChromelessRoute(location.pathname)
 
   if (isStandalone) {
     return (
