@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Copy, Check, LogOut } from 'lucide-react'
+import { Copy, Check, LogOut, X } from 'lucide-react'
 import { AuthButton, AuthError, AuthHeader, AuthInput } from '../components/authUi'
 
 /**
@@ -300,9 +300,9 @@ export default function PartnerPage() {
   )
 }
 
-/** Earnings card — shows the NET payout (after PayPal's fee). The
- *  "(אחרי עמלה של פייפאל)" line is always clickable and toggles a
- *  breakdown: the pre-fee amount + the PayPal fee that was taken. */
+/** Earnings card — shows the NET payout (after PayPal's fee). Clicking
+ *  "(אחרי עמלה של פייפאל)" opens a modal that EXPLAINS why the amount
+ *  differs (PayPal's processing fee) + shows the full breakdown. */
 function EarningsStat({
   net,
   gross,
@@ -314,29 +314,105 @@ function EarningsStat({
 }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-center">
-      <div className="text-base font-semibold text-fg">{fmtMoney(net)}</div>
-      <div className="mt-1 text-[11px] uppercase tracking-wide text-fg-muted">
-        סך הרווח שלך
+    <>
+      <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-center">
+        <div className="text-base font-semibold text-fg">{fmtMoney(net)}</div>
+        <div className="mt-1 text-[11px] uppercase tracking-wide text-fg-muted">
+          סך הרווח שלך
+        </div>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="mt-0.5 text-[10px] text-primary underline underline-offset-2 hover:text-accent"
+        >
+          (אחרי עמלה של פייפאל)
+        </button>
       </div>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="mt-0.5 text-[10px] text-primary underline-offset-2 hover:underline"
-      >
-        (אחרי עמלה של פייפאל) {open ? '▴' : '▾'}
-      </button>
       {open && (
-        <div className="mt-2 space-y-1 rounded-lg bg-white/[0.02] p-2 text-[11px] text-fg-muted">
-          <div>
-            בלי עמלת PayPal:{' '}
-            <span className="text-fg">{fmtMoney(gross || {})}</span>
+        <FeeExplainModal
+          net={net}
+          gross={gross}
+          fee={fee}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  )
+}
+
+/** A small explainer popup for the partner: why the payout is lower
+ *  than the sticker price (PayPal's per-transaction processing fee). */
+function FeeExplainModal({
+  net,
+  gross,
+  fee,
+  onClose,
+}: {
+  net: Record<string, number>
+  gross?: Record<string, number> | null
+  fee?: Record<string, number> | null
+  onClose: () => void
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      dir="rtl"
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="relative w-full max-w-md rounded-2xl border border-border bg-bg-elevated p-6 text-right shadow-2xl">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="סגור"
+          className="absolute left-4 top-4 rounded-md p-1 text-fg-muted transition-colors hover:text-fg"
+        >
+          <X className="h-4 w-4" />
+        </button>
+
+        <h2 className="mb-3 font-display text-lg font-medium text-fg">
+          למה הסכום שונה? — עמלת PayPal
+        </h2>
+        <p className="mb-4 text-sm leading-relaxed text-fg-secondary">
+          על כל תשלום, חברת PayPal גובה עמלת סליקה. לכן הסכום שמגיע בפועל
+          לחשבון נמוך מהמחיר שהלקוח שילם. הרווח שלך מחושב על הסכום שנשאר{' '}
+          <span className="text-fg">אחרי</span> עמלת PayPal — כלומר הכסף
+          ה"אמיתי" שנכנס.
+        </p>
+
+        <div className="space-y-2 rounded-xl border border-border/60 bg-white/[0.015] p-4 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-fg-muted">מחיר מלא (לפני עמלה)</span>
+            <span className="text-fg" dir="ltr">
+              {fmtMoney(gross || {})}
+            </span>
           </div>
-          <div>
-            עמלת PayPal: <span className="text-fg">{fmtMoney(fee || {})}</span>
+          <div className="flex items-center justify-between">
+            <span className="text-fg-muted">עמלת PayPal</span>
+            <span className="text-destructive" dir="ltr">
+              −{fmtMoney(fee || {})}
+            </span>
+          </div>
+          <div className="flex items-center justify-between border-t border-border/60 pt-2 font-medium">
+            <span className="text-fg">הרווח שלך (אחרי עמלה)</span>
+            <span className="text-success" dir="ltr">
+              {fmtMoney(net)}
+            </span>
           </div>
         </div>
-      )}
+
+        <p className="mt-4 text-[11px] leading-relaxed text-fg-faint">
+          העמלה נקבעת על ידי PayPal ומשתנה מעט בין עסקה לעסקה (מטבע,
+          המרת מטבע ועוד). המספרים כאן הם העמלות האמיתיות שנגבו בפועל.
+        </p>
+      </div>
     </div>
   )
 }
