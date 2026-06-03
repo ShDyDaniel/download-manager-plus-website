@@ -56,6 +56,15 @@ export function DownloadAuthModal({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  // Seconds left before "resend code" is allowed again. Set to 60 on
+  // every send; ticks down to 0. Stops the user spamming the endpoint.
+  const [cooldown, setCooldown] = useState(0)
+
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const t = setTimeout(() => setCooldown((c) => Math.max(0, c - 1)), 1000)
+    return () => clearTimeout(t)
+  }, [cooldown])
 
   // Reset on open so a re-open never shows stale state.
   useEffect(() => {
@@ -76,6 +85,7 @@ export function DownloadAuthModal({
     setBusy(false)
     setError(null)
     setNotice(null)
+    setCooldown(0)
   }, [open])
 
   useEffect(() => {
@@ -137,7 +147,25 @@ export function DownloadAuthModal({
       return
     }
     setCodeSent(true)
+    setCooldown(60)
     setNotice('שלחנו קוד אימות למייל. הזינו אותו כדי להשלים את ההרשמה.')
+  }
+
+  // Resend the signup code in-place (no leaving the code screen).
+  // Disabled until the 60s cooldown elapses; each send restarts it.
+  async function handleResendCode() {
+    if (busy || cooldown > 0) return
+    setBusy(true)
+    setError(null)
+    const r = await requestSignupCode(email)
+    setBusy(false)
+    if (!r.ok) {
+      setError(r.error || 'שליחת הקוד נכשלה')
+      return
+    }
+    setCode('')
+    setCooldown(60)
+    setNotice('שלחנו קוד חדש למייל.')
   }
 
   async function handleVerify(e: React.FormEvent) {
@@ -362,11 +390,22 @@ export function DownloadAuthModal({
               </p>
               {error && <AuthError message={error} />}
               <AuthButton busy={busy}>אימות והורדה</AuthButton>
-              <AuthModeLinks
-                items={[
-                  { label: 'שליחת קוד מחדש', onClick: () => { setCodeSent(false); setCode(''); setError(null) } },
-                ]}
-              />
+              <div className="text-center text-xs">
+                {cooldown > 0 ? (
+                  <span className="text-fg-faint">
+                    אפשר לשלוח קוד חדש בעוד {cooldown} שניות
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleResendCode}
+                    disabled={busy}
+                    className="text-fg-muted underline-offset-2 transition-colors hover:text-fg hover:underline disabled:opacity-50"
+                  >
+                    שליחת קוד מחדש
+                  </button>
+                )}
+              </div>
             </form>
           )}
 

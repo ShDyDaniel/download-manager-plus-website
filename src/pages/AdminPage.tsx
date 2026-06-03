@@ -264,6 +264,13 @@ function AdminCode({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [resent, setResent] = useState(false)
+  // 60s resend cooldown (resets on each send).
+  const [cooldown, setCooldown] = useState(0)
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const t = setTimeout(() => setCooldown((c) => Math.max(0, c - 1)), 1000)
+    return () => clearTimeout(t)
+  }, [cooldown])
   // Only request a code here when we arrived WITHOUT one already being
   // sent (refresh / expired token). After the login step, login sent
   // it — requesting again is the double-email bug.
@@ -273,6 +280,11 @@ function AdminCode({
     requestedRef.current = true
     void requestAdminCode()
   }, [autoRequest])
+  // A code was just sent (by login or by the effect above) — start the
+  // resend cooldown immediately on mount.
+  useEffect(() => {
+    setCooldown(60)
+  }, [])
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -289,10 +301,12 @@ function AdminCode({
   }
 
   async function resend() {
+    if (cooldown > 0) return
     setError(null)
     const r = await requestAdminCode()
     if (r.ok) {
       setResent(true)
+      setCooldown(60)
       setTimeout(() => setResent(false), 3000)
     } else {
       setError(r.error || 'שליחת הקוד נכשלה.')
@@ -321,9 +335,14 @@ function AdminCode({
           <button
             type="button"
             onClick={resend}
-            className="text-fg-muted transition-colors hover:text-fg"
+            disabled={cooldown > 0}
+            className="text-fg-muted transition-colors hover:text-fg disabled:opacity-50 disabled:hover:text-fg-muted"
           >
-            {resent ? 'נשלח קוד חדש ✓' : 'שלח קוד מחדש'}
+            {resent
+              ? 'נשלח קוד חדש ✓'
+              : cooldown > 0
+                ? `שלח שוב (${cooldown})`
+                : 'שלח קוד מחדש'}
           </button>
           <button
             type="button"

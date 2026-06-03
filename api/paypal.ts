@@ -5765,17 +5765,11 @@ async function handleAdmin2faRequest(req: VercelRequest, res: VercelResponse) {
   const email = await verifyAdminEmail(body.idToken || '')
   if (!email) return res.status(403).json({ ok: false, error: 'admin only' })
 
-  // Rate-limit: a logged-in admin shouldn't need many codes.
-  const allowed = await tryRateLimit(
-    `admin-2fa_${sanitizeEmailKey(email)}`,
-    8,
-    60 * 60,
-  )
-  if (!allowed) {
-    return res
-      .status(429)
-      .json({ ok: false, error: 'יותר מדי בקשות. נסה שוב מאוחר יותר.' })
-  }
+  // No rate limit here: this is the single, already-authenticated
+  // operator (admin password + secret gate key). Locking them out of
+  // their own login over a request cap is unacceptable; the email
+  // code's TTL + single-use is the abuse control. A 60s resend timer
+  // in the UI keeps casual re-sends sane.
 
   const code = String(Math.floor(100000 + Math.random() * 900000))
   const ttlSecs = 10 * 60
