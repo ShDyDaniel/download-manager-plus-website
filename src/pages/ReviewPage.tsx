@@ -2476,7 +2476,15 @@ function NoteItem({
       created.forEach(revoke)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [note.id, note.screenshotDriveFileId, note.audioDriveFileId, shareToken, roundId])
+  }, [
+    note.id,
+    note.screenshotDriveFileId,
+    note.audioDriveFileId,
+    note.screenshotR2Key,
+    note.audioR2Key,
+    shareToken,
+    roundId,
+  ])
 
   // Border + bg color per status — picked so the four states are
   // distinguishable at a glance when scrolling a long list. Per

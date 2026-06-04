@@ -4695,11 +4695,29 @@ async function handleDeleteProject(req: VercelRequest, res: VercelResponse) {
   if (!snap.exists) return res.status(404).json({ ok: false, error: 'לא נמצא' })
   const project = snap.data() as {
     ownerUid: string
-    driveFileId: string
+    driveFileId?: string
     notesFolderId?: string
+    r2Key?: string
+    videoSizeBytes?: number
   }
   if (project.ownerUid !== verified.uid) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+
+  // R2-backed legacy project (defensive — legacy projects predate R2,
+  // but never leak storage if one exists): always delete the object +
+  // its note-media and free the quota, regardless of the Drive flag.
+  if (project.r2Key) {
+    try {
+      await r2DeleteObject(project.r2Key)
+      await adjustStorageUsage(
+        verified.uid,
+        -(Number(project.videoSizeBytes) || 0),
+      )
+      await deleteRoundNoteMediaR2(verified.uid, projectId)
+    } catch (err) {
+      console.warn('[revisions/delete] R2 cleanup failed (ignoring):', err)
+    }
   }
 
   // Drive cleanup — share-link revoke (always) + optional file
@@ -4709,7 +4727,7 @@ async function handleDeleteProject(req: VercelRequest, res: VercelResponse) {
   let driveDeleted = false
   try {
     const integrationSnap = await integrationDocRef(verified.uid).get()
-    if (integrationSnap.exists) {
+    if (integrationSnap.exists && project.driveFileId) {
       const integration = integrationSnap.data() as IntegrationDoc
       const refreshToken = decryptToken(integration.refreshTokenEnc)
       const tokenResp = await refreshAccessToken(refreshToken)

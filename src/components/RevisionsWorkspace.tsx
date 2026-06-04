@@ -2254,7 +2254,13 @@ function ConfirmDeleteModal({
   // warning. For a round we trust its own storage; for a whole
   // project we fall back to the user's current backend.
   const isR2Round =
-    target.kind === 'round' ? target.storage === 'r2' : backend === 'r2'
+    target.kind === 'round'
+      ? target.storage === 'r2'
+      : target.kind === 'group'
+        ? backend === 'r2'
+        : // Legacy single-round projects predate R2 — always Drive, so
+          // keep the Drive opt-in checkbox flow for them.
+          false
   const title = isRound
     ? 'מחיקת סבב תיקונים'
     : target.kind === 'group'

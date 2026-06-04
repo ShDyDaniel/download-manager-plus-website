@@ -776,6 +776,9 @@ export function buildShareUrl(shareToken: string): string {
 
 /** Format a byte count as a human-readable string ("4.3 GB"). */
 export function formatBytes(bytes: number): string {
+  // Guard non-finite input (e.g. an Infinity "no cap" sentinel) so it
+  // never leaks an "Infinity GB" string into the UI.
+  if (!Number.isFinite(bytes)) return '—'
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   if (bytes < 1024 * 1024 * 1024) {
