@@ -166,6 +166,14 @@ function getR2(): S3Client {
     region: 'auto',
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey },
+    // Newer aws-sdk v3 versions add a CRC32 integrity checksum to every
+    // request by default. For PRESIGNED URLs that bakes an (empty-body)
+    // checksum into the signature, which R2 then rejects when the real
+    // part bytes arrive — and it also adds an x-amz-sdk-checksum-algorithm
+    // header that trips CORS preflight. R2 doesn't need these, so switch
+    // checksums to "only when the API requires it" (i.e. never here).
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
   })
   return _r2
 }
