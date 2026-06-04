@@ -3167,11 +3167,7 @@ async function issueSumitReceipt(args: {
       Status?: number
       UserErrorMessage?: string
       TechnicalErrorDetails?: string
-      Data?: {
-        DocumentDownloadURL?: string
-        DocumentNumber?: number | string
-        DocumentID?: number | string
-      }
+      Data?: Record<string, unknown>
     } | null
     if (!r.ok || !json || json.Status !== 0) {
       return {
@@ -3184,11 +3180,27 @@ async function issueSumitReceipt(args: {
           `HTTP ${r.status}`,
       }
     }
+    const data = (json.Data || {}) as Record<string, unknown>
+    // Collect every URL SUMIT returned and prefer a direct PDF over the
+    // customer-portal page: '.pdf' first, then an "original" download,
+    // then DocumentDownloadURL, then any URL.
+    const urls = Object.values(data).filter(
+      (v): v is string => typeof v === 'string' && /^https?:\/\//.test(v),
+    )
+    const pickUrl =
+      urls.find((u) => /\.pdf(\?|$)/i.test(u)) ||
+      urls.find((u) => /original=true/i.test(u)) ||
+      (typeof data.DocumentDownloadURL === 'string'
+        ? data.DocumentDownloadURL
+        : undefined) ||
+      urls[0]
+    const docNum =
+      (data.DocumentNumber as number | string | undefined) ?? undefined
     return {
       ok: true,
       draft,
-      url: json.Data?.DocumentDownloadURL,
-      documentNumber: json.Data?.DocumentNumber,
+      url: pickUrl,
+      documentNumber: docNum,
       raw: json,
     }
   } catch (err) {
