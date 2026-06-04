@@ -101,8 +101,14 @@ export default function DataTab({
   const tabSeconds = new Map<string, number>()
   const userRollup = new Map<
     string,
-    { counts: number; seconds: number; lastDate: string }
+    {
+      counts: number
+      seconds: number
+      lastDate: string
+      secByTab: Map<string, number>
+    }
   >()
+  const dayTotals = new Map<string, number>()
   let totalCounts = 0
   let totalSeconds = 0
   const cutoff7 = (() => {
@@ -116,6 +122,7 @@ export default function DataTab({
     const visits = s.total ?? 0
     totalCounts += visits
     if (s.date >= cutoff7) active7.add(s.uid)
+    dayTotals.set(s.date, (dayTotals.get(s.date) ?? 0) + visits)
     for (const [t, n] of Object.entries(s.counts ?? {}))
       tabCounts.set(t, (tabCounts.get(t) ?? 0) + n)
     const secs = s.seconds ?? {}
@@ -124,10 +131,14 @@ export default function DataTab({
     totalSeconds += docSecs
     for (const [t, n] of Object.entries(secs))
       tabSeconds.set(t, (tabSeconds.get(t) ?? 0) + n)
-    const cur = userRollup.get(s.uid) ?? { counts: 0, seconds: 0, lastDate: '' }
+    const cur =
+      userRollup.get(s.uid) ??
+      { counts: 0, seconds: 0, lastDate: '', secByTab: new Map<string, number>() }
     cur.counts += visits
     cur.seconds += docSecs
     if (s.date > cur.lastDate) cur.lastDate = s.date
+    for (const [t, n] of Object.entries(secs))
+      cur.secByTab.set(t, (cur.secByTab.get(t) ?? 0) + n)
     userRollup.set(s.uid, cur)
   }
 
@@ -136,9 +147,33 @@ export default function DataTab({
     ...[...tabCounts.keys()].filter((t) => !TAB_ORDER.includes(t)),
   ]
   const maxTabCount = Math.max(1, ...tabIds.map((t) => tabCounts.get(t) ?? 0))
+  const maxTabSeconds = Math.max(1, ...tabIds.map((t) => tabSeconds.get(t) ?? 0))
+
+  // Last-14-days daily totals, oldest on the right (RTL reading).
+  const daySeries: { date: string; total: number }[] = []
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date()
+    d.setDate(d.getDate() - i)
+    const iso = d.toISOString().slice(0, 10)
+    daySeries.push({ date: iso, total: dayTotals.get(iso) ?? 0 })
+  }
+  const dayMax = Math.max(1, ...daySeries.map((d) => d.total))
+
   const userRows = [...userRollup.entries()]
-    .map(([uid, r]) => ({ uid, ...r }))
-    .sort((a, b) => b.counts - a.counts)
+    .map(([uid, r]) => {
+      let favTab: { id: string; seconds: number } | null = null
+      for (const [t, n] of r.secByTab.entries())
+        if (!favTab || n > favTab.seconds) favTab = { id: t, seconds: n }
+      return {
+        uid,
+        counts: r.counts,
+        seconds: r.seconds,
+        lastDate: r.lastDate,
+        favTabLabel: favTab ? TAB_LABELS[favTab.id] ?? favTab.id : '—',
+        favTabSeconds: favTab?.seconds ?? 0,
+      }
+    })
+    .sort((a, b) => b.seconds - a.seconds)
 
   return (
     <div className="space-y-5">
@@ -222,6 +257,76 @@ export default function DataTab({
             </div>
           </div>
 
+          {/* Time-spent per tab */}
+          <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
+            <div className="mb-3 text-sm font-medium text-fg">זמן שהייה לפי טאב</div>
+            {tabIds.every((t) => (tabSeconds.get(t) ?? 0) === 0) ? (
+              <p className="text-xs text-fg-muted">אין עדיין נתוני זמן שימוש.</p>
+            ) : (
+              <div className="space-y-2.5">
+                {tabIds.map((t) => {
+                  const sec = tabSeconds.get(t) ?? 0
+                  const pct = (sec / maxTabSeconds) * 100
+                  return (
+                    <div key={t} className="flex items-center gap-3">
+                      <div className="w-28 shrink-0 text-xs text-fg-muted">
+                        {TAB_LABELS[t] ?? t}
+                      </div>
+                      <div className="relative h-6 flex-1 overflow-hidden rounded-md bg-card">
+                        <div
+                          className="h-full rounded-md transition-all"
+                          style={{
+                            width: `${Math.max(pct, 2)}%`,
+                            background:
+                              'linear-gradient(to left, hsl(var(--success)), hsl(var(--primary)))',
+                          }}
+                        />
+                      </div>
+                      <div className="w-20 shrink-0 text-left text-xs font-medium tabular-nums text-fg">
+                        {fmtDuration(sec)}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Daily activity — last 14 days */}
+          <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
+            <div className="mb-3 text-sm font-medium text-fg">
+              פעילות יומית (14 ימים אחרונים)
+            </div>
+            <div className="flex h-40 items-end gap-1.5" style={{ direction: 'rtl' }}>
+              {daySeries.map((d) => {
+                const pct = (d.total / dayMax) * 100
+                const h = d.total > 0 ? `${Math.max(pct, 4)}%` : '2%'
+                return (
+                  <div
+                    key={d.date}
+                    className="group relative flex flex-1 flex-col items-center gap-1.5"
+                    title={`${d.date}: ${d.total.toLocaleString('he-IL')} כניסות`}
+                  >
+                    <div className="relative flex h-full w-full items-end">
+                      <div
+                        className={
+                          'w-full rounded-t transition-all ' +
+                          (d.total > 0
+                            ? 'bg-gradient-to-t from-primary/80 to-accent/80'
+                            : 'bg-card')
+                        }
+                        style={{ height: h }}
+                      />
+                    </div>
+                    <div className="text-[10px] tabular-nums text-fg-muted">
+                      {d.date.slice(5)}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
           {/* Per-user table */}
           <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
             <div className="mb-3 text-sm font-medium text-fg">
@@ -247,6 +352,7 @@ export default function DataTab({
                     </span>
                     <span className="shrink-0 text-xs text-fg-muted">
                       {r.counts.toLocaleString()} כניסות · {fmtDuration(r.seconds)}
+                      {r.favTabLabel !== '—' && ` · ${r.favTabLabel}`}
                       {r.lastDate && ` · ${r.lastDate}`}
                     </span>
                   </button>
