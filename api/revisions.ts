@@ -2,6 +2,17 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'node:crypto'
 import { initializeApp, getApps, cert, type App } from 'firebase-admin/app'
 import { getFirestore, type Firestore } from 'firebase-admin/firestore'
+import {
+  S3Client,
+  CreateMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
+  UploadPartCommand,
+  PutObjectCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+} from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 /**
  * Revisions feature — server endpoints.
@@ -118,6 +129,239 @@ function getFirebase(): App {
 
 function getDb(): Firestore {
   return getFirestore(getFirebase())
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  R2 (Cloudflare) object storage — S3-compatible
+ *
+ *  Replaces Google Drive as the home for revision videos + note
+ *  media. Videos are uploaded DIRECTLY from the client (browser /
+ *  desktop) to R2 via presigned multipart URLs — bytes never pass
+ *  through Vercel. The Cloudflare Worker streams them back out from
+ *  R2 (zero egress). Object keys are namespaced per-owner:
+ *    videos/{uid}/{ts}-{rand}-{name}
+ *    notes/{uid}/{ts}-{rand}.{ext}
+ *  so a key always proves which user it belongs to (we verify the
+ *  `videos/{uid}/` prefix on every presign / mutate to stop a user
+ *  signing parts for someone else's object).
+ * ────────────────────────────────────────────────────────────── */
+
+const R2_BUCKET = process.env.R2_BUCKET || ''
+// Presigned-URL lifetime. Long enough to upload one ~5GB part on a
+// slow line, short enough that a leaked URL expires quickly.
+const R2_PRESIGN_TTL = 60 * 60 // 1 hour
+
+let _r2: S3Client | null = null
+function getR2(): S3Client {
+  if (_r2) return _r2
+  const accountId = process.env.R2_ACCOUNT_ID
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY
+  if (!accountId || !accessKeyId || !secretAccessKey || !R2_BUCKET) {
+    throw new Error(
+      'R2 env vars missing (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET)',
+    )
+  }
+  _r2 = new S3Client({
+    region: 'auto',
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId, secretAccessKey },
+  })
+  return _r2
+}
+
+function buildVideoKey(uid: string, fileName: string): string {
+  const safe =
+    (fileName || 'video')
+      .replace(/[^\w.\-]+/g, '_')
+      .replace(/_+/g, '_')
+      .slice(-80) || 'video'
+  const rand = crypto.randomBytes(8).toString('hex')
+  return `videos/${uid}/${Date.now()}-${rand}-${safe}`
+}
+
+function buildNoteMediaKey(uid: string, ext: string): string {
+  const clean = (ext || 'bin').replace(/[^\w]+/g, '').slice(0, 8) || 'bin'
+  const rand = crypto.randomBytes(8).toString('hex')
+  return `notes/${uid}/${Date.now()}-${rand}.${clean}`
+}
+
+// A key is owned by `uid` iff it sits under that user's prefix. We
+// check this before signing parts / completing / aborting so a
+// verified user can only ever touch their own objects.
+function keyBelongsToUser(key: string, uid: string): boolean {
+  if (!key || !uid) return false
+  return (
+    key.startsWith(`videos/${uid}/`) || key.startsWith(`notes/${uid}/`)
+  )
+}
+
+async function r2DeleteObject(key: string): Promise<boolean> {
+  if (!key) return false
+  try {
+    await getR2().send(
+      new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }),
+    )
+    return true
+  } catch (e) {
+    console.error('[r2] delete failed:', key, e)
+    return false
+  }
+}
+
+async function r2HeadSize(key: string): Promise<number> {
+  try {
+    const r = await getR2().send(
+      new HeadObjectCommand({ Bucket: R2_BUCKET, Key: key }),
+    )
+    return r.ContentLength || 0
+  } catch {
+    return 0
+  }
+}
+
+/* ── Upload actions (owner-only, Pro-gated) ───────────────────── */
+
+// action=r2-upload-init
+// Body: { fileName, contentType }
+// Starts a multipart upload, returns { key, uploadId }. The client
+// then asks for a presigned URL per part and PUTs the bytes itself.
+async function handleR2UploadInit(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
+
+  const body = (req.body || {}) as { fileName?: string; contentType?: string }
+  const fileName = String(body.fileName || 'video').slice(0, 300)
+  const contentType =
+    String(body.contentType || 'application/octet-stream').slice(0, 100)
+  const key = buildVideoKey(verified.uid, fileName)
+
+  try {
+    const out = await getR2().send(
+      new CreateMultipartUploadCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        ContentType: contentType,
+      }),
+    )
+    return res.status(200).json({ ok: true, key, uploadId: out.UploadId })
+  } catch (e) {
+    console.error('[r2-upload-init]', e)
+    return res.status(500).json({ ok: false, error: 'upload init failed' })
+  }
+}
+
+// action=r2-upload-part-url
+// Body: { key, uploadId, partNumber } → { url }
+async function handleR2UploadPartUrl(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+
+  const body = (req.body || {}) as {
+    key?: string
+    uploadId?: string
+    partNumber?: number
+  }
+  const key = String(body.key || '')
+  const uploadId = String(body.uploadId || '')
+  const partNumber = Math.floor(Number(body.partNumber) || 0)
+  if (!keyBelongsToUser(key, verified.uid)) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  if (!uploadId || partNumber < 1 || partNumber > 10000) {
+    return res.status(400).json({ ok: false, error: 'bad part request' })
+  }
+
+  try {
+    const url = await getSignedUrl(
+      getR2(),
+      new UploadPartCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        UploadId: uploadId,
+        PartNumber: partNumber,
+      }),
+      { expiresIn: R2_PRESIGN_TTL },
+    )
+    return res.status(200).json({ ok: true, url })
+  } catch (e) {
+    console.error('[r2-upload-part-url]', e)
+    return res.status(500).json({ ok: false, error: 'sign failed' })
+  }
+}
+
+// action=r2-upload-complete
+// Body: { key, uploadId, parts: [{ partNumber, etag }] }
+// → { key, sizeBytes }
+async function handleR2UploadComplete(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+
+  const body = (req.body || {}) as {
+    key?: string
+    uploadId?: string
+    parts?: Array<{ partNumber?: number; etag?: string }>
+  }
+  const key = String(body.key || '')
+  const uploadId = String(body.uploadId || '')
+  const parts = Array.isArray(body.parts) ? body.parts : []
+  if (!keyBelongsToUser(key, verified.uid)) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  if (!uploadId || parts.length === 0) {
+    return res.status(400).json({ ok: false, error: 'no parts' })
+  }
+
+  const Parts = parts
+    .map((p) => ({
+      PartNumber: Math.floor(Number(p.partNumber) || 0),
+      ETag: String(p.etag || ''),
+    }))
+    .filter((p) => p.PartNumber >= 1 && p.ETag)
+    .sort((a, b) => a.PartNumber - b.PartNumber)
+
+  try {
+    await getR2().send(
+      new CompleteMultipartUploadCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: { Parts },
+      }),
+    )
+    const sizeBytes = await r2HeadSize(key)
+    return res.status(200).json({ ok: true, key, sizeBytes })
+  } catch (e) {
+    console.error('[r2-upload-complete]', e)
+    return res.status(500).json({ ok: false, error: 'complete failed' })
+  }
+}
+
+// action=r2-upload-abort — best-effort cleanup if the client cancels.
+// Body: { key, uploadId }
+async function handleR2UploadAbort(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+
+  const body = (req.body || {}) as { key?: string; uploadId?: string }
+  const key = String(body.key || '')
+  const uploadId = String(body.uploadId || '')
+  if (!keyBelongsToUser(key, verified.uid) || !uploadId) {
+    return res.status(400).json({ ok: false, error: 'bad request' })
+  }
+  try {
+    await getR2().send(
+      new AbortMultipartUploadCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        UploadId: uploadId,
+      }),
+    )
+  } catch (e) {
+    console.error('[r2-upload-abort]', e)
+  }
+  return res.status(200).json({ ok: true })
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -1594,8 +1838,7 @@ async function handleCreateProjectGroup(
     idToken?: string
     title?: string
     password?: string
-    driveFileId?: string
-    driveFolderId?: string
+    r2Key?: string
     videoFileName?: string
     videoSizeBytes?: number
     videoMime?: string
@@ -1614,8 +1857,11 @@ async function handleCreateProjectGroup(
   if (!(await requirePro(res, verified))) return
 
   const title = String(body.title || '').trim().slice(0, 200)
-  const driveFileId = String(body.driveFileId || '').trim()
-  const driveFolderId = String(body.driveFolderId || '').trim() || null
+  const r2Key = String(body.r2Key || '').trim()
+  // Drive folders are no longer created for videos (they live in R2).
+  // Note-media still uses Drive for now and creates its own folder on
+  // demand, so this stays null at creation time.
+  const driveFolderId: string | null = null
   const videoFileName = String(body.videoFileName || '').trim().slice(0, 300)
   const videoSizeBytes = Number(body.videoSizeBytes) || 0
   const videoMime = String(body.videoMime || '').trim().slice(0, 100)
@@ -1675,13 +1921,13 @@ async function handleCreateProjectGroup(
     // Denormalised count of active rounds — lets the project list
     // render the card (with its round count) WITHOUT reading every
     // round doc. Maintained on add-round / delete-round.
-    roundCount: driveFileId ? 1 : 0,
+    roundCount: r2Key ? 1 : 0,
     createdAt: now,
     updatedAt: now,
   })
 
   let roundIdOut: string | null = null
-  if (driveFileId) {
+  if (r2Key) {
     const roundRef = db.collection('revisionProjects').doc()
     roundIdOut = roundRef.id
     batch.set(roundRef, {
@@ -1694,8 +1940,7 @@ async function handleCreateProjectGroup(
       // lookup).
       ownerUid: verified.uid,
       ownerEmail: verified.email,
-      driveFileId,
-      driveFolderId,
+      r2Key,
       videoFileName,
       videoSizeBytes,
       videoMime,
@@ -1745,8 +1990,7 @@ async function handleAddRoundToGroup(
   const body = (req.body || {}) as {
     idToken?: string
     groupId?: string
-    driveFileId?: string
-    driveFolderId?: string
+    r2Key?: string
     videoFileName?: string
     videoSizeBytes?: number
     videoMime?: string
@@ -1757,9 +2001,9 @@ async function handleAddRoundToGroup(
   if (!(await requirePro(res, verified))) return
 
   const groupId = String(body.groupId || '').trim()
-  const driveFileId = String(body.driveFileId || '').trim()
+  const r2Key = String(body.r2Key || '').trim()
   if (!groupId) return res.status(400).json({ ok: false, error: 'groupId required' })
-  if (!driveFileId) return res.status(400).json({ ok: false, error: 'driveFileId required' })
+  if (!r2Key) return res.status(400).json({ ok: false, error: 'r2Key required' })
 
   const db = getDb()
   const groupRef = db.collection('revisionGroups').doc(groupId)
@@ -1796,8 +2040,7 @@ async function handleAddRoundToGroup(
     groupId,
     ownerUid: verified.uid,
     ownerEmail: verified.email,
-    driveFileId,
-    driveFolderId: String(body.driveFolderId || '').trim() || group.driveFolderId,
+    r2Key,
     videoFileName: String(body.videoFileName || '').trim().slice(0, 300),
     videoSizeBytes: Number(body.videoSizeBytes) || 0,
     videoMime: String(body.videoMime || '').trim().slice(0, 100),
@@ -2385,7 +2628,9 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
             id: selectedRound.id,
             title: group.title,
             roundNumber: selectedRound.roundNumber,
-            embedUrl: `https://drive.google.com/file/d/${selectedRoundData.driveFileId}/preview`,
+            // Playback uses streamUrl (get-stream-token → Worker → R2).
+            // embedUrl/driveViewUrl were Drive-only and are gone now.
+            embedUrl: null,
             videoSizeBytes: Number(selectedRoundData.videoSizeBytes) || 0,
             videoMime: String(selectedRoundData.videoMime || ''),
             createdAt: selectedRound.createdAt,
@@ -2394,13 +2639,7 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
             // (legacy fallback = original ship behavior).
             watermark: group.watermark !== false,
             allowDownload: group.allowDownload === true,
-            // Only expose the Drive URL when the editor explicitly
-            // turned on "open in Drive" — otherwise the client
-            // would have a backdoor around the streaming proxy.
-            driveViewUrl:
-              group.openInDrive === true
-                ? `https://drive.google.com/file/d/${selectedRoundData.driveFileId}/view`
-                : null,
+            driveViewUrl: null,
           }
         : null,
     })
@@ -2448,7 +2687,7 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
       id: project.id,
       title: project.title,
       roundNumber,
-      embedUrl: `https://drive.google.com/file/d/${project.driveFileId}/preview`,
+      embedUrl: null,
       videoSizeBytes: project.videoSizeBytes,
       videoMime: project.videoMime,
       createdAt: project.createdAt,
@@ -3376,27 +3615,17 @@ async function handleAuthStream(req: VercelRequest, res: VercelResponse) {
   if (!resolved.ok) {
     return res.status(resolved.status).json({ ok: false, error: resolved.error })
   }
-  const { roundData, group } = resolved
-  const ownerUid = String(group?.ownerUid || roundData.ownerUid || '')
-  const driveFileId = String(roundData.driveFileId || '')
-
-  const integrationSnap = await integrationDocRef(ownerUid).get()
-  if (!integrationSnap.exists) {
-    return res.status(500).json({ ok: false, error: 'drive not connected' })
+  const { roundData } = resolved
+  // R2 era: the video lives in our own bucket. We just hand the Worker
+  // the object key (already password/round-validated above). The Worker
+  // reads the bytes straight from R2 via its binding — no access token,
+  // no Drive round-trip, zero egress.
+  const r2Key = String(roundData.r2Key || '')
+  if (!r2Key) {
+    return res.status(404).json({ ok: false, error: 'video not attached' })
   }
-  const integration = integrationSnap.data() as IntegrationDoc
-  const refreshToken = decryptToken(integration.refreshTokenEnc)
-  try {
-    const r = await refreshAccessToken(refreshToken)
-    res.setHeader('Cache-Control', 'no-store')
-    return res.status(200).json({
-      ok: true,
-      accessToken: r.accessToken,
-      driveFileId,
-    })
-  } catch {
-    return res.status(401).json({ ok: false, error: 'drive auth expired' })
-  }
+  res.setHeader('Cache-Control', 'no-store')
+  return res.status(200).json({ ok: true, r2Key })
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -3787,69 +4016,22 @@ async function handleCheckVideoStatus(req: VercelRequest, res: VercelResponse) {
   if (!snap.exists) return res.status(404).json({ ok: false, error: 'לא נמצא' })
   const project = snap.data() as {
     ownerUid: string
-    driveFileId: string
+    r2Key?: string
     videoStatus?: string
   }
   // Authorization — only the owner can poll their own project.
   if (project.ownerUid !== verified.uid) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  // Short-circuit if we already know it's ready.
-  if (project.videoStatus === 'ready') {
+  // R2 has no async transcoding step: once the multipart upload is
+  // completed and the round doc written, the object is immediately
+  // playable. So the video is "ready" the moment the key exists.
+  // (Kept as an endpoint so the client's existing poll is a harmless
+  // no-op rather than a 404.)
+  if (project.r2Key || project.videoStatus === 'ready') {
     return res.status(200).json({ ok: true, status: 'ready' })
   }
-
-  // Need a Drive access token for the editor's account.
-  const integrationSnap = await integrationDocRef(verified.uid).get()
-  if (!integrationSnap.exists) {
-    return res.status(400).json({ ok: false, error: 'Drive לא מחובר' })
-  }
-  const integration = integrationSnap.data() as IntegrationDoc
-  const refreshToken = decryptToken(integration.refreshTokenEnc)
-  let accessToken: string
-  try {
-    const r = await refreshAccessToken(refreshToken)
-    accessToken = r.accessToken
-  } catch (err) {
-    console.warn('[revisions/check-video-status] refresh failed:', err)
-    return res.status(401).json({ ok: false, error: 'הזדהות Drive פגה' })
-  }
-
-  // Query Drive for the videoMediaMetadata field. Its presence is
-  // the signal that transcoding completed.
-  const driveUrl = `https://www.googleapis.com/drive/v3/files/${project.driveFileId}?fields=id,videoMediaMetadata`
-  const driveResp = await fetch(driveUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
-  if (!driveResp.ok) {
-    // 404 / 410 = the editor deleted the file from Drive manually.
-    // Surface this so the UI can show "missing" instead of polling
-    // forever.
-    if (driveResp.status === 404 || driveResp.status === 410) {
-      return res.status(200).json({ ok: true, status: 'failed' })
-    }
-    return res.status(502).json({ ok: false, error: 'Drive שגיאה' })
-  }
-  const driveJson = (await driveResp.json()) as {
-    videoMediaMetadata?: { durationMillis?: string; width?: number; height?: number }
-  }
-  const meta = driveJson.videoMediaMetadata
-  if (!meta) {
-    // Still processing — leave videoStatus alone, return current.
-    return res.status(200).json({ ok: true, status: 'processing' })
-  }
-
-  // Ready! Persist the flip + duration to Firestore so future
-  // listeners see it without another round-trip.
-  const durationSec = meta.durationMillis ? Math.round(parseInt(meta.durationMillis, 10) / 1000) : 0
-  await docRef.update({
-    videoStatus: 'ready',
-    videoDurationSec: durationSec,
-    videoWidth: meta.width || 0,
-    videoHeight: meta.height || 0,
-    updatedAt: Date.now(),
-  })
-  return res.status(200).json({ ok: true, status: 'ready', durationSec })
+  return res.status(200).json({ ok: true, status: 'processing' })
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -4022,7 +4204,7 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
   if (!snap.exists) return res.status(404).json({ ok: false, error: 'הסבב לא נמצא' })
   const round = snap.data() as {
     ownerUid: string
-    driveFileId: string
+    r2Key?: string
     groupId?: string
   }
   if (round.ownerUid !== verified.uid) {
@@ -4037,93 +4219,16 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
     })
   }
 
-  // Optional Drive cleanup — trash the round's video file PLUS
-  // every note attachment (screenshot / voice memo) tagged with
-  // this round's id via appProperties at upload time. The shared
-  // notes folder itself stays (sibling rounds still need it), we
-  // just delete this round's contents out of it.
-  //
-  // Files written before the appProperties tagging shipped won't
-  // be matched by the query — they stay orphaned. There's no safe
-  // way to identify them after the fact (they don't carry a
-  // roundId anywhere queryable), so legacy attachments survive a
-  // per-round delete. Whole-project delete still nukes them via
-  // the notes-folder trash in delete-group.
+  // Hard-delete the round's video object from our R2 bucket when the
+  // caller asks for it. We own the storage, so removing the object
+  // immediately frees the user's quota — there's no "trash" limbo to
+  // worry about like there was with Drive. Note-media (still on Drive
+  // during the transition) is cleaned up separately when that path
+  // migrates; orphaned tiny screenshots are harmless until then.
   let driveDeleted = false
-  let mediaTrashedCount = 0
-  if (deleteDriveFile) {
-    try {
-      const integrationSnap = await integrationDocRef(verified.uid).get()
-      if (integrationSnap.exists) {
-        const integration = integrationSnap.data() as IntegrationDoc
-        const refreshToken = decryptToken(integration.refreshTokenEnc)
-        const tokenResp = await refreshAccessToken(refreshToken)
-        const trashHeaders = {
-          Authorization: `Bearer ${tokenResp.accessToken}`,
-          'Content-Type': 'application/json',
-        }
-        const trashBody = JSON.stringify({ trashed: true })
-
-        // 1. Trash the round's video file.
-        const trashResp = await fetch(
-          `https://www.googleapis.com/drive/v3/files/${round.driveFileId}`,
-          { method: 'PATCH', headers: trashHeaders, body: trashBody },
-        )
-        if (trashResp.ok) driveDeleted = true
-        else
-          console.warn(
-            '[revisions/delete-round] Drive trash failed:',
-            trashResp.status,
-          )
-
-        // 2. Find every note attachment tagged with this round id
-        //    and trash them in parallel. The query uses Drive's
-        //    appProperties operator; we ask for non-trashed only
-        //    so retries on a partially-deleted round don't blow
-        //    up on already-trashed siblings. pageSize=1000 covers
-        //    all realistic round sizes (most rounds have <50
-        //    notes, each with ≤2 attachments).
-        try {
-          const listUrl = new URL('https://www.googleapis.com/drive/v3/files')
-          listUrl.searchParams.set(
-            'q',
-            `appProperties has { key='dmpRoundId' and value='${roundId}' } and trashed = false`,
-          )
-          listUrl.searchParams.set('fields', 'files(id)')
-          listUrl.searchParams.set('pageSize', '1000')
-          const listResp = await fetch(listUrl.toString(), {
-            headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
-          })
-          if (listResp.ok) {
-            const listJson = (await listResp.json()) as {
-              files?: Array<{ id: string }>
-            }
-            const ids = (listJson.files || []).map((f) => f.id).filter(Boolean)
-            const results = await Promise.all(
-              ids.map((id) =>
-                fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
-                  method: 'PATCH',
-                  headers: trashHeaders,
-                  body: trashBody,
-                })
-                  .then((r) => r.ok)
-                  .catch(() => false),
-              ),
-            )
-            mediaTrashedCount = results.filter(Boolean).length
-          } else {
-            console.warn(
-              '[revisions/delete-round] media list failed:',
-              listResp.status,
-            )
-          }
-        } catch (err) {
-          console.warn('[revisions/delete-round] media cleanup failed:', err)
-        }
-      }
-    } catch (err) {
-      console.warn('[revisions/delete-round] Drive cleanup failed:', err)
-    }
+  const mediaTrashedCount = 0
+  if (deleteDriveFile && round.r2Key) {
+    driveDeleted = await r2DeleteObject(round.r2Key)
   }
 
   await roundRef.update({
@@ -4204,101 +4309,19 @@ async function handleDeleteGroup(req: VercelRequest, res: VercelResponse) {
     return r.status === 'active'
   })
 
-  // Optional Drive cleanup — trash every round's video file plus
-  // every note attachment tagged with this project's group id via
-  // appProperties at upload time. We DO NOT trash the notes folder
-  // itself — it's shared across every project the same user owns
-  // (lives directly under their "ניהול הורדות פלוס" root). Trashing
-  // it would orphan every other project's screenshots and voice
-  // memos. Instead we list-and-trash by appProperties.dmpGroupId
-  // so only this project's media disappears, and the folder
-  // continues to serve the user's other projects untouched.
-  //
-  // Legacy media (uploaded before the appProperties tagging
-  // shipped) doesn't carry the group id and won't match the query
-  // — those files stay in the shared folder as harmless orphans.
+  // Optional R2 cleanup — delete every round's video object from our
+  // bucket so the user's quota is freed immediately. Note-media (still
+  // on Drive during the transition) is handled when that path migrates.
   let driveDeleted = false
-  let mediaTrashedCount = 0
+  const mediaTrashedCount = 0
   if (deleteDriveFiles) {
-    try {
-      const integrationSnap = await integrationDocRef(verified.uid).get()
-      if (integrationSnap.exists) {
-        const integration = integrationSnap.data() as IntegrationDoc
-        const refreshToken = decryptToken(integration.refreshTokenEnc)
-        const tokenResp = await refreshAccessToken(refreshToken)
-        const trashHeaders = {
-          Authorization: `Bearer ${tokenResp.accessToken}`,
-          'Content-Type': 'application/json',
-        }
-        const trashBody = JSON.stringify({ trashed: true })
-        const trashUrl = (id: string) =>
-          `https://www.googleapis.com/drive/v3/files/${id}`
-
-        // 1. Trash each round's video file in parallel.
-        const videoIds: string[] = []
-        for (const d of activeRoundDocs) {
-          const r = d.data() as { driveFileId?: string }
-          if (r.driveFileId) videoIds.push(r.driveFileId)
-        }
-        const videoResults = await Promise.all(
-          videoIds.map((id) =>
-            fetch(trashUrl(id), {
-              method: 'PATCH',
-              headers: trashHeaders,
-              body: trashBody,
-            })
-              .then((r) => r.ok)
-              .catch(() => false),
-          ),
-        )
-        if (videoResults.some(Boolean)) driveDeleted = true
-
-        // 2. List every note attachment tagged with this group id
-        //    and trash them in parallel. The shared notes folder
-        //    is untouched — only the files belonging to this
-        //    project go away.
-        try {
-          const listUrl = new URL('https://www.googleapis.com/drive/v3/files')
-          listUrl.searchParams.set(
-            'q',
-            `appProperties has { key='dmpGroupId' and value='${groupId}' } and trashed = false`,
-          )
-          listUrl.searchParams.set('fields', 'files(id)')
-          listUrl.searchParams.set('pageSize', '1000')
-          const listResp = await fetch(listUrl.toString(), {
-            headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
-          })
-          if (listResp.ok) {
-            const listJson = (await listResp.json()) as {
-              files?: Array<{ id: string }>
-            }
-            const ids = (listJson.files || []).map((f) => f.id).filter(Boolean)
-            const mediaResults = await Promise.all(
-              ids.map((id) =>
-                fetch(trashUrl(id), {
-                  method: 'PATCH',
-                  headers: trashHeaders,
-                  body: trashBody,
-                })
-                  .then((r) => r.ok)
-                  .catch(() => false),
-              ),
-            )
-            mediaTrashedCount = mediaResults.filter(Boolean).length
-            if (mediaTrashedCount > 0) driveDeleted = true
-          } else {
-            console.warn(
-              '[revisions/delete-group] media list failed:',
-              listResp.status,
-            )
-          }
-        } catch (err) {
-          console.warn('[revisions/delete-group] media cleanup failed:', err)
-        }
-      }
-    } catch (err) {
-      console.warn('[revisions/delete-group] Drive cleanup failed:', err)
+    const keys: string[] = []
+    for (const d of activeRoundDocs) {
+      const r = d.data() as { r2Key?: string }
+      if (r.r2Key) keys.push(r.r2Key)
     }
+    const results = await Promise.all(keys.map((k) => r2DeleteObject(k)))
+    if (results.some(Boolean)) driveDeleted = true
   }
 
   const now = Date.now()
@@ -4636,7 +4659,7 @@ async function handleReplaceProjectVideo(
   const body = (req.body || {}) as {
     idToken?: string
     projectId?: string
-    driveFileId?: string
+    r2Key?: string
     videoFileName?: string
     videoSizeBytes?: number
     videoMime?: string
@@ -4646,12 +4669,15 @@ async function handleReplaceProjectVideo(
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
   const projectId = String(body.projectId || '').trim()
-  const newDriveFileId = String(body.driveFileId || '').trim()
+  const newR2Key = String(body.r2Key || '').trim()
   const videoFileName = String(body.videoFileName || '').trim().slice(0, 300)
   const videoSizeBytes = Number(body.videoSizeBytes) || 0
   const videoMime = String(body.videoMime || '').trim().slice(0, 100)
-  if (!projectId || !newDriveFileId) {
+  if (!projectId || !newR2Key) {
     return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
+  }
+  if (!keyBelongsToUser(newR2Key, verified.uid)) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
   }
 
   const docRef = getDb().collection('revisionProjects').doc(projectId)
@@ -4659,52 +4685,29 @@ async function handleReplaceProjectVideo(
   if (!snap.exists) return res.status(404).json({ ok: false, error: 'לא נמצא' })
   const project = snap.data() as {
     ownerUid: string
-    driveFileId: string
+    r2Key?: string
   }
   if (project.ownerUid !== verified.uid) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  const oldDriveFileId = project.driveFileId
+  const oldR2Key = project.r2Key || ''
 
   const now = Date.now()
   await docRef.update({
-    driveFileId: newDriveFileId,
+    r2Key: newR2Key,
     videoFileName: videoFileName || undefined,
     videoSizeBytes: videoSizeBytes || undefined,
     videoMime: videoMime || undefined,
-    // Reset videoStatus on the off chance the legacy polling
-    // path is still consulting it for a legacy project.
     videoStatus: 'ready',
     updatedAt: now,
   })
 
-  // Best-effort: trash the old Drive file unless the caller asked
-  // to keep it. If Drive errors, the new pointer still lives on
-  // the project doc — the orphan is a cleanup nuisance, not a
-  // user-facing failure.
+  // Best-effort: delete the old R2 object unless the caller asked to
+  // keep it. The new pointer is already saved, so a failed delete is
+  // just an orphan to clean up later, not a user-facing failure.
   const trashOld = body.trashOldFile !== false
-  if (trashOld && oldDriveFileId && oldDriveFileId !== newDriveFileId) {
-    try {
-      const integrationSnap = await integrationDocRef(verified.uid).get()
-      if (integrationSnap.exists) {
-        const integration = integrationSnap.data() as IntegrationDoc
-        const refreshToken = decryptToken(integration.refreshTokenEnc)
-        const tokenResp = await refreshAccessToken(refreshToken)
-        await fetch(
-          `https://www.googleapis.com/drive/v3/files/${oldDriveFileId}`,
-          {
-            method: 'PATCH',
-            headers: {
-              Authorization: `Bearer ${tokenResp.accessToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ trashed: true }),
-          },
-        ).catch(() => undefined)
-      }
-    } catch (err) {
-      console.warn('[revisions/replace-video] trash-old failed:', err)
-    }
+  if (trashOld && oldR2Key && oldR2Key !== newR2Key) {
+    await r2DeleteObject(oldR2Key)
   }
 
   return res.status(200).json({ ok: true })
@@ -5056,6 +5059,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleDriveStorage(req, res)
       case 'create-project':
         return await handleCreateProject(req, res)
+      case 'r2-upload-init':
+        return await handleR2UploadInit(req, res)
+      case 'r2-upload-part-url':
+        return await handleR2UploadPartUrl(req, res)
+      case 'r2-upload-complete':
+        return await handleR2UploadComplete(req, res)
+      case 'r2-upload-abort':
+        return await handleR2UploadAbort(req, res)
       case 'create-project-group':
         return await handleCreateProjectGroup(req, res)
       case 'add-round-to-group':

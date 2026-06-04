@@ -1,44 +1,33 @@
 /**
- * Cloudflare Worker — zero-bandwidth Drive video proxy
- * for the ניהול הורדות פלוס Revisions feature.
+ * Cloudflare Worker — zero-egress video proxy for the
+ * ניהול הורדות פלוס Revisions feature.
  *
- * Flow per video request:
- *   1. Browser → Worker (with ?token=<shareToken>&t=<passwordToken?>)
- *   2. Worker → Vercel (action=auth-stream, X-Worker-Secret header)
- *      Vercel validates the share token + password, refreshes the
- *      project owner's Drive token, returns:
- *          { ok, accessToken, driveFileId }
- *      We cache that for 50 min per (shareToken, passwordToken) so
- *      subsequent Range requests don't hit Vercel again.
- *   3. Worker → Drive (alt=media, with Authorization + Range)
- *   4. Worker streams Drive's body straight back to the browser.
+ * VIDEO (?token=...) now streams straight from our own Cloudflare R2
+ * bucket via the Worker's R2 binding — no access tokens, no Drive,
+ * no Vercel egress. Flow per request:
+ *   1. Browser → Worker (?token=<shareToken>&t=<passwordToken?>&r=<roundId?>)
+ *   2. Worker → Vercel (action=auth-stream, X-Worker-Secret header).
+ *      Vercel validates the share token + password + round and returns
+ *      { ok, r2Key }. We cache that mapping for 50 min per
+ *      (shareToken, passwordToken, roundId).
+ *   3. Worker → R2 (env.BUCKET.get(r2Key, { range })) and pipes the
+ *      bytes back, honoring HTTP Range so the player can seek.
  *
- * Because every video byte traverses Cloudflare (not Vercel), and
- * Cloudflare Workers have UNLIMITED free egress, hosting cost stays
- * at zero regardless of how many people view how many revisions.
+ * NOTE-MEDIA (?m=...) still rides the Drive path during the storage
+ * migration — screenshots/audio are tiny and will move to R2 in a
+ * follow-up. That branch is unchanged.
  *
- * Env vars required (set in Worker Settings → Variables):
- *   WORKER_SECRET — shared with Vercel's WORKER_SHARED_SECRET env
- *                   var so this endpoint can't be hit by random
- *                   browsers (which would let them mint Drive
- *                   access tokens for any project).
+ * Bindings/vars required (Worker Settings):
+ *   WORKER_SECRET — shared with Vercel's WORKER_SHARED_SECRET.
+ *   BUCKET        — R2 bucket binding (the dmplus-revisions bucket).
  */
 
-const VERCEL_AUTH_URL =
-  'https://dmplus.net/api/revisions?action=auth-stream'
-
-// Note-media handshake: same secret, different payload. The browser
-// hits the Worker with `?m=<encrypted token>`; we exchange the token
-// for a Drive access token + fileId and stream the bytes — exactly
-// like video, so screenshots/audio also bypass Vercel egress.
+const VERCEL_AUTH_URL = 'https://dmplus.net/api/revisions?action=auth-stream'
 const VERCEL_AUTH_MEDIA_URL =
   'https://dmplus.net/api/revisions?action=auth-media'
 
-// In-memory cache: key = `${shareToken}|${passwordToken}` → entry.
-// Lives only within a single Worker isolate; cold starts re-auth.
-// Drive access tokens live ~60 min; we cache for 50 min so a token
-// fetched at the very start of the cache window is still valid when
-// we serve the last request from it.
+// In-memory cache: key = `${shareToken}|${passwordToken}|${roundId}` →
+// { r2Key, expiresAt }. Lives within one isolate; cold starts re-auth.
 const authCache = new Map()
 const AUTH_TTL_MS = 50 * 60 * 1000
 
@@ -49,31 +38,18 @@ function corsHeaders(extra) {
     'access-control-allow-headers': 'range, content-type',
     'access-control-expose-headers':
       'accept-ranges, content-length, content-range, content-type',
-    // Default disposition is "inline" — the <video> tag plays the
-    // response without Chrome triggering a Downloads-tray entry
-    // for video/quicktime (and some other formats) the moment
-    // streaming starts. Callers that want to FORCE a download
-    // (the explicit "הורדה" link, when the editor enabled the
-    // allowDownload toggle) override this to "attachment" via
-    // the d=1 query param — see the dispositionFor() helper.
     'content-disposition': 'inline',
     ...(extra || {}),
   }
 }
 
-/** Pick the Content-Disposition header value based on the request's
- *  `d` query param. `d=1` switches to `attachment` + the original
- *  filename so the browser saves the response instead of playing
- *  it inline. Anything else falls through to `inline`. */
 function dispositionFor(url) {
   if (url.searchParams.get('d') !== '1') return 'inline'
-  // We don't know the real filename here — Vercel builds the URL
-  // and could include a filename hint in the future, but for now
-  // just use a generic name. The browser still respects the
-  // editor's "save as" rename either way.
   return 'attachment; filename="video.mp4"'
 }
 
+// Resolve a share token → R2 object key via Vercel (password/round
+// validated server-side). Cached per (token, pwd, round).
 async function fetchAuth(env, shareToken, passwordToken, roundId) {
   const r = await fetch(VERCEL_AUTH_URL, {
     method: 'POST',
@@ -81,9 +57,6 @@ async function fetchAuth(env, shareToken, passwordToken, roundId) {
       'content-type': 'application/json',
       'x-worker-secret': env.WORKER_SECRET || '',
     },
-    // roundId is needed for new-style project-group share tokens
-    // (one token, many rounds). Legacy single-round tokens ignore
-    // it. Both pass through with the same JSON body shape.
     body: JSON.stringify({ shareToken, passwordToken, roundId }),
   })
   if (!r.ok) {
@@ -91,20 +64,13 @@ async function fetchAuth(env, shareToken, passwordToken, roundId) {
     throw new Error(`auth ${r.status}: ${text.slice(0, 200)}`)
   }
   const json = await r.json()
-  if (!json || !json.ok || !json.accessToken || !json.driveFileId) {
+  if (!json || !json.ok || !json.r2Key) {
     throw new Error('auth response malformed')
   }
-  return {
-    accessToken: json.accessToken,
-    driveFileId: json.driveFileId,
-    expiresAt: Date.now() + AUTH_TTL_MS,
-  }
+  return { r2Key: json.r2Key, expiresAt: Date.now() + AUTH_TTL_MS }
 }
 
 async function getAuth(env, shareToken, passwordToken, roundId) {
-  // Cache key includes roundId so a project's different rounds
-  // don't accidentally collide. Without it, the first viewed round
-  // would shadow every later one for ~50 min.
   const cacheKey = `${shareToken}|${passwordToken || ''}|${roundId || ''}`
   const hit = authCache.get(cacheKey)
   if (hit && hit.expiresAt > Date.now()) return hit
@@ -113,22 +79,8 @@ async function getAuth(env, shareToken, passwordToken, roundId) {
   return fresh
 }
 
-async function fetchDrive(auth, request) {
-  const driveUrl = `https://www.googleapis.com/drive/v3/files/${auth.driveFileId}?alt=media`
-  const headers = new Headers({
-    authorization: `Bearer ${auth.accessToken}`,
-  })
-  const rangeHeader = request.headers.get('range')
-  if (rangeHeader) headers.set('range', rangeHeader)
-  return fetch(driveUrl, {
-    method: request.method === 'HEAD' ? 'HEAD' : 'GET',
-    headers,
-  })
-}
-
 export default {
   async fetch(request, env) {
-    // CORS preflight — browsers send this before a Range request.
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders() })
     }
@@ -141,11 +93,7 @@ export default {
 
     const url = new URL(request.url)
 
-    // ── Note-media path (?m=<encrypted token>) ──────────────────
-    // Screenshots + audio of notes. The token is opaque (encrypted
-    // by Vercel); we hand it back to Vercel's auth-media to get a
-    // Drive access token + fileId, then stream the bytes. Zero Vercel
-    // egress — same as the video path below.
+    // ── Note-media path (?m=<encrypted token>) — still on Drive ──
     const mediaToken = url.searchParams.get('m')
     if (mediaToken) {
       let authR
@@ -172,7 +120,12 @@ export default {
         })
       }
       const authJson = await authR.json().catch(() => null)
-      if (!authJson || !authJson.ok || !authJson.accessToken || !authJson.driveFileId) {
+      if (
+        !authJson ||
+        !authJson.ok ||
+        !authJson.accessToken ||
+        !authJson.driveFileId
+      ) {
         return new Response('media auth malformed', {
           status: 403,
           headers: corsHeaders(),
@@ -183,8 +136,6 @@ export default {
         { headers: { authorization: `Bearer ${authJson.accessToken}` } },
       )
       const respHeaders = corsHeaders({
-        // Note media is immutable once uploaded; let the browser cache
-        // it so re-views don't even re-hit the Worker.
         'cache-control': 'private, max-age=3600',
         'content-disposition': 'inline',
       })
@@ -199,12 +150,9 @@ export default {
       })
     }
 
+    // ── Video path (?token=...) — streams from R2 ───────────────
     const shareToken = url.searchParams.get('token')
     const passwordToken = url.searchParams.get('t') || ''
-    // roundId — required for new-style project-group share tokens
-    // (one token, many rounds). Legacy tokens that point at a single
-    // round ignore it. Forwarded to Vercel so the auth-stream action
-    // can resolve which round's video is being requested.
     const roundId = url.searchParams.get('r') || ''
     if (!shareToken) {
       return new Response('token required', {
@@ -213,9 +161,6 @@ export default {
       })
     }
 
-    // Get a Drive access token (cached). Retry once on auth failure
-    // — covers the rare case where a cached token expires between
-    // cache check and Drive call.
     let auth
     try {
       auth = await getAuth(env, shareToken, passwordToken, roundId)
@@ -226,48 +171,55 @@ export default {
       })
     }
 
-    let driveResp = await fetchDrive(auth, request)
-    if (driveResp.status === 401 || driveResp.status === 403) {
-      // Cached token might be stale — invalidate and retry once.
-      authCache.delete(`${shareToken}|${passwordToken || ''}|${roundId || ''}`)
-      try {
-        auth = await getAuth(env, shareToken, passwordToken, roundId)
-        driveResp = await fetchDrive(auth, request)
-      } catch (_err) {
-        // Fall through — return original error response.
+    if (!env.BUCKET) {
+      return new Response('R2 binding (BUCKET) not configured', {
+        status: 500,
+        headers: corsHeaders(),
+      })
+    }
+
+    const key = auth.r2Key
+
+    // HEAD — metadata only (some players probe with HEAD first).
+    if (request.method === 'HEAD') {
+      const head = await env.BUCKET.head(key)
+      if (!head) {
+        return new Response('not found', { status: 404, headers: corsHeaders() })
       }
+      const headers = corsHeaders({ 'content-disposition': dispositionFor(url) })
+      head.writeHttpMetadata(headers)
+      headers['etag'] = head.httpEtag
+      headers['accept-ranges'] = 'bytes'
+      headers['content-length'] = String(head.size)
+      return new Response(null, { status: 200, headers })
     }
 
-    // Stream Drive's body back to the browser. The body is a
-    // ReadableStream so nothing is buffered in the Worker — we just
-    // pipe bytes through. Forward the headers the <video> tag needs.
-    const respHeaders = corsHeaders({
-      // Override the default `inline` disposition when the caller
-      // asked for a download (d=1) — see dispositionFor() comment.
-      'content-disposition': dispositionFor(url),
-    })
-    const passthrough = [
-      'content-type',
-      'content-length',
-      'content-range',
-      'accept-ranges',
-      'last-modified',
-      'etag',
-    ]
-    for (const h of passthrough) {
-      const v = driveResp.headers.get(h)
-      if (v) respHeaders[h] = v
-    }
-    // Drive sometimes omits accept-ranges even though it supports
-    // byte ranges; advertise support so the player enables seeking.
-    if (!respHeaders['accept-ranges']) {
-      respHeaders['accept-ranges'] = 'bytes'
+    // GET — stream the bytes, honoring the Range header for seeking.
+    const object = await env.BUCKET.get(key, { range: request.headers })
+    if (!object) {
+      return new Response('not found', { status: 404, headers: corsHeaders() })
     }
 
-    return new Response(driveResp.body, {
-      status: driveResp.status,
-      statusText: driveResp.statusText,
-      headers: respHeaders,
-    })
+    const headers = corsHeaders({ 'content-disposition': dispositionFor(url) })
+    object.writeHttpMetadata(headers) // content-type etc. from stored metadata
+    headers['etag'] = object.httpEtag
+    headers['accept-ranges'] = 'bytes'
+
+    let status = 200
+    if (object.range && typeof object.range.offset === 'number') {
+      const offset = object.range.offset || 0
+      const length =
+        typeof object.range.length === 'number'
+          ? object.range.length
+          : object.size - offset
+      const end = offset + length - 1
+      headers['content-range'] = `bytes ${offset}-${end}/${object.size}`
+      headers['content-length'] = String(length)
+      status = 206
+    } else {
+      headers['content-length'] = String(object.size)
+    }
+
+    return new Response(object.body, { status, headers })
   },
 }

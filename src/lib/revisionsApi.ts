@@ -309,8 +309,7 @@ export async function fetchFirebaseCustomToken(): Promise<string> {
 }
 
 export interface CreateGroupInput {
-  driveFileId: string
-  driveFolderId: string
+  r2Key: string
   title: string
   videoFileName: string
   videoSizeBytes: number
@@ -367,8 +366,7 @@ export async function createEmptyProjectGroup(
 
 export interface AddRoundInput {
   groupId: string
-  driveFileId: string
-  driveFolderId: string
+  r2Key: string
   videoFileName: string
   videoSizeBytes: number
   videoMime: string
@@ -636,15 +634,13 @@ export async function updateProjectLock(
  *  replacing because the old upload was wrong). */
 export interface ReplaceVideoInput {
   projectId: string
-  driveFileId: string
-  driveFolderId: string
+  r2Key: string
   videoFileName: string
   videoSizeBytes: number
   videoMime: string
-  /** When true, the server moves the old video to Drive trash
-   *  after the swap. Defaults to true server-side; pass false
-   *  here only if the editor explicitly opts to keep the old
-   *  file (e.g. they wanted both in their Drive for backup). */
+  /** When true (default server-side), the old R2 object is deleted
+   *  after the swap so it stops counting against quota. Pass false
+   *  to keep it. */
   deleteOldDriveFile?: boolean
 }
 

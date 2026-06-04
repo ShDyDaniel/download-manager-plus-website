@@ -80,12 +80,8 @@ import {
   type OwnerNote,
   type RevisionGroup,
 } from '../lib/revisionsApi'
-import {
-  ensureProjectFolders,
-  setShareablePermissions,
-  uploadFileToDrive,
-  type UploadProgress,
-} from '../lib/driveUpload'
+import type { UploadProgress } from '../lib/driveUpload'
+import { uploadFileToR2 } from '../lib/r2Upload'
 
 export function RevisionsWorkspace() {
   // `undefined` = still loading. `null` = not connected. Object = connected.
@@ -1348,41 +1344,36 @@ function NewProjectModal({
       // (upload OR reuse a Drive-picked file) → set permissions →
       // create group with the resulting driveFileId. Each step
       // checks abort so a click on cancel exits at the next yield.
-      const at = await fetchDriveAccessToken()
-      if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
-      const folders = await ensureProjectFolders(at.accessToken)
       if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
 
-      let driveFileId: string
+      let r2Key: string
       let videoFileName: string
       let videoSizeBytes: number
       let videoMime: string
       if (source.kind === 'upload') {
-        const upload = await uploadFileToDrive({
-          accessToken: at.accessToken,
-          file: source.file,
-          folderId: folders.videosFolderId,
-          onProgress: setProgress,
+        const up = await uploadFileToR2(source.file, {
           signal: controller.signal,
+          onProgress: (f) =>
+            setProgress({
+              bytesUploaded: Math.round(f * source.file.size),
+              totalBytes: source.file.size,
+              fraction: f,
+            }),
         })
-        await setShareablePermissions(at.accessToken, upload.driveFileId)
-        driveFileId = upload.driveFileId
+        r2Key = up.key
         videoFileName = source.file.name
-        videoSizeBytes = source.file.size
+        videoSizeBytes = up.sizeBytes || source.file.size
         videoMime = source.file.type || 'video/mp4'
       } else {
-        // Drive-picked: reuse the existing file, nothing uploaded.
-        await setShareablePermissions(at.accessToken, source.picked.id)
-        if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
-        driveFileId = source.picked.id
-        videoFileName = source.picked.name
-        videoSizeBytes = source.picked.sizeBytes
-        videoMime = source.picked.mimeType || 'video/mp4'
+        // Drive-picker import isn't wired to R2 yet — that's the next
+        // slice (server-side Drive→R2). Until then only direct uploads.
+        throw new Error(
+          'ייבוא מ-Drive יתווסף בקרוב — כרגע יש להעלות קובץ מהמחשב',
+        )
       }
 
       await createProjectGroup({
-        driveFileId,
-        driveFolderId: folders.videosFolderId,
+        r2Key,
         title: title.trim(),
         videoFileName,
         videoSizeBytes,
@@ -1535,46 +1526,35 @@ function AddRoundModal({
     const controller = new AbortController()
     abortRef.current = controller
     try {
-      const at = await fetchDriveAccessToken()
-      if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
-      const folders = await ensureProjectFolders(at.accessToken)
       if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
 
-      // Resolve the round's video — either upload a fresh file, or
-      // reuse an existing Drive file the editor picked (no upload).
-      let driveFileId: string
+      let r2Key: string
       let videoFileName: string
       let videoSizeBytes: number
       let videoMime: string
       if (source.kind === 'upload') {
-        const upload = await uploadFileToDrive({
-          accessToken: at.accessToken,
-          file: source.file,
-          folderId: folders.videosFolderId,
-          onProgress: setProgress,
+        const up = await uploadFileToR2(source.file, {
           signal: controller.signal,
+          onProgress: (f) =>
+            setProgress({
+              bytesUploaded: Math.round(f * source.file.size),
+              totalBytes: source.file.size,
+              fraction: f,
+            }),
         })
-        await setShareablePermissions(at.accessToken, upload.driveFileId)
-        driveFileId = upload.driveFileId
+        r2Key = up.key
         videoFileName = source.file.name
-        videoSizeBytes = source.file.size
+        videoSizeBytes = up.sizeBytes || source.file.size
         videoMime = source.file.type || 'video/mp4'
       } else {
-        // Drive-picked: the file already lives in the user's Drive.
-        // Just make it shareable so the streaming worker can serve it
-        // and record the existing id — nothing is re-uploaded.
-        await setShareablePermissions(at.accessToken, source.picked.id)
-        if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
-        driveFileId = source.picked.id
-        videoFileName = source.picked.name
-        videoSizeBytes = source.picked.sizeBytes
-        videoMime = source.picked.mimeType || 'video/mp4'
+        throw new Error(
+          'ייבוא מ-Drive יתווסף בקרוב — כרגע יש להעלות קובץ מהמחשב',
+        )
       }
 
       await addRoundToGroup({
         groupId: group.id,
-        driveFileId,
-        driveFolderId: folders.videosFolderId,
+        r2Key,
         videoFileName,
         videoSizeBytes,
         videoMime,
@@ -1699,24 +1679,21 @@ function ReplaceVideoModal({
     const controller = new AbortController()
     abortRef.current = controller
     try {
-      const at = await fetchDriveAccessToken()
       if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
-      const folders = await ensureProjectFolders(at.accessToken)
-      if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
-      const upload = await uploadFileToDrive({
-        accessToken: at.accessToken,
-        file,
-        folderId: folders.videosFolderId,
-        onProgress: setProgress,
+      const up = await uploadFileToR2(file, {
         signal: controller.signal,
+        onProgress: (f) =>
+          setProgress({
+            bytesUploaded: Math.round(f * file.size),
+            totalBytes: file.size,
+            fraction: f,
+          }),
       })
-      await setShareablePermissions(at.accessToken, upload.driveFileId)
       const r = await replaceProjectVideo({
         projectId,
-        driveFileId: upload.driveFileId,
-        driveFolderId: folders.videosFolderId,
+        r2Key: up.key,
         videoFileName: file.name,
-        videoSizeBytes: file.size,
+        videoSizeBytes: up.sizeBytes || file.size,
         videoMime: file.type || 'video/mp4',
       })
       if (!r.ok) throw new Error(r.error)
