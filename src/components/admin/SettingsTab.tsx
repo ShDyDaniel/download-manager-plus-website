@@ -1,6 +1,17 @@
 import { useEffect, useState } from 'react'
-import { Loader2, AlertTriangle, Plus, Trash2, Send, Save } from 'lucide-react'
+import {
+  Loader2,
+  AlertTriangle,
+  Plus,
+  Trash2,
+  Send,
+  Save,
+  Sparkles,
+  CheckCircle,
+} from 'lucide-react'
 import { adminApi, getAdminIdToken } from '../../lib/adminApi'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 
 /**
  * Admin → Settings (web). Beta mode, plan mode, terms + privacy
@@ -55,6 +66,7 @@ export default function SettingsTab({
         </div>
       )}
       <AppConfigCard onErr={handleErr} />
+      <PricingCard onErr={handleErr} />
       <LegalCard kind="terms" title="תנאי שימוש" onErr={handleErr} />
       <LegalCard kind="privacy" title="מדיניות פרטיות" onErr={handleErr} />
       <EmailToolsCard onErr={handleErr} />
@@ -390,11 +402,381 @@ function SumitTestCard({ onErr }: { onErr: (e: unknown) => void }) {
   )
 }
 
+interface PlanPrice {
+  regular: number
+  sale: number | null
+}
+interface PricingDoc {
+  monthly: PlanPrice
+  yearly: PlanPrice
+  currency: string
+  saleLabel?: string | null
+  updatedAt?: string
+}
+const DEFAULT_PRICING: PricingDoc = {
+  monthly: { regular: 9, sale: null },
+  yearly: { regular: 60, sale: null },
+  currency: 'ILS',
+}
+
+/* Pricing card — ported 1:1 from the desktop admin panel. Loads via
+ * the public get-pricing endpoint, saves via admin-set-pricing, then
+ * triggers sync-plans so PayPal Plans match the new prices. */
+function PricingCard({ onErr }: { onErr: (e: unknown) => void }) {
+  const [draft, setDraft] = useState<PricingDoc>(DEFAULT_PRICING)
+  const [loaded, setLoaded] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [savedAt, setSavedAt] = useState<string | null>(null)
+  const [monthlySaleOn, setMonthlySaleOn] = useState(false)
+  const [yearlySaleOn, setYearlySaleOn] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const r = await fetch('/api/paypal?action=get-pricing')
+        const j = (await r.json()) as {
+          ok: boolean
+          monthly?: PlanPrice
+          yearly?: PlanPrice
+          currency?: string
+          saleLabel?: string | null
+        }
+        if (!alive) return
+        if (j.ok && j.monthly && j.yearly) {
+          const p: PricingDoc = {
+            monthly: { regular: j.monthly.regular, sale: j.monthly.sale ?? null },
+            yearly: { regular: j.yearly.regular, sale: j.yearly.sale ?? null },
+            currency: j.currency || 'ILS',
+            saleLabel: j.saleLabel ?? null,
+          }
+          setDraft(p)
+          setMonthlySaleOn(p.monthly.sale != null)
+          setYearlySaleOn(p.yearly.sale != null)
+        }
+        setLoaded(true)
+      } catch (err) {
+        setError((err as Error).message || 'טעינת מחירים נכשלה')
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  async function handleSave() {
+    setSaving(true)
+    setError('')
+    setSavedAt(null)
+    try {
+      const payload = {
+        monthly: {
+          regular: draft.monthly.regular,
+          sale: monthlySaleOn ? draft.monthly.sale ?? null : null,
+        },
+        yearly: {
+          regular: draft.yearly.regular,
+          sale: yearlySaleOn ? draft.yearly.sale ?? null : null,
+        },
+        currency: draft.currency || 'ILS',
+        saleLabel: draft.saleLabel,
+      }
+      // 1) Persist the pricing doc (source of truth for site + buy page).
+      await adminApi('admin-set-pricing', payload)
+      // 2) Sync PayPal Plans server-side. Soft-fail: the price is saved
+      //    regardless, and the next subscription attempt lazy-syncs.
+      try {
+        const idToken = await getAdminIdToken()
+        if (idToken) {
+          const r = await fetch('/api/paypal?action=sync-plans', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken }),
+          })
+          const j = (await r.json()) as { ok: boolean; error?: string }
+          if (!r.ok || !j.ok) {
+            setError(
+              `המחיר נשמר אבל סנכרון ל-PayPal נכשל (${j.error || 'שגיאה'}). הסנכרון יתבצע אוטומטית בעת הרכישה הבאה.`,
+            )
+          }
+        }
+      } catch {
+        setError(
+          'המחיר נשמר אבל סנכרון ל-PayPal נכשל. הסנכרון יתבצע אוטומטית בעת הרכישה הבאה.',
+        )
+      }
+      setSavedAt(new Date().toISOString())
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setError(err.message || 'שמירה נכשלה')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const anySale =
+    (monthlySaleOn && draft.monthly.sale != null) ||
+    (yearlySaleOn && draft.yearly.sale != null)
+
+  return (
+    <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-accent shadow-lg shadow-primary/40">
+          <Sparkles className="h-5 w-5 text-white" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+            תמחור מנויים
+            <span className="rounded-full bg-primary/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
+              {loaded ? `מטבע ${draft.currency}` : 'טוען...'}
+            </span>
+            {anySale && (
+              <span className="rounded-full bg-success/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-success">
+                מבצע פעיל
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            מחירים שמופיעים באתר ושנגבים דרך PayPal. שינויים מתעדכנים מיד באתר.
+            המערכת מאמתת בצד שרת שהסכום שאושר ב-PayPal תואם למחיר העכשווי — לקוח
+            לא יכול לקנות במחיר ישן או נמוך יותר.
+          </p>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-background/40 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-sm font-semibold text-foreground">מנוי חודשי</div>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={monthlySaleOn}
+              onChange={(e) => setMonthlySaleOn(e.target.checked)}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            מבצע פעיל
+          </label>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <PriceInput
+            label="מחיר רגיל"
+            value={draft.monthly.regular}
+            onChange={(v) =>
+              setDraft((d) => ({ ...d, monthly: { ...d.monthly, regular: v } }))
+            }
+            currency={draft.currency}
+          />
+          <PriceInput
+            label="מחיר מבצע"
+            value={draft.monthly.sale ?? 0}
+            onChange={(v) =>
+              setDraft((d) => ({ ...d, monthly: { ...d.monthly, sale: v } }))
+            }
+            currency={draft.currency}
+            disabled={!monthlySaleOn}
+            error={
+              monthlySaleOn &&
+              draft.monthly.sale != null &&
+              draft.monthly.sale >= draft.monthly.regular
+                ? '≥ רגיל'
+                : undefined
+            }
+          />
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-background/40 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-sm font-semibold text-foreground">מנוי שנתי</div>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={yearlySaleOn}
+              onChange={(e) => setYearlySaleOn(e.target.checked)}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            מבצע פעיל
+          </label>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <PriceInput
+            label="מחיר רגיל"
+            value={draft.yearly.regular}
+            onChange={(v) =>
+              setDraft((d) => ({ ...d, yearly: { ...d.yearly, regular: v } }))
+            }
+            currency={draft.currency}
+          />
+          <PriceInput
+            label="מחיר מבצע"
+            value={draft.yearly.sale ?? 0}
+            onChange={(v) =>
+              setDraft((d) => ({ ...d, yearly: { ...d.yearly, sale: v } }))
+            }
+            currency={draft.currency}
+            disabled={!yearlySaleOn}
+            error={
+              yearlySaleOn &&
+              draft.yearly.sale != null &&
+              draft.yearly.sale >= draft.yearly.regular
+                ? '≥ רגיל'
+                : undefined
+            }
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-xs text-muted-foreground">
+          תווית מבצע (אופציונלי) — מופיעה ככרזת מעל הכרטיס באתר
+        </label>
+        <Input
+          value={draft.saleLabel ?? ''}
+          onChange={(e) => setDraft((d) => ({ ...d, saleLabel: e.target.value }))}
+          placeholder="לדוגמה: ′מבצע חורף′ או ′44% הנחה′"
+          disabled={!anySale}
+        />
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-1 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertTriangle className="h-3.5 w-3.5" /> {error}
+        </div>
+      )}
+      {savedAt && (
+        <div className="flex items-center gap-1 rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+          <CheckCircle className="h-3.5 w-3.5" /> נשמר ב-
+          {new Date(savedAt).toLocaleTimeString('he-IL', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          })}
+          . האתר יציג את המחיר החדש בתוך כמה שניות.
+        </div>
+      )}
+
+      <div className="flex items-center justify-between">
+        <div className="text-[11px] text-muted-foreground">
+          {draft.updatedAt &&
+            `עודכן לאחרונה: ${new Date(draft.updatedAt).toLocaleString('he-IL')}`}
+        </div>
+        <Button onClick={handleSave} disabled={saving || !loaded} size="sm">
+          {saving ? (
+            <>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              שומר...
+            </>
+          ) : (
+            <>
+              <Save className="h-3.5 w-3.5" />
+              שמור שינויים
+            </>
+          )}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function PriceInput({
+  label,
+  value,
+  onChange,
+  currency,
+  disabled,
+  error,
+}: {
+  label: string
+  value: number
+  onChange: (v: number) => void
+  currency: string
+  disabled?: boolean
+  error?: string
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[11px] text-muted-foreground">
+        {label}
+        {error && <span className="ms-1 text-destructive">({error})</span>}
+      </span>
+      <div className="relative">
+        <Input
+          type="number"
+          inputMode="decimal"
+          step="0.5"
+          min={0}
+          value={value || ''}
+          onChange={(e) => {
+            const n = parseFloat(e.target.value)
+            onChange(Number.isFinite(n) && n >= 0 ? n : 0)
+          }}
+          disabled={disabled}
+          className="pl-10"
+        />
+        <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-xs text-muted-foreground">
+          {currency === 'ILS' ? '₪' : currency}
+        </span>
+      </div>
+    </label>
+  )
+}
+
 function EmailToolsCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [target, setTarget] = useState('')
   const [kind, setKind] = useState(TEST_EMAILS[0].kind)
   const [sending, setSending] = useState(false)
   const [msg, setMsg] = useState('')
+
+  // Marketing broadcast state
+  const [bcSubject, setBcSubject] = useState('')
+  const [bcHeading, setBcHeading] = useState('')
+  const [bcContent, setBcContent] = useState('')
+  const [bcBusy, setBcBusy] = useState(false)
+  const [bcResult, setBcResult] = useState<{
+    kind: 'idle' | 'dry' | 'done' | 'error'
+    text: string
+  }>({ kind: 'idle', text: '' })
+
+  async function sendBroadcast(dryRun: boolean) {
+    if (bcBusy) return
+    setBcResult({ kind: 'idle', text: '' })
+    if (!bcSubject.trim() || !bcHeading.trim() || !bcContent.trim()) {
+      setBcResult({ kind: 'error', text: 'יש למלא subject + heading + תוכן HTML' })
+      return
+    }
+    setBcBusy(true)
+    try {
+      const j = await adminApi<{
+        recipientCount?: number
+        sent?: number
+        failed?: number
+      }>('admin-send-marketing-email', {
+        subject: bcSubject.trim(),
+        heading: bcHeading.trim(),
+        contentHtml: bcContent.trim(),
+        dryRun,
+      })
+      if (dryRun) {
+        setBcResult({
+          kind: 'dry',
+          text: `יש ${j.recipientCount ?? 0} משתמשים ברשימת התפוצה כרגע. לחץ "שלח לכולם" כדי לשלוח להם.`,
+        })
+      } else {
+        setBcResult({
+          kind: 'done',
+          text: `הסתיים: ${j.sent ?? 0}/${j.recipientCount ?? 0} נשלחו, ${j.failed ?? 0} נכשלו.`,
+        })
+      }
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setBcResult({ kind: 'error', text: err.message || 'שליחה נכשלה' })
+    } finally {
+      setBcBusy(false)
+    }
+  }
 
   async function sendTest() {
     if (!target.trim()) return
@@ -451,9 +833,86 @@ function EmailToolsCard({ onErr }: { onErr: (e: unknown) => void }) {
         </button>
       </div>
       {msg && <div className="text-xs text-success">{msg}</div>}
-      <p className="text-[11px] text-fg-faint">
-        דיוור שיווקי המוני נשאר בפאנל של התוכנה (שליחה לכלל המשתמשים).
-      </p>
+
+      {/* ── Marketing broadcast ─────────────────────────────────── */}
+      <div className="mt-2 space-y-2.5 rounded-xl border border-border bg-background/40 p-3">
+        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Send className="h-3.5 w-3.5 text-accent" />
+          שליחת מייל שיווקי
+        </div>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          נשלח רק למשתמשים שהסכימו לקבל תוכן שיווקי בהרשמה. כל מייל כולל אוטומטית
+          קישור "להסרה מרשימת הדיוור" בתחתית.
+        </p>
+        <Input
+          value={bcSubject}
+          onChange={(e) => setBcSubject(e.target.value)}
+          placeholder="נושא (Subject) — לדוגמה: 50% הנחה לסוף שבוע"
+          disabled={bcBusy}
+        />
+        <Input
+          value={bcHeading}
+          onChange={(e) => setBcHeading(e.target.value)}
+          placeholder="כותרת ראשית במייל (Heading)"
+          disabled={bcBusy}
+        />
+        <textarea
+          value={bcContent}
+          onChange={(e) => setBcContent(e.target.value)}
+          placeholder='<p style="font-size:14px;line-height:1.7;color:#d1d5db;">תוכן ההודעה כאן...</p>'
+          rows={5}
+          disabled={bcBusy}
+          dir="ltr"
+          className="block w-full rounded-lg border border-border bg-input/60 px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/40 focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+        />
+        {bcResult.kind !== 'idle' && (
+          <div
+            className={
+              bcResult.kind === 'error'
+                ? 'rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive'
+                : bcResult.kind === 'dry'
+                  ? 'rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-accent'
+                  : 'rounded-md border border-success/40 bg-success/10 px-3 py-2 text-xs text-success'
+            }
+          >
+            {bcResult.text}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={bcBusy}
+            onClick={() => void sendBroadcast(true)}
+            className="flex-1"
+          >
+            {bcBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            כמה משתמשים יש ברשימה?
+          </Button>
+          <Button
+            variant="gradient"
+            size="sm"
+            disabled={bcBusy}
+            onClick={() => {
+              if (
+                window.confirm(
+                  'לשלוח את המייל לכל המשתמשים ברשימת התפוצה? אי אפשר לבטל אחרי שליחה.',
+                )
+              ) {
+                void sendBroadcast(false)
+              }
+            }}
+            className="flex-1"
+          >
+            {bcBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}
+            שלח לכולם
+          </Button>
+        </div>
+      </div>
     </Card>
   )
 }

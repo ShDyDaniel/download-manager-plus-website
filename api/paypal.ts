@@ -1132,6 +1132,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleBillingHistory(req, res)
       case 'sync-plans':
         return await handleSyncPlans(req, res)
+      case 'admin-set-pricing':
+        return await handleAdminSetPricing(req, res)
       case 'signup-request-code':
         return await handleSignupRequestCode(req, res)
       case 'signup-verify-code':
@@ -2942,6 +2944,56 @@ async function handleBillingHistory(req: VercelRequest, res: VercelResponse) {
 /* ─────────────────────────────────────────────────────────────
  *  Sync plans (action=sync-plans) — admin-only
  * ───────────────────────────────────────────────────────────── */
+
+/** Admin → write the pricing doc (appConfig/pricing). Mirrors the
+ *  desktop's savePricing(): validates the shape, writes regular/sale
+ *  for both plans, currency + optional saleLabel, and stamps audit
+ *  fields. After this, the client calls sync-plans to push the new
+ *  prices to PayPal. Gated by full 2FA (idToken + email-code). */
+async function handleAdminSetPricing(req: VercelRequest, res: VercelResponse) {
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const body = (req.body || {}) as {
+    monthly?: { regular?: unknown; sale?: unknown }
+    yearly?: { regular?: unknown; sale?: unknown }
+    currency?: unknown
+    saleLabel?: unknown
+  }
+  const posNum = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+  const monthlyRegular = posNum(body.monthly?.regular)
+  const yearlyRegular = posNum(body.yearly?.regular)
+  if (monthlyRegular == null || yearlyRegular == null) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'monthly/yearly regular price required' })
+  }
+  const monthlySale = posNum(body.monthly?.sale)
+  const yearlySale = posNum(body.yearly?.sale)
+  // Sale must be strictly below regular, else ignore it.
+  const doc = {
+    monthly: {
+      regular: monthlyRegular,
+      sale: monthlySale != null && monthlySale < monthlyRegular ? monthlySale : null,
+    },
+    yearly: {
+      regular: yearlyRegular,
+      sale: yearlySale != null && yearlySale < yearlyRegular ? yearlySale : null,
+    },
+    currency:
+      typeof body.currency === 'string' && body.currency.trim()
+        ? body.currency.trim()
+        : 'ILS',
+    saleLabel:
+      typeof body.saleLabel === 'string' && body.saleLabel.trim()
+        ? body.saleLabel.trim()
+        : null,
+    updatedAt: new Date().toISOString(),
+    updatedBy: admin,
+  }
+  await getDb().collection('appConfig').doc('pricing').set(doc, { merge: true })
+  return res.status(200).json({ ok: true, pricing: doc })
+}
 
 async function handleSyncPlans(req: VercelRequest, res: VercelResponse) {
   const body = req.body as { idToken?: string }
