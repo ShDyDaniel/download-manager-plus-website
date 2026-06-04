@@ -1,13 +1,8 @@
-/** Hard cap on the file size the web upload flow accepts. Drive
- *  itself can handle 5 TB per file, but a 2 GB cap on the web
- *  side gives us a sane upper bound for browser memory pressure
- *  (each File.slice() into an XHR PUT still holds the chunk in
- *  RAM during transit) and matches the operator's preference of
- *  keeping the per-round footprint modest so the user's Drive
- *  quota lasts. The cap is enforced both at file-pick time
- *  (instant validation, before the user clicks upload) and at
- *  submit time (defence-in-depth in case the picker is bypassed). */
-const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024 // 2 GB
+/** No hard per-file upload cap — the only limit is the account's
+ *  storage quota (enforced server-side at r2-upload-init). Kept as
+ *  Infinity so the existing `> MAX_UPLOAD_BYTES` guards compile and
+ *  simply never trigger; the quota gate does the real work. */
+const MAX_UPLOAD_BYTES = Number.POSITIVE_INFINITY
 
 /**
  * RevisionsWorkspace — the editor side of the Revisions feature
@@ -3234,9 +3229,7 @@ function DropZone({
     <div>
       <label className="mb-2 flex items-center justify-between text-xs text-fg-muted">
         <span>קובץ וידאו</span>
-        <span className="text-fg-faint">
-          עד <bdi dir="ltr">{formatBytes(MAX_UPLOAD_BYTES)}</bdi>
-        </span>
+        <span className="text-fg-faint">כל גודל שנכנס במכסה</span>
       </label>
       {/* The whole zone is the affordance — click anywhere opens
           the file picker, drop anywhere accepts the file. We use

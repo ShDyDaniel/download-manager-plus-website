@@ -583,15 +583,8 @@ async function handleDriveImportInit(req: VercelRequest, res: VercelResponse) {
     })
   }
 
-  // Hard 2 GB cap (matches the local-upload cap on both clients).
-  const MAX = 2 * 1024 * 1024 * 1024
-  if (meta.size > MAX) {
-    return res.status(413).json({
-      ok: false,
-      error: 'too-large',
-      message: 'הקובץ גדול מ-2GB ואינו נתמך לייבוא.',
-    })
-  }
+  // No hard per-file cap — the only limit is the account's storage
+  // quota (checked below). Users can import any size that fits.
 
   // Storage-quota gate — same rule as the local-upload path.
   const { usedBytes, limitBytes } = await getStorageState(verified.uid)
