@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Loader2, AlertTriangle, Plus, Trash2, Send, Save, RefreshCw, ExternalLink } from 'lucide-react'
+import { Loader2, AlertTriangle, Plus, Trash2, Send, Save } from 'lucide-react'
 import { adminApi, getAdminIdToken } from '../../lib/adminApi'
 
 /**
@@ -59,7 +59,6 @@ export default function SettingsTab({
       <LegalCard kind="privacy" title="מדיניות פרטיות" onErr={handleErr} />
       <EmailToolsCard onErr={handleErr} />
       <SumitTestCard onErr={handleErr} />
-      <ReceiptsLogCard onErr={handleErr} />
     </div>
   )
 }
@@ -387,153 +386,6 @@ function SumitTestCard({ onErr }: { onErr: (e: unknown) => void }) {
         מפיק מסמך טיוטה ב-SUMIT ושולח אותו מהמייל שלנו. כשהעסק מוגדר —
         הגדר env <code>SUMIT_LIVE=true</code> כדי להפיק מסמכים אמיתיים.
       </p>
-    </Card>
-  )
-}
-
-interface ReceiptRow {
-  at: string
-  email: string
-  amount: number | null
-  currency: string
-  description: string
-  documentNumber: string | number | null
-  url: string
-  draft: boolean
-  subscriptionId: string | null
-  test?: boolean
-}
-
-function ReceiptsLogCard({ onErr }: { onErr: (e: unknown) => void }) {
-  const [rows, setRows] = useState<ReceiptRow[]>([])
-  const [loading, setLoading] = useState(false)
-  const [loaded, setLoaded] = useState(false)
-
-  async function load() {
-    setLoading(true)
-    try {
-      const idToken = await getAdminIdToken()
-      if (!idToken) return onErr({ code: 'auth' })
-      const r = await fetch('/api/paypal?action=admin-list-receipts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken }),
-      })
-      const j = await r.json()
-      if (j.ok) {
-        setRows(Array.isArray(j.receipts) ? j.receipts : [])
-        setLoaded(true)
-      } else {
-        onErr(new Error(j.error || 'שגיאה'))
-      }
-    } catch (e) {
-      onErr(e)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  function fmtDate(iso: string) {
-    if (!iso) return '—'
-    try {
-      const d = new Date(iso)
-      return d.toLocaleString('he-IL', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    } catch {
-      return iso
-    }
-  }
-
-  return (
-    <Card title="קבלות שהופקו">
-      <div className="flex items-center justify-between">
-        <p className="text-[11px] text-fg-faint">
-          {loaded ? `${rows.length} קבלות אחרונות` : 'טוען…'}
-        </p>
-        <button
-          type="button"
-          onClick={load}
-          disabled={loading}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-white/5 disabled:opacity-50"
-        >
-          {loading ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="h-3.5 w-3.5" />
-          )}
-          רענון
-        </button>
-      </div>
-      {loaded && rows.length === 0 && (
-        <p className="py-4 text-center text-xs text-fg-faint">
-          עדיין לא הופקו קבלות.
-        </p>
-      )}
-      {rows.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="w-full text-right text-xs">
-            <thead>
-              <tr className="border-b border-border/60 text-fg-faint">
-                <th className="py-2 pl-2 font-medium">תאריך</th>
-                <th className="py-2 pl-2 font-medium">לקוח</th>
-                <th className="py-2 pl-2 font-medium">סכום</th>
-                <th className="py-2 pl-2 font-medium">מס׳ קבלה</th>
-                <th className="py-2 font-medium">קישור</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, i) => (
-                <tr key={i} className="border-b border-border/30 text-fg-muted">
-                  <td className="py-2 pl-2 whitespace-nowrap" dir="ltr">
-                    {fmtDate(row.at)}
-                  </td>
-                  <td className="py-2 pl-2 break-all" dir="ltr">
-                    <span className="inline-flex items-center gap-1.5">
-                      {row.test && (
-                        <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-500">
-                          בדיקה
-                        </span>
-                      )}
-                      {row.email || '—'}
-                    </span>
-                  </td>
-                  <td className="py-2 pl-2 whitespace-nowrap" dir="ltr">
-                    {row.amount != null ? `${row.amount} ${row.currency}` : '—'}
-                  </td>
-                  <td className="py-2 pl-2 whitespace-nowrap">
-                    {row.documentNumber ?? (row.draft ? 'טיוטה' : '—')}
-                  </td>
-                  <td className="py-2">
-                    {row.url ? (
-                      <a
-                        href={row.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-primary underline"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                        פתח
-                      </a>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
     </Card>
   )
 }

@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
-import { RefreshCw, Loader2, AlertTriangle, DownloadCloud } from 'lucide-react'
+import {
+  RefreshCw,
+  Loader2,
+  AlertTriangle,
+  DownloadCloud,
+  X,
+  ChevronLeft,
+} from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 
 interface UsageStatsDoc {
@@ -44,6 +51,7 @@ export default function DataTab({
   const [error, setError] = useState('')
   const [pulling, setPulling] = useState(false)
   const [pullMsg, setPullMsg] = useState<string | null>(null)
+  const [selectedUid, setSelectedUid] = useState<string | null>(null)
 
   function handleErr(e: unknown) {
     const err = e as Error & { code?: string }
@@ -136,9 +144,11 @@ export default function DataTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl font-medium text-fg">נתונים</h2>
+          <h2 className="font-display text-2xl font-medium text-fg">
+            נתוני שימוש
+          </h2>
           <p className="mt-1 text-sm text-fg-muted">
-            שימוש בפיצ׳רים של התוכנה (לפי טאב, זמן, ומשתמש).
+            שימוש בפיצ׳רים של התוכנה (לפי טאב, זמן, ומשתמש). לחצו על משתמש לפירוט מלא.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -222,24 +232,241 @@ export default function DataTab({
             ) : (
               <div className="space-y-1.5">
                 {userRows.map((r) => (
-                  <div
+                  <button
                     key={r.uid}
-                    className="flex items-center justify-between gap-3 rounded-lg bg-white/[0.02] px-3 py-2 text-sm"
+                    type="button"
+                    onClick={() => setSelectedUid(r.uid)}
+                    className="flex w-full items-center justify-between gap-3 rounded-lg bg-white/[0.02] px-3 py-2 text-right text-sm transition-colors hover:bg-white/[0.06]"
+                    title="לחצו לפירוט מלא"
                   >
-                    <span className="min-w-0 truncate text-fg">
-                      {nameByUid.get(r.uid) ?? r.uid}
+                    <span className="flex min-w-0 items-center gap-1.5 text-fg">
+                      <ChevronLeft className="h-3.5 w-3.5 shrink-0 text-fg-muted" />
+                      <span className="truncate">
+                        {nameByUid.get(r.uid) ?? r.uid}
+                      </span>
                     </span>
                     <span className="shrink-0 text-xs text-fg-muted">
                       {r.counts.toLocaleString()} כניסות · {fmtDuration(r.seconds)}
                       {r.lastDate && ` · ${r.lastDate}`}
                     </span>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
           </div>
         </>
       )}
+
+      <UserUsageModal
+        uid={selectedUid}
+        users={users}
+        stats={stats}
+        onClose={() => setSelectedUid(null)}
+      />
+    </div>
+  )
+}
+
+function UserUsageModal({
+  uid,
+  users,
+  stats,
+  onClose,
+}: {
+  uid: string | null
+  users: UserDoc[]
+  stats: UsageStatsDoc[] | null
+  onClose: () => void
+}) {
+  useEffect(() => {
+    if (!uid) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prev
+    }
+  }, [uid, onClose])
+
+  if (!uid) return null
+
+  const user = users.find((u) => u.uid === uid) ?? null
+  const userStats = (stats ?? []).filter((s) => s.uid === uid)
+
+  const tabVisits = new Map<string, number>()
+  const tabSeconds = new Map<string, number>()
+  let totalVisits = 0
+  let totalSeconds = 0
+  for (const s of userStats) {
+    totalVisits += s.total ?? 0
+    const docSeconds =
+      s.totalSeconds ??
+      Object.values(s.seconds ?? {}).reduce((a, n) => a + n, 0)
+    totalSeconds += docSeconds
+    for (const [t, n] of Object.entries(s.counts ?? {}))
+      tabVisits.set(t, (tabVisits.get(t) ?? 0) + n)
+    for (const [t, n] of Object.entries(s.seconds ?? {}))
+      tabSeconds.set(t, (tabSeconds.get(t) ?? 0) + n)
+  }
+
+  const tabIds = [
+    ...TAB_ORDER.filter((t) => tabVisits.has(t) || tabSeconds.has(t)),
+    ...[...new Set([...tabVisits.keys(), ...tabSeconds.keys()])].filter(
+      (t) => !TAB_ORDER.includes(t),
+    ),
+  ]
+  const tabRows = tabIds
+    .map((t) => ({
+      id: t,
+      label: TAB_LABELS[t] ?? t,
+      visits: tabVisits.get(t) ?? 0,
+      seconds: tabSeconds.get(t) ?? 0,
+      sharePct:
+        totalSeconds > 0
+          ? Math.round(((tabSeconds.get(t) ?? 0) / totalSeconds) * 100)
+          : 0,
+    }))
+    .sort((a, b) => b.seconds - a.seconds)
+
+  const dayRows = userStats
+    .map((s) => {
+      const docSeconds =
+        s.totalSeconds ??
+        Object.values(s.seconds ?? {}).reduce((a, n) => a + n, 0)
+      let top: { id: string; seconds: number } | null = null
+      for (const [t, n] of Object.entries(s.seconds ?? {}))
+        if (!top || n > top.seconds) top = { id: t, seconds: n }
+      return {
+        date: s.date,
+        visits: s.total ?? 0,
+        seconds: docSeconds,
+        topLabel: top ? TAB_LABELS[top.id] ?? top.id : '—',
+      }
+    })
+    .sort((a, b) => b.date.localeCompare(a.date))
+
+  const daysActive = new Set(userStats.map((s) => s.date)).size
+
+  return (
+    <div
+      dir="rtl"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+      className="fixed inset-0 z-[250] flex items-start justify-center overflow-y-auto bg-black/70 px-4 py-10 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="relative w-full max-w-3xl overflow-hidden rounded-2xl border border-border bg-bg shadow-2xl">
+        <header className="flex items-start gap-3 border-b border-border px-6 py-4">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-semibold text-fg">
+              {user?.name || user?.email || '(חשבון מחוק)'}
+            </h2>
+            {user?.email && (
+              <div
+                className="mt-0.5 text-[11px] text-fg-muted"
+                dir="ltr"
+                style={{ unicodeBidi: 'plaintext', textAlign: 'right' }}
+              >
+                {user.email}
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1.5 text-fg-muted transition-colors hover:bg-white/5 hover:text-fg"
+            aria-label="סגירה"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+
+        <div className="max-h-[70vh] overflow-y-auto p-6">
+          <div className="mb-5 grid grid-cols-3 gap-3">
+            <Stat label="סך כניסות" value={totalVisits.toLocaleString()} />
+            <Stat label="סך זמן" value={fmtDuration(totalSeconds)} />
+            <Stat label="ימים פעילים" value={String(daysActive)} />
+          </div>
+
+          {userStats.length === 0 ? (
+            <div className="rounded-2xl border border-border/60 py-8 text-center text-sm text-fg-muted">
+              אין נתונים למשתמש זה.
+            </div>
+          ) : (
+            <>
+              <div className="mb-2 text-sm font-medium text-fg">פילוח לפי טאב</div>
+              <div className="mb-5 overflow-hidden rounded-2xl border border-border/60">
+                <table className="w-full text-right text-sm">
+                  <thead>
+                    <tr className="border-b border-border/60 text-xs text-fg-muted">
+                      <th className="px-4 py-2.5 font-medium">טאב</th>
+                      <th className="px-4 py-2.5 font-medium">כניסות</th>
+                      <th className="px-4 py-2.5 font-medium">זמן</th>
+                      <th className="px-4 py-2.5 font-medium">% מהזמן</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tabRows.map((t) => (
+                      <tr
+                        key={t.id}
+                        className="border-b border-border/30 last:border-0 text-fg-muted"
+                      >
+                        <td className="px-4 py-2.5 text-fg">{t.label}</td>
+                        <td className="px-4 py-2.5 tabular-nums">
+                          {t.visits.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2.5 tabular-nums">
+                          {fmtDuration(t.seconds)}
+                        </td>
+                        <td className="px-4 py-2.5 tabular-nums">{t.sharePct}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mb-2 text-sm font-medium text-fg">פילוח לפי יום</div>
+              <div className="overflow-hidden rounded-2xl border border-border/60">
+                <table className="w-full text-right text-sm">
+                  <thead>
+                    <tr className="border-b border-border/60 text-xs text-fg-muted">
+                      <th className="px-4 py-2.5 font-medium">תאריך</th>
+                      <th className="px-4 py-2.5 font-medium">כניסות</th>
+                      <th className="px-4 py-2.5 font-medium">זמן</th>
+                      <th className="px-4 py-2.5 font-medium">טאב מוביל</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dayRows.map((d) => (
+                      <tr
+                        key={d.date}
+                        className="border-b border-border/30 last:border-0 text-fg-muted"
+                      >
+                        <td className="px-4 py-2.5 tabular-nums" dir="ltr">
+                          {d.date}
+                        </td>
+                        <td className="px-4 py-2.5 tabular-nums">
+                          {d.visits.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2.5 tabular-nums">
+                          {fmtDuration(d.seconds)}
+                        </td>
+                        <td className="px-4 py-2.5 text-fg">{d.topLabel}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
