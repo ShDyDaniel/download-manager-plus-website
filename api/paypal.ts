@@ -3141,6 +3141,8 @@ async function issueSumitReceipt(args: {
         Quantity: 1,
         UnitPrice: args.amount,
         Description: args.description,
+        // SUMIT requires each line to carry an Item with a Name.
+        Item: { Name: args.description, Price: args.amount },
       },
     ],
     Payments: [
