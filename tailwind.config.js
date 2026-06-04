@@ -33,17 +33,51 @@ export default {
           DEFAULT: 'var(--primary)',
           hover: 'var(--primary-hover)',
           soft: 'var(--primary-soft)',
+          foreground: 'hsl(var(--primary-foreground))',
         },
         accent: {
           DEFAULT: 'var(--accent)',
           glow: 'var(--accent-glow)',
+          foreground: 'hsl(var(--accent-foreground))',
         },
         border: {
           DEFAULT: 'var(--border)',
           strong: 'var(--border-strong)',
         },
-        success: 'var(--success)',
-        destructive: 'var(--destructive)',
+        success: {
+          DEFAULT: 'var(--success)',
+          foreground: 'hsl(var(--success-foreground))',
+        },
+        destructive: {
+          DEFAULT: 'var(--destructive)',
+          foreground: 'hsl(var(--destructive-foreground))',
+        },
+        /* ── Desktop "shadcn" token layer ──────────────────────────
+         * Mirrors the desktop app's semantic tokens so the /admin
+         * panel components (ported verbatim from the desktop UI kit)
+         * resolve to the SAME espresso palette. Additive: none of
+         * these names collide with the marketing-site tokens above.
+         * Values are the desktop HSL triplets (see index.css). */
+        foreground: 'hsl(var(--foreground))',
+        background: 'hsl(var(--background))',
+        card: {
+          DEFAULT: 'hsl(var(--card))',
+          foreground: 'hsl(var(--card-foreground))',
+        },
+        popover: {
+          DEFAULT: 'hsl(var(--popover))',
+          foreground: 'hsl(var(--popover-foreground))',
+        },
+        muted: {
+          DEFAULT: 'hsl(var(--muted))',
+          foreground: 'hsl(var(--muted-foreground))',
+        },
+        secondary: {
+          DEFAULT: 'hsl(var(--secondary))',
+          foreground: 'hsl(var(--secondary-foreground))',
+        },
+        input: 'hsl(var(--input))',
+        ring: 'hsl(var(--ring))',
       },
       borderColor: {
         DEFAULT: 'var(--border)',
