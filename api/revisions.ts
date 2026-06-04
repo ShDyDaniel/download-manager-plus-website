@@ -737,14 +737,38 @@ function storageQuotaForUser(user: Record<string, unknown>): number {
   return STORAGE_QUOTA_PRO
 }
 
-// Read a user's current usage + their quota in one go.
+// Compute a user's CURRENT R2 usage + their quota. Usage is summed
+// live from their active R2 rounds on every call (accurate + self-
+// healing — never drifts, and covers rounds created before any counter
+// existed). One query per call; fine at solo-creator scale.
 async function getStorageState(
   uid: string,
 ): Promise<{ usedBytes: number; limitBytes: number }> {
-  const snap = await getDb().collection('users').doc(uid).get()
-  const user = (snap.data() as Record<string, unknown>) || {}
-  const usedBytes = Number(user.storageUsedBytes) || 0
-  return { usedBytes, limitBytes: storageQuotaForUser(user) }
+  const userSnap = await getDb().collection('users').doc(uid).get()
+  const user = (userSnap.data() as Record<string, unknown>) || {}
+  const limitBytes = storageQuotaForUser(user)
+
+  let usedBytes = 0
+  try {
+    const roundsSnap = await getDb()
+      .collection('revisionProjects')
+      .where('ownerUid', '==', uid)
+      .get()
+    for (const d of roundsSnap.docs) {
+      const r = d.data() as {
+        r2Key?: string
+        videoSizeBytes?: number
+        status?: string
+      }
+      // Only R2-backed, non-archived rounds occupy our storage.
+      if (r.r2Key && r.status !== 'archived') {
+        usedBytes += Number(r.videoSizeBytes) || 0
+      }
+    }
+  } catch (e) {
+    console.warn('[storage] usage sum failed:', uid, e)
+  }
+  return { usedBytes, limitBytes }
 }
 
 // Adjust the stored usage counter atomically (deltaBytes may be
@@ -2298,6 +2322,7 @@ async function handleListRoundsForGroup(
       notesCount: Number(r.notesCount) || 0,
       videoFileName: String(r.videoFileName || ''),
       createdAt: Number(r.createdAt) || 0,
+      storage: (r.r2Key ? 'r2' : 'drive') as 'r2' | 'drive',
     }))
     .sort((a, b) => a.roundNumber - b.roundNumber)
 
@@ -2359,6 +2384,7 @@ async function handleListRoundsOwner(
       locked: r.locked === true,
       notesCount: Number(r.notesCount) || 0,
       createdAt: Number(r.createdAt) || 0,
+      storage: (r.r2Key ? 'r2' : 'drive') as 'r2' | 'drive',
     }))
     .sort((a, b) => a.roundNumber - b.roundNumber)
 
@@ -2770,6 +2796,7 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
         notesCount: Number(r.notesCount) || 0,
         videoFileName: String(r.videoFileName || ''),
         createdAt: Number(r.createdAt) || 0,
+        storage: (r.r2Key ? 'r2' : 'drive') as 'r2' | 'drive',
       }))
       .sort((a, b) => a.roundNumber - b.roundNumber)
 

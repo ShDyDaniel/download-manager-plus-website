@@ -666,6 +666,7 @@ function ConnectedWorkspace({
             ) : (
               <ProjectList
                 projects={projects}
+                backend={backend}
                 onEditGroup={(g) => setEditingGroup(g)}
                 onAddRound={(g) => setAddingRoundTo(g)}
                 onOpenRound={(g, round) =>
@@ -848,6 +849,7 @@ function EmptyProjectList({ onNew }: { onNew: () => void }) {
 
 function ProjectList({
   projects,
+  backend,
   onEditGroup,
   onAddRound,
   onOpenRound,
@@ -857,6 +859,7 @@ function ProjectList({
   onDeleteLegacy,
 }: {
   projects: Projects
+  backend: 'r2' | 'drive'
   onEditGroup: (g: RevisionGroup) => void
   onAddRound: (g: RevisionGroup) => void
   onOpenRound: (g: RevisionGroup, round: GroupRoundSummary) => void
@@ -887,6 +890,7 @@ function ProjectList({
           <GroupCard
             key={`g-${item.group.id}`}
             group={item.group}
+            backend={backend}
             onEdit={() => onEditGroup(item.group)}
             onAddRound={() => onAddRound(item.group)}
             onOpenRound={(round) => onOpenRound(item.group, round)}
@@ -912,6 +916,7 @@ function ProjectList({
 
 function GroupCard({
   group,
+  backend,
   onEdit,
   onAddRound,
   onOpenRound,
@@ -919,6 +924,7 @@ function GroupCard({
   onDeleteGroup,
 }: {
   group: RevisionGroup
+  backend: 'r2' | 'drive'
   onEdit: () => void
   onAddRound: () => void
   onOpenRound: (round: GroupRoundSummary) => void
@@ -1130,6 +1136,16 @@ function GroupCard({
                       {round.locked && (
                         <span className="rounded bg-bg-elevated px-1.5 py-0.5 text-[10px] uppercase text-fg-muted">
                           סגור
+                        </span>
+                      )}
+                      {round.storage && round.storage !== backend && (
+                        <span
+                          className="rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-400"
+                          title="הסבב הזה לא אוחסן במערכת שאתה משתמש בה כעת"
+                        >
+                          {round.storage === 'drive'
+                            ? 'Google Drive'
+                            : 'מערכת חדשה'}
                         </span>
                       )}
                     </div>

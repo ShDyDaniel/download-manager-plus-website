@@ -261,6 +261,9 @@ export interface GroupRoundSummary {
   locked: boolean
   notesCount: number
   createdAt: number
+  /** Which storage backend this round's video lives on. Lets the UI
+   *  flag rounds NOT on the user's current backend. */
+  storage?: 'r2' | 'drive'
 }
 
 export interface RevisionGroup {
