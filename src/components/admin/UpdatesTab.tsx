@@ -1,6 +1,16 @@
 import { useEffect, useState } from 'react'
-import { Loader2, AlertTriangle, RefreshCw, UploadCloud, Trash2 } from 'lucide-react'
+import {
+  Loader2,
+  AlertTriangle,
+  RefreshCw,
+  UploadCloud,
+  Trash2,
+  Eye,
+  X,
+  DownloadCloud,
+} from 'lucide-react'
 import { getAdminIdToken } from '../../lib/adminApi'
+import { Portal } from '@/components/ui/Portal'
 
 interface ReleaseDoc {
   version: string
@@ -12,6 +22,7 @@ interface ReleaseDoc {
   draft: boolean
   publishedAt?: string
   mandatory?: boolean
+  mandatoryExemptVersions?: string[]
 }
 
 const EMPTY: ReleaseDoc = {
@@ -23,6 +34,7 @@ const EMPTY: ReleaseDoc = {
   winUrlBackup: '',
   draft: true,
   mandatory: false,
+  mandatoryExemptVersions: [],
 }
 
 export default function UpdatesTab({
@@ -36,6 +48,8 @@ export default function UpdatesTab({
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
+  const [exemptText, setExemptText] = useState('')
+  const [preview, setPreview] = useState(false)
 
   async function call(action: 'load' | 'save' | 'delete' | 'publish', release?: ReleaseDoc) {
     const idToken = await getAdminIdToken()
@@ -68,7 +82,9 @@ export default function UpdatesTab({
     setError('')
     try {
       const j = await call('load')
-      setDraft(j.draft ? { ...EMPTY, ...j.draft } : EMPTY)
+      const d = j.draft ? { ...EMPTY, ...j.draft } : EMPTY
+      setDraft(d)
+      setExemptText((d.mandatoryExemptVersions ?? []).join(', '))
       setLatest(j.latest ?? null)
     } catch (e) {
       if ((e as Error).message !== 'auth')
@@ -197,7 +213,49 @@ export default function UpdatesTab({
           עדכון חובה (חוסם את האפליקציה עד התקנה)
         </label>
 
+        {draft.mandatory && (
+          <Row label="גרסאות פטורות מעדכון החובה (מופרדות בפסיק)">
+            <In
+              value={exemptText}
+              onChange={(v) => {
+                setExemptText(v)
+                const parsed = v
+                  .split(/[,\s]+/)
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+                set('mandatoryExemptVersions', parsed)
+              }}
+              ltr
+              placeholder="1.7.40, 1.7.41"
+            />
+            {(draft.mandatoryExemptVersions ?? []).length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {(draft.mandatoryExemptVersions ?? []).map((v) => (
+                  <span
+                    key={v}
+                    className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-fg-muted"
+                    dir="ltr"
+                  >
+                    v{v}
+                  </span>
+                ))}
+              </div>
+            )}
+            <p className="mt-1 text-[10px] text-fg-faint">
+              משתמשים שמריצים גרסה מהרשימה הזאת יראו את חלון העדכון כאופציונלי (לא חוסם).
+            </p>
+          </Row>
+        )}
+
         <div className="flex flex-wrap items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => setPreview(true)}
+            disabled={!draft.version}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm text-fg transition-colors hover:bg-white/[0.04] disabled:opacity-50"
+          >
+            <Eye className="h-4 w-4" /> תצוגה מקדימה
+          </button>
           <button
             type="button"
             onClick={() => act('save')}
@@ -230,6 +288,64 @@ export default function UpdatesTab({
           </button>
         </div>
       </div>
+
+      {preview && (
+        <Portal>
+          <div
+            dir="rtl"
+            onClick={() => setPreview(false)}
+            className="fixed inset-0 z-[260] flex items-center justify-center bg-black/80 p-6 backdrop-blur-md"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="relative w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+            >
+              <button
+                type="button"
+                onClick={() => setPreview(false)}
+                className="absolute left-4 top-4 rounded-md p-1 text-muted-foreground hover:bg-popover hover:text-foreground"
+                aria-label="סגירה"
+              >
+                <X className="h-4 w-4" />
+              </button>
+              <div className="p-6 text-center">
+                <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-accent shadow-lg shadow-primary/40">
+                  <DownloadCloud className="h-6 w-6 text-white" />
+                </div>
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  כך המשתמש יראה את חלון העדכון
+                </div>
+                <h3 className="mt-2 text-lg font-bold text-foreground">
+                  גרסה חדשה זמינה
+                </h3>
+                <div className="mt-0.5 text-sm text-muted-foreground" dir="ltr">
+                  v{draft.version || '—'}
+                </div>
+                {draft.mandatory && (
+                  <span className="mt-2 inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[10px] font-semibold text-destructive">
+                    <AlertTriangle className="h-3 w-3" /> עדכון חובה
+                  </span>
+                )}
+                {draft.notes && (
+                  <div className="mt-3 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-background/40 p-3 text-right text-xs text-foreground">
+                    {draft.notes}
+                  </div>
+                )}
+                <div className="mt-4 flex flex-col gap-2">
+                  <div className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">
+                    הורד והתקן
+                  </div>
+                  {!draft.mandatory && (
+                    <div className="text-xs text-muted-foreground">אחר כך</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </Portal>
+      )}
     </div>
   )
 }
