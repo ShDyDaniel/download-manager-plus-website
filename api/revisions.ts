@@ -1674,8 +1674,13 @@ async function handleOauthStatus(req: VercelRequest, res: VercelResponse) {
   const userSnap = await getDb().collection('users').doc(verified.uid).get()
   const userDoc = (userSnap.data() as Record<string, unknown>) || {}
   const storageBackend = userDoc.storageBackend === 'drive' ? 'drive' : 'r2'
-  const storageUsedBytes = Number(userDoc.storageUsedBytes) || 0
-  const storageLimitBytes = storageQuotaForUser(userDoc)
+  // Compute usage LIVE from the user's actual R2 rounds rather than the
+  // stored counter — the counter is 0 for rounds created before it
+  // existed (and can drift), which made the in-app bar read "0 B" even
+  // with real videos uploaded. getStorageState sums every active
+  // r2Key round's videoSizeBytes on each call.
+  const { usedBytes: storageUsedBytes, limitBytes: storageLimitBytes } =
+    await getStorageState(verified.uid)
 
   const snap = await integrationDocRef(verified.uid).get()
   if (!snap.exists) {

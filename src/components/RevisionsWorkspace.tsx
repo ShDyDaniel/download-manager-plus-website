@@ -710,7 +710,7 @@ function ConnectedWorkspace({
               />
             )}
 
-            {drive && storage && (
+            {backend === 'drive' && drive && storage && (
               <DriveStorageFooter drive={drive} storage={storage} />
             )}
             {backend === 'r2' && r2Storage && (
@@ -1174,9 +1174,7 @@ function GroupCard({
                           className="rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-400"
                           title="הסבב הזה לא אוחסן במערכת שאתה משתמש בה כעת"
                         >
-                          {round.storage === 'drive'
-                            ? 'Google Drive'
-                            : 'מערכת חדשה'}
+                          {round.storage === 'drive' ? 'Google Drive' : 'CL'}
                         </span>
                       )}
                     </div>
