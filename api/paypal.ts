@@ -4132,6 +4132,10 @@ type TestEmailKind =
   | 'renewal-extension'
   | 'expiry-reminder'
   | 'annual-report'
+  | 'payment-failed'
+  | 'plan-switch'
+  | 'purge-warning-subscription'
+  | 'purge-warning-trial'
 
 function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } {
   // Mock data — deliberately recognisable so the recipient can
@@ -4375,6 +4379,93 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
           `,
         }),
       }
+    case 'payment-failed':
+      return {
+        subject: '[בדיקה] ⚠️ חיוב המנוי נכשל — נדרשת פעולה',
+        html: renderEmail({
+          heading: '⚠️ לא הצלחנו לחייב את המנוי',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+              [תצוגת בדיקה] ניסינו לחדש את המנוי שלך ל-<strong>ניהול הורדות פלוס Pro</strong>, אבל החיוב נכשל (כרטיס שפג תוקף / אין כיסוי).
+            </p>
+            <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
+              PayPal ינסה שוב בימים הקרובים. כדי לא לאבד את הגישה, מומלץ לעדכן את אמצעי התשלום עכשיו.
+            </p>
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
+              <tr><td align="center">
+                <a href="${WEBSITE_BASE}/account" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">עדכון אמצעי תשלום</a>
+              </td></tr>
+            </table>
+          `,
+        }),
+      }
+    case 'plan-switch':
+      return {
+        subject: '[בדיקה] ⬆️ עברת למסלול שנתי — ניהול הורדות פלוס',
+        html: renderEmail({
+          heading: '⬆️ עברת למסלול שנתי',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
+              [תצוגת בדיקה] המנוי שלך עודכן בהצלחה ממסלול חודשי למסלול שנתי. הימים שנותרו במסלול הקודם נשמרו והתווספו.
+            </p>
+            <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;font-size:13px;line-height:1.9;color:#C9BFA8;">
+              <div>• מסלול חדש: שנתי</div>
+              <div>• בתוקף עד: ${mockExpiry}</div>
+              <div>• חיוב הבא: ${mockExpiry}</div>
+              <div>• מתחדש אוטומטית עד שתבטל</div>
+            </div>
+            <p style="font-size:12px;line-height:1.7;margin:0;color:#8B8170;">
+              ניהול המנוי: <a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/account</a>
+            </p>
+          `,
+        }),
+      }
+    case 'purge-warning-subscription':
+      return {
+        subject: '[בדיקה] ⚠️ הגישה הסתיימה — סבבי התיקונים יימחקו בעוד 14 ימים',
+        html: renderEmail({
+          heading: '⚠️ הגישה הסתיימה — סבבי התיקונים יימחקו בקרוב',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+              [תצוגת בדיקה] המנוי שלך ל-<strong>ניהול הורדות פלוס</strong> הסתיים, ואין יותר גישה לסבבי התיקונים שהעלית.
+            </p>
+            <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+              סבבי התיקונים שלך (הסרטונים, התמונות וההקלטות) יימחקו לצמיתות בעוד <strong>14 ימים</strong> (${mockExpiry}). חידוש המנוי לפני התאריך הזה ישמור את כל הסבבים.
+            </p>
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:18px 0 24px;">
+              <tr><td align="center">
+                <a href="${WEBSITE_BASE}/buy" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">חידוש ושמירת הסבבים 👑</a>
+              </td></tr>
+            </table>
+            <p style="font-size:12px;margin:0;color:#5C5444;">
+              לא רוצים להמשיך? אין צורך לעשות דבר — סבבי התיקונים יימחקו אוטומטית בתאריך הנ"ל.
+            </p>
+          `,
+        }),
+      }
+    case 'purge-warning-trial':
+      return {
+        subject: '[בדיקה] ⚠️ הניסיון הסתיים — סבבי התיקונים יימחקו בעוד 14 ימים',
+        html: renderEmail({
+          heading: '⚠️ הגישה הסתיימה — סבבי התיקונים יימחקו בקרוב',
+          contentHtml: `
+            <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+              [תצוגת בדיקה] תקופת הניסיון שלך ל-<strong>ניהול הורדות פלוס</strong> הסתיימה, ואין יותר גישה לסבבי התיקונים שהעלית.
+            </p>
+            <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+              סבבי התיקונים שלך (הסרטונים, התמונות וההקלטות) יימחקו לצמיתות בעוד <strong>14 ימים</strong> (${mockExpiry}). שדרוג למנוי לפני התאריך הזה ישמור את כל הסבבים.
+            </p>
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:18px 0 24px;">
+              <tr><td align="center">
+                <a href="${WEBSITE_BASE}/buy" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">שדרוג ושמירת הסבבים 👑</a>
+              </td></tr>
+            </table>
+            <p style="font-size:12px;margin:0;color:#5C5444;">
+              לא רוצים להמשיך? אין צורך לעשות דבר — סבבי התיקונים יימחקו אוטומטית בתאריך הנ"ל.
+            </p>
+          `,
+        }),
+      }
   }
 }
 
@@ -4400,6 +4491,10 @@ async function handleAdminSendTestEmail(req: VercelRequest, res: VercelResponse)
     'renewal-extension',
     'expiry-reminder',
     'annual-report',
+    'payment-failed',
+    'plan-switch',
+    'purge-warning-subscription',
+    'purge-warning-trial',
   ]
   if (!allowed.includes(kind)) {
     return res.status(400).json({ ok: false, error: `unknown template: ${kind}` })

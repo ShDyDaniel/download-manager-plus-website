@@ -23,6 +23,10 @@ const TEST_EMAILS: { kind: string; label: string }[] = [
   { kind: 'renewal-extension', label: 'הארכת מנוי' },
   { kind: 'expiry-reminder', label: 'תזכורת לפני פקיעה' },
   { kind: 'annual-report', label: 'סיכום חיובים שנתי' },
+  { kind: 'payment-failed', label: 'כשל בחיוב מנוי' },
+  { kind: 'plan-switch', label: 'החלפת מסלול (חודשי/שנתי)' },
+  { kind: 'purge-warning-subscription', label: 'אזהרת מחיקת סבבים — מנוי שהסתיים' },
+  { kind: 'purge-warning-trial', label: 'אזהרת מחיקת סבבים — ניסיון שהסתיים' },
 ]
 
 export default function SettingsTab({

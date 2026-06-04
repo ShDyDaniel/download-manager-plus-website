@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
+import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import nodemailer from 'nodemailer'
 
 /**
@@ -92,6 +93,10 @@ interface KeyDoc {
    *  reminders because PayPal handles the recurring charge. We
    *  skip these in the 10d/2d reminder loop. */
   subscriptionId?: string
+  /** PayPal subscription state: 'active' | 'cancelled' | 'expired' |
+   *  'past_due'. A cancelled/expired sub no longer auto-renews, so it
+   *  qualifies for the expiry reminders below. */
+  subscriptionStatus?: string
   subscriptionPlanDays?: number
   billingHistory?: Array<{
     eventId?: string
@@ -279,11 +284,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ).trim()
       const expiresAtIso = data.expiresAt
 
-      // Subscription keys auto-renew via PayPal — sending them a
-      // "manually renew" email would be confusing and might prompt
-      // duplicate payments. The PayPal webhook handles the renewal
-      // and extends expiresAt without our cron's help.
-      if (data.subscriptionId) {
+      // Auto-renewing subscriptions handle themselves via PayPal —
+      // reminding them to "manually renew" would confuse + risk a
+      // double charge. BUT a subscription the user CANCELLED won't
+      // renew: it just runs out at expiresAt, so those users DO need
+      // the heads-up. So we skip only subscriptions still live in
+      // PayPal (status active / past_due / unset). 'cancelled' and
+      // 'expired' fall through to the reminder windows below.
+      const subStatus = String(data.subscriptionStatus || '').toLowerCase()
+      const subWillAutoRenew =
+        Boolean(data.subscriptionId) &&
+        subStatus !== 'cancelled' &&
+        subStatus !== 'expired'
+      if (subWillAutoRenew) {
         results.push({ key, action: 'skipped', reason: 'auto-renewing subscription' })
         continue
       }
@@ -381,6 +394,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // doesn't double-send.
     const annualResults = await maybeSendAnnualReports(db)
 
+    // ─── Storage purge sweep ──────────────────────────────────
+    // Warn-then-delete the R2 videos of users who lost access (lapsed
+    // subscription / ended trial). Two emails, then deletion after the
+    // grace window. Runs in this same daily cron (Hobby = 1 cron).
+    const purgeResults = await runStoragePurgeSweep(db)
+
     return res.status(200).json({
       ok: true,
       scanned: results.length,
@@ -389,6 +408,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       failed,
       results,
       annual: annualResults,
+      purge: purgeResults,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
@@ -559,6 +579,344 @@ async function sendAnnualReportEmail(args: {
     subject: `סיכום חיובים שנתי — ${args.year}`,
     html,
   })
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  Storage purge — warn-then-delete R2 files for lapsed users
+ *
+ *  Users who lose access (subscription expired / cancelled-and-ended,
+ *  or a 14-day trial that ended) can't reach their Revisions videos.
+ *  We don't delete immediately — a grace window lets them renew and
+ *  "rescue" their files. Per-user timeline (tracked on the user doc):
+ *    - day 0  (first run with no access): warning #1 + stamp filesPurgeAt
+ *    - day 11 (3 days before): warning #2 (final)
+ *    - day 14 (>= filesPurgeAt): delete every R2 video + note media,
+ *      free the quota.
+ *  Regaining access clears the countdown. Only OUR R2 storage is
+ *  touched — Google-Drive videos live in the user's own Drive and are
+ *  never deleted by us.
+ * ═══════════════════════════════════════════════════════════════ */
+
+const PURGE_GRACE_DAYS = 14
+const PURGE_FINAL_WARN_DAYS = 3
+const R2_BUCKET = (process.env.R2_BUCKET || '').trim()
+
+let _r2: S3Client | null = null
+function getR2OrNull(): S3Client | null {
+  if (_r2) return _r2
+  const accountId = process.env.R2_ACCOUNT_ID
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY
+  if (!accountId || !accessKeyId || !secretAccessKey || !R2_BUCKET) return null
+  _r2 = new S3Client({
+    region: 'auto',
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId, secretAccessKey },
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
+  })
+  return _r2
+}
+
+async function r2Delete(r2: S3Client, key: string): Promise<void> {
+  if (!key) return
+  await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }))
+}
+
+/** Does this user currently have access (so we must NOT purge)? Mirrors
+ *  the server's isUserPro (minus the admin-email env list — role==admin
+ *  covers operators here). Throws bubble up; the caller treats any
+ *  error as "uncertain → skip", so a Firestore blip never deletes. */
+async function userHasAccess(
+  db: ReturnType<typeof getFirestore>,
+  uid: string,
+): Promise<boolean> {
+  const userSnap = await db.collection('users').doc(uid).get()
+  if (userSnap.exists) {
+    const u = userSnap.data() as Record<string, unknown>
+    if (u.role === 'admin') return true
+    if (u.subscription === 'pro') return true
+    if (u.trialStatus === 'approved' && u.trialExpiresAt) {
+      const ts = new Date(String(u.trialExpiresAt)).getTime()
+      if (Number.isFinite(ts) && ts > Date.now()) return true
+    }
+  }
+  const keySnap = await db
+    .collection('productKeys')
+    .where('redeemedBy', '==', uid)
+    .limit(1)
+    .get()
+  if (!keySnap.empty) {
+    const k = keySnap.docs[0].data() as Record<string, unknown>
+    if (!k.expiresAt) return true
+    const exp = new Date(String(k.expiresAt)).getTime()
+    if (!Number.isFinite(exp)) return true
+    if (exp > Date.now()) return true
+    if (
+      k.subscriptionStatus === 'active' &&
+      Date.now() - exp <= 24 * 60 * 60 * 1000
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+/** Global beta mode → everyone has Pro, so we must not purge anyone.
+ *  Fail-SAFE: a read error returns true (treat as beta-on) so we never
+ *  delete during a Firestore hiccup. */
+async function isBetaOn(db: ReturnType<typeof getFirestore>): Promise<boolean> {
+  try {
+    const cfg = await db.collection('appConfig').doc('global').get()
+    return cfg.exists && cfg.data()?.betaMode === true
+  } catch {
+    return true
+  }
+}
+
+async function runStoragePurgeSweep(
+  db: ReturnType<typeof getFirestore>,
+): Promise<{
+  ran: boolean
+  warned1: number
+  warned2: number
+  purged: number
+  skipped: number
+  reason?: string
+}> {
+  const r2 = getR2OrNull()
+  if (!r2) {
+    return { ran: false, warned1: 0, warned2: 0, purged: 0, skipped: 0, reason: 'R2 not configured' }
+  }
+  if (await isBetaOn(db)) {
+    return { ran: false, warned1: 0, warned2: 0, purged: 0, skipped: 0, reason: 'beta mode on' }
+  }
+
+  // Candidate users = owners of at least one active R2 round.
+  const roundsSnap = await db
+    .collection('revisionProjects')
+    .where('status', '==', 'active')
+    .get()
+  const byOwner = new Map<
+    string,
+    Array<{ id: string; r2Key: string; videoSizeBytes: number }>
+  >()
+  for (const d of roundsSnap.docs) {
+    const r = d.data() as {
+      ownerUid?: string
+      r2Key?: string
+      videoSizeBytes?: number
+    }
+    if (!r.ownerUid || !r.r2Key) continue
+    const arr = byOwner.get(r.ownerUid) || []
+    arr.push({
+      id: d.id,
+      r2Key: r.r2Key,
+      videoSizeBytes: Number(r.videoSizeBytes) || 0,
+    })
+    byOwner.set(r.ownerUid, arr)
+  }
+
+  const now = Date.now()
+  const graceMs = PURGE_GRACE_DAYS * 86_400_000
+  const finalWarnMs = PURGE_FINAL_WARN_DAYS * 86_400_000
+  let warned1 = 0
+  let warned2 = 0
+  let purged = 0
+  let skipped = 0
+
+  for (const [uid, rounds] of byOwner) {
+    try {
+      const userRef = db.collection('users').doc(uid)
+      const userSnap = await userRef.get()
+      const user = (userSnap.data() as Record<string, unknown>) || {}
+
+      if (await userHasAccess(db, uid)) {
+        // Has access (or came back) — cancel any running countdown.
+        if (user.filesPurgeAt) {
+          await userRef.update({
+            filesPurgeAt: null,
+            purgeWarn1SentAt: null,
+            purgeWarn2SentAt: null,
+          })
+        }
+        skipped++
+        continue
+      }
+
+      // No access. We must have an email to warn before deleting.
+      const email = String(user.email || '').trim()
+      if (!email) {
+        skipped++
+        continue
+      }
+
+      // Which copy to use — a paid user always has a productKey; a
+      // trial-only user doesn't.
+      let purgeKind: 'subscription' | 'trial' = 'subscription'
+      try {
+        const k = await db
+          .collection('productKeys')
+          .where('redeemedBy', '==', uid)
+          .limit(1)
+          .get()
+        if (k.empty && user.trialStatus) purgeKind = 'trial'
+      } catch {
+        /* default to subscription copy on lookup error */
+      }
+
+      const purgeAt = user.filesPurgeAt
+        ? Date.parse(String(user.filesPurgeAt))
+        : NaN
+
+      if (!Number.isFinite(purgeAt)) {
+        // First detection — start the countdown + warning #1.
+        const at = now + graceMs
+        await sendPurgeWarningEmail(email, new Date(at), false, purgeKind)
+        await userRef.update({
+          filesPurgeAt: new Date(at).toISOString(),
+          purgeWarn1SentAt: new Date(now).toISOString(),
+          purgeWarn2SentAt: null,
+        })
+        warned1++
+        continue
+      }
+
+      if (now >= purgeAt) {
+        // Grace elapsed → delete every R2 video + its note media.
+        for (const rd of rounds) {
+          try {
+            await r2Delete(r2, rd.r2Key)
+            const notesSnap = await db
+              .collection('revisionProjects')
+              .doc(rd.id)
+              .collection('notes')
+              .get()
+            for (const n of notesSnap.docs) {
+              const nd = n.data() as {
+                screenshotR2Key?: string
+                audioR2Key?: string
+              }
+              if (nd.screenshotR2Key) {
+                await r2Delete(r2, nd.screenshotR2Key).catch(() => undefined)
+              }
+              if (nd.audioR2Key) {
+                await r2Delete(r2, nd.audioR2Key).catch(() => undefined)
+              }
+            }
+            await db.collection('revisionProjects').doc(rd.id).update({
+              status: 'archived',
+              r2Purged: true,
+              updatedAt: now,
+            })
+          } catch (err) {
+            console.warn(`[purge] round ${rd.id} for ${uid} failed:`, err)
+          }
+        }
+        await userRef.update({
+          storageUsedBytes: 0,
+          filesPurgeAt: null,
+          purgeWarn1SentAt: null,
+          purgeWarn2SentAt: null,
+          filesPurgedAt: new Date(now).toISOString(),
+        })
+        purged++
+        continue
+      }
+
+      // Within the grace window — send the final warning once.
+      if (now >= purgeAt - finalWarnMs && !user.purgeWarn2SentAt) {
+        await sendPurgeWarningEmail(email, new Date(purgeAt), true, purgeKind)
+        await userRef.update({ purgeWarn2SentAt: new Date(now).toISOString() })
+        warned2++
+        continue
+      }
+
+      skipped++
+    } catch (err) {
+      console.warn(`[purge] skipping ${uid} (error):`, err)
+      skipped++
+    }
+  }
+
+  console.info(
+    `[cron/purge] warned1=${warned1} warned2=${warned2} purged=${purged} skipped=${skipped}`,
+  )
+  return { ran: true, warned1, warned2, purged, skipped }
+}
+
+async function sendPurgeWarningEmail(
+  to: string,
+  purgeAt: Date,
+  isFinal: boolean,
+  kind: 'subscription' | 'trial',
+): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const { subject, html } = buildPurgeWarningEmail({
+    kind,
+    isFinal,
+    purgeAt,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to,
+    subject,
+    html,
+  })
+}
+
+/** Builds the purge-warning email — separate copy for an ended
+ *  SUBSCRIPTION vs an ended TRIAL, and a more urgent variant for the
+ *  final (3-days-out) notice. Exported-style helper so the admin test
+ *  panel can render the exact same templates. */
+export function buildPurgeWarningEmail(args: {
+  kind: 'subscription' | 'trial'
+  isFinal: boolean
+  purgeAt: Date
+}): { subject: string; html: string } {
+  const dateStr = formatExpiryHebrew(args.purgeAt)
+  const days = daysUntil(args.purgeAt)
+  const daysWord = days === 1 ? 'יום אחד' : `${days} ימים`
+  const sourceLine =
+    args.kind === 'trial'
+      ? 'תקופת הניסיון שלך ל-<strong>ניהול הורדות פלוס</strong> הסתיימה, ואין יותר גישה לסבבי התיקונים שהעלית.'
+      : 'המנוי שלך ל-<strong>ניהול הורדות פלוס</strong> הסתיים, ואין יותר גישה לסבבי התיקונים שהעלית.'
+  const ctaLabel =
+    args.kind === 'trial' ? 'שדרוג ושמירת הסבבים 👑' : 'חידוש ושמירת הסבבים 👑'
+  const heading = args.isFinal
+    ? '🚨 סבבי התיקונים שלך יימחקו בקרוב'
+    : '⚠️ הגישה הסתיימה — סבבי התיקונים יימחקו בקרוב'
+  const subject = args.isFinal
+    ? `🚨 סבבי התיקונים שלך יימחקו בעוד ${daysWord}`
+    : `⚠️ הגישה הסתיימה — סבבי התיקונים יימחקו בעוד ${daysWord}`
+  const html = renderEmail({
+    heading,
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+        ${sourceLine}
+      </p>
+      <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+        סבבי התיקונים שלך (הסרטונים, התמונות וההקלטות) יימחקו לצמיתות בעוד <strong>${daysWord}</strong> (${dateStr}). ${
+          args.kind === 'trial' ? 'שדרוג למנוי' : 'חידוש המנוי'
+        } לפני התאריך הזה ישמור את כל הסבבים.
+      </p>
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:18px 0 24px;">
+        <tr><td align="center">
+          <a href="${WEBSITE_BASE}/buy" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">${ctaLabel}</a>
+        </td></tr>
+      </table>
+      <p style="font-size:12px;margin:0;color:#5C5444;">
+        לא רוצים להמשיך? אין צורך לעשות דבר — סבבי התיקונים יימחקו אוטומטית בתאריך הנ"ל.
+      </p>
+    `,
+  })
+  return { subject, html }
 }
 
 /* ─────────────────────────────────────────────────────────────
