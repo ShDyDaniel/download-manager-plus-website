@@ -440,7 +440,12 @@ function ConnectedWorkspace({
   } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<
     | { kind: 'group'; group: RevisionGroup }
-    | { kind: 'round'; group: RevisionGroup; roundId: string }
+    | {
+        kind: 'round'
+        group: RevisionGroup
+        roundId: string
+        storage?: 'r2' | 'drive'
+      }
     | { kind: 'legacy'; project: LegacyProjectSummary }
     | null
   >(null)
@@ -673,8 +678,13 @@ function ConnectedWorkspace({
                   setViewingRound({ group: g, round })
                 }
                 onOpenLegacy={(p) => setViewingRound({ legacy: p })}
-                onDeleteRound={(g, roundId) =>
-                  setConfirmDelete({ kind: 'round', group: g, roundId })
+                onDeleteRound={(g, roundId, storage) =>
+                  setConfirmDelete({
+                    kind: 'round',
+                    group: g,
+                    roundId,
+                    storage,
+                  })
                 }
                 onDeleteGroup={(g) =>
                   setConfirmDelete({ kind: 'group', group: g })
@@ -864,7 +874,11 @@ function ProjectList({
   onAddRound: (g: RevisionGroup) => void
   onOpenRound: (g: RevisionGroup, round: GroupRoundSummary) => void
   onOpenLegacy: (p: LegacyProjectSummary) => void
-  onDeleteRound: (g: RevisionGroup, roundId: string) => void
+  onDeleteRound: (
+    g: RevisionGroup,
+    roundId: string,
+    storage?: 'r2' | 'drive',
+  ) => void
   onDeleteGroup: (g: RevisionGroup) => void
   onDeleteLegacy: (p: LegacyProjectSummary) => void
 }) {
@@ -894,7 +908,9 @@ function ProjectList({
             onEdit={() => onEditGroup(item.group)}
             onAddRound={() => onAddRound(item.group)}
             onOpenRound={(round) => onOpenRound(item.group, round)}
-            onDeleteRound={(roundId) => onDeleteRound(item.group, roundId)}
+            onDeleteRound={(roundId, storage) =>
+              onDeleteRound(item.group, roundId, storage)
+            }
             onDeleteGroup={() => onDeleteGroup(item.group)}
           />
         ) : (
@@ -928,7 +944,7 @@ function GroupCard({
   onEdit: () => void
   onAddRound: () => void
   onOpenRound: (round: GroupRoundSummary) => void
-  onDeleteRound: (roundId: string) => void
+  onDeleteRound: (roundId: string, storage?: 'r2' | 'drive') => void
   onDeleteGroup: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -1176,7 +1192,7 @@ function GroupCard({
                     </a>
                     <button
                       type="button"
-                      onClick={() => onDeleteRound(round.id)}
+                      onClick={() => onDeleteRound(round.id, round.storage)}
                       className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -2180,7 +2196,12 @@ function ConfirmDeleteModal({
 }: {
   target:
     | { kind: 'group'; group: RevisionGroup }
-    | { kind: 'round'; group: RevisionGroup; roundId: string }
+    | {
+        kind: 'round'
+        group: RevisionGroup
+        roundId: string
+        storage?: 'r2' | 'drive'
+      }
     | { kind: 'legacy'; project: LegacyProjectSummary }
   onClose: () => void
   onDeleted: () => void
@@ -2190,8 +2211,13 @@ function ConfirmDeleteModal({
   const [error, setError] = useState<string | null>(null)
 
   const isRound = target.kind === 'round'
+  // R2-backed rounds delete everything (video + screenshots + audio)
+  // unconditionally on the server — there's no Drive trash to opt
+  // into, so we skip the checkbox and show a plain irreversible
+  // warning instead.
+  const isR2Round = target.kind === 'round' && target.storage === 'r2'
   const title = isRound
-    ? 'מחיקת סבב'
+    ? 'מחיקת סבב תיקונים'
     : target.kind === 'group'
       ? `מחיקת הפרויקט "${target.group.title}"`
       : `מחיקת הפרויקט "${target.project.title}"`
@@ -2218,21 +2244,31 @@ function ConfirmDeleteModal({
 
   return (
     <ModalShell title={title} onClose={onClose}>
-      <p className="text-sm leading-relaxed text-fg-muted">
-        הקישור הציבורי יפסיק לעבוד מיד. הפעולה לא ניתנת לביטול.
-      </p>
-      <label className="mt-4 flex items-start gap-2 text-xs text-fg-muted">
-        <input
-          type="checkbox"
-          checked={deleteDrive}
-          onChange={(e) => setDeleteDrive(e.target.checked)}
-          className="mt-0.5 accent-current"
-        />
-        <span>
-          למחוק גם את קבצי הוידאו מ-Google Drive (הם יישלחו לסל
-          המחזור של Drive ל-30 ימים, ניתן לשחזר ידנית)
-        </span>
-      </label>
+      {isR2Round ? (
+        <p className="text-sm leading-relaxed text-fg-muted">
+          אתה בטוח שאתה רוצה למחוק את הסבב תיקונים? הסרטון וכל מה
+          שקשור אליו (התמונות וההקלטות של הסבב הזה) יימחקו ולא יהיה
+          ניתן לשחזר את זה.
+        </p>
+      ) : (
+        <>
+          <p className="text-sm leading-relaxed text-fg-muted">
+            הקישור הציבורי יפסיק לעבוד מיד. הפעולה לא ניתנת לביטול.
+          </p>
+          <label className="mt-4 flex items-start gap-2 text-xs text-fg-muted">
+            <input
+              type="checkbox"
+              checked={deleteDrive}
+              onChange={(e) => setDeleteDrive(e.target.checked)}
+              className="mt-0.5 accent-current"
+            />
+            <span>
+              למחוק גם את קבצי הוידאו מ-Google Drive (הם יישלחו לסל
+              המחזור של Drive ל-30 ימים, ניתן לשחזר ידנית)
+            </span>
+          </label>
+        </>
+      )}
       {error && (
         <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {error}
@@ -2253,7 +2289,7 @@ function ConfirmDeleteModal({
           disabled={busy}
           className="rounded-md bg-destructive px-5 py-2 text-sm font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-40"
         >
-          {busy ? 'מוחק…' : 'מחיקה'}
+          {busy ? 'מוחק…' : isR2Round ? 'כן, מחק' : 'מחיקה'}
         </button>
       </div>
     </ModalShell>
