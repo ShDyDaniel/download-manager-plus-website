@@ -6,6 +6,7 @@ import {
   Search,
   Ban,
   Monitor,
+  HardDrive,
   Loader2,
   RefreshCw,
   Key as KeyIcon,
@@ -49,6 +50,8 @@ interface UserDoc {
   name?: string
   role?: 'admin' | 'user'
   subscription?: string
+  /** Revisions storage backend: 'r2' (new, default) | 'drive'. */
+  storageBackend?: 'r2' | 'drive'
   blocked?: boolean
   deviceId?: string | null
   createdAt?: string
@@ -267,7 +270,9 @@ function UserRow({
   onAuthExpired: () => void
   onShowKey: (k: KeySummary) => void
 }) {
-  const [busy, setBusy] = useState<null | 'block' | 'device' | 'role' | 'plan'>(
+  const [busy, setBusy] = useState<
+    null | 'block' | 'device' | 'role' | 'plan' | 'storage'
+  >(
     null,
   )
   const [error, setError] = useState('')
@@ -293,6 +298,7 @@ function UserRow({
   }
 
   const isAdmin = user.role === 'admin' || isAdminEmail(user.email)
+  const isDrive = user.storageBackend === 'drive'
   const onTrial = isTrialActive(user)
   const isPro = user.subscription === 'pro' || isKeyActive(redeemedKey)
   const blocked = user.blocked === true
@@ -458,6 +464,24 @@ function UserRow({
               }
             >
               <ShieldCheck className="h-3.5 w-3.5" />
+            </IconBtn>
+            <IconBtn
+              title={
+                isDrive
+                  ? 'אחסון סבבים: גוגל דרייב (לחץ למעבר למערכת החדשה R2)'
+                  : 'אחסון סבבים: מערכת חדשה R2 (לחץ למעבר לגוגל דרייב)'
+              }
+              busy={busy === 'storage'}
+              active={isDrive}
+              activeClass="border-amber-400/30 bg-amber-400/10 text-amber-400"
+              onClick={() =>
+                run('storage', 'admin-set-user-storage', {
+                  uid: user.uid,
+                  storageBackend: isDrive ? 'r2' : 'drive',
+                })
+              }
+            >
+              <HardDrive className="h-3.5 w-3.5" />
             </IconBtn>
           </div>
         </div>

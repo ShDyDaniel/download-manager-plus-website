@@ -324,7 +324,10 @@ export async function fetchFirebaseCustomToken(): Promise<string> {
 }
 
 export interface CreateGroupInput {
-  r2Key: string
+  // Exactly one storage pointer, per the user's backend.
+  r2Key?: string
+  driveFileId?: string
+  driveFolderId?: string
   title: string
   videoFileName: string
   videoSizeBytes: number
@@ -381,7 +384,9 @@ export async function createEmptyProjectGroup(
 
 export interface AddRoundInput {
   groupId: string
-  r2Key: string
+  r2Key?: string
+  driveFileId?: string
+  driveFolderId?: string
   videoFileName: string
   videoSizeBytes: number
   videoMime: string
@@ -649,7 +654,9 @@ export async function updateProjectLock(
  *  replacing because the old upload was wrong). */
 export interface ReplaceVideoInput {
   projectId: string
-  r2Key: string
+  r2Key?: string
+  driveFileId?: string
+  driveFolderId?: string
   videoFileName: string
   videoSizeBytes: number
   videoMime: string

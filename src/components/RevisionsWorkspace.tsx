@@ -62,6 +62,7 @@ import {
   fetchDriveAccessToken,
   fetchDriveIntegration,
   fetchDriveStorage,
+  fetchStorageBackend,
   fetchNoteMediaAsObjectUrl,
   formatBytes,
   listGroupsForOwner,
@@ -80,21 +81,119 @@ import {
   type OwnerNote,
   type RevisionGroup,
 } from '../lib/revisionsApi'
-import type { UploadProgress } from '../lib/driveUpload'
+import {
+  ensureProjectFolders,
+  setShareablePermissions,
+  uploadFileToDrive,
+  type UploadProgress,
+} from '../lib/driveUpload'
 import { uploadFileToR2 } from '../lib/r2Upload'
+
+/* ──────────────────────────────────────────────────────────────
+ *  Dual-backend upload helper — uploads one round's video to the
+ *  user's storage backend and returns the pointer to store on the
+ *  round doc (r2Key for R2, driveFileId+driveFolderId for Drive)
+ *  plus the file metadata. Shared by the create / add-round /
+ *  replace flows so the per-backend branching lives in one place.
+ * ────────────────────────────────────────────────────────────── */
+type UploadPointer = {
+  r2Key?: string
+  driveFileId?: string
+  driveFolderId?: string
+}
+
+async function uploadRoundVideo(
+  backend: 'r2' | 'drive',
+  source: VideoSource,
+  signal: AbortSignal,
+  setProgress: (p: UploadProgress | null) => void,
+): Promise<{
+  pointer: UploadPointer
+  videoFileName: string
+  videoSizeBytes: number
+  videoMime: string
+}> {
+  if (backend === 'drive') {
+    const at = await fetchDriveAccessToken()
+    if (signal.aborted) throw new Error('ההעלאה בוטלה')
+    const folders = await ensureProjectFolders(at.accessToken)
+    if (signal.aborted) throw new Error('ההעלאה בוטלה')
+    if (source.kind === 'upload') {
+      const upload = await uploadFileToDrive({
+        accessToken: at.accessToken,
+        file: source.file,
+        folderId: folders.videosFolderId,
+        onProgress: setProgress,
+        signal,
+      })
+      await setShareablePermissions(at.accessToken, upload.driveFileId)
+      return {
+        pointer: {
+          driveFileId: upload.driveFileId,
+          driveFolderId: folders.videosFolderId,
+        },
+        videoFileName: source.file.name,
+        videoSizeBytes: source.file.size,
+        videoMime: source.file.type || 'video/mp4',
+      }
+    }
+    if (source.kind === 'drive') {
+      await setShareablePermissions(at.accessToken, source.picked.id)
+      return {
+        pointer: {
+          driveFileId: source.picked.id,
+          driveFolderId: folders.videosFolderId,
+        },
+        videoFileName: source.picked.name,
+        videoSizeBytes: source.picked.sizeBytes,
+        videoMime: source.picked.mimeType || 'video/mp4',
+      }
+    }
+    throw new Error('לא נבחר קובץ')
+  }
+
+  // R2 backend (default): upload straight to our storage.
+  if (source.kind !== 'upload') {
+    throw new Error(
+      'ייבוא מ-Drive זמין רק במצב Google Drive — העלו קובץ מהמחשב',
+    )
+  }
+  const up = await uploadFileToR2(source.file, {
+    signal,
+    onProgress: (f) =>
+      setProgress({
+        bytesUploaded: Math.round(f * source.file.size),
+        totalBytes: source.file.size,
+        fraction: f,
+      }),
+  })
+  return {
+    pointer: { r2Key: up.key },
+    videoFileName: source.file.name,
+    videoSizeBytes: up.sizeBytes || source.file.size,
+    videoMime: source.file.type || 'video/mp4',
+  }
+}
 
 export function RevisionsWorkspace() {
   // `undefined` = still loading. `null` = not connected. Object = connected.
   // Three-state split prevents the empty-state from flashing during the
   // initial fetch on a returning user who's already connected.
   const [drive, setDrive] = useState<DriveIntegration | null | undefined>(undefined)
+  const [backend, setBackend] = useState<'r2' | 'drive' | undefined>(undefined)
   const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const d = await fetchDriveIntegration()
-      if (!cancelled) setDrive(d)
+      const [d, b] = await Promise.all([
+        fetchDriveIntegration(),
+        fetchStorageBackend(),
+      ])
+      if (!cancelled) {
+        setDrive(d)
+        setBackend(b)
+      }
     })()
     return () => {
       cancelled = true
@@ -105,7 +204,7 @@ export function RevisionsWorkspace() {
     setRefreshKey((n) => n + 1)
   }, [])
 
-  if (drive === undefined) {
+  if (drive === undefined || backend === undefined) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center text-sm text-fg-muted">
         טוען…
@@ -113,13 +212,17 @@ export function RevisionsWorkspace() {
     )
   }
 
-  if (drive === null) {
+  // Only the Google-Drive backend requires a connected Drive account.
+  // R2 users (the default) go straight to the workspace — their videos
+  // upload to our own storage, no Google account needed.
+  if (backend === 'drive' && drive === null) {
     return <ConnectDriveEmptyState onRequestRefresh={requestRefresh} />
   }
 
   return (
     <ConnectedWorkspace
       drive={drive}
+      backend={backend}
       onDisconnected={() => setDrive(null)}
     />
   )
@@ -299,9 +402,13 @@ interface Projects {
 
 function ConnectedWorkspace({
   drive,
+  backend,
   onDisconnected,
 }: {
-  drive: DriveIntegration
+  // null when the user is on the R2 backend and hasn't connected Drive
+  // (which is fine — Drive isn't needed for R2 uploads).
+  drive: DriveIntegration | null
+  backend: 'r2' | 'drive'
   onDisconnected: () => void
 }) {
   const [projects, setProjects] = useState<Projects | null>(null)
@@ -405,6 +512,8 @@ function ConnectedWorkspace({
   // Fetched on mount + after mutations (reload bumps refreshTick).
   // Not on the live listener — it only changes on upload/delete.
   useEffect(() => {
+    // Drive storage quota only applies to the Drive backend.
+    if (!drive) return
     let cancelled = false
     void (async () => {
       const s = await fetchDriveStorage()
@@ -413,7 +522,7 @@ function ConnectedWorkspace({
     return () => {
       cancelled = true
     }
-  }, [refreshTick])
+  }, [refreshTick, drive])
 
   function handleDisconnect() {
     // Just open the modal. The actual disconnect call moves to
@@ -556,7 +665,9 @@ function ConnectedWorkspace({
               />
             )}
 
-            {storage && <DriveStorageFooter drive={drive} storage={storage} />}
+            {drive && storage && (
+              <DriveStorageFooter drive={drive} storage={storage} />
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -569,6 +680,7 @@ function ConnectedWorkspace({
         {showNewProject && (
           <NewProjectModal
             key="new"
+            backend={backend}
             onClose={() => setShowNewProject(false)}
             onCreated={() => {
               setShowNewProject(false)
@@ -590,6 +702,7 @@ function ConnectedWorkspace({
         {addingRoundTo && (
           <AddRoundModal
             key="addround"
+            backend={backend}
             group={addingRoundTo}
             onClose={() => setAddingRoundTo(null)}
             onAdded={() => {
@@ -612,6 +725,7 @@ function ConnectedWorkspace({
         {replacingProject && (
           <ReplaceVideoModal
             key="replace"
+            backend={backend}
             projectId={replacingProject.projectId}
             currentName={replacingProject.currentName}
             onClose={() => setReplacingProject(null)}
@@ -646,7 +760,8 @@ function ActionBar({
   onDisconnect,
 }: {
   onNewProject: () => void
-  drive: DriveIntegration
+  // null on the R2 backend — no Drive account to show / disconnect.
+  drive: DriveIntegration | null
   onDisconnect: () => void
 }) {
   return (
@@ -659,19 +774,21 @@ function ActionBar({
         <Plus className="h-4 w-4" />
         פרויקט חדש
       </button>
-      <div className="flex items-center gap-3 text-xs text-fg-muted">
-        <DriveIcon className="h-3.5 w-3.5 text-primary" />
-        <span dir="ltr" className="truncate">
-          {drive.email}
-        </span>
-        <button
-          type="button"
-          onClick={onDisconnect}
-          className="text-fg-muted underline-offset-2 hover:text-fg hover:underline"
-        >
-          ניתוק
-        </button>
-      </div>
+      {drive && (
+        <div className="flex items-center gap-3 text-xs text-fg-muted">
+          <DriveIcon className="h-3.5 w-3.5 text-primary" />
+          <span dir="ltr" className="truncate">
+            {drive.email}
+          </span>
+          <button
+            type="button"
+            onClick={onDisconnect}
+            className="text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+          >
+            ניתוק
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -1263,9 +1380,11 @@ function ModalShell({
  * ────────────────────────────────────────────────────────────── */
 
 function NewProjectModal({
+  backend,
   onClose,
   onCreated,
 }: {
+  backend: 'r2' | 'drive'
   onClose: () => void
   onCreated: () => void
 }) {
@@ -1346,34 +1465,16 @@ function NewProjectModal({
       // checks abort so a click on cancel exits at the next yield.
       if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
 
-      let r2Key: string
       let videoFileName: string
       let videoSizeBytes: number
       let videoMime: string
-      if (source.kind === 'upload') {
-        const up = await uploadFileToR2(source.file, {
-          signal: controller.signal,
-          onProgress: (f) =>
-            setProgress({
-              bytesUploaded: Math.round(f * source.file.size),
-              totalBytes: source.file.size,
-              fraction: f,
-            }),
-        })
-        r2Key = up.key
-        videoFileName = source.file.name
-        videoSizeBytes = up.sizeBytes || source.file.size
-        videoMime = source.file.type || 'video/mp4'
-      } else {
-        // Drive-picker import isn't wired to R2 yet — that's the next
-        // slice (server-side Drive→R2). Until then only direct uploads.
-        throw new Error(
-          'ייבוא מ-Drive יתווסף בקרוב — כרגע יש להעלות קובץ מהמחשב',
-        )
-      }
+      const loc = await uploadRoundVideo(backend, source, controller.signal, setProgress)
+      videoFileName = loc.videoFileName
+      videoSizeBytes = loc.videoSizeBytes
+      videoMime = loc.videoMime
 
       await createProjectGroup({
-        r2Key,
+        ...loc.pointer,
         title: title.trim(),
         videoFileName,
         videoSizeBytes,
@@ -1487,10 +1588,12 @@ function NewProjectModal({
  * ────────────────────────────────────────────────────────────── */
 
 function AddRoundModal({
+  backend,
   group,
   onClose,
   onAdded,
 }: {
+  backend: 'r2' | 'drive'
   group: RevisionGroup
   onClose: () => void
   onAdded: () => void
@@ -1528,36 +1631,19 @@ function AddRoundModal({
     try {
       if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
 
-      let r2Key: string
-      let videoFileName: string
-      let videoSizeBytes: number
-      let videoMime: string
-      if (source.kind === 'upload') {
-        const up = await uploadFileToR2(source.file, {
-          signal: controller.signal,
-          onProgress: (f) =>
-            setProgress({
-              bytesUploaded: Math.round(f * source.file.size),
-              totalBytes: source.file.size,
-              fraction: f,
-            }),
-        })
-        r2Key = up.key
-        videoFileName = source.file.name
-        videoSizeBytes = up.sizeBytes || source.file.size
-        videoMime = source.file.type || 'video/mp4'
-      } else {
-        throw new Error(
-          'ייבוא מ-Drive יתווסף בקרוב — כרגע יש להעלות קובץ מהמחשב',
-        )
-      }
+      const loc = await uploadRoundVideo(
+        backend,
+        source,
+        controller.signal,
+        setProgress,
+      )
 
       await addRoundToGroup({
         groupId: group.id,
-        r2Key,
-        videoFileName,
-        videoSizeBytes,
-        videoMime,
+        ...loc.pointer,
+        videoFileName: loc.videoFileName,
+        videoSizeBytes: loc.videoSizeBytes,
+        videoMime: loc.videoMime,
       })
       onAdded()
     } catch (err) {
@@ -1640,11 +1726,13 @@ function AddRoundModal({
  * ────────────────────────────────────────────────────────────── */
 
 function ReplaceVideoModal({
+  backend,
   projectId,
   currentName,
   onClose,
   onReplaced,
 }: {
+  backend: 'r2' | 'drive'
   projectId: string
   currentName: string
   onClose: () => void
@@ -1680,21 +1768,18 @@ function ReplaceVideoModal({
     abortRef.current = controller
     try {
       if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
-      const up = await uploadFileToR2(file, {
-        signal: controller.signal,
-        onProgress: (f) =>
-          setProgress({
-            bytesUploaded: Math.round(f * file.size),
-            totalBytes: file.size,
-            fraction: f,
-          }),
-      })
+      const loc = await uploadRoundVideo(
+        backend,
+        { kind: 'upload', file },
+        controller.signal,
+        setProgress,
+      )
       const r = await replaceProjectVideo({
         projectId,
-        r2Key: up.key,
-        videoFileName: file.name,
-        videoSizeBytes: up.sizeBytes || file.size,
-        videoMime: file.type || 'video/mp4',
+        ...loc.pointer,
+        videoFileName: loc.videoFileName,
+        videoSizeBytes: loc.videoSizeBytes,
+        videoMime: loc.videoMime,
       })
       if (!r.ok) throw new Error(r.error)
       onReplaced()

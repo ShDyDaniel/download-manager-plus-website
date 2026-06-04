@@ -1200,6 +1200,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSetUserBlocked(req, res)
       case 'admin-set-user-role':
         return await handleAdminSetUserRole(req, res)
+      case 'admin-set-user-storage':
+        return await handleAdminSetUserStorage(req, res)
       case 'admin-set-user-subscription':
         return await handleAdminSetUserSubscription(req, res)
       case 'admin-clear-user-device':
@@ -5745,6 +5747,26 @@ async function handleAdminSetUserRole(req: VercelRequest, res: VercelResponse) {
   const role = body.role === 'admin' ? 'admin' : 'user'
   if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
   await getDb().collection('users').doc(uid).update({ role })
+  return res.status(200).json({ ok: true })
+}
+
+/** Storage backend for the Revisions feature, per user:
+ *    'r2'    → our Cloudflare R2 (the new system; default)
+ *    'drive' → Google Drive (the original system)
+ *  Controls which upload path the user's client takes; existing rounds
+ *  keep working either way (each round knows its own backend). */
+async function handleAdminSetUserStorage(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { uid?: string; storageBackend?: string }
+  const uid = String(body.uid || '').trim()
+  const storageBackend = body.storageBackend === 'drive' ? 'drive' : 'r2'
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
+  await getDb().collection('users').doc(uid).update({ storageBackend })
   return res.status(200).json({ ok: true })
 }
 
