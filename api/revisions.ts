@@ -3826,7 +3826,35 @@ async function handleNoteMediaOwner(
   const note = noteSnap.data() as {
     screenshotDriveFileId?: string | null
     audioDriveFileId?: string | null
+    screenshotR2Key?: string | null
+    audioR2Key?: string | null
   }
+
+  // R2-backed note media — stream straight from our bucket. Same as
+  // the public note-media endpoint; works for the desktop owner view
+  // without any bucket-CORS dependency (bytes flow R2 → Vercel → app).
+  const r2Key = kind === 'image' ? note.screenshotR2Key : note.audioR2Key
+  if (r2Key) {
+    try {
+      const r2 = getR2()
+      const obj = await r2.send(
+        new GetObjectCommand({ Bucket: R2_BUCKET, Key: r2Key }),
+      )
+      res.setHeader('Content-Type', obj.ContentType || 'application/octet-stream')
+      if (typeof obj.ContentLength === 'number') {
+        res.setHeader('Content-Length', String(obj.ContentLength))
+      }
+      res.setHeader('Cache-Control', 'private, max-age=3600')
+      res.setHeader('Content-Disposition', 'inline')
+      const bytes = await obj.Body?.transformToByteArray()
+      if (!bytes) return res.status(404).end('media not attached')
+      return res.status(200).send(Buffer.from(bytes))
+    } catch (err) {
+      console.warn('[revisions/note-media-owner] R2 fetch failed:', err)
+      return res.status(404).end('media not attached')
+    }
+  }
+
   const driveFileId =
     kind === 'image' ? note.screenshotDriveFileId : note.audioDriveFileId
   if (!driveFileId) return res.status(404).end('media not attached')
