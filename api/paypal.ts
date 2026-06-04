@@ -3121,35 +3121,35 @@ async function issueSumitReceipt(args: {
   if (!companyId || !apiKey) {
     return { ok: false, draft, error: 'SUMIT not configured' }
   }
-  // SUMIT create-document. Field names per the OfficeGuy/SUMIT REST
-  // API. Kept in one place so they're trivial to adjust if the live
-  // response (surfaced by the admin test action) shows otherwise.
+  // SUMIT create-document. Schema verified against the OfficeGuy/SUMIT
+  // model (AccountingDocumentsCreateRequest): Items + Payments + VAT
+  // are TOP-LEVEL siblings of Details; the draft flag is Details.IsDraft;
+  // a payment carries an Amount + one Details_* object. Omitting
+  // SendByEmail means SUMIT does NOT email — we deliver from our mailbox.
   const payload = {
     Credentials: { CompanyID: companyId, APIKey: apiKey },
     Details: {
+      IsDraft: draft,
       Customer: {
         Name: args.customerName || args.customerEmail,
         EmailAddress: args.customerEmail,
-        SearchMode: 0,
       },
-      Language: 'Hebrew',
-      Currency: args.currency === 'USD' ? 'USD' : 'ILS',
-      Type: 'TaxInvoiceReceipt',
-      Draft: draft,
+      Description: args.description,
     },
     Items: [
       {
         Quantity: 1,
         UnitPrice: args.amount,
         Description: args.description,
-        Item: { Name: args.description },
       },
     ],
-    Payments: [{ Amount: args.amount, Type: 'PayPal' }],
+    Payments: [
+      {
+        Amount: args.amount,
+        Details_Other: { Description: 'PayPal' },
+      },
+    ],
     VATIncluded: true,
-    // Never let SUMIT email the customer — we deliver from our mailbox.
-    SendByEmail: false,
-    SendDocumentByEmailToCustomer: false,
   }
   try {
     const r = await fetch(`${SUMIT_API_BASE}/accounting/documents/create/`, {
