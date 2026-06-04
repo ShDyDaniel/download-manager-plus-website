@@ -416,16 +416,26 @@ async function handleR2UploadInit(req: VercelRequest, res: VercelResponse) {
     : videoTypeFromFileName(fileName)
   const sizeBytes = Math.max(0, Math.floor(Number(body.sizeBytes) || 0))
 
-  // Storage-quota gate: refuse to start an upload that would push the
-  // user over their limit (100GB Pro / 1.5GB trial).
+  // Storage-quota gate, BEFORE the upload starts. We require a real
+  // size up front: without it we can't guarantee the file fits, so we
+  // refuse rather than let an unbounded upload begin (the size is
+  // re-verified for real at r2-upload-complete as a backstop).
   const { usedBytes, limitBytes } = await getStorageState(verified.uid)
-  if (sizeBytes > 0 && usedBytes + sizeBytes > limitBytes) {
+  if (sizeBytes <= 0) {
+    return res.status(400).json({
+      ok: false,
+      error: 'size-required',
+      message: 'לא ניתן לקבוע את גודל הקובץ. נסו שוב.',
+    })
+  }
+  if (usedBytes + sizeBytes > limitBytes) {
     return res.status(413).json({
       ok: false,
       error: 'quota',
-      message: `אין מספיק מקום אחסון. בשימוש ${(usedBytes / GB).toFixed(2)}GB מתוך ${(limitBytes / GB).toFixed(2)}GB. מחק סבבים ישנים ונסה שוב.`,
+      message: `אין מספיק מקום אחסון. הקובץ שוקל ${(sizeBytes / GB).toFixed(2)}GB, ובשימוש כבר ${(usedBytes / GB).toFixed(2)}GB מתוך ${(limitBytes / GB).toFixed(2)}GB. מחקו סבבים ישנים ונסו שוב.`,
       usedBytes,
       limitBytes,
+      sizeBytes,
     })
   }
 
@@ -524,7 +534,29 @@ async function handleR2UploadComplete(req: VercelRequest, res: VercelResponse) {
         MultipartUpload: { Parts },
       }),
     )
+    // Backstop against a client that under-reported its size at init:
+    // measure the REAL assembled object and, if it pushes the account
+    // over quota, delete it and reject. This makes the quota
+    // impossible to exceed even with a tampered client. (The object
+    // isn't a round doc yet, so getStorageState doesn't include it —
+    // used + real is the true projected usage.)
     const sizeBytes = await r2HeadSize(key)
+    const { usedBytes, limitBytes } = await getStorageState(verified.uid)
+    if (usedBytes + sizeBytes > limitBytes) {
+      try {
+        await r2DeleteObject(key)
+      } catch {
+        /* best-effort cleanup */
+      }
+      return res.status(413).json({
+        ok: false,
+        error: 'quota',
+        message: `אין מספיק מקום אחסון לקובץ הזה (${(sizeBytes / GB).toFixed(2)}GB). בשימוש ${(usedBytes / GB).toFixed(2)}GB מתוך ${(limitBytes / GB).toFixed(2)}GB.`,
+        usedBytes,
+        limitBytes,
+        sizeBytes,
+      })
+    }
     return res.status(200).json({ ok: true, key, sizeBytes })
   } catch (e) {
     console.error('[r2-upload-complete]', e)
