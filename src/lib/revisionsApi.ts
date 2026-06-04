@@ -112,6 +112,21 @@ export interface DriveIntegration {
 
 /** Check whether the user has Drive connected. Returns null if
  *  not connected; integration shape if connected. */
+/** Which storage backend this user is on (admin-controlled, default
+ *  'r2'). Decides whether the workspace requires a Drive connection
+ *  and which upload path to use. */
+export async function fetchStorageBackend(): Promise<'r2' | 'drive'> {
+  try {
+    const r = await postAction<{ ok: true; storageBackend?: string }>(
+      'oauth-status',
+      authBody(),
+    )
+    return r.storageBackend === 'drive' ? 'drive' : 'r2'
+  } catch {
+    return 'r2'
+  }
+}
+
 export async function fetchDriveIntegration(): Promise<DriveIntegration | null> {
   try {
     const r = await postAction<{

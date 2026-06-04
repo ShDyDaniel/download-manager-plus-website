@@ -228,6 +228,34 @@ async function r2HeadSize(key: string): Promise<number> {
   }
 }
 
+// Move a Drive file to trash, on behalf of its owner (Drive-backed
+// rounds only). Best-effort — returns whether the trash succeeded.
+async function driveTrashFile(ownerUid: string, fileId: string): Promise<boolean> {
+  if (!ownerUid || !fileId) return false
+  try {
+    const integrationSnap = await integrationDocRef(ownerUid).get()
+    if (!integrationSnap.exists) return false
+    const integration = integrationSnap.data() as IntegrationDoc
+    const refreshToken = decryptToken(integration.refreshTokenEnc)
+    const r = await refreshAccessToken(refreshToken)
+    const resp = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${fileId}`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${r.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ trashed: true }),
+      },
+    )
+    return resp.ok
+  } catch (e) {
+    console.error('[drive] trash failed:', fileId, e)
+    return false
+  }
+}
+
 /* ── Upload actions (owner-only, Pro-gated) ───────────────────── */
 
 // action=r2-upload-init
@@ -1285,14 +1313,25 @@ async function handleOauthStatus(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
 
+  // Which storage backend this user is on (admin-controlled, default R2).
+  // The client uses it to decide whether to require a Drive connection
+  // and which upload path to take.
+  const userSnap = await getDb().collection('users').doc(verified.uid).get()
+  const storageBackend =
+    (userSnap.data() as { storageBackend?: string } | undefined)
+      ?.storageBackend === 'drive'
+      ? 'drive'
+      : 'r2'
+
   const snap = await integrationDocRef(verified.uid).get()
   if (!snap.exists) {
-    return res.status(200).json({ ok: true, connected: false })
+    return res.status(200).json({ ok: true, connected: false, storageBackend })
   }
   const data = snap.data() as IntegrationDoc
   return res.status(200).json({
     ok: true,
     connected: true,
+    storageBackend,
     email: data.email,
     // Full integration shape so the desktop can stop using a
     // direct Firestore listener (blocked by rules for non-admin
@@ -1846,7 +1885,12 @@ async function handleCreateProjectGroup(
     idToken?: string
     title?: string
     password?: string
+    // Dual storage backend: an R2-backed round carries r2Key; a
+    // Drive-backed round carries driveFileId (+ driveFolderId). The
+    // client sends whichever its user's storageBackend dictates.
     r2Key?: string
+    driveFileId?: string
+    driveFolderId?: string
     videoFileName?: string
     videoSizeBytes?: number
     videoMime?: string
@@ -1866,10 +1910,10 @@ async function handleCreateProjectGroup(
 
   const title = String(body.title || '').trim().slice(0, 200)
   const r2Key = String(body.r2Key || '').trim()
-  // Drive folders are no longer created for videos (they live in R2).
-  // Note-media still uses Drive for now and creates its own folder on
-  // demand, so this stays null at creation time.
-  const driveFolderId: string | null = null
+  const driveFileId = String(body.driveFileId || '').trim()
+  // Drive note-media needs the parent folder; R2 rounds leave it null.
+  const driveFolderId = String(body.driveFolderId || '').trim() || null
+  const hasVideo = !!(r2Key || driveFileId)
   const videoFileName = String(body.videoFileName || '').trim().slice(0, 300)
   const videoSizeBytes = Number(body.videoSizeBytes) || 0
   const videoMime = String(body.videoMime || '').trim().slice(0, 100)
@@ -1929,13 +1973,13 @@ async function handleCreateProjectGroup(
     // Denormalised count of active rounds — lets the project list
     // render the card (with its round count) WITHOUT reading every
     // round doc. Maintained on add-round / delete-round.
-    roundCount: r2Key ? 1 : 0,
+    roundCount: hasVideo ? 1 : 0,
     createdAt: now,
     updatedAt: now,
   })
 
   let roundIdOut: string | null = null
-  if (r2Key) {
+  if (hasVideo) {
     const roundRef = db.collection('revisionProjects').doc()
     roundIdOut = roundRef.id
     batch.set(roundRef, {
@@ -1948,7 +1992,11 @@ async function handleCreateProjectGroup(
       // lookup).
       ownerUid: verified.uid,
       ownerEmail: verified.email,
-      r2Key,
+      // Exactly one of these is set, per the user's storage backend.
+      // null (not undefined) so the field exists for queries/clarity.
+      r2Key: r2Key || null,
+      driveFileId: driveFileId || null,
+      driveFolderId,
       videoFileName,
       videoSizeBytes,
       videoMime,
@@ -1999,6 +2047,8 @@ async function handleAddRoundToGroup(
     idToken?: string
     groupId?: string
     r2Key?: string
+    driveFileId?: string
+    driveFolderId?: string
     videoFileName?: string
     videoSizeBytes?: number
     videoMime?: string
@@ -2010,8 +2060,11 @@ async function handleAddRoundToGroup(
 
   const groupId = String(body.groupId || '').trim()
   const r2Key = String(body.r2Key || '').trim()
+  const driveFileId = String(body.driveFileId || '').trim()
+  const driveFolderId = String(body.driveFolderId || '').trim() || null
   if (!groupId) return res.status(400).json({ ok: false, error: 'groupId required' })
-  if (!r2Key) return res.status(400).json({ ok: false, error: 'r2Key required' })
+  if (!r2Key && !driveFileId)
+    return res.status(400).json({ ok: false, error: 'r2Key or driveFileId required' })
 
   const db = getDb()
   const groupRef = db.collection('revisionGroups').doc(groupId)
@@ -2048,7 +2101,9 @@ async function handleAddRoundToGroup(
     groupId,
     ownerUid: verified.uid,
     ownerEmail: verified.email,
-    r2Key,
+    r2Key: r2Key || null,
+    driveFileId: driveFileId || null,
+    driveFolderId: driveFolderId || group.driveFolderId || null,
     videoFileName: String(body.videoFileName || '').trim().slice(0, 300),
     videoSizeBytes: Number(body.videoSizeBytes) || 0,
     videoMime: String(body.videoMime || '').trim().slice(0, 100),
@@ -2636,8 +2691,7 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
             id: selectedRound.id,
             title: group.title,
             roundNumber: selectedRound.roundNumber,
-            // Playback uses streamUrl (get-stream-token → Worker → R2).
-            // embedUrl/driveViewUrl were Drive-only and are gone now.
+            // Playback always uses streamUrl (get-stream-token → Worker).
             embedUrl: null,
             videoSizeBytes: Number(selectedRoundData.videoSizeBytes) || 0,
             videoMime: String(selectedRoundData.videoMime || ''),
@@ -2647,7 +2701,12 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
             // (legacy fallback = original ship behavior).
             watermark: group.watermark !== false,
             allowDownload: group.allowDownload === true,
-            driveViewUrl: null,
+            // "Open in Drive" link only for Drive-backed rounds whose
+            // editor enabled the toggle. R2 rounds have no Drive URL.
+            driveViewUrl:
+              group.openInDrive === true && selectedRoundData.driveFileId
+                ? `https://drive.google.com/file/d/${selectedRoundData.driveFileId}/view`
+                : null,
           }
         : null,
     })
@@ -3624,16 +3683,38 @@ async function handleAuthStream(req: VercelRequest, res: VercelResponse) {
     return res.status(resolved.status).json({ ok: false, error: resolved.error })
   }
   const { roundData } = resolved
-  // R2 era: the video lives in our own bucket. We just hand the Worker
-  // the object key (already password/round-validated above). The Worker
-  // reads the bytes straight from R2 via its binding — no access token,
-  // no Drive round-trip, zero egress.
+
+  // R2-backed round: hand the Worker the object key; it reads the bytes
+  // straight from R2 via its binding (no token, zero egress).
   const r2Key = String(roundData.r2Key || '')
-  if (!r2Key) {
+  if (r2Key) {
+    res.setHeader('Cache-Control', 'no-store')
+    return res.status(200).json({ ok: true, r2Key })
+  }
+
+  // Drive-backed round (a user kept on the Google Drive backend): mint a
+  // fresh access token from the owner's stored refresh token and hand the
+  // Worker the Drive file id, exactly like before the R2 migration.
+  const driveFileId = String(roundData.driveFileId || '')
+  if (!driveFileId) {
     return res.status(404).json({ ok: false, error: 'video not attached' })
   }
-  res.setHeader('Cache-Control', 'no-store')
-  return res.status(200).json({ ok: true, r2Key })
+  const ownerUid = String(roundData.ownerUid || '')
+  const integrationSnap = await integrationDocRef(ownerUid).get()
+  if (!integrationSnap.exists) {
+    return res.status(500).json({ ok: false, error: 'drive not connected' })
+  }
+  const integration = integrationSnap.data() as IntegrationDoc
+  const refreshToken = decryptToken(integration.refreshTokenEnc)
+  try {
+    const r = await refreshAccessToken(refreshToken)
+    res.setHeader('Cache-Control', 'no-store')
+    return res
+      .status(200)
+      .json({ ok: true, accessToken: r.accessToken, driveFileId })
+  } catch {
+    return res.status(401).json({ ok: false, error: 'drive auth expired' })
+  }
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -4025,18 +4106,17 @@ async function handleCheckVideoStatus(req: VercelRequest, res: VercelResponse) {
   const project = snap.data() as {
     ownerUid: string
     r2Key?: string
+    driveFileId?: string
     videoStatus?: string
   }
   // Authorization — only the owner can poll their own project.
   if (project.ownerUid !== verified.uid) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  // R2 has no async transcoding step: once the multipart upload is
-  // completed and the round doc written, the object is immediately
-  // playable. So the video is "ready" the moment the key exists.
-  // (Kept as an endpoint so the client's existing poll is a harmless
-  // no-op rather than a 404.)
-  if (project.r2Key || project.videoStatus === 'ready') {
+  // Both backends serve the file the moment the round doc exists with a
+  // key — R2 has no transcode step, and Drive files stream through the
+  // Worker immediately. So once either key is present it's ready.
+  if (project.r2Key || project.driveFileId || project.videoStatus === 'ready') {
     return res.status(200).json({ ok: true, status: 'ready' })
   }
   return res.status(200).json({ ok: true, status: 'processing' })
@@ -4213,6 +4293,7 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
   const round = snap.data() as {
     ownerUid: string
     r2Key?: string
+    driveFileId?: string
     groupId?: string
   }
   if (round.ownerUid !== verified.uid) {
@@ -4235,8 +4316,12 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
   // migrates; orphaned tiny screenshots are harmless until then.
   let driveDeleted = false
   const mediaTrashedCount = 0
-  if (deleteDriveFile && round.r2Key) {
-    driveDeleted = await r2DeleteObject(round.r2Key)
+  if (deleteDriveFile) {
+    if (round.r2Key) {
+      driveDeleted = await r2DeleteObject(round.r2Key)
+    } else if (round.driveFileId) {
+      driveDeleted = await driveTrashFile(round.ownerUid, round.driveFileId)
+    }
   }
 
   await roundRef.update({
@@ -4323,12 +4408,14 @@ async function handleDeleteGroup(req: VercelRequest, res: VercelResponse) {
   let driveDeleted = false
   const mediaTrashedCount = 0
   if (deleteDriveFiles) {
-    const keys: string[] = []
+    const ops: Array<Promise<boolean>> = []
     for (const d of activeRoundDocs) {
-      const r = d.data() as { r2Key?: string }
-      if (r.r2Key) keys.push(r.r2Key)
+      const r = d.data() as { r2Key?: string; driveFileId?: string; ownerUid?: string }
+      if (r.r2Key) ops.push(r2DeleteObject(r.r2Key))
+      else if (r.driveFileId)
+        ops.push(driveTrashFile(r.ownerUid || verified.uid, r.driveFileId))
     }
-    const results = await Promise.all(keys.map((k) => r2DeleteObject(k)))
+    const results = await Promise.all(ops)
     if (results.some(Boolean)) driveDeleted = true
   }
 
@@ -4668,6 +4755,8 @@ async function handleReplaceProjectVideo(
     idToken?: string
     projectId?: string
     r2Key?: string
+    driveFileId?: string
+    driveFolderId?: string
     videoFileName?: string
     videoSizeBytes?: number
     videoMime?: string
@@ -4678,13 +4767,14 @@ async function handleReplaceProjectVideo(
   if (!(await requirePro(res, verified))) return
   const projectId = String(body.projectId || '').trim()
   const newR2Key = String(body.r2Key || '').trim()
+  const newDriveFileId = String(body.driveFileId || '').trim()
   const videoFileName = String(body.videoFileName || '').trim().slice(0, 300)
   const videoSizeBytes = Number(body.videoSizeBytes) || 0
   const videoMime = String(body.videoMime || '').trim().slice(0, 100)
-  if (!projectId || !newR2Key) {
+  if (!projectId || (!newR2Key && !newDriveFileId)) {
     return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
   }
-  if (!keyBelongsToUser(newR2Key, verified.uid)) {
+  if (newR2Key && !keyBelongsToUser(newR2Key, verified.uid)) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
 
@@ -4694,15 +4784,21 @@ async function handleReplaceProjectVideo(
   const project = snap.data() as {
     ownerUid: string
     r2Key?: string
+    driveFileId?: string
   }
   if (project.ownerUid !== verified.uid) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const oldR2Key = project.r2Key || ''
+  const oldDriveFileId = project.driveFileId || ''
 
   const now = Date.now()
+  // Swap to whichever backend the new upload used; clear the other so
+  // the round carries exactly one pointer.
   await docRef.update({
-    r2Key: newR2Key,
+    r2Key: newR2Key || null,
+    driveFileId: newDriveFileId || null,
+    driveFolderId: String(body.driveFolderId || '').trim() || null,
     videoFileName: videoFileName || undefined,
     videoSizeBytes: videoSizeBytes || undefined,
     videoMime: videoMime || undefined,
@@ -4710,12 +4806,13 @@ async function handleReplaceProjectVideo(
     updatedAt: now,
   })
 
-  // Best-effort: delete the old R2 object unless the caller asked to
-  // keep it. The new pointer is already saved, so a failed delete is
-  // just an orphan to clean up later, not a user-facing failure.
+  // Best-effort: remove the OLD object/file unless asked to keep it.
   const trashOld = body.trashOldFile !== false
-  if (trashOld && oldR2Key && oldR2Key !== newR2Key) {
-    await r2DeleteObject(oldR2Key)
+  if (trashOld) {
+    if (oldR2Key && oldR2Key !== newR2Key) await r2DeleteObject(oldR2Key)
+    if (oldDriveFileId && oldDriveFileId !== newDriveFileId) {
+      await driveTrashFile(project.ownerUid, oldDriveFileId)
+    }
   }
 
   return res.status(200).json({ ok: true })

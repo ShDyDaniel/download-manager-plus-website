@@ -64,10 +64,19 @@ async function fetchAuth(env, shareToken, passwordToken, roundId) {
     throw new Error(`auth ${r.status}: ${text.slice(0, 200)}`)
   }
   const json = await r.json()
-  if (!json || !json.ok || !json.r2Key) {
+  // Dual backend: an R2 round returns { r2Key }; a Drive round returns
+  // { accessToken, driveFileId }. Accept either.
+  const okR2 = json && json.ok && json.r2Key
+  const okDrive = json && json.ok && json.accessToken && json.driveFileId
+  if (!okR2 && !okDrive) {
     throw new Error('auth response malformed')
   }
-  return { r2Key: json.r2Key, expiresAt: Date.now() + AUTH_TTL_MS }
+  return {
+    r2Key: json.r2Key || '',
+    accessToken: json.accessToken || '',
+    driveFileId: json.driveFileId || '',
+    expiresAt: Date.now() + AUTH_TTL_MS,
+  }
 }
 
 async function getAuth(env, shareToken, passwordToken, roundId) {
@@ -171,6 +180,38 @@ export default {
       })
     }
 
+    // ── Drive-backed round → stream from Google Drive (pre-R2 path,
+    // for users the admin keeps on the Drive backend) ──────────────
+    if (!auth.r2Key && auth.driveFileId) {
+      const driveUrl = `https://www.googleapis.com/drive/v3/files/${auth.driveFileId}?alt=media`
+      const dh = new Headers({ authorization: `Bearer ${auth.accessToken}` })
+      const range = request.headers.get('range')
+      if (range) dh.set('range', range)
+      const driveResp = await fetch(driveUrl, {
+        method: request.method === 'HEAD' ? 'HEAD' : 'GET',
+        headers: dh,
+      })
+      const respHeaders = corsHeaders({ 'content-disposition': dispositionFor(url) })
+      for (const h of [
+        'content-type',
+        'content-length',
+        'content-range',
+        'accept-ranges',
+        'last-modified',
+        'etag',
+      ]) {
+        const v = driveResp.headers.get(h)
+        if (v) respHeaders[h] = v
+      }
+      if (!respHeaders['accept-ranges']) respHeaders['accept-ranges'] = 'bytes'
+      return new Response(driveResp.body, {
+        status: driveResp.status,
+        statusText: driveResp.statusText,
+        headers: respHeaders,
+      })
+    }
+
+    // ── R2-backed round ─────────────────────────────────────────
     if (!env.BUCKET) {
       return new Response('R2 binding (BUCKET) not configured', {
         status: 500,
