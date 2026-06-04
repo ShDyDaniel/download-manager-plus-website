@@ -47,8 +47,12 @@ async function postAction<T>(
     body: JSON.stringify({ sessionToken, ...body }),
     signal,
   })
-  const json = (await r.json()) as { ok: boolean; error?: string } & T
-  if (!json.ok) throw new Error(json.error || `${action} failed`)
+  const json = (await r.json()) as {
+    ok: boolean
+    error?: string
+    message?: string
+  } & T
+  if (!json.ok) throw new Error(json.message || json.error || `${action} failed`)
   return json
 }
 
@@ -105,6 +109,7 @@ export async function uploadFileToR2(
     {
       fileName: file.name,
       contentType: file.type || 'application/octet-stream',
+      sizeBytes: file.size,
     },
     signal,
   )

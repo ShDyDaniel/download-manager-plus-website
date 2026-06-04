@@ -1,7 +1,11 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'node:crypto'
 import { initializeApp, getApps, cert, type App } from 'firebase-admin/app'
-import { getFirestore, type Firestore } from 'firebase-admin/firestore'
+import {
+  getFirestore,
+  FieldValue,
+  type Firestore,
+} from 'firebase-admin/firestore'
 import {
   S3Client,
   CreateMultipartUploadCommand,
@@ -228,6 +232,31 @@ async function r2HeadSize(key: string): Promise<number> {
   }
 }
 
+// Delete every R2 note-media object (screenshots / audio) attached to a
+// round's notes. Safe no-op for notes that still use Drive. Note media
+// is tiny so it isn't tracked in the storage quota counter.
+async function deleteRoundNoteMediaR2(
+  ownerUid: string,
+  roundId: string,
+): Promise<void> {
+  try {
+    const notesSnap = await getDb()
+      .collection('revisionProjects')
+      .doc(roundId)
+      .collection('notes')
+      .get()
+    const keys: string[] = []
+    for (const n of notesSnap.docs) {
+      const d = n.data() as { screenshotR2Key?: string; audioR2Key?: string }
+      if (d.screenshotR2Key) keys.push(d.screenshotR2Key)
+      if (d.audioR2Key) keys.push(d.audioR2Key)
+    }
+    if (keys.length) await Promise.all(keys.map((k) => r2DeleteObject(k)))
+  } catch (e) {
+    console.warn('[r2] note-media cleanup failed:', roundId, e)
+  }
+}
+
 // Move a Drive file to trash, on behalf of its owner (Drive-backed
 // rounds only). Best-effort — returns whether the trash succeeded.
 async function driveTrashFile(ownerUid: string, fileId: string): Promise<boolean> {
@@ -267,10 +296,29 @@ async function handleR2UploadInit(req: VercelRequest, res: VercelResponse) {
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   if (!(await requirePro(res, verified))) return
 
-  const body = (req.body || {}) as { fileName?: string; contentType?: string }
+  const body = (req.body || {}) as {
+    fileName?: string
+    contentType?: string
+    sizeBytes?: number
+  }
   const fileName = String(body.fileName || 'video').slice(0, 300)
   const contentType =
     String(body.contentType || 'application/octet-stream').slice(0, 100)
+  const sizeBytes = Math.max(0, Math.floor(Number(body.sizeBytes) || 0))
+
+  // Storage-quota gate: refuse to start an upload that would push the
+  // user over their limit (100GB Pro / 1.5GB trial).
+  const { usedBytes, limitBytes } = await getStorageState(verified.uid)
+  if (sizeBytes > 0 && usedBytes + sizeBytes > limitBytes) {
+    return res.status(413).json({
+      ok: false,
+      error: 'quota',
+      message: `אין מספיק מקום אחסון. בשימוש ${(usedBytes / GB).toFixed(2)}GB מתוך ${(limitBytes / GB).toFixed(2)}GB. מחק סבבים ישנים ונסה שוב.`,
+      usedBytes,
+      limitBytes,
+    })
+  }
+
   const key = buildVideoKey(verified.uid, fileName)
 
   try {
@@ -666,6 +714,59 @@ function serverIsTrialActive(user: Record<string, unknown>): boolean {
   const ts = new Date(String(exp)).getTime()
   if (!Number.isFinite(ts)) return false
   return ts > Date.now()
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  R2 storage quota (per user)
+ *
+ *  Paid (Pro) users get the full quota; users whose access is a
+ *  14-day trial get a small one. The counter (users.storageUsedBytes)
+ *  is bumped on round create / replace and decremented on delete —
+ *  only for R2-backed rounds (Drive videos live in the user's own
+ *  Drive and don't count against our storage).
+ * ────────────────────────────────────────────────────────────── */
+const GB = 1024 * 1024 * 1024
+const STORAGE_QUOTA_PRO = 100 * GB
+const STORAGE_QUOTA_TRIAL = Math.round(1.5 * GB)
+
+function storageQuotaForUser(user: Record<string, unknown>): number {
+  // Trial-only access → small quota. Any paid/other Pro path → full.
+  if (serverIsTrialActive(user) && user.subscription !== 'pro') {
+    return STORAGE_QUOTA_TRIAL
+  }
+  return STORAGE_QUOTA_PRO
+}
+
+// Read a user's current usage + their quota in one go.
+async function getStorageState(
+  uid: string,
+): Promise<{ usedBytes: number; limitBytes: number }> {
+  const snap = await getDb().collection('users').doc(uid).get()
+  const user = (snap.data() as Record<string, unknown>) || {}
+  const usedBytes = Number(user.storageUsedBytes) || 0
+  return { usedBytes, limitBytes: storageQuotaForUser(user) }
+}
+
+// Adjust the stored usage counter atomically (deltaBytes may be
+// negative on delete). Never lets the counter go below zero.
+async function adjustStorageUsage(uid: string, deltaBytes: number): Promise<void> {
+  if (!uid || !deltaBytes) return
+  try {
+    await getDb()
+      .collection('users')
+      .doc(uid)
+      .set({ storageUsedBytes: FieldValue.increment(deltaBytes) }, { merge: true })
+    // Clamp negatives that can arise from drift (best-effort).
+    if (deltaBytes < 0) {
+      const snap = await getDb().collection('users').doc(uid).get()
+      const v = Number((snap.data() as { storageUsedBytes?: number })?.storageUsedBytes)
+      if (Number.isFinite(v) && v < 0) {
+        await getDb().collection('users').doc(uid).update({ storageUsedBytes: 0 })
+      }
+    }
+  } catch (e) {
+    console.warn('[storage] adjust usage failed:', uid, deltaBytes, e)
+  }
 }
 
 // Mirror of isKeyActive() from src/lib/firestore.ts — null/expired
@@ -1313,25 +1414,31 @@ async function handleOauthStatus(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
 
-  // Which storage backend this user is on (admin-controlled, default R2).
-  // The client uses it to decide whether to require a Drive connection
-  // and which upload path to take.
+  // Which storage backend this user is on (admin-controlled, default R2),
+  // plus their R2 usage + quota for the in-app storage bar.
   const userSnap = await getDb().collection('users').doc(verified.uid).get()
-  const storageBackend =
-    (userSnap.data() as { storageBackend?: string } | undefined)
-      ?.storageBackend === 'drive'
-      ? 'drive'
-      : 'r2'
+  const userDoc = (userSnap.data() as Record<string, unknown>) || {}
+  const storageBackend = userDoc.storageBackend === 'drive' ? 'drive' : 'r2'
+  const storageUsedBytes = Number(userDoc.storageUsedBytes) || 0
+  const storageLimitBytes = storageQuotaForUser(userDoc)
 
   const snap = await integrationDocRef(verified.uid).get()
   if (!snap.exists) {
-    return res.status(200).json({ ok: true, connected: false, storageBackend })
+    return res.status(200).json({
+      ok: true,
+      connected: false,
+      storageBackend,
+      storageUsedBytes,
+      storageLimitBytes,
+    })
   }
   const data = snap.data() as IntegrationDoc
   return res.status(200).json({
     ok: true,
     connected: true,
     storageBackend,
+    storageUsedBytes,
+    storageLimitBytes,
     email: data.email,
     // Full integration shape so the desktop can stop using a
     // direct Firestore listener (blocked by rules for non-admin
@@ -2011,6 +2118,11 @@ async function handleCreateProjectGroup(
   }
   await batch.commit()
 
+  // Count R2 storage toward the user's quota (Drive videos don't).
+  if (r2Key && videoSizeBytes > 0) {
+    await adjustStorageUsage(verified.uid, videoSizeBytes)
+  }
+
   return res.status(200).json({
     ok: true,
     groupId: groupRef.id,
@@ -2126,6 +2238,11 @@ async function handleAddRoundToGroup(
     (d) => (d.data() as { status?: string }).status === 'active',
   ).length
   await groupRef.update({ updatedAt: now, roundCount: activeCount })
+
+  // Count R2 storage toward the user's quota (Drive videos don't).
+  if (r2Key) {
+    await adjustStorageUsage(verified.uid, Number(body.videoSizeBytes) || 0)
+  }
 
   return res.status(200).json({ ok: true, roundId: roundRef.id })
 }
@@ -4294,6 +4411,7 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
     ownerUid: string
     r2Key?: string
     driveFileId?: string
+    videoSizeBytes?: number
     groupId?: string
   }
   if (round.ownerUid !== verified.uid) {
@@ -4308,20 +4426,19 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
     })
   }
 
-  // Hard-delete the round's video object from our R2 bucket when the
-  // caller asks for it. We own the storage, so removing the object
-  // immediately frees the user's quota — there's no "trash" limbo to
-  // worry about like there was with Drive. Note-media (still on Drive
-  // during the transition) is cleaned up separately when that path
-  // migrates; orphaned tiny screenshots are harmless until then.
+  // Remove the round's video from storage. For R2 we ALWAYS delete the
+  // object (it's our storage — keeping it just wastes the user's quota)
+  // and decrement the usage counter. For Drive we only trash when the
+  // caller opted in (the file lives in the user's own Drive).
   let driveDeleted = false
   const mediaTrashedCount = 0
-  if (deleteDriveFile) {
-    if (round.r2Key) {
-      driveDeleted = await r2DeleteObject(round.r2Key)
-    } else if (round.driveFileId) {
-      driveDeleted = await driveTrashFile(round.ownerUid, round.driveFileId)
-    }
+  if (round.r2Key) {
+    driveDeleted = await r2DeleteObject(round.r2Key)
+    await adjustStorageUsage(round.ownerUid, -(Number(round.videoSizeBytes) || 0))
+    // Also delete this round's R2 note-media attachments + free quota.
+    await deleteRoundNoteMediaR2(round.ownerUid, roundId)
+  } else if (deleteDriveFile && round.driveFileId) {
+    driveDeleted = await driveTrashFile(round.ownerUid, round.driveFileId)
   }
 
   await roundRef.update({
@@ -4407,16 +4524,30 @@ async function handleDeleteGroup(req: VercelRequest, res: VercelResponse) {
   // on Drive during the transition) is handled when that path migrates.
   let driveDeleted = false
   const mediaTrashedCount = 0
-  if (deleteDriveFiles) {
-    const ops: Array<Promise<boolean>> = []
+  {
+    const ops: Array<Promise<unknown>> = []
+    let freedBytes = 0
     for (const d of activeRoundDocs) {
-      const r = d.data() as { r2Key?: string; driveFileId?: string; ownerUid?: string }
-      if (r.r2Key) ops.push(r2DeleteObject(r.r2Key))
-      else if (r.driveFileId)
+      const r = d.data() as {
+        r2Key?: string
+        driveFileId?: string
+        ownerUid?: string
+        videoSizeBytes?: number
+      }
+      if (r.r2Key) {
+        // R2 video: always delete + free quota + clean its note media.
+        ops.push(r2DeleteObject(r.r2Key))
+        ops.push(deleteRoundNoteMediaR2(r.ownerUid || verified.uid, d.id))
+        freedBytes += Number(r.videoSizeBytes) || 0
+        driveDeleted = true
+      } else if (deleteDriveFiles && r.driveFileId) {
+        // Drive video: only trash when the caller opted in.
         ops.push(driveTrashFile(r.ownerUid || verified.uid, r.driveFileId))
+        driveDeleted = true
+      }
     }
-    const results = await Promise.all(ops)
-    if (results.some(Boolean)) driveDeleted = true
+    await Promise.all(ops)
+    if (freedBytes > 0) await adjustStorageUsage(verified.uid, -freedBytes)
   }
 
   const now = Date.now()
@@ -4785,12 +4916,14 @@ async function handleReplaceProjectVideo(
     ownerUid: string
     r2Key?: string
     driveFileId?: string
+    videoSizeBytes?: number
   }
   if (project.ownerUid !== verified.uid) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const oldR2Key = project.r2Key || ''
   const oldDriveFileId = project.driveFileId || ''
+  const oldSizeBytes = Number(project.videoSizeBytes) || 0
 
   const now = Date.now()
   // Swap to whichever backend the new upload used; clear the other so
@@ -4808,12 +4941,22 @@ async function handleReplaceProjectVideo(
 
   // Best-effort: remove the OLD object/file unless asked to keep it.
   const trashOld = body.trashOldFile !== false
+  let freedOldR2 = false
   if (trashOld) {
-    if (oldR2Key && oldR2Key !== newR2Key) await r2DeleteObject(oldR2Key)
+    if (oldR2Key && oldR2Key !== newR2Key) {
+      await r2DeleteObject(oldR2Key)
+      freedOldR2 = true
+    }
     if (oldDriveFileId && oldDriveFileId !== newDriveFileId) {
       await driveTrashFile(project.ownerUid, oldDriveFileId)
     }
   }
+
+  // Quota: add the new R2 object's bytes, subtract the freed old one's.
+  let delta = 0
+  if (newR2Key) delta += videoSizeBytes
+  if (freedOldR2) delta -= oldSizeBytes
+  if (delta) await adjustStorageUsage(project.ownerUid, delta)
 
   return res.status(200).json({ ok: true })
 }

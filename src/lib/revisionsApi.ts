@@ -127,6 +127,27 @@ export async function fetchStorageBackend(): Promise<'r2' | 'drive'> {
   }
 }
 
+/** R2 storage usage + quota for the in-app storage bar (R2 users). */
+export async function fetchStorageState(): Promise<{
+  usedBytes: number
+  limitBytes: number
+} | null> {
+  try {
+    const r = await postAction<{
+      ok: true
+      storageUsedBytes?: number
+      storageLimitBytes?: number
+    }>('oauth-status', authBody())
+    if (typeof r.storageLimitBytes !== 'number') return null
+    return {
+      usedBytes: Number(r.storageUsedBytes) || 0,
+      limitBytes: r.storageLimitBytes,
+    }
+  } catch {
+    return null
+  }
+}
+
 export async function fetchDriveIntegration(): Promise<DriveIntegration | null> {
   try {
     const r = await postAction<{

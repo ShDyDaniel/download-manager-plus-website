@@ -63,6 +63,7 @@ import {
   fetchDriveIntegration,
   fetchDriveStorage,
   fetchStorageBackend,
+  fetchStorageState,
   fetchNoteMediaAsObjectUrl,
   formatBytes,
   listGroupsForOwner,
@@ -413,6 +414,10 @@ function ConnectedWorkspace({
 }) {
   const [projects, setProjects] = useState<Projects | null>(null)
   const [storage, setStorage] = useState<DriveStorage | null>(null)
+  const [r2Storage, setR2Storage] = useState<{
+    usedBytes: number
+    limitBytes: number
+  } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [showNewProject, setShowNewProject] = useState(false)
@@ -523,6 +528,20 @@ function ConnectedWorkspace({
       cancelled = true
     }
   }, [refreshTick, drive])
+
+  // R2 storage usage + quota (our own storage). Refreshed after every
+  // upload/delete via refreshTick.
+  useEffect(() => {
+    if (backend !== 'r2') return
+    let cancelled = false
+    void (async () => {
+      const s = await fetchStorageState()
+      if (!cancelled) setR2Storage(s)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [refreshTick, backend])
 
   function handleDisconnect() {
     // Just open the modal. The actual disconnect call moves to
@@ -667,6 +686,12 @@ function ConnectedWorkspace({
 
             {drive && storage && (
               <DriveStorageFooter drive={drive} storage={storage} />
+            )}
+            {backend === 'r2' && r2Storage && (
+              <R2StorageBar
+                usedBytes={r2Storage.usedBytes}
+                limitBytes={r2Storage.limitBytes}
+              />
             )}
           </motion.div>
         )}
@@ -1310,6 +1335,41 @@ function DriveStorageFooter({
           style={{ width: `${usedPct}%` }}
         />
       </div>
+    </div>
+  )
+}
+
+/* R2 storage bar — our own storage usage vs the user's quota
+ * (100GB Pro / 1.5GB trial). Turns amber/red as it fills. */
+function R2StorageBar({
+  usedBytes,
+  limitBytes,
+}: {
+  usedBytes: number
+  limitBytes: number
+}) {
+  const pct = limitBytes ? Math.min(100, (usedBytes / limitBytes) * 100) : 0
+  const barColor =
+    pct >= 95 ? 'bg-destructive' : pct >= 80 ? 'bg-amber-400' : 'bg-primary'
+  return (
+    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-xs text-fg-muted">
+      <div className="mb-2 flex items-center justify-between">
+        <span>שטח אחסון בחשבון</span>
+        <span dir="ltr" className="font-mono text-fg">
+          {formatBytes(usedBytes)} / {formatBytes(limitBytes)}
+        </span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-bg-elevated">
+        <div
+          className={`h-full transition-all ${barColor}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {pct >= 95 && (
+        <div className="mt-2 text-[11px] text-destructive">
+          האחסון כמעט מלא — מחק סבבים ישנים כדי לפנות מקום.
+        </div>
+      )}
     </div>
   )
 }
