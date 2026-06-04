@@ -9,8 +9,11 @@ import {
   Trash2,
   Undo2,
   ImageIcon,
+  MessageSquare,
+  X,
 } from 'lucide-react'
 import { adminApi, getAdminIdToken } from '../../lib/adminApi'
+import { Portal } from '@/components/ui/Portal'
 
 interface FeedbackDoc {
   id: string
@@ -90,7 +93,10 @@ export default function FeedbackTab({
   const list = (items ?? []).filter((it) =>
     view === 'open' ? !it.resolved : it.resolved,
   )
-  const openCount = (items ?? []).filter((it) => !it.resolved).length
+  const open = (items ?? []).filter((it) => !it.resolved)
+  const openCount = open.length
+  const openBugs = open.filter((it) => it.kind === 'bug').length
+  const openFeatures = open.filter((it) => it.kind === 'feature').length
 
   return (
     <div className="space-y-5">
@@ -107,6 +113,14 @@ export default function FeedbackTab({
           <RefreshCw className="h-3.5 w-3.5" /> רענן
         </button>
       </header>
+
+      {items !== null && (
+        <div className="grid grid-cols-3 gap-3">
+          <StatCard label="פתוחים" value={openCount} color="from-primary to-primary" icon={<MessageSquare className="h-4 w-4 text-white" />} />
+          <StatCard label="באגים פתוחים" value={openBugs} color="from-destructive to-primary" icon={<Bug className="h-4 w-4 text-white" />} />
+          <StatCard label="פיצ׳רים פתוחים" value={openFeatures} color="from-accent to-primary" icon={<Lightbulb className="h-4 w-4 text-white" />} />
+        </div>
+      )}
 
       <div className="flex gap-2">
         <Tab active={view === 'open'} onClick={() => setView('open')}>
@@ -189,6 +203,7 @@ function FeedbackRow({
 }) {
   const [images, setImages] = useState<string[] | null>(null)
   const [loadingImg, setLoadingImg] = useState(false)
+  const [lightbox, setLightbox] = useState<string | null>(null)
   const fileIds =
     it.telegramFileIds && it.telegramFileIds.length
       ? it.telegramFileIds
@@ -276,13 +291,18 @@ function FeedbackRow({
               {images ? (
                 <div className="flex flex-wrap gap-2">
                   {images.map((u, i) => (
-                    <a key={i} href={u} target="_blank" rel="noreferrer">
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => setLightbox(u)}
+                      className="overflow-hidden rounded-lg border border-border transition-opacity hover:opacity-80"
+                    >
                       <img
                         src={u}
                         alt=""
-                        className="h-20 w-20 rounded-lg border border-border object-cover"
+                        className="h-20 w-20 object-cover"
                       />
-                    </a>
+                    </button>
                   ))}
                 </div>
               ) : (
@@ -330,6 +350,62 @@ function FeedbackRow({
             <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
+      </div>
+
+      {lightbox && (
+        <Portal>
+          <div
+            dir="rtl"
+            onClick={() => setLightbox(null)}
+            className="fixed inset-0 z-[260] flex items-center justify-center bg-black/85 p-6 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+          >
+            <button
+              type="button"
+              onClick={() => setLightbox(null)}
+              className="absolute right-5 top-5 rounded-md p-1.5 text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+              aria-label="סגירה"
+            >
+              <X className="h-5 w-5" />
+            </button>
+            <img
+              src={lightbox}
+              alt=""
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-[90vh] max-w-[90vw] rounded-xl border border-white/10 object-contain shadow-2xl"
+            />
+          </div>
+        </Portal>
+      )}
+    </div>
+  )
+}
+
+function StatCard({
+  label,
+  value,
+  color,
+  icon,
+}: {
+  label: string
+  value: number
+  color: string
+  icon: React.ReactNode
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 bg-white/[0.015] p-4">
+      <div>
+        <div className="text-2xl font-semibold tabular-nums text-fg">{value}</div>
+        <div className="text-[11px] text-fg-muted">{label}</div>
+      </div>
+      <div
+        className={
+          'flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br shadow-md ' +
+          color
+        }
+      >
+        {icon}
       </div>
     </div>
   )
