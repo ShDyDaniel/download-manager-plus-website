@@ -3234,18 +3234,39 @@ async function sendReceiptEmail(args: {
   const draftNote = args.draft
     ? `<p style="font-size:11px;margin:0 0 14px;color:#8B8170;">[מסמך טיוטה — לבדיקה בלבד]</p>`
     : ''
+
+  // Try to fetch the actual receipt PDF and attach it, so the customer
+  // gets the real document in OUR email — not a link to SUMIT's portal.
+  // SUMIT serves a finalized document's PDF from the download URL; a
+  // DRAFT has no official PDF (the URL returns the portal HTML), so we
+  // fall back to a link in that case.
+  let pdf: Buffer | null = null
+  try {
+    const r = await fetch(args.url)
+    const ct = (r.headers.get('content-type') || '').toLowerCase()
+    const buf = Buffer.from(await r.arrayBuffer())
+    const looksPdf = ct.includes('pdf') || buf.subarray(0, 5).toString('latin1') === '%PDF-'
+    if (r.ok && looksPdf && buf.length > 0) pdf = buf
+  } catch {
+    /* fall back to link */
+  }
+
+  const ctaHtml = pdf
+    ? `<p style="font-size:13px;line-height:1.7;margin:0 0 8px;color:#C9BFA8;">הקבלה הרשמית מצורפת למייל זה כקובץ PDF.</p>`
+    : `<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:18px 0 24px;">
+        <tr><td align="center">
+          <a href="${args.url}" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">צפייה / הורדת הקבלה</a>
+        </td></tr>
+      </table>`
+
   const html = renderEmail({
     heading: 'הקבלה שלך 🧾',
     contentHtml: `
       ${draftNote}
       <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-        תודה על התשלום ל-<strong>ניהול הורדות פלוס</strong>. מצורפת הקבלה הרשמית עבור: ${args.description} — <strong dir="ltr">${args.amount} ${sym}</strong>.
+        תודה על התשלום ל-<strong>ניהול הורדות פלוס</strong>. הקבלה הרשמית עבור: ${args.description} — <strong dir="ltr">${args.amount} ${sym}</strong>.
       </p>
-      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:18px 0 24px;">
-        <tr><td align="center">
-          <a href="${args.url}" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">צפייה / הורדת הקבלה</a>
-        </td></tr>
-      </table>
+      ${ctaHtml}
       <p style="font-size:11px;margin:0;color:#5C5444;">הקבלה הופקה דרך מערכת SUMIT.</p>
     `,
   })
@@ -3254,6 +3275,9 @@ async function sendReceiptEmail(args: {
     to: args.to,
     subject: 'הקבלה שלך — ניהול הורדות פלוס',
     html,
+    attachments: pdf
+      ? [{ filename: 'קבלה.pdf', content: pdf, contentType: 'application/pdf' }]
+      : undefined,
   })
 }
 
