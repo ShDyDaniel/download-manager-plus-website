@@ -623,10 +623,17 @@ async function r2Delete(r2: S3Client, key: string): Promise<void> {
   await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }))
 }
 
+// Operators always keep access — mirror the hardcoded admin set used
+// by api/revisions.ts (SERVER_ADMIN_EMAILS) and api/paypal.ts
+// (ADMIN_EMAILS), keyed by email since an admin's user-doc role isn't
+// guaranteed to be 'admin'. Prevents the purge from ever touching an
+// operator account.
+const PURGE_ADMIN_EMAILS = new Set(['dyshalts@gmail.com'])
+
 /** Does this user currently have access (so we must NOT purge)? Mirrors
- *  the server's isUserPro (minus the admin-email env list — role==admin
- *  covers operators here). Throws bubble up; the caller treats any
- *  error as "uncertain → skip", so a Firestore blip never deletes. */
+ *  the server's isUserPro (admin email + role + subscription + trial +
+ *  active key). Throws bubble up; the caller treats any error as
+ *  "uncertain → skip", so a Firestore blip never deletes. */
 async function userHasAccess(
   db: ReturnType<typeof getFirestore>,
   uid: string,
@@ -634,6 +641,7 @@ async function userHasAccess(
   const userSnap = await db.collection('users').doc(uid).get()
   if (userSnap.exists) {
     const u = userSnap.data() as Record<string, unknown>
+    if (PURGE_ADMIN_EMAILS.has(String(u.email || '').toLowerCase())) return true
     if (u.role === 'admin') return true
     if (u.subscription === 'pro') return true
     if (u.trialStatus === 'approved' && u.trialExpiresAt) {
