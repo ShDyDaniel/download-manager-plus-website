@@ -449,7 +449,7 @@ function ConnectedWorkspace({
     currentName: string
   } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<
-    | { kind: 'group'; group: RevisionGroup }
+    | { kind: 'group'; group: RevisionGroup; storages?: Array<'r2' | 'drive'> }
     | {
         kind: 'round'
         group: RevisionGroup
@@ -696,8 +696,8 @@ function ConnectedWorkspace({
                     storage,
                   })
                 }
-                onDeleteGroup={(g) =>
-                  setConfirmDelete({ kind: 'group', group: g })
+                onDeleteGroup={(g, storages) =>
+                  setConfirmDelete({ kind: 'group', group: g, storages })
                 }
                 onDeleteLegacy={(p) =>
                   setConfirmDelete({ kind: 'legacy', project: p })
@@ -761,7 +761,6 @@ function ConnectedWorkspace({
           <ConfirmDeleteModal
             key="delete"
             target={confirmDelete}
-            backend={backend}
             onClose={() => setConfirmDelete(null)}
             onDeleted={() => {
               setConfirmDelete(null)
@@ -890,7 +889,7 @@ function ProjectList({
     roundId: string,
     storage?: 'r2' | 'drive',
   ) => void
-  onDeleteGroup: (g: RevisionGroup) => void
+  onDeleteGroup: (g: RevisionGroup, storages: Array<'r2' | 'drive'>) => void
   onDeleteLegacy: (p: LegacyProjectSummary) => void
 }) {
   // Merge groups + legacy into a single chronological list. We
@@ -922,7 +921,9 @@ function ProjectList({
             onDeleteRound={(roundId, storage) =>
               onDeleteRound(item.group, roundId, storage)
             }
-            onDeleteGroup={() => onDeleteGroup(item.group)}
+            onDeleteGroup={(storages) =>
+              onDeleteGroup(item.group, storages)
+            }
           />
         ) : (
           <LegacyCard
@@ -956,7 +957,7 @@ function GroupCard({
   onAddRound: () => void
   onOpenRound: (round: GroupRoundSummary) => void
   onDeleteRound: (roundId: string, storage?: 'r2' | 'drive') => void
-  onDeleteGroup: () => void
+  onDeleteGroup: (storages: Array<'r2' | 'drive'>) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const shareUrl = buildShareUrl(group.shareToken)
@@ -1215,7 +1216,13 @@ function GroupCard({
           <div className="border-t border-border p-3 text-left">
             <button
               type="button"
-              onClick={onDeleteGroup}
+              onClick={() =>
+                onDeleteGroup(
+                  (rounds ?? [])
+                    .map((r) => r.storage)
+                    .filter((s): s is 'r2' | 'drive' => Boolean(s)),
+                )
+              }
               className="inline-flex items-center gap-1.5 text-xs text-destructive/80 transition-colors hover:text-destructive"
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -2226,12 +2233,11 @@ function EditGroupModal({
 
 function ConfirmDeleteModal({
   target,
-  backend,
   onClose,
   onDeleted,
 }: {
   target:
-    | { kind: 'group'; group: RevisionGroup }
+    | { kind: 'group'; group: RevisionGroup; storages?: Array<'r2' | 'drive'> }
     | {
         kind: 'round'
         group: RevisionGroup
@@ -2239,7 +2245,6 @@ function ConfirmDeleteModal({
         storage?: 'r2' | 'drive'
       }
     | { kind: 'legacy'; project: LegacyProjectSummary }
-  backend: 'r2' | 'drive'
   onClose: () => void
   onDeleted: () => void
 }) {
@@ -2248,19 +2253,29 @@ function ConfirmDeleteModal({
   const [error, setError] = useState<string | null>(null)
 
   const isRound = target.kind === 'round'
-  // R2 deletions remove everything (video + screenshots + audio)
-  // unconditionally on the server — there's no Drive trash to opt
-  // into, so we skip the checkbox and show a plain irreversible
-  // warning. For a round we trust its own storage; for a whole
-  // project we fall back to the user's current backend.
-  const isR2Round =
+  // Decide the delete UX from what's ACTUALLY being deleted, not the
+  // account's current backend:
+  //   'r2'    → everything is in our storage; one irreversible confirm.
+  //   'drive' → it's on Google Drive; offer the Drive-trash opt-in.
+  //   'mixed' → a project with BOTH kinds of rounds; delete everything
+  //             (including Drive) and just say so.
+  const groupStorages =
+    target.kind === 'group' ? target.storages ?? [] : []
+  const hasR2 = groupStorages.includes('r2')
+  const hasDrive = groupStorages.includes('drive')
+  const mode: 'r2' | 'drive' | 'mixed' =
     target.kind === 'round'
       ? target.storage === 'r2'
+        ? 'r2'
+        : 'drive'
       : target.kind === 'group'
-        ? backend === 'r2'
-        : // Legacy single-round projects predate R2 — always Drive, so
-          // keep the Drive opt-in checkbox flow for them.
-          false
+        ? hasR2 && hasDrive
+          ? 'mixed'
+          : hasR2
+            ? 'r2'
+            : 'drive'
+        : // Legacy single-round projects predate R2 — always Drive.
+          'drive'
   const title = isRound
     ? 'מחיקת סבב תיקונים'
     : target.kind === 'group'
@@ -2270,13 +2285,20 @@ function ConfirmDeleteModal({
   async function confirm() {
     setBusy(true)
     setError(null)
+    // Force Drive trash for mixed projects; never for pure-R2; user's
+    // choice for pure-Drive.
+    const effectiveDeleteDrive =
+      mode === 'mixed' ? true : mode === 'r2' ? false : deleteDrive
     let result: { ok: boolean; error?: string } = { ok: true }
     if (target.kind === 'round') {
-      result = await deleteRound(target.roundId, deleteDrive)
+      result = await deleteRound(target.roundId, effectiveDeleteDrive)
     } else if (target.kind === 'group') {
-      result = await deleteGroup(target.group.id, deleteDrive)
+      result = await deleteGroup(target.group.id, effectiveDeleteDrive)
     } else {
-      const ok = await deleteLegacyProject(target.project.id, deleteDrive)
+      const ok = await deleteLegacyProject(
+        target.project.id,
+        effectiveDeleteDrive,
+      )
       result = { ok }
     }
     setBusy(false)
@@ -2289,11 +2311,17 @@ function ConfirmDeleteModal({
 
   return (
     <ModalShell title={title} onClose={onClose}>
-      {isR2Round ? (
+      {mode === 'r2' ? (
         <p className="text-sm leading-relaxed text-fg-muted">
           {isRound
             ? 'למחוק את הסבב תיקונים? הסרטון וכל מה שקשור אליו (התיקונים התמונות וההקלטות של הסבב הזה) יימחקו ולא יהיה ניתן לשחזר אותם.'
             : 'למחוק את הפרויקט? כל הסבבים, הסרטונים וכל מה שקשור אליהם (התיקונים, התמונות וההקלטות) יימחקו ולא יהיה ניתן לשחזר אותם.'}
+        </p>
+      ) : mode === 'mixed' ? (
+        <p className="text-sm leading-relaxed text-fg-muted">
+          בפרויקט הזה יש סבבים גם ב-Google Drive וגם באחסון שלנו. כל
+          הקבצים יימחקו — גם מ-Google Drive וגם מהאחסון — ולא יהיה ניתן
+          לשחזר אותם.
         </p>
       ) : (
         <>
@@ -2334,7 +2362,7 @@ function ConfirmDeleteModal({
           disabled={busy}
           className="rounded-md bg-destructive px-5 py-2 text-sm font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-40"
         >
-          {busy ? 'מוחק…' : isR2Round ? 'כן, מחק' : 'מחיקה'}
+          {busy ? 'מוחק…' : mode === 'drive' ? 'מחיקה' : 'כן, מחק'}
         </button>
       </div>
     </ModalShell>
