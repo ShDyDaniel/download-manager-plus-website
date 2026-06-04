@@ -25,6 +25,8 @@
 const VERCEL_AUTH_URL = 'https://dmplus.net/api/revisions?action=auth-stream'
 const VERCEL_AUTH_MEDIA_URL =
   'https://dmplus.net/api/revisions?action=auth-media'
+const VERCEL_IMPORT_AUTH_URL =
+  'https://dmplus.net/api/revisions?action=drive-import-auth'
 
 // In-memory cache: key = `${shareToken}|${passwordToken}|${roundId}` →
 // { r2Key, expiresAt }. Lives within one isolate; cold starts re-auth.
@@ -101,6 +103,79 @@ export default {
     }
 
     const url = new URL(request.url)
+
+    // ── Drive → R2 import (?import=<nonce>) ─────────────────────
+    // The client (after drive-import-init validated the link + quota)
+    // hits this to make Cloudflare stream a PUBLIC Drive file straight
+    // into our R2 bucket — Drive → Cloudflare → R2, zero Vercel egress.
+    const importToken = url.searchParams.get('import')
+    if (importToken) {
+      if (!env.BUCKET) {
+        return new Response(
+          JSON.stringify({ ok: false, error: 'R2 binding not configured' }),
+          { status: 500, headers: corsHeaders({ 'content-type': 'application/json' }) },
+        )
+      }
+      // Exchange the nonce for the job details (worker-secret channel).
+      let job
+      try {
+        const a = await fetch(VERCEL_IMPORT_AUTH_URL, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-worker-secret': env.WORKER_SECRET || '',
+          },
+          body: JSON.stringify({ importToken }),
+        })
+        job = await a.json()
+        if (!a.ok || !job || !job.ok || !job.fileId || !job.key || !job.apiKey) {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              error: (job && job.error) || `import auth ${a.status}`,
+            }),
+            { status: 403, headers: corsHeaders({ 'content-type': 'application/json' }) },
+          )
+        }
+      } catch (err) {
+        return new Response(
+          JSON.stringify({ ok: false, error: `import auth failed: ${err}` }),
+          { status: 502, headers: corsHeaders({ 'content-type': 'application/json' }) },
+        )
+      }
+
+      // Pull the bytes from Drive (public file + API key) and stream
+      // them into R2. fetch() follows Drive's redirect to the CDN host.
+      const driveResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+          job.fileId,
+        )}?alt=media&supportsAllDrives=true&key=${job.apiKey}`,
+      )
+      if (!driveResp.ok || !driveResp.body) {
+        const t = await driveResp.text().catch(() => '')
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: `drive fetch ${driveResp.status}: ${t.slice(0, 150)}`,
+          }),
+          { status: 502, headers: corsHeaders({ 'content-type': 'application/json' }) },
+        )
+      }
+      try {
+        await env.BUCKET.put(job.key, driveResp.body, {
+          httpMetadata: { contentType: job.mimeType || 'video/mp4' },
+        })
+      } catch (err) {
+        return new Response(
+          JSON.stringify({ ok: false, error: `R2 put failed: ${err}` }),
+          { status: 500, headers: corsHeaders({ 'content-type': 'application/json' }) },
+        )
+      }
+      return new Response(
+        JSON.stringify({ ok: true, key: job.key }),
+        { status: 200, headers: corsHeaders({ 'content-type': 'application/json' }) },
+      )
+    }
 
     // ── Note-media path (?m=<encrypted token>) — still on Drive ──
     const mediaToken = url.searchParams.get('m')

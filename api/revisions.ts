@@ -202,6 +202,59 @@ function buildNoteMediaKey(uid: string, ext: string): string {
   return `${uid}/notes/${Date.now()}-${rand}.${clean}`
 }
 
+// Google Drive API key (server env). Used to read PUBLIC files
+// ("anyone with the link") without OAuth — both for the size/quota
+// pre-check here and for the Worker's actual byte transfer.
+const DRIVE_API_KEY = (process.env.DRIVE_API_KEY || '').trim()
+
+/** Pull the file id out of any common Google Drive share URL shape:
+ *    https://drive.google.com/file/d/<ID>/view?usp=sharing
+ *    https://drive.google.com/open?id=<ID>
+ *    https://drive.google.com/uc?id=<ID>&export=download
+ *    https://docs.google.com/.../d/<ID>/edit
+ *  Also accepts a bare id. Returns null if nothing id-shaped found. */
+function extractDriveFileId(input: string): string | null {
+  const s = String(input || '').trim()
+  if (!s) return null
+  // /d/<id>/ or /d/<id> end
+  const dMatch = s.match(/\/d\/([a-zA-Z0-9_-]{10,})/)
+  if (dMatch) return dMatch[1]
+  // ?id=<id> or &id=<id>
+  const idMatch = s.match(/[?&]id=([a-zA-Z0-9_-]{10,})/)
+  if (idMatch) return idMatch[1]
+  // bare id
+  if (/^[a-zA-Z0-9_-]{10,}$/.test(s)) return s
+  return null
+}
+
+/** Read a public Drive file's metadata via the API key. Returns null
+ *  when the file isn't reachable (not shared publicly / wrong id /
+ *  key missing). `size` is bytes (Drive returns it as a string). */
+async function fetchDrivePublicMeta(
+  fileId: string,
+): Promise<{ name: string; size: number; mimeType: string } | null> {
+  if (!DRIVE_API_KEY) return null
+  try {
+    const url =
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}` +
+      `?fields=id,name,size,mimeType&supportsAllDrives=true&key=${DRIVE_API_KEY}`
+    const r = await fetch(url)
+    if (!r.ok) return null
+    const j = (await r.json()) as {
+      name?: string
+      size?: string
+      mimeType?: string
+    }
+    return {
+      name: String(j.name || 'video.mp4'),
+      size: Math.max(0, Math.floor(Number(j.size) || 0)),
+      mimeType: String(j.mimeType || 'video/mp4'),
+    }
+  } catch {
+    return null
+  }
+}
+
 // A key is owned by `uid` iff it sits under that user's folder. The
 // new layout is `{uid}/...`; we also accept the original
 // `videos/{uid}/` & `notes/{uid}/` prefixes so objects created before
@@ -465,6 +518,160 @@ async function handleR2UploadAbort(req: VercelRequest, res: VercelResponse) {
     console.error('[r2-upload-abort]', e)
   }
   return res.status(200).json({ ok: true })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Drive-link → R2 import (R2-backend users)
+ *
+ *  Lets an R2 user paste a PUBLIC Google-Drive share link instead of
+ *  uploading a local file. The actual byte transfer runs in the
+ *  Cloudflare Worker (Drive → Cloudflare → R2) so nothing transits
+ *  Vercel. Two-step:
+ *    1. drive-import-init (this user) — validate link, read size via
+ *       the API key, enforce the storage quota, and mint a one-time
+ *       nonce describing the job. Returns the Worker import URL.
+ *    2. The client hits that Worker URL; the Worker calls
+ *       drive-import-auth (worker secret) to exchange the nonce for
+ *       {fileId, key, apiKey}, streams the file into R2, and reports
+ *       back. The client then registers the round with the r2Key.
+ * ────────────────────────────────────────────────────────────── */
+
+// action=drive-import-init  Body: { idToken|sessionToken, driveUrl }
+async function handleDriveImportInit(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
+
+  if (!DRIVE_API_KEY) {
+    return res.status(500).json({
+      ok: false,
+      error: 'drive-import-not-configured',
+      message: 'ייבוא מקישור אינו מוגדר בשרת (חסר DRIVE_API_KEY).',
+    })
+  }
+  const cfBase = (process.env.CLOUDFLARE_STREAM_BASE || '').trim()
+  if (!cfBase) {
+    return res.status(500).json({
+      ok: false,
+      error: 'stream-base-not-configured',
+      message: 'ייבוא מקישור אינו מוגדר בשרת (חסר CLOUDFLARE_STREAM_BASE).',
+    })
+  }
+
+  const body = (req.body || {}) as { driveUrl?: string }
+  const fileId = extractDriveFileId(String(body.driveUrl || ''))
+  if (!fileId) {
+    return res.status(400).json({
+      ok: false,
+      error: 'bad-link',
+      message: 'הקישור אינו נראה כמו קישור של Google Drive.',
+    })
+  }
+
+  const meta = await fetchDrivePublicMeta(fileId)
+  if (!meta) {
+    return res.status(400).json({
+      ok: false,
+      error: 'not-public',
+      message:
+        'לא הצלחנו לגשת לקובץ. ודאו שהשיתוף מוגדר ל"כל מי שיש לו את הקישור" ושהקישור תקין.',
+    })
+  }
+
+  // Hard 2 GB cap (matches the local-upload cap on both clients).
+  const MAX = 2 * 1024 * 1024 * 1024
+  if (meta.size > MAX) {
+    return res.status(413).json({
+      ok: false,
+      error: 'too-large',
+      message: 'הקובץ גדול מ-2GB ואינו נתמך לייבוא.',
+    })
+  }
+
+  // Storage-quota gate — same rule as the local-upload path.
+  const { usedBytes, limitBytes } = await getStorageState(verified.uid)
+  if (meta.size > 0 && usedBytes + meta.size > limitBytes) {
+    return res.status(413).json({
+      ok: false,
+      error: 'quota',
+      message: `אין מספיק מקום אחסון לקובץ הזה (${(meta.size / GB).toFixed(2)}GB). בשימוש ${(usedBytes / GB).toFixed(2)}GB מתוך ${(limitBytes / GB).toFixed(2)}GB.`,
+      usedBytes,
+      limitBytes,
+      sizeBytes: meta.size,
+    })
+  }
+
+  const key = buildVideoKey(verified.uid, meta.name)
+  const nonce = crypto.randomBytes(24).toString('hex')
+  const now = Date.now()
+  await getDb()
+    .collection('driveImports')
+    .doc(nonce)
+    .set({
+      ownerUid: verified.uid,
+      fileId,
+      key,
+      sizeBytes: meta.size,
+      mimeType: meta.mimeType,
+      fileName: meta.name,
+      createdAt: now,
+      // 1-hour window for the Worker to pick the job up + finish.
+      expiresAt: now + 60 * 60 * 1000,
+    })
+
+  const sep = cfBase.includes('?') ? '&' : '?'
+  const importUrl = `${cfBase}${sep}import=${encodeURIComponent(nonce)}`
+
+  return res.status(200).json({
+    ok: true,
+    importToken: nonce,
+    importUrl,
+    r2Key: key,
+    sizeBytes: meta.size,
+    fileName: meta.name,
+    mimeType: meta.mimeType,
+  })
+}
+
+// action=drive-import-auth  (Worker only — X-Worker-Secret)
+// Body: { importToken } → { ok, fileId, key, apiKey, mimeType }
+async function handleDriveImportAuth(req: VercelRequest, res: VercelResponse) {
+  const expected = (process.env.WORKER_SHARED_SECRET || '').trim()
+  if (!expected) {
+    return res.status(500).json({ ok: false, error: 'WORKER_SHARED_SECRET not set' })
+  }
+  const got = req.headers['x-worker-secret']
+  if (typeof got !== 'string' || got !== expected) {
+    return res.status(403).json({ ok: false, error: 'invalid worker secret' })
+  }
+
+  const body = (req.body || {}) as { importToken?: string }
+  const nonce = String(body.importToken || '').trim()
+  if (!nonce) return res.status(400).json({ ok: false, error: 'importToken required' })
+
+  const snap = await getDb().collection('driveImports').doc(nonce).get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'unknown import' })
+  const job = snap.data() as {
+    fileId?: string
+    key?: string
+    mimeType?: string
+    expiresAt?: number
+  }
+  if (!job.fileId || !job.key) {
+    return res.status(400).json({ ok: false, error: 'malformed import' })
+  }
+  if (job.expiresAt && Date.now() > job.expiresAt) {
+    return res.status(410).json({ ok: false, error: 'import expired' })
+  }
+
+  res.setHeader('Cache-Control', 'no-store')
+  return res.status(200).json({
+    ok: true,
+    fileId: job.fileId,
+    key: job.key,
+    apiKey: DRIVE_API_KEY,
+    mimeType: job.mimeType || 'video/mp4',
+  })
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -5478,6 +5685,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleR2UploadComplete(req, res)
       case 'r2-upload-abort':
         return await handleR2UploadAbort(req, res)
+      case 'drive-import-init':
+        return await handleDriveImportInit(req, res)
+      case 'drive-import-auth':
+        return await handleDriveImportAuth(req, res)
       case 'create-project-group':
         return await handleCreateProjectGroup(req, res)
       case 'add-round-to-group':

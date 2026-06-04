@@ -148,6 +148,60 @@ export async function fetchStorageState(): Promise<{
   }
 }
 
+/** Import a PUBLIC Google-Drive video by link into our R2 storage.
+ *  Two-step: drive-import-init validates the link + size + quota and
+ *  returns a Worker import URL; we then hit that URL so Cloudflare
+ *  streams the bytes Drive → R2 (nothing through the browser or
+ *  Vercel). Resolves to the r2 pointer + metadata the create/add
+ *  calls need. Throws a Hebrew message on quota / sharing errors. */
+export async function importDriveLinkToR2(driveUrl: string): Promise<{
+  r2Key: string
+  videoFileName: string
+  videoSizeBytes: number
+  videoMime: string
+}> {
+  const token = getSessionToken()
+  if (!token) throw new Error('יש להתחבר מחדש לאתר ולנסות שוב')
+
+  const initResp = await fetch(`${API_BASE}?action=drive-import-init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionToken: token, driveUrl }),
+  })
+  const init = (await initResp.json().catch(() => ({}))) as {
+    ok?: boolean
+    error?: string
+    message?: string
+    importUrl?: string
+    r2Key?: string
+    sizeBytes?: number
+    fileName?: string
+    mimeType?: string
+  }
+  if (!initResp.ok || !init.ok || !init.importUrl || !init.r2Key) {
+    throw new Error(init.message || init.error || 'הייבוא נכשל')
+  }
+
+  // Kick off the Cloudflare-side transfer. This holds open until the
+  // whole file has streamed into R2, so it can take a while for big
+  // videos — that's expected.
+  const impResp = await fetch(init.importUrl)
+  const imp = (await impResp.json().catch(() => ({}))) as {
+    ok?: boolean
+    error?: string
+  }
+  if (!impResp.ok || !imp.ok) {
+    throw new Error(imp.error || 'העברת הקובץ ל-Cloudflare נכשלה')
+  }
+
+  return {
+    r2Key: init.r2Key,
+    videoFileName: init.fileName || 'video.mp4',
+    videoSizeBytes: Number(init.sizeBytes) || 0,
+    videoMime: init.mimeType || 'video/mp4',
+  }
+}
+
 export async function fetchDriveIntegration(): Promise<DriveIntegration | null> {
   try {
     const r = await postAction<{

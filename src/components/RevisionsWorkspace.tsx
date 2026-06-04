@@ -41,6 +41,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import {
   Copy,
   ExternalLink,
+  Link2 as LinkIcon,
   HardDrive,
   MessageSquare,
   Pencil,
@@ -64,6 +65,7 @@ import {
   fetchDriveStorage,
   fetchStorageBackend,
   fetchStorageState,
+  importDriveLinkToR2,
   fetchNoteMediaAsObjectUrl,
   formatBytes,
   listGroupsForOwner,
@@ -153,7 +155,20 @@ async function uploadRoundVideo(
     throw new Error('לא נבחר קובץ')
   }
 
-  // R2 backend (default): upload straight to our storage.
+  // R2 backend (default): import-by-link runs entirely server/worker
+  // side (Drive → Cloudflare → R2), so there's nothing to stream from
+  // the browser. Report indeterminate progress while it runs.
+  if (source.kind === 'link') {
+    setProgress({ bytesUploaded: 0, totalBytes: 0, fraction: 0 })
+    const imported = await importDriveLinkToR2(source.url)
+    setProgress({ bytesUploaded: 1, totalBytes: 1, fraction: 1 })
+    return {
+      pointer: { r2Key: imported.r2Key },
+      videoFileName: imported.videoFileName,
+      videoSizeBytes: imported.videoSizeBytes,
+      videoMime: imported.videoMime,
+    }
+  }
   if (source.kind !== 'upload') {
     throw new Error(
       'ייבוא מ-Drive זמין רק במצב Google Drive — העלו קובץ מהמחשב',
@@ -1616,6 +1631,7 @@ function NewProjectModal({
           onError={setError}
           inputRef={fileInputRef}
           disabled={busy}
+          backend={backend}
         />
         <ToggleRow
           label="חתימת מים על הסרטון"
@@ -1635,10 +1651,16 @@ function NewProjectModal({
           value={openInDrive}
           onChange={setOpenInDrive}
         />
-        {progress && (
+        {(progress || (busy && source.kind === 'link')) && (
           <UploadProgressBar
-            progress={progress}
-            fileName={source.kind === 'upload' ? source.file.name : ''}
+            progress={progress ?? { bytesUploaded: 0, totalBytes: 0, fraction: 0 }}
+            fileName={
+              source.kind === 'upload'
+                ? source.file.name
+                : source.kind === 'link'
+                  ? 'מייבא מ-Google Drive…'
+                  : ''
+            }
           />
         )}
         {error && (
@@ -1660,14 +1682,18 @@ function NewProjectModal({
             className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
           >
             {busy
-              ? progress
-                ? `מעלה ${Math.round(progress.fraction * 100)}%`
-                : 'יוצר…'
+              ? source.kind === 'link'
+                ? 'מייבא…'
+                : progress
+                  ? `מעלה ${Math.round(progress.fraction * 100)}%`
+                  : 'יוצר…'
               : source.kind === 'upload'
                 ? 'יצירה והעלאה'
-                : source.kind === 'drive'
-                  ? 'יצירת פרויקט'
-                  : 'יצירת פרויקט ריק'}
+                : source.kind === 'link'
+                  ? 'יצירה וייבוא'
+                  : source.kind === 'drive'
+                    ? 'יצירת פרויקט'
+                    : 'יצירת פרויקט ריק'}
           </button>
         </div>
       </form>
@@ -1709,7 +1735,11 @@ function AddRoundModal({
     e.preventDefault()
     if (busy || source.kind === 'none') return
     const chosenSize =
-      source.kind === 'upload' ? source.file.size : source.picked.sizeBytes
+      source.kind === 'upload'
+        ? source.file.size
+        : source.kind === 'drive'
+          ? source.picked.sizeBytes
+          : 0 // link import — size is validated server-side
     if (chosenSize > MAX_UPLOAD_BYTES) {
       setError(
         `הקובץ גדול מהמותר (מקסימום ${formatBytes(MAX_UPLOAD_BYTES)}). בחרו קובץ קטן יותר.`,
@@ -1764,11 +1794,18 @@ function AddRoundModal({
           onError={setError}
           inputRef={fileInputRef}
           disabled={busy}
+          backend={backend}
         />
-        {progress && (
+        {(progress || (busy && source.kind === 'link')) && (
           <UploadProgressBar
-            progress={progress}
-            fileName={source.kind === 'upload' ? source.file.name : ''}
+            progress={progress ?? { bytesUploaded: 0, totalBytes: 0, fraction: 0 }}
+            fileName={
+              source.kind === 'upload'
+                ? source.file.name
+                : source.kind === 'link'
+                  ? 'מייבא מ-Google Drive…'
+                  : ''
+            }
           />
         )}
         {error && (
@@ -1790,14 +1827,18 @@ function AddRoundModal({
             className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
           >
             {busy
-              ? progress
-                ? `מעלה ${Math.round(progress.fraction * 100)}%`
+              ? source.kind === 'link'
+                ? 'מייבא…'
+                : progress
+                  ? `מעלה ${Math.round(progress.fraction * 100)}%`
+                  : source.kind === 'drive'
+                    ? 'יוצר…'
+                    : 'מעלה…'
+              : source.kind === 'link'
+                ? 'ייבוא סבב'
                 : source.kind === 'drive'
-                  ? 'יוצר…'
-                  : 'מעלה…'
-              : source.kind === 'drive'
-                ? 'הוספת סבב'
-                : 'העלאת סבב'}
+                  ? 'הוספת סבב'
+                  : 'העלאת סבב'}
           </button>
         </div>
       </form>
@@ -2918,6 +2959,9 @@ export type VideoSource =
   | { kind: 'none' }
   | { kind: 'upload'; file: File }
   | { kind: 'drive'; picked: PickedDriveFile }
+  // R2 backend only: import a PUBLIC Drive link — Cloudflare streams
+  // the bytes Drive → R2, the user never downloads/uploads anything.
+  | { kind: 'link'; url: string }
 
 /**
  * VideoSourceField — two-way video chooser used by the new-project and
@@ -2937,17 +2981,23 @@ function VideoSourceField({
   onError,
   disabled = false,
   inputRef,
+  backend,
 }: {
   value: VideoSource
   onChange: (v: VideoSource) => void
   onError: (msg: string | null) => void
   disabled?: boolean
   inputRef: React.RefObject<HTMLInputElement>
+  backend: 'r2' | 'drive'
 }) {
-  const [mode, setMode] = useState<'upload' | 'drive'>('upload')
+  // The second tab differs by backend: Drive users pick an existing
+  // Drive file (Picker); R2 users paste a public Drive link that
+  // Cloudflare streams into our storage.
+  const secondMode: 'drive' | 'link' = backend === 'drive' ? 'drive' : 'link'
+  const [mode, setMode] = useState<'upload' | 'drive' | 'link'>('upload')
   const [picking, setPicking] = useState(false)
 
-  function switchMode(next: 'upload' | 'drive') {
+  function switchMode(next: 'upload' | 'drive' | 'link') {
     if (next === mode || disabled) return
     setMode(next)
     onError(null)
@@ -2992,7 +3042,7 @@ function VideoSourceField({
     <div>
       {/* Segmented source toggle with a sliding copper indicator */}
       <div className="relative mb-3 grid grid-cols-2 rounded-md border border-border bg-bg-card p-1">
-        {(['upload', 'drive'] as const).map((m) => {
+        {(['upload', secondMode] as const).map((m) => {
           const active = mode === m
           return (
             <button
@@ -3017,10 +3067,16 @@ function VideoSourceField({
               >
                 {m === 'upload' ? (
                   <Upload className="h-3.5 w-3.5" />
+                ) : m === 'link' ? (
+                  <LinkIcon className="h-3.5 w-3.5" />
                 ) : (
                   <HardDrive className="h-3.5 w-3.5" />
                 )}
-                {m === 'upload' ? 'העלאת קובץ' : 'בחירה מ-Google Drive'}
+                {m === 'upload'
+                  ? 'העלאת קובץ'
+                  : m === 'link'
+                    ? 'ייבוא מקישור'
+                    : 'בחירה מ-Google Drive'}
               </span>
             </button>
           )
@@ -3035,7 +3091,32 @@ function VideoSourceField({
           exit={{ opacity: 0, x: mode === 'upload' ? 10 : -10 }}
           transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
         >
-          {mode === 'upload' ? (
+          {mode === 'link' ? (
+            <div className="rounded-xl border-2 border-border bg-bg-card px-5 py-6">
+              <label className="mb-2 block text-xs font-medium text-fg">
+                קישור Google Drive ציבורי
+              </label>
+              <input
+                type="url"
+                dir="ltr"
+                inputMode="url"
+                placeholder="https://drive.google.com/file/d/..."
+                disabled={disabled}
+                value={value.kind === 'link' ? value.url : ''}
+                onChange={(e) => {
+                  const url = e.target.value.trim()
+                  onError(null)
+                  onChange(url ? { kind: 'link', url } : { kind: 'none' })
+                }}
+                className="w-full rounded-md border border-border bg-bg px-3 py-2 text-left text-sm text-fg outline-none focus:border-primary"
+              />
+              <p className="mt-2 text-xs leading-relaxed text-fg-muted">
+                הסרטון חייב להיות משותף ל"כל מי שיש לו את הקישור". המערכת
+                תבדוק את גודל הקובץ ואת המקום הפנוי, ואז תעביר אותו
+                לאחסון שלנו — בלי להוריד ולהעלות מחדש.
+              </p>
+            </div>
+          ) : mode === 'upload' ? (
             <DropZone
               file={value.kind === 'upload' ? value.file : null}
               onPick={(f) => {
