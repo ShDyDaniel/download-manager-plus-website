@@ -205,7 +205,12 @@ function buildNoteMediaKey(uid: string, ext: string): string {
 // Google Drive API key (server env). Used to read PUBLIC files
 // ("anyone with the link") without OAuth — both for the size/quota
 // pre-check here and for the Worker's actual byte transfer.
-const DRIVE_API_KEY = (process.env.DRIVE_API_KEY || '').trim()
+// Reuses the existing GOOGLE_DRIVE_API_KEY; falls back to DRIVE_API_KEY.
+const DRIVE_API_KEY = (
+  process.env.GOOGLE_DRIVE_API_KEY ||
+  process.env.DRIVE_API_KEY ||
+  ''
+).trim()
 
 /** Pull the file id out of any common Google Drive share URL shape:
  *    https://drive.google.com/file/d/<ID>/view?usp=sharing
