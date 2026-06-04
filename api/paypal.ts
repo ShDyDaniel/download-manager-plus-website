@@ -1407,9 +1407,48 @@ async function handleSaleCompleted(
     .limit(1)
     .get()
   if (keys.empty) {
+    // The key isn't created yet (this SALE.COMPLETED arrived before
+    // BILLING.SUBSCRIPTION.ACTIVATED). The charge STILL happened, so we
+    // must issue a receipt here — otherwise the FIRST payment would
+    // never get one. The webhook is deduped per event.id, so this fires
+    // exactly once for this charge. We don't touch the key/period here
+    // (ACTIVATED creates it).
+    if (sumitConfigured()) {
+      try {
+        const sub = await paypalCall<{
+          subscriber?: { email_address?: string }
+        }>('GET', `/v1/billing/subscriptions/${subscriptionId}`)
+        const recipient = (sub.subscriber?.email_address || '').trim()
+        if (recipient) {
+          const amount = parseFloat(resource.amount.total)
+          const desc = 'ניהול הורדות פלוס — מנוי'
+          const receipt = await issueSumitReceipt({
+            customerName: recipient,
+            customerEmail: recipient,
+            description: desc,
+            amount,
+            currency: resource.amount.currency,
+          })
+          if (receipt.ok && receipt.url) {
+            await sendReceiptEmail({
+              to: recipient,
+              url: receipt.url,
+              amount,
+              currency: resource.amount.currency,
+              description: desc,
+              draft: receipt.draft,
+            }).catch((e) => console.warn('[sumit] deferred receipt email failed:', e))
+          } else {
+            console.warn('[sumit] deferred receipt issue failed:', receipt.error)
+          }
+        }
+      } catch (err) {
+        console.warn('[sumit] deferred receipt step threw (ignored):', err)
+      }
+    }
     return {
       ok: true,
-      summary: `sale for ${subscriptionId} — key not yet created (deferred)`,
+      summary: `sale for ${subscriptionId} — key deferred; receipt handled`,
     }
   }
   const keyDoc = keys.docs[0]
