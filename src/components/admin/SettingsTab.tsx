@@ -401,6 +401,7 @@ interface ReceiptRow {
   url: string
   draft: boolean
   subscriptionId: string | null
+  test?: boolean
 }
 
 function ReceiptsLogCard({ onErr }: { onErr: (e: unknown) => void }) {
@@ -497,7 +498,14 @@ function ReceiptsLogCard({ onErr }: { onErr: (e: unknown) => void }) {
                     {fmtDate(row.at)}
                   </td>
                   <td className="py-2 pl-2 break-all" dir="ltr">
-                    {row.email || '—'}
+                    <span className="inline-flex items-center gap-1.5">
+                      {row.test && (
+                        <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-500">
+                          בדיקה
+                        </span>
+                      )}
+                      {row.email || '—'}
+                    </span>
                   </td>
                   <td className="py-2 pl-2 whitespace-nowrap" dir="ltr">
                     {row.amount != null ? `${row.amount} ${row.currency}` : '—'}

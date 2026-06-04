@@ -4902,6 +4902,27 @@ async function handleAdminTestSumit(req: VercelRequest, res: VercelResponse) {
     } catch (err) {
       console.warn('[sumit-test] email failed:', err)
     }
+    // Log the test receipt too, so the admin sees the receipts list
+    // update live after a test. Flagged test:true so it's clearly
+    // distinguishable from real payment receipts.
+    try {
+      await getDb()
+        .collection('receipts')
+        .add({
+          at: new Date().toISOString(),
+          email: recipient,
+          amount: 9,
+          currency: 'ILS',
+          description: 'ניהול הורדות פלוס — מנוי חודשי (בדיקה)',
+          documentNumber: receipt.documentNumber ?? null,
+          url: receipt.url,
+          draft: receipt.draft,
+          subscriptionId: null,
+          test: true,
+        })
+    } catch (e) {
+      console.warn('[sumit-test] receipt log write failed:', e)
+    }
   }
 
   return res.status(200).json({
@@ -6883,6 +6904,7 @@ async function handleAdminListReceipts(
         url?: string
         draft?: boolean
         subscriptionId?: string | null
+        test?: boolean
       }
       return {
         at: data.at || '',
@@ -6894,6 +6916,7 @@ async function handleAdminListReceipts(
         url: data.url || '',
         draft: Boolean(data.draft),
         subscriptionId: data.subscriptionId || null,
+        test: Boolean(data.test),
       }
     })
     return res.status(200).json({ ok: true, receipts })
