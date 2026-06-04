@@ -50,6 +50,42 @@ function dispositionFor(url) {
   return 'attachment; filename="video.mp4"'
 }
 
+// Derive a sane video content-type from the object key's extension.
+// Used as a fallback when the stored R2 metadata content-type is
+// missing or generic (application/octet-stream) — otherwise the
+// browser's <video> can mis-sniff the file and render it as an
+// audio-only player (no picture).
+function videoTypeFromKey(key) {
+  const m = /\.([a-z0-9]+)(?:\?|$)/i.exec(key || '')
+  const ext = m ? m[1].toLowerCase() : ''
+  switch (ext) {
+    case 'mp4':
+    case 'm4v':
+      return 'video/mp4'
+    case 'mov':
+      return 'video/quicktime'
+    case 'webm':
+      return 'video/webm'
+    case 'mkv':
+      return 'video/x-matroska'
+    case 'avi':
+      return 'video/x-msvideo'
+    case 'wmv':
+      return 'video/x-ms-wmv'
+    case 'flv':
+      return 'video/x-flv'
+    default:
+      return 'video/mp4'
+  }
+}
+
+function ensureVideoContentType(headers, key) {
+  const ct = (headers.get('content-type') || '').toLowerCase()
+  if (!ct || ct === 'application/octet-stream' || ct === 'binary/octet-stream') {
+    headers.set('content-type', videoTypeFromKey(key))
+  }
+}
+
 // Resolve a share token → R2 object key via Vercel (password/round
 // validated server-side). Cached per (token, pwd, round).
 async function fetchAuth(env, shareToken, passwordToken, roundId) {
@@ -308,6 +344,7 @@ export default {
         corsHeaders({ 'content-disposition': dispositionFor(url) }),
       )
       head.writeHttpMetadata(headers)
+      ensureVideoContentType(headers, key)
       headers.set('etag', head.httpEtag)
       headers.set('accept-ranges', 'bytes')
       headers.set('content-length', String(head.size))
@@ -324,6 +361,7 @@ export default {
       corsHeaders({ 'content-disposition': dispositionFor(url) }),
     )
     object.writeHttpMetadata(headers) // content-type etc. from stored metadata
+    ensureVideoContentType(headers, key)
     headers.set('etag', object.httpEtag)
     headers.set('accept-ranges', 'bytes')
 

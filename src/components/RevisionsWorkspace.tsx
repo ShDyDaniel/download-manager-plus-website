@@ -761,6 +761,7 @@ function ConnectedWorkspace({
           <ConfirmDeleteModal
             key="delete"
             target={confirmDelete}
+            backend={backend}
             onClose={() => setConfirmDelete(null)}
             onDeleted={() => {
               setConfirmDelete(null)
@@ -2225,6 +2226,7 @@ function EditGroupModal({
 
 function ConfirmDeleteModal({
   target,
+  backend,
   onClose,
   onDeleted,
 }: {
@@ -2237,6 +2239,7 @@ function ConfirmDeleteModal({
         storage?: 'r2' | 'drive'
       }
     | { kind: 'legacy'; project: LegacyProjectSummary }
+  backend: 'r2' | 'drive'
   onClose: () => void
   onDeleted: () => void
 }) {
@@ -2245,11 +2248,13 @@ function ConfirmDeleteModal({
   const [error, setError] = useState<string | null>(null)
 
   const isRound = target.kind === 'round'
-  // R2-backed rounds delete everything (video + screenshots + audio)
+  // R2 deletions remove everything (video + screenshots + audio)
   // unconditionally on the server — there's no Drive trash to opt
   // into, so we skip the checkbox and show a plain irreversible
-  // warning instead.
-  const isR2Round = target.kind === 'round' && target.storage === 'r2'
+  // warning. For a round we trust its own storage; for a whole
+  // project we fall back to the user's current backend.
+  const isR2Round =
+    target.kind === 'round' ? target.storage === 'r2' : backend === 'r2'
   const title = isRound
     ? 'מחיקת סבב תיקונים'
     : target.kind === 'group'
@@ -2280,9 +2285,9 @@ function ConfirmDeleteModal({
     <ModalShell title={title} onClose={onClose}>
       {isR2Round ? (
         <p className="text-sm leading-relaxed text-fg-muted">
-          למחוק את הסבב תיקונים? הסרטון וכל מה שקשור אליו (התיקונים
-          התמונות וההקלטות של הסבב הזה) יימחקו ולא יהיה ניתן לשחזר
-          אותם.
+          {isRound
+            ? 'למחוק את הסבב תיקונים? הסרטון וכל מה שקשור אליו (התיקונים התמונות וההקלטות של הסבב הזה) יימחקו ולא יהיה ניתן לשחזר אותם.'
+            : 'למחוק את הפרויקט? כל הסבבים, הסרטונים וכל מה שקשור אליהם (התיקונים, התמונות וההקלטות) יימחקו ולא יהיה ניתן לשחזר אותם.'}
         </p>
       ) : (
         <>

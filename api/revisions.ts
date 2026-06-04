@@ -196,6 +196,32 @@ function buildVideoKey(uid: string, fileName: string): string {
   return `${uid}/videos/${Date.now()}-${rand}-${safe}`
 }
 
+// Map a filename's extension to a real video MIME type. Keeps R2
+// objects served as video/* so the browser <video> renders a picture
+// instead of mis-sniffing the file as an audio-only stream.
+function videoTypeFromFileName(name: string): string {
+  const m = /\.([a-z0-9]+)$/i.exec(String(name || '').trim())
+  switch ((m ? m[1] : '').toLowerCase()) {
+    case 'mp4':
+    case 'm4v':
+      return 'video/mp4'
+    case 'mov':
+      return 'video/quicktime'
+    case 'webm':
+      return 'video/webm'
+    case 'mkv':
+      return 'video/x-matroska'
+    case 'avi':
+      return 'video/x-msvideo'
+    case 'wmv':
+      return 'video/x-ms-wmv'
+    case 'flv':
+      return 'video/x-flv'
+    default:
+      return 'video/mp4'
+  }
+}
+
 function buildNoteMediaKey(uid: string, ext: string): string {
   const clean = (ext || 'bin').replace(/[^\w]+/g, '').slice(0, 8) || 'bin'
   const rand = crypto.randomBytes(8).toString('hex')
@@ -379,8 +405,15 @@ async function handleR2UploadInit(req: VercelRequest, res: VercelResponse) {
     sizeBytes?: number
   }
   const fileName = String(body.fileName || 'video').slice(0, 300)
-  const contentType =
-    String(body.contentType || 'application/octet-stream').slice(0, 100)
+  // Store a real video/* content-type so the <video> player on the
+  // review page renders a picture (a generic octet-stream makes some
+  // browsers mis-sniff the file as audio-only). Trust the client's
+  // type only when it's already a video/* value; otherwise derive it
+  // from the file extension.
+  const clientType = String(body.contentType || '').toLowerCase()
+  const contentType = clientType.startsWith('video/')
+    ? clientType.slice(0, 100)
+    : videoTypeFromFileName(fileName)
   const sizeBytes = Math.max(0, Math.floor(Number(body.sizeBytes) || 0))
 
   // Storage-quota gate: refuse to start an upload that would push the
