@@ -3130,6 +3130,10 @@ async function issueSumitReceipt(args: {
     Credentials: { CompanyID: companyId, APIKey: apiKey },
     Details: {
       IsDraft: draft,
+      // Document type. An עוסק פטור may only issue a קבלה (Receipt),
+      // not a חשבונית מס. Default to Receipt; an עוסק מורשה can switch
+      // to "InvoiceReceipt" (חשבונית מס/קבלה) via env SUMIT_DOC_TYPE.
+      Type: process.env.SUMIT_DOC_TYPE || 'Receipt',
       Customer: {
         Name: args.customerName || args.customerEmail,
         EmailAddress: args.customerEmail,
