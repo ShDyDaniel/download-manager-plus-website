@@ -1144,6 +1144,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminMigrateEmailVerified(req, res)
       case 'admin-send-test-email':
         return await handleAdminSendTestEmail(req, res)
+      case 'admin-test-sumit':
+        return await handleAdminTestSumit(req, res)
       case 'admin-send-marketing-email':
         return await handleAdminSendMarketingEmail(req, res)
       case 'unsubscribe':
@@ -1455,6 +1457,43 @@ async function handleSaleCompleted(
       at: new Date().toISOString(),
     }),
   })
+
+  // Issue + email a SUMIT tax receipt for this charge. Fully
+  // best-effort: any failure is logged and ignored so it can never
+  // affect the subscription/payment flow.
+  if (sumitConfigured()) {
+    try {
+      const recipient = key.buyerEmail || key.redeemedByEmail || ''
+      if (recipient) {
+        const planLabel = days >= 360 ? 'מנוי שנתי' : 'מנוי חודשי'
+        const receipt = await issueSumitReceipt({
+          customerName: recipient,
+          customerEmail: recipient,
+          description: `ניהול הורדות פלוס — ${planLabel}`,
+          amount: paidAmount,
+          currency: resource.amount.currency,
+        })
+        if (receipt.ok && receipt.url) {
+          await keyDoc.ref
+            .update({ lastReceiptUrl: receipt.url, lastReceiptAt: new Date().toISOString() })
+            .catch(() => undefined)
+          await sendReceiptEmail({
+            to: recipient,
+            url: receipt.url,
+            amount: paidAmount,
+            currency: resource.amount.currency,
+            description: `ניהול הורדות פלוס — ${planLabel}`,
+            draft: receipt.draft,
+          }).catch((e) => console.warn('[sumit] receipt email failed:', e))
+        } else {
+          console.warn('[sumit] receipt issue failed:', receipt.error, receipt.raw)
+        }
+      }
+    } catch (err) {
+      console.warn('[sumit] receipt step threw (ignored):', err)
+    }
+  }
+
   return {
     ok: true,
     summary: `extended ${keyDoc.id} by ${days}d → ${newExpiresAt.toISOString()}`,
@@ -3043,6 +3082,163 @@ function generateKeyString(): string {
   return `${block()}-${block()}-${block()}-${block()}`
 }
 
+/* ──────────────────────────────────────────────────────────────
+ *  SUMIT (סאמיט) — issue a tax receipt for a paid charge
+ *
+ *  We collect payment via PayPal, so SUMIT is used only to ISSUE +
+ *  REGISTER the legal document (חשבונית מס/קבלה). The server creates
+ *  the document via SUMIT's API and we email it from OUR mailbox.
+ *
+ *  Draft vs real: while the SUMIT account isn't configured for a real
+ *  business it can only make DRAFTS — so we default to Draft. Once the
+ *  business is set up there, set env SUMIT_LIVE=true to issue real
+ *  documents. Fully fail-safe: if anything errors the caller ignores
+ *  it (payment flow is never affected).
+ * ────────────────────────────────────────────────────────────── */
+const SUMIT_API_BASE = 'https://api.sumit.co.il'
+
+function sumitConfigured(): boolean {
+  return Boolean(process.env.SUMIT_COMPANY_ID && process.env.SUMIT_API_KEY)
+}
+
+async function issueSumitReceipt(args: {
+  customerName: string
+  customerEmail: string
+  description: string
+  amount: number
+  currency: string
+}): Promise<{
+  ok: boolean
+  url?: string
+  documentNumber?: number | string
+  draft: boolean
+  raw?: unknown
+  error?: string
+}> {
+  const companyId = Number(process.env.SUMIT_COMPANY_ID)
+  const apiKey = process.env.SUMIT_API_KEY || ''
+  const draft = process.env.SUMIT_LIVE !== 'true'
+  if (!companyId || !apiKey) {
+    return { ok: false, draft, error: 'SUMIT not configured' }
+  }
+  // SUMIT create-document. Field names per the OfficeGuy/SUMIT REST
+  // API. Kept in one place so they're trivial to adjust if the live
+  // response (surfaced by the admin test action) shows otherwise.
+  const payload = {
+    Credentials: { CompanyID: companyId, APIKey: apiKey },
+    Details: {
+      Customer: {
+        Name: args.customerName || args.customerEmail,
+        EmailAddress: args.customerEmail,
+        SearchMode: 0,
+      },
+      Language: 'Hebrew',
+      Currency: args.currency === 'USD' ? 'USD' : 'ILS',
+      Type: 'TaxInvoiceReceipt',
+      Draft: draft,
+    },
+    Items: [
+      {
+        Quantity: 1,
+        UnitPrice: args.amount,
+        Description: args.description,
+        Item: { Name: args.description },
+      },
+    ],
+    Payments: [{ Amount: args.amount, Type: 'PayPal' }],
+    VATIncluded: true,
+    // Never let SUMIT email the customer — we deliver from our mailbox.
+    SendByEmail: false,
+    SendDocumentByEmailToCustomer: false,
+  }
+  try {
+    const r = await fetch(`${SUMIT_API_BASE}/accounting/documents/create/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const json = (await r.json().catch(() => null)) as {
+      Status?: number
+      UserErrorMessage?: string
+      TechnicalErrorDetails?: string
+      Data?: {
+        DocumentDownloadURL?: string
+        DocumentNumber?: number | string
+        DocumentID?: number | string
+      }
+    } | null
+    if (!r.ok || !json || json.Status !== 0) {
+      return {
+        ok: false,
+        draft,
+        raw: json,
+        error:
+          json?.UserErrorMessage ||
+          json?.TechnicalErrorDetails ||
+          `HTTP ${r.status}`,
+      }
+    }
+    return {
+      ok: true,
+      draft,
+      url: json.Data?.DocumentDownloadURL,
+      documentNumber: json.Data?.DocumentNumber,
+      raw: json,
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      draft,
+      error: err instanceof Error ? err.message : 'sumit request failed',
+    }
+  }
+}
+
+/** Email the SUMIT receipt to the customer from OUR mailbox. The
+ *  document is the legal receipt SUMIT issued; we're just the
+ *  delivery channel. Best-effort. */
+async function sendReceiptEmail(args: {
+  to: string
+  url: string
+  amount: number
+  currency: string
+  description: string
+  draft: boolean
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const sym = args.currency === 'USD' ? '$' : '₪'
+  const draftNote = args.draft
+    ? `<p style="font-size:11px;margin:0 0 14px;color:#8B8170;">[מסמך טיוטה — לבדיקה בלבד]</p>`
+    : ''
+  const html = renderEmail({
+    heading: 'הקבלה שלך 🧾',
+    contentHtml: `
+      ${draftNote}
+      <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+        תודה על התשלום ל-<strong>ניהול הורדות פלוס</strong>. מצורפת הקבלה הרשמית עבור: ${args.description} — <strong dir="ltr">${args.amount} ${sym}</strong>.
+      </p>
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:18px 0 24px;">
+        <tr><td align="center">
+          <a href="${args.url}" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">צפייה / הורדת הקבלה</a>
+        </td></tr>
+      </table>
+      <p style="font-size:11px;margin:0;color:#5C5444;">הקבלה הופקה דרך מערכת SUMIT.</p>
+    `,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    subject: 'הקבלה שלך — ניהול הורדות פלוס',
+    html,
+  })
+}
+
 async function sendSubscriptionWelcomeEmail(args: {
   to: string
   key: string
@@ -4536,6 +4732,72 @@ async function handleAdminSendTestEmail(req: VercelRequest, res: VercelResponse)
     })
   }
   return res.status(200).json({ ok: true, sentTo: targetEmail, kind })
+}
+
+/** Admin-only: create a SUMIT test document (draft) and optionally
+ *  email it. Returns the RAW SUMIT response so we can confirm the API
+ *  contract + see the document URL / any error message. */
+async function handleAdminTestSumit(req: VercelRequest, res: VercelResponse) {
+  const body = req.body as { idToken?: string; targetEmail?: string }
+  const idToken = (body.idToken || '').trim()
+  const targetEmail = (body.targetEmail || '').trim().toLowerCase()
+  if (!idToken) return res.status(401).json({ ok: false, error: 'missing id token' })
+  let email: string
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken)
+    email = (decoded.email || '').toLowerCase()
+  } catch {
+    return res.status(401).json({ ok: false, error: 'invalid id token' })
+  }
+  if (!ADMIN_EMAILS.includes(email)) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+  if (!sumitConfigured()) {
+    return res.status(400).json({
+      ok: false,
+      error: 'SUMIT לא מוגדר — חסר SUMIT_COMPANY_ID / SUMIT_API_KEY ב-env',
+    })
+  }
+
+  const recipient = targetEmail || email
+  const receipt = await issueSumitReceipt({
+    customerName: 'בדיקה — לקוח לדוגמה',
+    customerEmail: recipient,
+    description: 'ניהול הורדות פלוס — מנוי חודשי (בדיקה)',
+    amount: 9,
+    currency: 'ILS',
+  })
+
+  // If a document URL came back, also email it so the admin sees the
+  // full end-to-end flow (issue → our mailbox).
+  let emailed = false
+  if (receipt.ok && receipt.url) {
+    try {
+      await sendReceiptEmail({
+        to: recipient,
+        url: receipt.url,
+        amount: 9,
+        currency: 'ILS',
+        description: 'ניהול הורדות פלוס — מנוי חודשי (בדיקה)',
+        draft: receipt.draft,
+      })
+      emailed = true
+    } catch (err) {
+      console.warn('[sumit-test] email failed:', err)
+    }
+  }
+
+  return res.status(200).json({
+    ok: receipt.ok,
+    draft: receipt.draft,
+    url: receipt.url || null,
+    documentNumber: receipt.documentNumber ?? null,
+    emailed,
+    error: receipt.error || null,
+    // RAW response from SUMIT — lets us confirm field names live.
+    raw: receipt.raw ?? null,
+  })
 }
 
 /* ─────────────────────────────────────────────────────────────

@@ -58,6 +58,7 @@ export default function SettingsTab({
       <LegalCard kind="terms" title="תנאי שימוש" onErr={handleErr} />
       <LegalCard kind="privacy" title="מדיניות פרטיות" onErr={handleErr} />
       <EmailToolsCard onErr={handleErr} />
+      <SumitTestCard onErr={handleErr} />
     </div>
   )
 }
@@ -295,6 +296,96 @@ function LegalCard({
         </button>
       </div>
       {msg && <div className="text-xs text-success">{msg}</div>}
+    </Card>
+  )
+}
+
+function SumitTestCard({ onErr }: { onErr: (e: unknown) => void }) {
+  const [target, setTarget] = useState('')
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState<{
+    ok: boolean
+    draft?: boolean
+    url?: string | null
+    documentNumber?: string | number | null
+    emailed?: boolean
+    error?: string | null
+    raw?: unknown
+  } | null>(null)
+
+  async function run() {
+    setSending(true)
+    setResult(null)
+    try {
+      const idToken = await getAdminIdToken()
+      if (!idToken) return onErr({ code: 'auth' })
+      const r = await fetch('/api/paypal?action=admin-test-sumit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, targetEmail: target.trim() }),
+      })
+      const j = await r.json()
+      setResult(j)
+    } catch (e) {
+      onErr(e)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <Card title="בדיקת קבלה — SUMIT (סאמיט)">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          placeholder="מייל יעד (ריק = למייל שלך)"
+          dir="ltr"
+          className="flex-1 rounded-lg border border-border bg-transparent px-3 py-2 text-sm text-fg outline-none focus:border-primary"
+        />
+        <button
+          type="button"
+          onClick={run}
+          disabled={sending}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-50"
+        >
+          {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          הפקת קבלת בדיקה
+        </button>
+      </div>
+      {result && (
+        <div className="mt-2 space-y-1 text-xs">
+          <div className={result.ok ? 'text-success' : 'text-destructive'}>
+            {result.ok
+              ? `הצליח ${result.draft ? '(טיוטה)' : ''} ${result.emailed ? '— נשלח במייל' : ''}`
+              : `נכשל: ${result.error || 'שגיאה'}`}
+          </div>
+          {result.url && (
+            <a
+              href={result.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              dir="ltr"
+              className="block break-all text-primary underline"
+            >
+              {result.url}
+            </a>
+          )}
+          <details>
+            <summary className="cursor-pointer text-fg-faint">תשובת SUMIT הגולמית</summary>
+            <pre
+              dir="ltr"
+              className="mt-1 max-h-60 overflow-auto rounded bg-black/30 p-2 text-[10px] leading-relaxed text-fg-muted"
+            >
+              {JSON.stringify(result.raw, null, 2)}
+            </pre>
+          </details>
+        </div>
+      )}
+      <p className="text-[11px] text-fg-faint">
+        מפיק מסמך טיוטה ב-SUMIT ושולח אותו מהמייל שלנו. כשהעסק מוגדר —
+        הגדר env <code>SUMIT_LIVE=true</code> כדי להפיק מסמכים אמיתיים.
+      </p>
     </Card>
   )
 }
