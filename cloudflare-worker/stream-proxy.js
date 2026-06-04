@@ -222,16 +222,20 @@ export default {
     const key = auth.r2Key
 
     // HEAD — metadata only (some players probe with HEAD first).
+    // NOTE: writeHttpMetadata() needs a real Headers instance (it calls
+    // .set()), so we build one from the plain CORS object.
     if (request.method === 'HEAD') {
       const head = await env.BUCKET.head(key)
       if (!head) {
         return new Response('not found', { status: 404, headers: corsHeaders() })
       }
-      const headers = corsHeaders({ 'content-disposition': dispositionFor(url) })
+      const headers = new Headers(
+        corsHeaders({ 'content-disposition': dispositionFor(url) }),
+      )
       head.writeHttpMetadata(headers)
-      headers['etag'] = head.httpEtag
-      headers['accept-ranges'] = 'bytes'
-      headers['content-length'] = String(head.size)
+      headers.set('etag', head.httpEtag)
+      headers.set('accept-ranges', 'bytes')
+      headers.set('content-length', String(head.size))
       return new Response(null, { status: 200, headers })
     }
 
@@ -241,10 +245,12 @@ export default {
       return new Response('not found', { status: 404, headers: corsHeaders() })
     }
 
-    const headers = corsHeaders({ 'content-disposition': dispositionFor(url) })
+    const headers = new Headers(
+      corsHeaders({ 'content-disposition': dispositionFor(url) }),
+    )
     object.writeHttpMetadata(headers) // content-type etc. from stored metadata
-    headers['etag'] = object.httpEtag
-    headers['accept-ranges'] = 'bytes'
+    headers.set('etag', object.httpEtag)
+    headers.set('accept-ranges', 'bytes')
 
     let status = 200
     if (object.range && typeof object.range.offset === 'number') {
@@ -254,11 +260,11 @@ export default {
           ? object.range.length
           : object.size - offset
       const end = offset + length - 1
-      headers['content-range'] = `bytes ${offset}-${end}/${object.size}`
-      headers['content-length'] = String(length)
+      headers.set('content-range', `bytes ${offset}-${end}/${object.size}`)
+      headers.set('content-length', String(length))
       status = 206
     } else {
-      headers['content-length'] = String(object.size)
+      headers.set('content-length', String(object.size))
     }
 
     return new Response(object.body, { status, headers })
