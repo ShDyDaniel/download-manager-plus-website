@@ -13,6 +13,7 @@ import {
   AbortMultipartUploadCommand,
   UploadPartCommand,
   PutObjectCommand,
+  GetObjectCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
 } from '@aws-sdk/client-s3'
@@ -182,6 +183,9 @@ function getR2(): S3Client {
   return _r2
 }
 
+// Per-user folder layout, kept tidy:
+//   {uid}/videos/<file>   — round videos
+//   {uid}/notes/<file>    — reviewer screenshots + voice notes
 function buildVideoKey(uid: string, fileName: string): string {
   const safe =
     (fileName || 'video')
@@ -189,22 +193,25 @@ function buildVideoKey(uid: string, fileName: string): string {
       .replace(/_+/g, '_')
       .slice(-80) || 'video'
   const rand = crypto.randomBytes(8).toString('hex')
-  return `videos/${uid}/${Date.now()}-${rand}-${safe}`
+  return `${uid}/videos/${Date.now()}-${rand}-${safe}`
 }
 
 function buildNoteMediaKey(uid: string, ext: string): string {
   const clean = (ext || 'bin').replace(/[^\w]+/g, '').slice(0, 8) || 'bin'
   const rand = crypto.randomBytes(8).toString('hex')
-  return `notes/${uid}/${Date.now()}-${rand}.${clean}`
+  return `${uid}/notes/${Date.now()}-${rand}.${clean}`
 }
 
-// A key is owned by `uid` iff it sits under that user's prefix. We
-// check this before signing parts / completing / aborting so a
-// verified user can only ever touch their own objects.
+// A key is owned by `uid` iff it sits under that user's folder. The
+// new layout is `{uid}/...`; we also accept the original
+// `videos/{uid}/` & `notes/{uid}/` prefixes so objects created before
+// the reorg still validate (for delete, etc.).
 function keyBelongsToUser(key: string, uid: string): boolean {
   if (!key || !uid) return false
   return (
-    key.startsWith(`videos/${uid}/`) || key.startsWith(`notes/${uid}/`)
+    key.startsWith(`${uid}/`) ||
+    key.startsWith(`videos/${uid}/`) ||
+    key.startsWith(`notes/${uid}/`)
   )
 }
 
@@ -219,6 +226,18 @@ async function r2DeleteObject(key: string): Promise<boolean> {
     console.error('[r2] delete failed:', key, e)
     return false
   }
+}
+
+// Presigned GET URL for a note-media object. Note media is small and
+// immutable, so the browser can fetch it directly from R2 via this
+// short-lived URL — no Worker hop needed (unlike video, which streams
+// with Range through the Worker).
+async function r2PresignGet(key: string, ttl = 60 * 60): Promise<string> {
+  return getSignedUrl(
+    getR2(),
+    new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }),
+    { expiresIn: ttl },
+  )
 }
 
 async function r2HeadSize(key: string): Promise<number> {
@@ -3002,6 +3021,10 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
     /** Drive file ID of the uploaded voice recording. Same flow as
      *  screenshotDriveFileId — upload first, then submit the note. */
     audioDriveFileId?: string
+    /** R2 keys — the equivalent of the Drive ids for R2-backed rounds.
+     *  upload-note-media returns one of these; the client forwards it. */
+    screenshotR2Key?: string
+    audioR2Key?: string
     annotations?: unknown[]
   }
   const shareToken = String(body.shareToken || '').trim()
@@ -3026,6 +3049,8 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
       : null
   const screenshotDriveFileId = String(body.screenshotDriveFileId || '').trim() || null
   const audioDriveFileId = String(body.audioDriveFileId || '').trim() || null
+  const screenshotR2Key = String(body.screenshotR2Key || '').trim() || null
+  const audioR2Key = String(body.audioR2Key || '').trim() || null
   if (!shareToken) return res.status(400).json({ ok: false, error: 'shareToken' })
   if (!viewerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(viewerEmail)) {
     return res.status(400).json({ ok: false, error: 'מייל לא תקין' })
@@ -3034,7 +3059,9 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
     !text &&
     !body.screenshotDataUrl &&
     !screenshotDriveFileId &&
-    !audioDriveFileId
+    !audioDriveFileId &&
+    !screenshotR2Key &&
+    !audioR2Key
   ) {
     return res
       .status(400)
@@ -3086,6 +3113,10 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
     screenshotDataUrl: screenshotDataUrl || null,
     screenshotDriveFileId,
     audioDriveFileId,
+    // R2 equivalents (R2-backed rounds). A note carries either the
+    // Drive ids or the R2 keys, never both.
+    screenshotR2Key,
+    audioR2Key,
     annotations,
     status: 'new',
     createdAt: now,
@@ -3238,6 +3269,39 @@ async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
       ok: false,
       error: 'הסבב סגור לתיקונים. אי אפשר להעלות מדיה חדשה.',
     })
+  }
+
+  // R2-backed round → store the attachment in our R2 bucket (under the
+  // owner's folder), exactly like the video. Returns an r2Key the
+  // client then attaches to the note via add-note. No Drive involved.
+  if (roundData.r2Key) {
+    const ownerUid = String(group?.ownerUid || roundData.ownerUid || '')
+    const bytes = Buffer.from(dataBase64, 'base64')
+    const ext =
+      kind === 'image'
+        ? mimeType.includes('png')
+          ? 'png'
+          : 'jpg'
+        : mimeType.includes('mp4')
+          ? 'm4a'
+          : 'webm'
+    const key = buildNoteMediaKey(ownerUid, ext)
+    try {
+      await getR2().send(
+        new PutObjectCommand({
+          Bucket: R2_BUCKET,
+          Key: key,
+          Body: bytes,
+          ContentType: mimeType,
+        }),
+      )
+    } catch (e) {
+      console.error('[upload-note-media] R2 put failed:', e)
+      return res
+        .status(502)
+        .json({ ok: false, error: 'העלאת המדיה לאחסון נכשלה' })
+    }
+    return res.status(200).json({ ok: true, r2Key: key, mimeType })
   }
 
   // Owner uid + drive folder come from either the group (preferred
@@ -3429,7 +3493,37 @@ async function handleNoteMedia(req: VercelRequest, res: VercelResponse) {
   const note = noteSnap.data() as {
     screenshotDriveFileId?: string | null
     audioDriveFileId?: string | null
+    screenshotR2Key?: string | null
+    audioR2Key?: string | null
   }
+
+  // ── R2-backed note media — stream straight from our bucket ──
+  // Small files (screenshots/voice notes), so we pull the whole
+  // object server-side and pipe it back. No Range, no CORS concerns
+  // (the bytes flow R2 → Vercel → browser, same-origin to the client).
+  const r2Key = kind === 'image' ? note.screenshotR2Key : note.audioR2Key
+  if (r2Key) {
+    try {
+      const r2 = getR2()
+      const obj = await r2.send(
+        new GetObjectCommand({ Bucket: R2_BUCKET, Key: r2Key }),
+      )
+      const contentType = obj.ContentType || 'application/octet-stream'
+      res.setHeader('Content-Type', contentType)
+      if (typeof obj.ContentLength === 'number') {
+        res.setHeader('Content-Length', String(obj.ContentLength))
+      }
+      res.setHeader('Cache-Control', 'private, max-age=3600')
+      res.setHeader('Content-Disposition', 'inline')
+      const bytes = await obj.Body?.transformToByteArray()
+      if (!bytes) return res.status(404).end('media not attached')
+      return res.status(200).send(Buffer.from(bytes))
+    } catch (err) {
+      console.warn('[revisions/note-media] R2 fetch failed:', err)
+      return res.status(404).end('media not attached')
+    }
+  }
+
   const driveFileId =
     kind === 'image' ? note.screenshotDriveFileId : note.audioDriveFileId
   if (!driveFileId) return res.status(404).end('media not attached')
@@ -4149,7 +4243,21 @@ async function handleNoteMediaUrl(req: VercelRequest, res: VercelResponse) {
 
   const noteSnap = await roundRef.collection('notes').doc(noteId).get()
   if (!noteSnap.exists) return res.status(404).json({ ok: false, error: 'note not found' })
-  const note = noteSnap.data() as { screenshotDriveFileId?: string | null; audioDriveFileId?: string | null }
+  const note = noteSnap.data() as {
+    screenshotDriveFileId?: string | null
+    audioDriveFileId?: string | null
+    screenshotR2Key?: string | null
+    audioR2Key?: string | null
+  }
+
+  // R2-backed media → hand the browser a short-lived presigned GET URL
+  // straight to R2 (no Worker hop needed for small images/audio).
+  const r2Key = kind === 'image' ? note.screenshotR2Key : note.audioR2Key
+  if (r2Key) {
+    const url = await r2PresignGet(String(r2Key))
+    return res.status(200).json({ ok: true, url })
+  }
+
   const driveFileId = kind === 'image' ? note.screenshotDriveFileId : note.audioDriveFileId
   if (!driveFileId) return res.status(404).json({ ok: false, error: 'media not attached' })
 
@@ -4184,7 +4292,19 @@ async function handleNoteMediaOwnerUrl(req: VercelRequest, res: VercelResponse) 
 
   const noteSnap = await projectRef.collection('notes').doc(noteId).get()
   if (!noteSnap.exists) return res.status(404).json({ ok: false, error: 'note not found' })
-  const note = noteSnap.data() as { screenshotDriveFileId?: string | null; audioDriveFileId?: string | null }
+  const note = noteSnap.data() as {
+    screenshotDriveFileId?: string | null
+    audioDriveFileId?: string | null
+    screenshotR2Key?: string | null
+    audioR2Key?: string | null
+  }
+
+  const r2Key = kind === 'image' ? note.screenshotR2Key : note.audioR2Key
+  if (r2Key) {
+    const url = await r2PresignGet(String(r2Key))
+    return res.status(200).json({ ok: true, url })
+  }
+
   const driveFileId = kind === 'image' ? note.screenshotDriveFileId : note.audioDriveFileId
   if (!driveFileId) return res.status(404).json({ ok: false, error: 'media not attached' })
 
@@ -4663,6 +4783,8 @@ async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
     viewerEmail: string
     screenshotDriveFileId?: string | null
     audioDriveFileId?: string | null
+    screenshotR2Key?: string | null
+    audioR2Key?: string | null
   }
   if ((note.viewerEmail || '').toLowerCase() !== viewerEmail) {
     return res.status(403).json({
@@ -4676,6 +4798,20 @@ async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
   // the note (the user clicked delete, not "delete-pending-cleanup"),
   // and the orphan media file just sits in the editor's Drive until
   // they clean it up manually. Same forgiveness we apply elsewhere.
+  // R2-side media (the new backend) — delete the objects directly.
+  // Best-effort, same forgiveness as Drive: a failed delete leaves an
+  // orphan object but never blocks the note deletion.
+  const r2Keys = [note.screenshotR2Key, note.audioR2Key].filter(
+    (k): k is string => typeof k === 'string' && k.length > 0,
+  )
+  for (const k of r2Keys) {
+    try {
+      await r2DeleteObject(k)
+    } catch (err) {
+      console.warn('[revisions/delete-note] R2 media cleanup failed:', err)
+    }
+  }
+
   const driveIds = [note.screenshotDriveFileId, note.audioDriveFileId].filter(
     (id): id is string => typeof id === 'string' && id.length > 0,
   )

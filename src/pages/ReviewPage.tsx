@@ -138,6 +138,9 @@ interface Note {
   screenshotDriveFileId?: string | null
   /** Drive file ID of the voice recording attached to this note. */
   audioDriveFileId?: string | null
+  /** R2 keys — equivalents for R2-backed rounds. */
+  screenshotR2Key?: string | null
+  audioR2Key?: string | null
   status: 'new' | 'resolved' | 'question' | 'not-possible'
   /** Editor's text response — populated when status is 'question'
    *  (the clarifying question) or 'not-possible' (why it can't be
@@ -203,7 +206,7 @@ async function uploadNoteMedia(
   kind: 'image' | 'audio',
   mimeType: string,
   base64: string,
-): Promise<string> {
+): Promise<{ driveFileId?: string; r2Key?: string }> {
   const r = await fetch(`${API}?action=upload-note-media`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -216,11 +219,12 @@ async function uploadNoteMedia(
       dataBase64: base64,
     }),
   })
+  // R2-backed rounds return { r2Key }; Drive-backed return { driveFileId }.
   const json = (await r.json()) as
-    | { ok: true; driveFileId: string; mimeType: string }
+    | { ok: true; driveFileId?: string; r2Key?: string; mimeType: string }
     | { ok: false; error: string }
   if (!json.ok) throw new Error(json.error || 'העלאה נכשלה')
-  return json.driveFileId
+  return { driveFileId: json.driveFileId, r2Key: json.r2Key }
 }
 
 /** Build a URL the browser can use to fetch a note's media. Goes
@@ -1766,10 +1770,12 @@ function ReviewWorkspace({
       // refresh and waste quota.
       let screenshotDriveFileId: string | null = null
       let audioDriveFileId: string | null = null
+      let screenshotR2Key: string | null = null
+      let audioR2Key: string | null = null
       if (screenshotToSave) {
         const parsed = stripDataUrl(screenshotToSave)
         if (parsed) {
-          screenshotDriveFileId = await uploadNoteMedia(
+          const up = await uploadNoteMedia(
             token,
             passwordToken,
             roundId,
@@ -1777,11 +1783,13 @@ function ReviewWorkspace({
             parsed.mime,
             parsed.base64,
           )
+          screenshotDriveFileId = up.driveFileId || null
+          screenshotR2Key = up.r2Key || null
         }
       }
       if (audioBlob) {
         const base64 = await blobToBase64(audioBlob)
-        audioDriveFileId = await uploadNoteMedia(
+        const up = await uploadNoteMedia(
           token,
           passwordToken,
           roundId,
@@ -1789,9 +1797,11 @@ function ReviewWorkspace({
           audioBlob.type || 'audio/webm',
           base64,
         )
+        audioDriveFileId = up.driveFileId || null
+        audioR2Key = up.r2Key || null
       }
 
-      // ── Phase 2: create the note pointing at the fileIds ──
+      // ── Phase 2: create the note pointing at the fileIds/keys ──
       const r = await fetch(`${API}?action=add-note`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1804,6 +1814,8 @@ function ReviewWorkspace({
           text,
           screenshotDriveFileId,
           audioDriveFileId,
+          screenshotR2Key,
+          audioR2Key,
         }),
       })
       const json = (await r.json()) as
@@ -1828,6 +1840,8 @@ function ReviewWorkspace({
           text,
           screenshotDriveFileId,
           audioDriveFileId,
+          screenshotR2Key,
+          audioR2Key,
           status: 'new',
           createdAt: Date.now(),
         },
@@ -2437,7 +2451,7 @@ function NoteItem({
     const revoke = (u: string) => {
       if (u.startsWith('blob:')) URL.revokeObjectURL(u)
     }
-    if (note.screenshotDriveFileId) {
+    if (note.screenshotDriveFileId || note.screenshotR2Key) {
       void fetchNoteMediaSrc(shareToken, note.id, 'image', passwordToken, roundId)
         .then((u) => {
           if (alive) {
@@ -2447,7 +2461,7 @@ function NoteItem({
         })
         .catch(() => undefined)
     }
-    if (note.audioDriveFileId) {
+    if (note.audioDriveFileId || note.audioR2Key) {
       void fetchNoteMediaSrc(shareToken, note.id, 'audio', passwordToken, roundId)
         .then((u) => {
           if (alive) {

@@ -2543,7 +2543,7 @@ function NoteCard({
 
   // Fetch screenshot once on mount (or when the file id changes).
   useEffect(() => {
-    if (!note.screenshotDriveFileId) return
+    if (!note.screenshotDriveFileId && !note.screenshotR2Key) return
     let url: string | null = null
     let cancelled = false
     void (async () => {
@@ -2567,11 +2567,11 @@ function NoteCard({
       cancelled = true
       if (url) URL.revokeObjectURL(url)
     }
-  }, [projectId, note.id, note.screenshotDriveFileId])
+  }, [projectId, note.id, note.screenshotDriveFileId, note.screenshotR2Key])
 
   // Same for audio.
   useEffect(() => {
-    if (!note.audioDriveFileId) return
+    if (!note.audioDriveFileId && !note.audioR2Key) return
     let url: string | null = null
     let cancelled = false
     void (async () => {
@@ -2595,7 +2595,7 @@ function NoteCard({
       cancelled = true
       if (url) URL.revokeObjectURL(url)
     }
-  }, [projectId, note.id, note.audioDriveFileId])
+  }, [projectId, note.id, note.audioDriveFileId, note.audioR2Key])
 
   const ts = formatTimestamp(note.timeSeconds)
   const dateStr = formatDateLong(note.createdAt)

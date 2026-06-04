@@ -560,6 +560,9 @@ export interface OwnerNote {
   screenshotDriveFileId?: string | null
   /** Drive file ID of the voice recording attached to this note. */
   audioDriveFileId?: string | null
+  /** R2 object keys — equivalents for R2-backed rounds. */
+  screenshotR2Key?: string | null
+  audioR2Key?: string | null
   status: NoteStatus
   /** Free-text editor response. Populated when status is 'question'
    *  or 'not-possible'. */
