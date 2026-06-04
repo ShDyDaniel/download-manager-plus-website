@@ -1146,6 +1146,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSendTestEmail(req, res)
       case 'admin-test-sumit':
         return await handleAdminTestSumit(req, res)
+      case 'admin-list-receipts':
+        return await handleAdminListReceipts(req, res)
       case 'admin-send-marketing-email':
         return await handleAdminSendMarketingEmail(req, res)
       case 'unsubscribe':
@@ -1421,26 +1423,13 @@ async function handleSaleCompleted(
         const recipient = (sub.subscriber?.email_address || '').trim()
         if (recipient) {
           const amount = parseFloat(resource.amount.total)
-          const desc = 'ניהול הורדות פלוס — מנוי'
-          const receipt = await issueSumitReceipt({
-            customerName: recipient,
-            customerEmail: recipient,
-            description: desc,
+          await issueAndDeliverReceipt({
+            recipient,
             amount,
             currency: resource.amount.currency,
+            description: 'ניהול הורדות פלוס — מנוי',
+            subscriptionId,
           })
-          if (receipt.ok && receipt.url) {
-            await sendReceiptEmail({
-              to: recipient,
-              url: receipt.url,
-              amount,
-              currency: resource.amount.currency,
-              description: desc,
-              draft: receipt.draft,
-            }).catch((e) => console.warn('[sumit] deferred receipt email failed:', e))
-          } else {
-            console.warn('[sumit] deferred receipt issue failed:', receipt.error)
-          }
         }
       } catch (err) {
         console.warn('[sumit] deferred receipt step threw (ignored):', err)
@@ -1497,7 +1486,7 @@ async function handleSaleCompleted(
     }),
   })
 
-  // Issue + email a SUMIT tax receipt for this charge. Fully
+  // Issue + email + log a SUMIT tax receipt for this charge. Fully
   // best-effort: any failure is logged and ignored so it can never
   // affect the subscription/payment flow.
   if (sumitConfigured()) {
@@ -1505,27 +1494,17 @@ async function handleSaleCompleted(
       const recipient = key.buyerEmail || key.redeemedByEmail || ''
       if (recipient) {
         const planLabel = days >= 360 ? 'מנוי שנתי' : 'מנוי חודשי'
-        const receipt = await issueSumitReceipt({
-          customerName: recipient,
-          customerEmail: recipient,
-          description: `ניהול הורדות פלוס — ${planLabel}`,
+        const url = await issueAndDeliverReceipt({
+          recipient,
           amount: paidAmount,
           currency: resource.amount.currency,
+          description: `ניהול הורדות פלוס — ${planLabel}`,
+          subscriptionId,
         })
-        if (receipt.ok && receipt.url) {
+        if (url) {
           await keyDoc.ref
-            .update({ lastReceiptUrl: receipt.url, lastReceiptAt: new Date().toISOString() })
+            .update({ lastReceiptUrl: url, lastReceiptAt: new Date().toISOString() })
             .catch(() => undefined)
-          await sendReceiptEmail({
-            to: recipient,
-            url: receipt.url,
-            amount: paidAmount,
-            currency: resource.amount.currency,
-            description: `ניהול הורדות פלוס — ${planLabel}`,
-            draft: receipt.draft,
-          }).catch((e) => console.warn('[sumit] receipt email failed:', e))
-        } else {
-          console.warn('[sumit] receipt issue failed:', receipt.error, receipt.raw)
         }
       }
     } catch (err) {
@@ -3318,6 +3297,62 @@ async function sendReceiptEmail(args: {
       ? [{ filename: 'קבלה.pdf', content: pdf, contentType: 'application/pdf' }]
       : undefined,
   })
+}
+
+/** Issue a SUMIT receipt, email it to the customer, and log it to the
+ *  `receipts` collection (for the admin receipts log). One call covers
+ *  every paid path. Fully best-effort — returns the URL when it
+ *  succeeded, undefined otherwise; never throws. */
+async function issueAndDeliverReceipt(args: {
+  recipient: string
+  amount: number
+  currency: string
+  description: string
+  subscriptionId?: string | null
+}): Promise<string | undefined> {
+  try {
+    const receipt = await issueSumitReceipt({
+      customerName: args.recipient,
+      customerEmail: args.recipient,
+      description: args.description,
+      amount: args.amount,
+      currency: args.currency,
+    })
+    if (!receipt.ok || !receipt.url) {
+      console.warn('[sumit] receipt issue failed:', receipt.error, receipt.raw)
+      return undefined
+    }
+    await sendReceiptEmail({
+      to: args.recipient,
+      url: receipt.url,
+      amount: args.amount,
+      currency: args.currency,
+      description: args.description,
+      draft: receipt.draft,
+    }).catch((e) => console.warn('[sumit] receipt email failed:', e))
+    // Log to the receipts collection for the admin panel. Best-effort.
+    try {
+      await getDb()
+        .collection('receipts')
+        .add({
+          at: new Date().toISOString(),
+          email: args.recipient,
+          amount: args.amount,
+          currency: args.currency,
+          description: args.description,
+          documentNumber: receipt.documentNumber ?? null,
+          url: receipt.url,
+          draft: receipt.draft,
+          subscriptionId: args.subscriptionId || null,
+        })
+    } catch (e) {
+      console.warn('[sumit] receipt log write failed:', e)
+    }
+    return receipt.url
+  } catch (err) {
+    console.warn('[sumit] issueAndDeliverReceipt threw (ignored):', err)
+    return undefined
+  }
 }
 
 async function sendSubscriptionWelcomeEmail(args: {
@@ -6819,6 +6854,53 @@ async function handleAdminListReferrals(
     }
   })
   return res.status(200).json({ ok: true, partners })
+}
+
+/** Admin → receipts log. Returns the most recent SUMIT receipts that
+ *  were issued for payments (newest first). Best-effort: an empty or
+ *  missing collection simply returns []. */
+async function handleAdminListReceipts(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = req.body as { idToken?: string }
+  const admin = await verifyAdminEmail(body.idToken || '')
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  try {
+    const snap = await getDb()
+      .collection('receipts')
+      .orderBy('at', 'desc')
+      .limit(100)
+      .get()
+    const receipts = snap.docs.map((d) => {
+      const data = d.data() as {
+        at?: string
+        email?: string
+        amount?: number
+        currency?: string
+        description?: string
+        documentNumber?: string | number | null
+        url?: string
+        draft?: boolean
+        subscriptionId?: string | null
+      }
+      return {
+        at: data.at || '',
+        email: data.email || '',
+        amount: typeof data.amount === 'number' ? data.amount : null,
+        currency: data.currency || 'ILS',
+        description: data.description || '',
+        documentNumber: data.documentNumber ?? null,
+        url: data.url || '',
+        draft: Boolean(data.draft),
+        subscriptionId: data.subscriptionId || null,
+      }
+    })
+    return res.status(200).json({ ok: true, receipts })
+  } catch (err) {
+    console.warn('[sumit] list receipts failed:', err)
+    return res.status(200).json({ ok: true, receipts: [] })
+  }
 }
 
 async function handleAdminDeleteReferral(
