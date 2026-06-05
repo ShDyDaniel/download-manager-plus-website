@@ -10,10 +10,10 @@ import {
   Loader2,
   RefreshCw,
   Key as KeyIcon,
-  X,
   AlertTriangle,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
+import { KeyDetailsModal } from './KeyDetailsModal'
 
 /**
  * Admin → Users tab (web). Faithful port of the desktop UsersTab:
@@ -593,91 +593,3 @@ function IconBtn({
   )
 }
 
-function KeyDetailsModal({
-  keyDoc,
-  onClose,
-}: {
-  keyDoc: KeySummary
-  onClose: () => void
-}) {
-  function fmt(s?: string | null): string {
-    if (!s) return '—'
-    const d = new Date(s)
-    return Number.isNaN(d.getTime()) ? s : d.toLocaleString('he-IL')
-  }
-  const createdLabel = (() => {
-    const cb = keyDoc.createdBy || ''
-    if (cb.startsWith('admin-grant:')) return `הענקת אדמין (${cb.slice(12)})`
-    if (cb.includes('yearly')) return 'PayPal — מנוי שנתי'
-    if (cb.includes('monthly')) return 'PayPal — מנוי חודשי'
-    if (cb.startsWith('paypal')) return 'PayPal'
-    if (cb === 'manual') return 'ידני'
-    return cb || '—'
-  })()
-  return (
-    <div
-      dir="rtl"
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div className="relative max-h-[85vh] w-full max-w-md overflow-y-auto rounded-xl border border-border bg-bg-elevated p-6">
-        <button
-          onClick={onClose}
-          className="absolute left-4 top-4 rounded-md p-1 text-fg-muted hover:text-fg"
-        >
-          <X className="h-4 w-4" />
-        </button>
-        <div className="mb-4 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/15">
-            <KeyIcon className="h-5 w-5 text-accent" />
-          </div>
-          <h2 className="text-base font-bold text-fg">פרטי מפתח מוצר</h2>
-        </div>
-        <div className="space-y-2 text-sm">
-          <Field label="מפתח" value={keyDoc.key} mono />
-          <Field label="מקור" value={createdLabel} />
-          <Field label="נוצר" value={fmt(keyDoc.createdAt)} />
-          <Field label="מומש" value={fmt(keyDoc.redeemedAt)} />
-          <Field label="תוקף" value={fmt(keyDoc.expiresAt)} />
-          {keyDoc.subscriptionStatus && (
-            <Field label="סטטוס מנוי" value={keyDoc.subscriptionStatus} />
-          )}
-          {keyDoc.subscriptionId && (
-            <Field label="מזהה מנוי" value={keyDoc.subscriptionId} mono />
-          )}
-          {keyDoc.subscriptionPrice != null && (
-            <Field
-              label="מחיר"
-              value={`${keyDoc.subscriptionPrice} ${keyDoc.subscriptionCurrency || ''}`}
-            />
-          )}
-          {keyDoc.buyerEmail && (
-            <Field label="מייל קונה" value={keyDoc.buyerEmail} mono />
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function Field({
-  label,
-  value,
-  mono,
-}: {
-  label: string
-  value: string
-  mono?: boolean
-}) {
-  return (
-    <div className="flex items-start justify-between gap-3 rounded-lg bg-background px-3 py-2">
-      <span className="shrink-0 text-xs text-fg-muted">{label}</span>
-      <span
-        className={'text-left text-fg ' + (mono ? 'font-mono text-xs' : 'text-sm')}
-        dir={mono ? 'ltr' : undefined}
-      >
-        {value}
-      </span>
-    </div>
-  )
-}

@@ -10,6 +10,7 @@ import {
   CheckCircle,
   GripVertical,
   Crown,
+  ChevronDown,
 } from 'lucide-react'
 import { adminApi, getAdminIdToken } from '../../lib/adminApi'
 import { Button } from '@/components/ui/Button'
@@ -311,6 +312,17 @@ function LegalCard({
   const [msg, setMsg] = useState('')
   const [dragSrc, setDragSrc] = useState<number | null>(null)
   const [dragOver, setDragOver] = useState<number | null>(null)
+  // Sections collapsed by default — the legal docs are long, so the
+  // editor stays compact until the admin opens a specific section.
+  const [openSections, setOpenSections] = useState<Set<number>>(new Set())
+  function toggleSection(i: number) {
+    setOpenSections((prev) => {
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+  }
 
   function moveSection(from: number, to: number) {
     if (from === to) return
@@ -426,26 +438,48 @@ function LegalCard({
               />
               <button
                 type="button"
+                onClick={() => toggleSection(i)}
+                title={openSections.has(i) ? 'כיווץ' : 'פתיחה'}
+                className="text-fg-muted transition-colors hover:text-fg"
+              >
+                <ChevronDown
+                  className={
+                    'h-4 w-4 transition-transform ' +
+                    (openSections.has(i) ? 'rotate-180' : '')
+                  }
+                />
+              </button>
+              <button
+                type="button"
                 onClick={() => setSections(sections.filter((_, j) => j !== i))}
                 className="text-fg-muted hover:text-destructive"
               >
                 <Trash2 className="h-4 w-4" />
               </button>
             </div>
-            <textarea
-              value={s.paragraphs.join('\n\n')}
-              onChange={(e) => {
-                const next = [...sections]
-                next[i] = {
-                  ...s,
-                  paragraphs: e.target.value.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean),
-                }
-                setSections(next)
-              }}
-              rows={4}
-              placeholder="פסקאות (שורה ריקה מפרידה בין פסקאות)"
-              className="w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm text-fg outline-none focus:border-primary"
-            />
+            {openSections.has(i) ? (
+              <textarea
+                value={s.paragraphs.join('\n\n')}
+                onChange={(e) => {
+                  const next = [...sections]
+                  next[i] = {
+                    ...s,
+                    paragraphs: e.target.value
+                      .split(/\n\s*\n/)
+                      .map((p) => p.trim())
+                      .filter(Boolean),
+                  }
+                  setSections(next)
+                }}
+                rows={6}
+                placeholder="פסקאות (שורה ריקה מפרידה בין פסקאות)"
+                className="w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm text-fg outline-none focus:border-primary"
+              />
+            ) : (
+              <div className="px-1 text-[11px] text-fg-faint">
+                {s.paragraphs.length} פסקאות — לחצו לפתיחה
+              </div>
+            )}
           </div>
         ))}
       </div>
