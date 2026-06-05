@@ -5933,7 +5933,7 @@ function verifyAdminToken(token: string): AdminTokenClaims | null {
       return null
     }
     const now = Math.floor(Date.now() / 1000)
-    if (claims.exp && claims.exp < now) return null
+    if (!claims.exp || claims.exp < now) return null
     return claims
   } catch {
     return null
@@ -6026,7 +6026,7 @@ function verifyStepUpToken(token: string): AdminStepUpClaims | null {
       return null
     }
     const now = Math.floor(Date.now() / 1000)
-    if (claims.exp && claims.exp < now) return null
+    if (!claims.exp || claims.exp < now) return null
     return claims
   } catch {
     return null
@@ -6040,11 +6040,18 @@ function verifyStepUpToken(token: string): AdminStepUpClaims | null {
 async function verifyAdminStepUp(req: VercelRequest): Promise<string | null> {
   const email = await verifyAdmin2FA(req)
   if (!email) return null
+  if (!hasFreshStepUp(req, email)) return null
+  return email
+}
+
+/** True iff the request carries a fresh, valid step-up token bound to
+ *  `email`. Assumes the caller already proved the full 2FA gate — this
+ *  only checks the extra biometric factor. Used by verifyAdminStepUp
+ *  and by passkey registration (gating ADDITIONAL enrollments). */
+function hasFreshStepUp(req: VercelRequest, email: string): boolean {
   const body = (req.body || {}) as { stepUpToken?: string }
   const claims = verifyStepUpToken((body.stepUpToken || '').trim())
-  if (!claims) return null
-  if (claims.email.toLowerCase() !== email.toLowerCase()) return null
-  return email
+  return !!claims && claims.email.toLowerCase() === email.toLowerCase()
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -6961,9 +6968,16 @@ async function takeWebauthnChallenge(
   return d.challenge || null
 }
 
-/** Registration step 1 — options. Gated by full 2FA (the admin must
- *  already be unlocked, via email code or an existing passkey, to add
- *  a new one). */
+/** Registration step 1 — options.
+ *
+ *  Bootstrap (FIRST passkey, when none exist): gated by full 2FA only —
+ *  otherwise you could never enroll the first one.
+ *
+ *  Adding an ADDITIONAL passkey (≥1 already exists): ALSO requires a
+ *  fresh step-up token. This closes the hole where a stolen 12h
+ *  adminToken could enroll an attacker's own device and thereby mint
+ *  step-up tokens — i.e. adding a credential is itself treated as a
+ *  sensitive mutation once the account is past bootstrap. */
 async function handleAdminPasskeyRegOptions(
   req: VercelRequest,
   res: VercelResponse,
@@ -6971,6 +6985,13 @@ async function handleAdminPasskeyRegOptions(
   const email = await verifyAdmin2FA(req)
   if (!email) return res.status(403).json({ ok: false, error: 'forbidden' })
   const existing = await listAdminCredentials(email)
+  if (existing.length > 0 && !hasFreshStepUp(req, email)) {
+    return res.status(403).json({
+      ok: false,
+      error: 'נדרש אימות ביומטרי כדי להוסיף Passkey נוסף',
+      code: 'stepup-required',
+    })
+  }
   const options = await generateRegistrationOptions({
     rpName: WEBAUTHN_RP_NAME,
     rpID: WEBAUTHN_RP_ID,
@@ -6987,13 +7008,23 @@ async function handleAdminPasskeyRegOptions(
   return res.status(200).json({ ok: true, options })
 }
 
-/** Registration step 2 — verify + store the new credential. */
+/** Registration step 2 — verify + store the new credential. Same
+ *  bootstrap-vs-additional step-up rule as step 1 (re-checked here so
+ *  the actual write is never reachable with a bare adminToken). */
 async function handleAdminPasskeyRegVerify(
   req: VercelRequest,
   res: VercelResponse,
 ) {
   const email = await verifyAdmin2FA(req)
   if (!email) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const existing = await listAdminCredentials(email)
+  if (existing.length > 0 && !hasFreshStepUp(req, email)) {
+    return res.status(403).json({
+      ok: false,
+      error: 'נדרש אימות ביומטרי כדי להוסיף Passkey נוסף',
+      code: 'stepup-required',
+    })
+  }
   const body = (req.body || {}) as { response?: unknown; deviceName?: string }
   const expectedChallenge = await takeWebauthnChallenge(email, 'reg')
   if (!expectedChallenge) {

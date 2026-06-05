@@ -132,7 +132,7 @@ function verifyTokenOfUse(
       return null
     }
     const now = Math.floor(Date.now() / 1000)
-    if (claims.exp && claims.exp < now) return null
+    if (!claims.exp || claims.exp < now) return null
     return claims
   } catch {
     return null

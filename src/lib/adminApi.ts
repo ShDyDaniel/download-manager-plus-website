@@ -228,16 +228,34 @@ export async function tryPasskeyLogin(): Promise<{
   return { ok: false, error: v.error }
 }
 
-/** Register a new passkey on THIS device (requires an unlocked admin
- *  session — email code or an existing passkey). */
+/** Register a new passkey on THIS device.
+ *  - FIRST passkey (bootstrap): needs only the unlocked admin session.
+ *  - ADDITIONAL passkey: ALSO needs a fresh step-up (prove an existing
+ *    passkey), matching the server. This is what stops a stolen 12h
+ *    adminToken from enrolling an attacker's device. */
 export async function registerPasskey(
   deviceName: string,
 ): Promise<ApiResult<unknown>> {
   try {
-    const opt = await adminApi<{ options: unknown }>('admin-passkey-reg-options')
+    // If a passkey already exists, mint a step-up token first (prompts a
+    // biometric on an existing credential) and attach it to both calls.
+    let stepUpToken: string | undefined
+    const existing = await listPasskeys()
+    if (existing.length > 0) {
+      stepUpToken = await ensureStepUp()
+    }
+    const extra = stepUpToken ? { stepUpToken } : {}
+    const opt = await adminApi<{ options: unknown }>(
+      'admin-passkey-reg-options',
+      extra,
+    )
     const { startRegistration } = await import('@simplewebauthn/browser')
     const att = await startRegistration({ optionsJSON: opt.options as never })
-    await adminApi('admin-passkey-reg-verify', { response: att, deviceName })
+    await adminApi('admin-passkey-reg-verify', {
+      response: att,
+      deviceName,
+      ...extra,
+    })
     return { ok: true }
   } catch (e) {
     return { ok: false, error: (e as Error).message || 'רישום נכשל' }
