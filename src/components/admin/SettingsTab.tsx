@@ -8,6 +8,7 @@ import {
   Save,
   Sparkles,
   CheckCircle,
+  GripVertical,
 } from 'lucide-react'
 import { adminApi, getAdminIdToken } from '../../lib/adminApi'
 import { Button } from '@/components/ui/Button'
@@ -195,6 +196,18 @@ function LegalCard({
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  const [dragSrc, setDragSrc] = useState<number | null>(null)
+  const [dragOver, setDragOver] = useState<number | null>(null)
+
+  function moveSection(from: number, to: number) {
+    if (from === to) return
+    setSections((prev) => {
+      const next = [...prev]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      return next
+    })
+  }
 
   useEffect(() => {
     void (async () => {
@@ -251,8 +264,39 @@ function LegalCard({
 
       <div className="space-y-3">
         {sections.map((s, i) => (
-          <div key={i} className="rounded-lg border border-border/60 p-3">
+          <div
+            key={i}
+            onDragOver={(e) => {
+              if (dragSrc === null) return
+              e.preventDefault()
+              setDragOver(i)
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              if (dragSrc !== null) moveSection(dragSrc, i)
+              setDragSrc(null)
+              setDragOver(null)
+            }}
+            className={
+              'rounded-lg border p-3 transition-colors ' +
+              (dragOver === i && dragSrc !== null
+                ? 'border-primary'
+                : 'border-border/60')
+            }
+          >
             <div className="mb-2 flex items-center gap-2">
+              <span
+                draggable
+                onDragStart={() => setDragSrc(i)}
+                onDragEnd={() => {
+                  setDragSrc(null)
+                  setDragOver(null)
+                }}
+                title="גרור לסידור מחדש"
+                className="cursor-grab text-fg-faint hover:text-fg-muted active:cursor-grabbing"
+              >
+                <GripVertical className="h-4 w-4" />
+              </span>
               <input
                 value={s.title}
                 onChange={(e) => {

@@ -13,6 +13,7 @@ import {
   Eye,
   X,
   ExternalLink,
+  Infinity as InfinityIcon,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { adminApi } from '../../lib/adminApi'
@@ -216,12 +217,13 @@ export default function KeysTab({
                 setUntilDate('')
               }}
               className={
-                'rounded-lg border px-3 py-1.5 text-xs transition-colors ' +
+                'inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs transition-colors ' +
                 (preset === p.val && !customDays && !untilDate
                   ? 'border-primary/40 bg-primary/10 text-primary'
                   : 'border-border text-fg-muted hover:text-fg')
               }
             >
+              {p.val === null && <InfinityIcon className="h-3.5 w-3.5" />}
               {p.label}
             </button>
           ))}
