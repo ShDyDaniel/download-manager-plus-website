@@ -182,7 +182,7 @@ export default function KeysTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl font-medium text-fg">מפתחות מוצר</h2>
+          <h2 className="text-3xl font-bold font-display text-fg">מפתחות מוצר</h2>
           <p className="mt-1 text-sm text-fg-muted">יצירה וניהול מפתחות Pro</p>
         </div>
         <button
@@ -201,7 +201,7 @@ export default function KeysTab({
       </div>
 
       {/* Create */}
-      <div className="space-y-3 rounded-2xl border border-border/60 bg-white/[0.015] p-4">
+      <div className="space-y-3 rounded-2xl border border-border bg-card p-4">
         <div className="flex items-center gap-2">
           <Plus className="h-4 w-4 text-primary" />
           <h3 className="text-sm font-semibold text-fg">הפק מפתח Pro חדש</h3>
@@ -271,11 +271,11 @@ export default function KeysTab({
       {/* List */}
       <div className="space-y-2">
         {keys === null ? (
-          <div className="flex items-center justify-center gap-2 rounded-2xl border border-border/60 py-8 text-sm text-fg-muted">
+          <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-8 text-sm text-fg-muted">
             <Loader2 className="h-4 w-4 animate-spin" /> טוען מפתחות…
           </div>
         ) : keys.length === 0 ? (
-          <div className="rounded-2xl border border-border/60 py-8 text-center text-sm text-fg-muted">
+          <div className="rounded-2xl border border-border py-8 text-center text-sm text-fg-muted">
             אין מפתחות עדיין
           </div>
         ) : (
@@ -284,7 +284,7 @@ export default function KeysTab({
             .map((k) => (
               <div
                 key={k.id}
-                className="rounded-2xl border border-border/60 bg-white/[0.015] p-3"
+                className="rounded-2xl border border-border bg-card p-3"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
@@ -703,7 +703,7 @@ function Stat({
   success?: boolean
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 bg-white/[0.015] p-4">
+    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card p-4">
       <div>
         <div className="text-2xl font-semibold tabular-nums text-fg">{value}</div>
         <div className="text-[11px] text-fg-muted">{label}</div>

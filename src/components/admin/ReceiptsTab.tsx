@@ -67,7 +67,7 @@ export default function ReceiptsTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl font-medium text-fg">קבלות</h2>
+          <h2 className="text-3xl font-bold font-display text-fg">קבלות</h2>
           <p className="mt-1 text-sm text-fg-muted">
             כל קבלות SUMIT שהופקו אוטומטית בעקבות תשלום או חידוש מנוי, מהחדש לישן.
           </p>
@@ -94,18 +94,18 @@ export default function ReceiptsTab({
       )}
 
       {rows === null ? (
-        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border/60 py-10 text-sm text-fg-muted">
+        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-10 text-sm text-fg-muted">
           <Loader2 className="h-4 w-4 animate-spin" /> טוען…
         </div>
       ) : rows.length === 0 ? (
-        <div className="rounded-2xl border border-border/60 bg-white/[0.015] py-10 text-center text-sm text-fg-muted">
+        <div className="rounded-2xl border border-border bg-card py-10 text-center text-sm text-fg-muted">
           עדיין לא הופקו קבלות.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-2xl border border-border/60 bg-white/[0.015]">
+        <div className="overflow-x-auto rounded-2xl border border-border bg-card">
           <table className="w-full text-right text-sm">
             <thead>
-              <tr className="border-b border-border/60 text-xs text-fg-muted">
+              <tr className="border-b border-border text-xs text-fg-muted">
                 <th className="px-4 py-3 font-medium">תאריך</th>
                 <th className="px-4 py-3 font-medium">לקוח</th>
                 <th className="px-4 py-3 font-medium">סכום</th>

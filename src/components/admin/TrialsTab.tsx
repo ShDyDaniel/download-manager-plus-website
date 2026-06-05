@@ -76,7 +76,7 @@ export default function TrialsTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl font-medium text-fg">
+          <h2 className="text-3xl font-bold font-display text-fg">
             משתמשים בתקופת ניסיון
           </h2>
           <p className="mt-1 text-sm text-fg-muted">
@@ -99,11 +99,11 @@ export default function TrialsTab({
       )}
 
       {users === null ? (
-        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border/60 py-10 text-sm text-fg-muted">
+        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-10 text-sm text-fg-muted">
           <Loader2 className="h-4 w-4 animate-spin" /> טוען…
         </div>
       ) : active.length === 0 ? (
-        <div className="rounded-2xl border border-border/60 py-10 text-center text-sm text-fg-muted">
+        <div className="rounded-2xl border border-border py-10 text-center text-sm text-fg-muted">
           אף משתמש לא בתקופת ניסיון כרגע.
         </div>
       ) : (

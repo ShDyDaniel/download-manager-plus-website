@@ -179,7 +179,7 @@ export default function DataTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl font-medium text-fg">
+          <h2 className="text-3xl font-bold font-display text-fg">
             נתוני שימוש
           </h2>
           <p className="mt-1 text-sm text-fg-muted">
@@ -219,7 +219,7 @@ export default function DataTab({
       )}
 
       {stats === null ? (
-        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border/60 py-10 text-sm text-fg-muted">
+        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-10 text-sm text-fg-muted">
           <Loader2 className="h-4 w-4 animate-spin" /> טוען…
         </div>
       ) : (
@@ -231,7 +231,7 @@ export default function DataTab({
           </div>
 
           {/* Per-tab usage */}
-          <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
+          <div className="rounded-2xl border border-border bg-card p-5">
             <div className="mb-3 text-sm font-medium text-fg">שימוש לפי טאב</div>
             <div className="space-y-2.5">
               {tabIds.map((t) => {
@@ -258,7 +258,7 @@ export default function DataTab({
           </div>
 
           {/* Time-spent per tab */}
-          <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
+          <div className="rounded-2xl border border-border bg-card p-5">
             <div className="mb-3 text-sm font-medium text-fg">זמן שהייה לפי טאב</div>
             {tabIds.every((t) => (tabSeconds.get(t) ?? 0) === 0) ? (
               <p className="text-xs text-fg-muted">אין עדיין נתוני זמן שימוש.</p>
@@ -293,7 +293,7 @@ export default function DataTab({
           </div>
 
           {/* Daily activity — last 14 days */}
-          <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
+          <div className="rounded-2xl border border-border bg-card p-5">
             <div className="mb-3 text-sm font-medium text-fg">
               פעילות יומית (14 ימים אחרונים)
             </div>
@@ -328,7 +328,7 @@ export default function DataTab({
           </div>
 
           {/* Per-user table */}
-          <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
+          <div className="rounded-2xl border border-border bg-card p-5">
             <div className="mb-3 text-sm font-medium text-fg">
               לפי משתמש ({userRows.length})
             </div>
@@ -501,16 +501,16 @@ function UserUsageModal({
           </div>
 
           {userStats.length === 0 ? (
-            <div className="rounded-2xl border border-border/60 py-8 text-center text-sm text-fg-muted">
+            <div className="rounded-2xl border border-border py-8 text-center text-sm text-fg-muted">
               אין נתונים למשתמש זה.
             </div>
           ) : (
             <>
               <div className="mb-2 text-sm font-medium text-fg">פילוח לפי טאב</div>
-              <div className="mb-5 overflow-hidden rounded-2xl border border-border/60">
+              <div className="mb-5 overflow-hidden rounded-2xl border border-border">
                 <table className="w-full text-right text-sm">
                   <thead>
-                    <tr className="border-b border-border/60 text-xs text-fg-muted">
+                    <tr className="border-b border-border text-xs text-fg-muted">
                       <th className="px-4 py-2.5 font-medium">טאב</th>
                       <th className="px-4 py-2.5 font-medium">כניסות</th>
                       <th className="px-4 py-2.5 font-medium">זמן</th>
@@ -538,10 +538,10 @@ function UserUsageModal({
               </div>
 
               <div className="mb-2 text-sm font-medium text-fg">פילוח לפי יום</div>
-              <div className="overflow-hidden rounded-2xl border border-border/60">
+              <div className="overflow-hidden rounded-2xl border border-border">
                 <table className="w-full text-right text-sm">
                   <thead>
-                    <tr className="border-b border-border/60 text-xs text-fg-muted">
+                    <tr className="border-b border-border text-xs text-fg-muted">
                       <th className="px-4 py-2.5 font-medium">תאריך</th>
                       <th className="px-4 py-2.5 font-medium">כניסות</th>
                       <th className="px-4 py-2.5 font-medium">זמן</th>
@@ -579,7 +579,7 @@ function UserUsageModal({
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-center">
+    <div className="rounded-2xl border border-border bg-card p-4 text-center">
       <div className="text-xl font-semibold text-fg">{value}</div>
       <div className="mt-1 text-[11px] text-fg-muted">{label}</div>
     </div>

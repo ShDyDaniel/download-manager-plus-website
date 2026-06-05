@@ -59,7 +59,7 @@ export default function SettingsTab({
   return (
     <div className="space-y-5">
       <header>
-        <h2 className="font-display text-2xl font-medium text-fg">הגדרות</h2>
+        <h2 className="text-3xl font-bold font-display text-fg">הגדרות</h2>
         <p className="mt-1 text-sm text-fg-muted">
           מצב בטא, מודל תמחור, מסמכים משפטיים וכלי דיוור.
         </p>
@@ -81,7 +81,7 @@ export default function SettingsTab({
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="space-y-3 rounded-2xl border border-border/60 bg-white/[0.015] p-4">
+    <div className="space-y-3 rounded-2xl border border-border bg-card p-4">
       <h3 className="text-sm font-semibold text-fg">{title}</h3>
       {children}
     </div>
@@ -398,7 +398,7 @@ function LegalCard({
               'rounded-lg border p-3 transition-colors ' +
               (dragOver === i && dragSrc !== null
                 ? 'border-primary'
-                : 'border-border/60')
+                : 'border-border')
             }
           >
             <div className="mb-2 flex items-center gap-2">

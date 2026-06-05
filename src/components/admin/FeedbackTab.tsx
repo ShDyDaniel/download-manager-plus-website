@@ -102,7 +102,7 @@ export default function FeedbackTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl font-medium text-fg">דיווחים והצעות</h2>
+          <h2 className="text-3xl font-bold font-display text-fg">דיווחים והצעות</h2>
           <p className="mt-1 text-sm text-fg-muted">באגים ובקשות פיצ׳רים ממשתמשים.</p>
         </div>
         <button
@@ -138,11 +138,11 @@ export default function FeedbackTab({
       )}
 
       {items === null ? (
-        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border/60 py-10 text-sm text-fg-muted">
+        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-10 text-sm text-fg-muted">
           <Loader2 className="h-4 w-4 animate-spin" /> טוען…
         </div>
       ) : list.length === 0 ? (
-        <div className="rounded-2xl border border-border/60 py-10 text-center text-sm text-fg-muted">
+        <div className="rounded-2xl border border-border py-10 text-center text-sm text-fg-muted">
           {view === 'open' ? 'אין דיווחים פתוחים 🎉' : 'אין דיווחים שטופלו'}
         </div>
       ) : (
@@ -236,7 +236,7 @@ function FeedbackRow({
 
   const isBug = it.kind === 'bug'
   return (
-    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4">
+    <div className="rounded-2xl border border-border bg-card p-4">
       <div className="flex items-start gap-3">
         <span
           className={
@@ -394,7 +394,7 @@ function StatCard({
   icon: React.ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 bg-white/[0.015] p-4">
+    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card p-4">
       <div>
         <div className="text-2xl font-semibold tabular-nums text-fg">{value}</div>
         <div className="text-[11px] text-fg-muted">{label}</div>

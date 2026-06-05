@@ -143,7 +143,7 @@ export default function UpdatesTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl font-medium text-fg">עדכונים</h2>
+          <h2 className="text-3xl font-bold font-display text-fg">עדכונים</h2>
           <p className="mt-1 text-sm text-fg-muted">
             ניהול טיוטת גרסה ופרסום עדכון למשתמשים.
           </p>
@@ -158,7 +158,7 @@ export default function UpdatesTab({
       </header>
 
       {latest && (
-        <div className="rounded-2xl border border-border/60 bg-white/[0.015] px-4 py-3 text-sm">
+        <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm">
           <span className="text-fg-muted">גרסה מפורסמת כעת: </span>
           <span className="font-medium text-fg" dir="ltr">
             v{latest.version}
@@ -178,7 +178,7 @@ export default function UpdatesTab({
       )}
       {msg && <div className="text-xs text-success">{msg}</div>}
 
-      <div className="space-y-3 rounded-2xl border border-border/60 bg-white/[0.015] p-4">
+      <div className="space-y-3 rounded-2xl border border-border bg-card p-4">
         <div className="text-sm font-semibold text-fg">טיוטת גרסה</div>
         <Row label="מספר גרסה">
           <In value={draft.version} onChange={(v) => set('version', v)} ltr placeholder="1.7.42" />

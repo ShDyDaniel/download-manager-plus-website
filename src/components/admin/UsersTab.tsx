@@ -154,7 +154,7 @@ export default function UsersTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl font-medium text-fg">משתמשים</h2>
+          <h2 className="text-3xl font-bold font-display text-fg">משתמשים</h2>
           <p className="mt-1 text-sm text-fg-muted">
             כל מי שנרשם או התחבר. הנתונים נשלפים בזמן אמת.
           </p>
@@ -198,11 +198,11 @@ export default function UsersTab({
 
       <div className="space-y-2">
         {users === null ? (
-          <div className="flex items-center justify-center gap-2 rounded-2xl border border-border/60 py-8 text-sm text-fg-muted">
+          <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-8 text-sm text-fg-muted">
             <Loader2 className="h-4 w-4 animate-spin" /> טוען משתמשים…
           </div>
         ) : filtered.length === 0 ? (
-          <div className="rounded-2xl border border-border/60 py-8 text-center text-sm text-fg-muted">
+          <div className="rounded-2xl border border-border py-8 text-center text-sm text-fg-muted">
             {users.length === 0
               ? 'אין משתמשים עדיין'
               : 'אין משתמשים שתואמים את החיפוש'}
@@ -240,7 +240,7 @@ function Stat({
   accent?: boolean
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/60 bg-white/[0.015] p-4">
+    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card p-4">
       <div>
         <div className="text-2xl font-semibold tabular-nums text-fg">{value}</div>
         <div className="text-[11px] text-fg-muted">{label}</div>
@@ -313,7 +313,7 @@ function UserRow({
         : user.lastSeenPlatform || '—'
 
   return (
-    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-3">
+    <div className="rounded-2xl border border-border bg-card p-3">
       <div className="flex items-stretch gap-3">
         <div className="relative shrink-0">
           <div

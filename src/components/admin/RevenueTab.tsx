@@ -68,7 +68,7 @@ export default function RevenueTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl font-medium text-fg">הכנסות</h2>
+          <h2 className="text-3xl font-bold font-display text-fg">הכנסות</h2>
           <p className="mt-1 text-sm text-fg-muted">
             כל ההכנסות, עמלות PayPal, חלוקה לשותפים והשורה התחתונה — לפי חודשים.
           </p>
@@ -89,7 +89,7 @@ export default function RevenueTab({
       )}
 
       {data === null ? (
-        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border/60 py-10 text-sm text-fg-muted">
+        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-10 text-sm text-fg-muted">
           <Loader2 className="h-4 w-4 animate-spin" /> טוען…
         </div>
       ) : (
@@ -108,7 +108,7 @@ export default function RevenueTab({
 
           {/* Per-partner totals */}
           {data.totals.partners.length > 0 && (
-            <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
+            <div className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-3 flex items-center gap-2 text-sm font-medium text-fg">
                 <Coins className="h-4 w-4 text-primary" />
                 מגיע לשותפים (סה״כ)
@@ -131,7 +131,7 @@ export default function RevenueTab({
 
           {/* Per-month breakdown */}
           {data.months.length === 0 ? (
-            <div className="rounded-2xl border border-border/60 py-10 text-center text-sm text-fg-muted">
+            <div className="rounded-2xl border border-border py-10 text-center text-sm text-fg-muted">
               אין עדיין הכנסות.
             </div>
           ) : (
@@ -139,7 +139,7 @@ export default function RevenueTab({
               {data.months.map((m) => (
                 <div
                   key={m.month}
-                  className="rounded-2xl border border-border/60 bg-white/[0.015] p-5"
+                  className="rounded-2xl border border-border bg-card p-5"
                 >
                   <div className="mb-3 flex items-center justify-between">
                     <span className="font-display text-lg text-fg">
@@ -155,7 +155,7 @@ export default function RevenueTab({
                     <Mini label="נטו" value={fmt(m.net)} />
                   </div>
                   {m.partners.length > 0 && (
-                    <div className="mt-3 space-y-1 border-t border-border/60 pt-3">
+                    <div className="mt-3 space-y-1 border-t border-border pt-3">
                       <div className="text-[11px] uppercase tracking-wide text-fg-muted">
                         חלוקה לשותפים
                       </div>
@@ -199,7 +199,7 @@ function Tot({
         'rounded-2xl border p-4 ' +
         (accent
           ? 'border-success/30 bg-success/[0.06]'
-          : 'border-border/60 bg-white/[0.015]')
+          : 'border-border bg-card')
       }
     >
       <div

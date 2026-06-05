@@ -68,7 +68,7 @@ export default function DashboardTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl font-medium text-fg">דשבורד שרתים</h2>
+          <h2 className="text-3xl font-bold font-display text-fg">דשבורד שרתים</h2>
           <p className="mt-1 text-sm text-fg-muted">
             שימוש חי במכסות — דאטאבייס, Cloudflare ו-Vercel.
           </p>
@@ -157,7 +157,7 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
+    <div className="rounded-2xl border border-border bg-card p-5">
       <div className="mb-4 flex items-center gap-3">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
           {icon}
@@ -201,7 +201,7 @@ function UsageBar({
 
 function NotConfigured({ error, hint }: { error?: string; hint?: string }) {
   return (
-    <div className="rounded-xl border border-border/60 bg-white/[0.02] px-4 py-3">
+    <div className="rounded-xl border border-border bg-white/[0.02] px-4 py-3">
       <div className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-fg-muted">
         <AlertTriangle className="h-3.5 w-3.5 text-primary" /> עדיין לא מוגדר
       </div>

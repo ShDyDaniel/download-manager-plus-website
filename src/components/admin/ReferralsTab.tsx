@@ -142,7 +142,7 @@ export default function ReferralsTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-2xl font-medium text-fg">שותפים</h2>
+          <h2 className="text-3xl font-bold font-display text-fg">שותפים</h2>
           <p className="mt-1 text-sm text-fg-muted">
             ניהול שותפים, עמלות, וקישורי הפניה.
           </p>
@@ -157,7 +157,7 @@ export default function ReferralsTab({
       </header>
 
       {/* Create */}
-      <div className="space-y-3 rounded-2xl border border-border/60 bg-white/[0.015] p-4">
+      <div className="space-y-3 rounded-2xl border border-border bg-card p-4">
         <div className="flex items-center gap-2">
           <Plus className="h-4 w-4 text-primary" />
           <h3 className="text-sm font-semibold text-fg">שותף חדש</h3>
@@ -215,11 +215,11 @@ export default function ReferralsTab({
       {/* List */}
       <div className="space-y-2">
         {partners === null ? (
-          <div className="flex items-center justify-center gap-2 rounded-2xl border border-border/60 py-8 text-sm text-fg-muted">
+          <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-8 text-sm text-fg-muted">
             <Loader2 className="h-4 w-4 animate-spin" /> טוען שותפים…
           </div>
         ) : partners.length === 0 ? (
-          <div className="rounded-2xl border border-border/60 py-8 text-center text-sm text-fg-muted">
+          <div className="rounded-2xl border border-border py-8 text-center text-sm text-fg-muted">
             אין שותפים עדיין
           </div>
         ) : (
@@ -593,7 +593,7 @@ function PartnerCard({
   }
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-border/60 bg-white/[0.015]">
+    <div className="overflow-hidden rounded-2xl border border-border bg-card">
       <div className="flex flex-wrap items-center gap-3 p-4">
         <button
           type="button"
@@ -865,7 +865,7 @@ function Mini({ label, value }: { label: string; value: string }) {
 }
 function Editor({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-border/60 p-3">
+    <div className="rounded-lg border border-border p-3">
       <div className="mb-2 text-xs font-medium text-fg-muted">{title}</div>
       {children}
     </div>
