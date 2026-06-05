@@ -103,7 +103,10 @@ export default function DashboardTab({
                 <UsageBar label="כתיבות" used={usage.firestore.writes || 0} limit={usage.firestore.writesLimit || 20000} />
               </div>
             ) : (
-              <NotConfigured error={usage.firestore.error} />
+              <NotConfigured
+                error={usage.firestore.error}
+                hint="הפעל את Cloud Monitoring API בפרויקט Firebase והגדר GOOGLE_APPLICATION_CREDENTIALS / מפתח שירות כדי לראות שימוש חי."
+              />
             )}
           </Section>
 
@@ -111,7 +114,10 @@ export default function DashboardTab({
             {usage.cloudflare.configured ? (
               <UsageBar label="בקשות" used={usage.cloudflare.requests || 0} limit={usage.cloudflare.requestsLimit || 100000} />
             ) : (
-              <NotConfigured error={usage.cloudflare.error} />
+              <NotConfigured
+                error={usage.cloudflare.error}
+                hint="הגדר CF_API_TOKEN ו-CF_ACCOUNT_ID במשתני הסביבה של Vercel כדי לראות את מספר הבקשות ל-Worker."
+              />
             )}
           </Section>
 
@@ -193,12 +199,13 @@ function UsageBar({
   )
 }
 
-function NotConfigured({ error }: { error?: string }) {
+function NotConfigured({ error, hint }: { error?: string; hint?: string }) {
   return (
     <div className="rounded-xl border border-border/60 bg-white/[0.02] px-4 py-3">
       <div className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-fg-muted">
         <AlertTriangle className="h-3.5 w-3.5 text-primary" /> עדיין לא מוגדר
       </div>
+      {hint && <p className="text-[11px] leading-relaxed text-fg-muted">{hint}</p>}
       {error && (
         <p className="mt-1.5 text-[10px] text-fg-faint" dir="ltr">
           {error}

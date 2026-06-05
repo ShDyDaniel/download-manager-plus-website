@@ -367,6 +367,14 @@ function UserRow({
                 <span dir="ltr">{platform}</span>
               </>
             )}
+            {user.createdAt && (
+              <>
+                <span>·</span>
+                <span dir="ltr">
+                  נוצר {new Date(user.createdAt).toLocaleDateString('he-IL')}
+                </span>
+              </>
+            )}
             {redeemedKey && (
               <>
                 <span>·</span>
