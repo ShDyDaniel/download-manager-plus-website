@@ -1206,6 +1206,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminPasskeyList(req, res)
       case 'admin-passkey-delete':
         return await handleAdminPasskeyDelete(req, res)
+      case 'admin-stepup-options':
+        return await handleAdminStepUpOptions(req, res)
+      case 'admin-stepup-verify':
+        return await handleAdminStepUpVerify(req, res)
       case 'admin-ip-allowed':
         return await handleAdminIpAllowed(req, res)
       case 'admin-gate-check':
@@ -2969,7 +2973,7 @@ async function handleBillingHistory(req: VercelRequest, res: VercelResponse) {
  *  fields. After this, the client calls sync-plans to push the new
  *  prices to PayPal. Gated by full 2FA (idToken + email-code). */
 async function handleAdminSetPricing(req: VercelRequest, res: VercelResponse) {
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
   const body = (req.body || {}) as {
     monthly?: { regular?: unknown; sale?: unknown }
@@ -3014,11 +3018,11 @@ async function handleAdminSetPricing(req: VercelRequest, res: VercelResponse) {
 }
 
 async function handleSyncPlans(req: VercelRequest, res: VercelResponse) {
-  // Full admin gate: gateKey + Firebase idToken + 12h adminToken.
-  // The web PricingCard calls this via adminApi(), which attaches all
-  // three, so syncing PayPal plans (a sensitive catalog mutation) is
-  // no longer reachable with a bare idToken.
-  const admin = await verifyAdmin2FA(req)
+  // Step-up gate: gateKey + idToken + adminToken + fresh passkey
+  // step-up token. Syncing PayPal plans is a sensitive catalog
+  // mutation; it runs right after admin-set-pricing (also step-up) so
+  // the same 5-minute step-up token covers both — no second prompt.
+  const admin = await verifyAdminStepUp(req)
   if (!admin) {
     return res.status(403).json({ ok: false, error: 'admin only' })
   }
@@ -4381,7 +4385,7 @@ async function handleAdminMigrateEmailVerified(
   // Full admin gate (gateKey + idToken + 12h adminToken). This bulk
   // mutation marks EVERY user as email-verified — a bare idToken is
   // not enough.
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) {
     return res.status(403).json({ ok: false, error: 'admin only' })
   }
@@ -4821,7 +4825,7 @@ async function handleAdminSendTestEmail(req: VercelRequest, res: VercelResponse)
   // Full admin gate (gateKey + idToken + 12h adminToken). Sending mail
   // on the brand's behalf is a sensitive action — bare idToken is not
   // enough.
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) {
     return res.status(403).json({ ok: false, error: 'admin only' })
   }
@@ -4883,7 +4887,7 @@ async function handleAdminSendTestEmail(req: VercelRequest, res: VercelResponse)
  *  contract + see the document URL / any error message. */
 async function handleAdminTestSumit(req: VercelRequest, res: VercelResponse) {
   // Full admin gate (gateKey + idToken + 12h adminToken).
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const email = admin
   const body = req.body as { targetEmail?: string }
@@ -5006,7 +5010,7 @@ async function handleAdminSendMarketingEmail(
   // Full admin gate (gateKey + idToken + 12h adminToken). Mass-mailing
   // the entire opted-in user base is one of the most sensitive actions
   // in the panel — a bare idToken is not enough.
-  const adminEmail = await verifyAdmin2FA(req)
+  const adminEmail = await verifyAdminStepUp(req)
   if (!adminEmail) {
     return res.status(403).json({ ok: false, error: 'admin only' })
   }
@@ -5478,7 +5482,7 @@ async function handleGetPrivacy(_req: VercelRequest, res: VercelResponse) {
 async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {
   // Full admin gate (gateKey + idToken + 12h adminToken). Granting Pro
   // mutates a user's entitlement — a bare idToken is not enough.
-  const adminEmail = await verifyAdmin2FA(req)
+  const adminEmail = await verifyAdminStepUp(req)
   if (!adminEmail) {
     return res.status(403).json({ ok: false, error: 'admin only' })
   }
@@ -5956,6 +5960,94 @@ async function verifyAdmin2FA(req: VercelRequest): Promise<string | null> {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  STEP-UP authentication (per-action re-verification).
+ *
+ *  The 12h adminToken proves "this person logged in with a second
+ *  factor at some point in the last 12h". That's enough to LOOK at
+ *  data, but every MUTATION additionally requires a STEP-UP token:
+ *  a short-lived (5 min) token minted ONLY by a fresh passkey
+ *  (biometric) assertion. So even if an attacker somehow obtained a
+ *  live adminToken, they could not change anything without also
+ *  producing a fresh Face-ID / Touch-ID / Windows-Hello signature on
+ *  one of the operator's registered devices. This is exactly the
+ *  requirement: every admin action is "signed" by proof of a real,
+ *  present admin — not just a one-time check at login.
+ *
+ *  Reusable within its 5-minute window (so a single logical save that
+ *  fans out into two API calls doesn't prompt twice), then it expires
+ *  and the next mutation prompts for a fresh biometric.
+ * ────────────────────────────────────────────────────────────── */
+
+const ADMIN_STEPUP_TTL_SECONDS = 5 * 60
+
+interface AdminStepUpClaims {
+  email: string
+  use: 'admin-stepup'
+  iat: number
+  exp: number
+}
+
+function signStepUpToken(email: string): string {
+  const iat = Math.floor(Date.now() / 1000)
+  const exp = iat + ADMIN_STEPUP_TTL_SECONDS
+  const claims: AdminStepUpClaims = { email, use: 'admin-stepup', iat, exp }
+  const header = b64urlEncode(
+    Buffer.from(
+      JSON.stringify({ alg: 'HS256', typ: 'JWT', use: 'admin-stepup' }),
+    ),
+  )
+  const payload = b64urlEncode(Buffer.from(JSON.stringify(claims)))
+  const sig = b64urlEncode(
+    crypto
+      .createHmac('sha256', tokenSecret())
+      .update(`${header}.${payload}`)
+      .digest(),
+  )
+  return `${header}.${payload}.${sig}`
+}
+
+function verifyStepUpToken(token: string): AdminStepUpClaims | null {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    const [h, p, s] = parts
+    const expected = crypto
+      .createHmac('sha256', tokenSecret())
+      .update(`${h}.${p}`)
+      .digest()
+    const actual = b64urlDecode(s)
+    if (expected.length !== actual.length) return null
+    if (!crypto.timingSafeEqual(expected, actual)) return null
+    const claims = JSON.parse(
+      b64urlDecode(p).toString('utf8'),
+    ) as AdminStepUpClaims
+    if (claims.use !== 'admin-stepup') return null
+    if (!claims.email || !ADMIN_EMAILS.includes(claims.email.toLowerCase())) {
+      return null
+    }
+    const now = Math.floor(Date.now() / 1000)
+    if (claims.exp && claims.exp < now) return null
+    return claims
+  } catch {
+    return null
+  }
+}
+
+/** Gate for every admin MUTATION. Requires the full 2FA gate AND a
+ *  fresh step-up token (≤5 min old, minted by a passkey assertion) for
+ *  the SAME admin email. Returns the email, or null (caller 403s with
+ *  error code 'stepup-required' so the client knows to re-prompt). */
+async function verifyAdminStepUp(req: VercelRequest): Promise<string | null> {
+  const email = await verifyAdmin2FA(req)
+  if (!email) return null
+  const body = (req.body || {}) as { stepUpToken?: string }
+  const claims = verifyStepUpToken((body.stepUpToken || '').trim())
+  if (!claims) return null
+  if (claims.email.toLowerCase() !== email.toLowerCase()) return null
+  return email
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Admin IP allowlist — restricts the website /admin surface to a
  *  set of approved public IPs, configured from the DESKTOP app.
  *
@@ -6046,7 +6138,7 @@ async function handleAdminSetIpAllowlist(
   res: VercelResponse,
 ) {
   const body = (req.body || {}) as { idToken?: string; ips?: unknown }
-  const email = await verifyAdmin2FA(req)
+  const email = await verifyAdminStepUp(req)
   if (!email) return res.status(403).json({ ok: false, error: 'admin only' })
 
   const raw = Array.isArray(body.ips) ? body.ips : []
@@ -6158,7 +6250,7 @@ async function handleAdminGateStatus(req: VercelRequest, res: VercelResponse) {
  *  only. Passing an empty newKey clears the gate (page becomes
  *  open again). */
 async function handleAdminSetGateKey(req: VercelRequest, res: VercelResponse) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { newKey?: string }
@@ -6218,7 +6310,7 @@ async function handleAdminSetUserBlocked(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { uid?: string; blocked?: boolean }
@@ -6232,7 +6324,7 @@ async function handleAdminSetUserBlocked(
 }
 
 async function handleAdminSetUserRole(req: VercelRequest, res: VercelResponse) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { uid?: string; role?: string }
@@ -6252,7 +6344,7 @@ async function handleAdminSetUserStorage(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { uid?: string; storageBackend?: string }
@@ -6271,7 +6363,7 @@ async function handleAdminSetUserSubscription(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { uid?: string; subscription?: string }
@@ -6310,7 +6402,7 @@ async function handleAdminClearUserDevice(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { uid?: string }
@@ -6329,7 +6421,7 @@ async function handleAdminApproveTrial(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
   const body = (req.body || {}) as {
     uid?: string
@@ -6381,7 +6473,7 @@ async function handleAdminApproveTrial(
 }
 
 async function handleAdminRevokeTrial(req: VercelRequest, res: VercelResponse) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { uid?: string }
@@ -6410,7 +6502,7 @@ async function handleAdminListKeys(req: VercelRequest, res: VercelResponse) {
 }
 
 async function handleAdminCreateKey(req: VercelRequest, res: VercelResponse) {
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
   const body = (req.body || {}) as { expiresAt?: string | null }
   // Validate expiry: null (perpetual) or a future ISO string.
@@ -6445,7 +6537,7 @@ async function handleAdminCreateKey(req: VercelRequest, res: VercelResponse) {
 }
 
 async function handleAdminDeleteKey(req: VercelRequest, res: VercelResponse) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { keyId?: string }
@@ -6459,7 +6551,7 @@ async function handleAdminSetKeyExpiry(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { keyId?: string; expiresAt?: string | null }
@@ -6503,7 +6595,7 @@ async function handleAdminIssueUsagePull(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
   await getDb()
     .collection('appConfig')
@@ -6547,7 +6639,7 @@ async function handleAdminSetAppConfig(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as {
@@ -6604,7 +6696,9 @@ async function setLegalDoc(
   res: VercelResponse,
   doc: 'terms' | 'privacy',
 ) {
-  if (!(await verifyAdmin2FA(req))) {
+  // Publishing legal docs bumps the version → forces EVERY user to
+  // re-accept on next login. Step-up required.
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as {
@@ -6656,7 +6750,7 @@ async function handleAdminSetFeedbackResolved(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { id?: string; resolved?: boolean }
@@ -6673,7 +6767,7 @@ async function handleAdminDeleteFeedback(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdmin2FA(req))) {
+  if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { id?: string }
@@ -6843,7 +6937,7 @@ async function listAdminCredentials(
 async function saveWebauthnChallenge(
   email: string,
   challenge: string,
-  kind: 'reg' | 'auth',
+  kind: 'reg' | 'auth' | 'stepup',
 ) {
   await getDb()
     .collection('adminWebauthnChallenges')
@@ -6853,7 +6947,7 @@ async function saveWebauthnChallenge(
 
 async function takeWebauthnChallenge(
   email: string,
-  kind: 'reg' | 'auth',
+  kind: 'reg' | 'auth' | 'stepup',
 ): Promise<string | null> {
   const ref = getDb()
     .collection('adminWebauthnChallenges')
@@ -7040,7 +7134,7 @@ async function handleAdminPasskeyDelete(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  const email = await verifyAdmin2FA(req)
+  const email = await verifyAdminStepUp(req)
   if (!email) return res.status(403).json({ ok: false, error: 'forbidden' })
   const body = (req.body || {}) as { id?: string }
   const id = (body.id || '').trim()
@@ -7055,6 +7149,97 @@ async function handleAdminPasskeyDelete(
     await ref.delete().catch(() => undefined)
   }
   return res.status(200).json({ ok: true })
+}
+
+/* ── Step-up (per-action re-verification) endpoints ──────────────
+ *  Both require the full 2FA gate first (you must already be logged
+ *  in). They drive a FRESH passkey assertion whose only product is a
+ *  5-minute step-up token, which the mutation endpoints then demand.
+ */
+
+/** Step-up step 1 — issue a fresh authentication challenge for the
+ *  admin's registered passkeys. Returns {hasPasskeys:false} if none
+ *  are registered (the client then tells the operator to add one). */
+async function handleAdminStepUpOptions(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const email = await verifyAdmin2FA(req)
+  if (!email) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const creds = await listAdminCredentials(email)
+  if (creds.length === 0) {
+    return res.status(200).json({ ok: true, hasPasskeys: false })
+  }
+  const options = await generateAuthenticationOptions({
+    rpID: WEBAUTHN_RP_ID,
+    allowCredentials: creds.map((c) => ({
+      id: c.id,
+      transports: c.transports as never,
+    })),
+    // Require user verification (biometric / PIN), not just presence —
+    // this is the whole point of step-up.
+    userVerification: 'required',
+  })
+  await saveWebauthnChallenge(email, options.challenge, 'stepup')
+  return res.status(200).json({ ok: true, hasPasskeys: true, options })
+}
+
+/** Step-up step 2 — verify the assertion → mint a 5-min step-up
+ *  token. The token is what unlocks mutations for the next 5 min. */
+async function handleAdminStepUpVerify(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const email = await verifyAdmin2FA(req)
+  if (!email) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const body = (req.body || {}) as { response?: { id?: string } }
+  const credId = body.response?.id || ''
+  if (!credId) return res.status(400).json({ ok: false, error: 'חסר מזהה' })
+  const ref = getDb().collection('adminCredentials').doc(credId)
+  const snap = await ref.get()
+  if (!snap.exists) {
+    return res.status(400).json({ ok: false, error: 'מפתח לא מוכר' })
+  }
+  const credDoc = snap.data() as AdminCredentialDoc
+  if (credDoc.email.toLowerCase() !== email.toLowerCase()) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const expectedChallenge = await takeWebauthnChallenge(email, 'stepup')
+  if (!expectedChallenge) {
+    return res.status(400).json({ ok: false, error: 'אין אתגר תקף' })
+  }
+  let verification
+  try {
+    verification = await verifyAuthenticationResponse({
+      response: body.response as never,
+      expectedChallenge,
+      expectedOrigin: WEBAUTHN_ORIGINS,
+      expectedRPID: WEBAUTHN_RP_ID,
+      // Enforce that the authenticator actually verified the user.
+      requireUserVerification: true,
+      credential: {
+        id: credId,
+        publicKey: new Uint8Array(Buffer.from(credDoc.publicKey, 'base64url')),
+        counter: credDoc.counter,
+        transports: credDoc.transports as never,
+      },
+    })
+  } catch (err) {
+    return res
+      .status(400)
+      .json({ ok: false, error: (err as Error).message || 'אימות נכשל' })
+  }
+  if (!verification.verified) {
+    return res.status(400).json({ ok: false, error: 'האימות נכשל' })
+  }
+  await ref
+    .update({ counter: verification.authenticationInfo.newCounter })
+    .catch(() => undefined)
+  return res.status(200).json({
+    ok: true,
+    stepUpToken: signStepUpToken(email),
+    expiresInSeconds: ADMIN_STEPUP_TTL_SECONDS,
+  })
 }
 
 /** Latin slug from a partner name (non-latin → empty → random base). */
@@ -7077,7 +7262,7 @@ async function handleAdminCreateReferral(
     loginEmail?: string
     password?: string
   }
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const name = (body.name || '').trim().slice(0, 80)
   if (!name) return res.status(400).json({ ok: false, error: 'יש להזין שם' })
@@ -7230,7 +7415,7 @@ async function handleAdminDeleteReferral(
   res: VercelResponse,
 ) {
   const body = req.body as { idToken?: string; code?: string }
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const code = (body.code || '').trim()
   if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
@@ -7711,7 +7896,7 @@ async function handleAdminSetReferralCredentials(
     loginEmail?: string
     password?: string
   }
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const code = (body.code || '').trim()
   const loginEmail = (body.loginEmail || '').trim().toLowerCase()
@@ -7762,7 +7947,7 @@ async function handleAdminSetReferralCommission(
   res: VercelResponse,
 ) {
   const body = req.body as { idToken?: string; code?: string }
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const code = (body.code || '').trim()
   if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
@@ -7806,7 +7991,7 @@ async function handleAdminSetReferralVisibility(
     code?: string
     visibility?: { revenue?: boolean; earnings?: boolean; counts?: boolean }
   }
-  const admin = await verifyAdmin2FA(req)
+  const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const code = (body.code || '').trim()
   if (!code) return res.status(400).json({ ok: false, error: 'missing code' })

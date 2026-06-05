@@ -17,6 +17,7 @@ import {
   getAdminIdToken,
   getStoredAdminToken,
   getGateKey,
+  getStepUpToken,
 } from '../../lib/adminApi'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -79,6 +80,24 @@ export default function UpdatesTab({
       onAuthExpired()
       throw new Error('auth')
     }
+    // Every mutation (everything except 'load') additionally requires a
+    // fresh step-up token — a live passkey assertion. Publishing a
+    // release drives every user's auto-updater, so it gets the same
+    // per-action biometric gate as the rest of the panel.
+    let stepUpToken: string | undefined
+    if (action !== 'load') {
+      try {
+        stepUpToken = await getStepUpToken()
+      } catch (e) {
+        const code = (e as Error & { code?: string }).code
+        if (code === 'auth') {
+          onAuthExpired()
+          throw new Error('auth')
+        }
+        // no-passkey / cancelled → surface the message to the operator.
+        throw e
+      }
+    }
     const r = await fetch('/api/admin/draft-release', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -86,6 +105,7 @@ export default function UpdatesTab({
         idToken,
         adminToken,
         gateKey: getGateKey(),
+        ...(stepUpToken ? { stepUpToken } : {}),
         action,
         ...payload,
       }),

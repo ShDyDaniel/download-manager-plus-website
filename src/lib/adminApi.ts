@@ -27,6 +27,11 @@ const ADMIN_TOKEN_KEY = 'dmplus.admin.v1'
 // restarts on this trusted device) so the operator only has to open
 // the special link once per device.
 const GATE_KEY = 'dmplus.admin.gate.v1'
+// The step-up token + its expiry. sessionStorage (dies with the tab)
+// because it's a short-lived per-action re-verification, never a
+// long-term credential.
+const STEPUP_TOKEN_KEY = 'dmplus.admin.stepup.v1'
+const STEPUP_EXP_KEY = 'dmplus.admin.stepup.exp.v1'
 
 export function getStoredAdminToken(): string | null {
   return sessionStorage.getItem(ADMIN_TOKEN_KEY)
@@ -36,6 +41,7 @@ export function storeAdminToken(token: string): void {
 }
 export function clearAdminToken(): void {
   sessionStorage.removeItem(ADMIN_TOKEN_KEY)
+  clearStepUpToken()
 }
 
 export function getGateKey(): string {
@@ -279,11 +285,145 @@ export async function setGateKey(newKey: string): Promise<void> {
   storeGateKey(newKey)
 }
 
+/* ── Step-up (per-action re-verification) ───────────────────────────
+ *
+ * Every admin MUTATION requires a fresh STEP-UP token on top of the
+ * 12h admin session: a 5-minute token minted ONLY by a live passkey
+ * (Face ID / Touch ID / Windows Hello) assertion. So changing anything
+ * always needs a present, biometric-verified admin — not just a login
+ * that happened hours ago. Reads don't need it.
+ *
+ * This Set is the SINGLE SOURCE OF TRUTH on the client for which
+ * actions are mutations. It MUST stay in sync with the server: every
+ * action listed here is gated by verifyAdminStepUp() in api/paypal.ts.
+ */
+const STEPUP_ACTIONS = new Set<string>([
+  'admin-set-pricing',
+  'sync-plans',
+  'admin-migrate-email-verified',
+  'admin-send-test-email',
+  'admin-test-sumit',
+  'admin-send-marketing-email',
+  'admin-create-referral',
+  'admin-delete-referral',
+  'admin-set-referral-credentials',
+  'admin-set-referral-commission',
+  'admin-set-referral-visibility',
+  'admin-grant-pro',
+  'admin-passkey-delete',
+  'admin-set-gate-key',
+  'admin-set-ip-allowlist',
+  'admin-set-user-blocked',
+  'admin-set-user-role',
+  'admin-set-user-storage',
+  'admin-set-user-subscription',
+  'admin-clear-user-device',
+  'admin-approve-trial',
+  'admin-revoke-trial',
+  'admin-create-key',
+  'admin-delete-key',
+  'admin-set-key-expiry',
+  'admin-issue-usage-pull',
+  'admin-set-app-config',
+  'admin-set-terms',
+  'admin-set-privacy',
+  'admin-set-feedback-resolved',
+  'admin-delete-feedback',
+])
+
+/** True if this action needs a step-up token (it's a mutation). */
+export function actionNeedsStepUp(action: string): boolean {
+  return STEPUP_ACTIONS.has(action)
+}
+
+function getValidStepUpToken(): string | null {
+  try {
+    const tok = sessionStorage.getItem(STEPUP_TOKEN_KEY)
+    const exp = Number(sessionStorage.getItem(STEPUP_EXP_KEY) || '0')
+    if (!tok || !exp) return null
+    // Treat as expired 10s early to avoid a race where it lapses
+    // server-side between this check and the request landing.
+    if (Date.now() >= exp - 10_000) return null
+    return tok
+  } catch {
+    return null
+  }
+}
+function storeStepUpToken(token: string, expiresInSeconds: number): void {
+  try {
+    sessionStorage.setItem(STEPUP_TOKEN_KEY, token)
+    sessionStorage.setItem(
+      STEPUP_EXP_KEY,
+      String(Date.now() + expiresInSeconds * 1000),
+    )
+  } catch {
+    /* ignore */
+  }
+}
+export function clearStepUpToken(): void {
+  try {
+    sessionStorage.removeItem(STEPUP_TOKEN_KEY)
+    sessionStorage.removeItem(STEPUP_EXP_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
- * The workhorse for every admin DATA call. Attaches BOTH the
- * Firebase idToken and the stored 2FA admin token. Throws on a
- * non-ok response so callers can try/catch. A 403 here means the
- * 2FA token expired/missing — callers should bounce to the login.
+ * Ensure we hold a valid step-up token, prompting a fresh passkey
+ * assertion if not. Returns the token. Throws:
+ *   - code 'auth'      → the 12h session lapsed (bounce to login)
+ *   - code 'no-passkey'→ this device has no registered passkey
+ *   - code 'cancelled' → the operator dismissed the biometric prompt
+ */
+async function ensureStepUp(): Promise<string> {
+  const cached = getValidStepUpToken()
+  if (cached) return cached
+  // 1) Ask the server for a fresh authentication challenge. This call
+  //    itself is a normal 2FA-gated call (NOT in STEPUP_ACTIONS, so no
+  //    recursion). If the session lapsed, adminApi throws code 'auth'.
+  const opt = await adminApi<{ hasPasskeys?: boolean; options?: unknown }>(
+    'admin-stepup-options',
+  )
+  if (!opt.hasPasskeys || !opt.options) {
+    const err = new Error(
+      'אין Passkey רשום במכשיר הזה. הוסף Passkey בהגדרות כדי לבצע פעולות ניהול.',
+    ) as Error & { code?: string }
+    err.code = 'no-passkey'
+    throw err
+  }
+  // 2) Drive the biometric prompt.
+  const { startAuthentication } = await import('@simplewebauthn/browser')
+  let assertion
+  try {
+    assertion = await startAuthentication({ optionsJSON: opt.options as never })
+  } catch {
+    const err = new Error('האימות הביומטרי בוטל') as Error & { code?: string }
+    err.code = 'cancelled'
+    throw err
+  }
+  // 3) Exchange the assertion for a 5-min step-up token.
+  const v = await adminApi<{ stepUpToken: string; expiresInSeconds: number }>(
+    'admin-stepup-verify',
+    { response: assertion },
+  )
+  storeStepUpToken(v.stepUpToken, v.expiresInSeconds || 300)
+  return v.stepUpToken
+}
+
+/** Public: get a valid step-up token (for non-adminApi callers like
+ *  the draft-release endpoint). Prompts a passkey if needed. */
+export async function getStepUpToken(): Promise<string> {
+  return ensureStepUp()
+}
+
+/**
+ * The workhorse for every admin call. Attaches the Firebase idToken,
+ * the 12h admin token, and the gate key. For MUTATIONS (see
+ * STEPUP_ACTIONS) it ALSO ensures + attaches a fresh step-up token,
+ * prompting a passkey assertion when the previous one expired. Throws
+ * on a non-ok response. A 403 means a gate failed — callers treat
+ * code 'auth' as "bounce to login".
  */
 export async function adminApi<T>(
   action: string,
@@ -296,17 +436,49 @@ export async function adminApi<T>(
     err.code = 'auth'
     throw err
   }
-  const r = await fetch(`/api/paypal?action=${action}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...body, idToken, adminToken, gateKey: getGateKey() }),
-  })
-  const json = (await r.json()) as ApiResult<T>
+
+  const needsStepUp = STEPUP_ACTIONS.has(action)
+
+  const doFetch = async (stepUpToken?: string) => {
+    const r = await fetch(`/api/paypal?action=${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...body,
+        idToken,
+        adminToken,
+        gateKey: getGateKey(),
+        ...(stepUpToken ? { stepUpToken } : {}),
+      }),
+    })
+    const json = (await r.json()) as ApiResult<T>
+    return { status: r.status, json }
+  }
+
+  // Mutation: ensure a step-up token up front (may prompt passkey).
+  let stepUpToken: string | undefined
+  if (needsStepUp) {
+    stepUpToken = await ensureStepUp()
+  }
+
+  let { status, json } = await doFetch(stepUpToken)
+
+  // If a mutation 403s despite our token, the step-up may have lapsed
+  // between mint and landing (or been rejected). Drop it and re-prompt
+  // exactly once. If THAT still fails, fall through to the error path
+  // (ensureStepUp throws code 'auth' when the 12h session is the real
+  // problem, which bounces to login).
+  if (needsStepUp && status === 403) {
+    clearStepUpToken()
+    stepUpToken = await ensureStepUp()
+    ;({ status, json } = await doFetch(stepUpToken))
+  }
+
   if (!json.ok) {
     const err = new Error(json.error || 'admin call failed') as Error & {
       code?: string
     }
-    if (r.status === 403) err.code = 'auth'
+    if (status === 403) err.code = 'auth'
     throw err
   }
   return json

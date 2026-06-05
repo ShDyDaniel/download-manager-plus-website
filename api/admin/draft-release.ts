@@ -102,12 +102,16 @@ function b64urlDecode(s: string): Buffer {
 
 interface AdminTokenClaims {
   email: string
-  use: 'admin'
+  use: 'admin' | 'admin-stepup'
   iat: number
   exp: number
 }
 
-function verifyAdminToken(token: string): AdminTokenClaims | null {
+/** Verify an HMAC admin token of a given `use`. Mirrors paypal.ts. */
+function verifyTokenOfUse(
+  token: string,
+  use: 'admin' | 'admin-stepup',
+): AdminTokenClaims | null {
   try {
     const parts = token.split('.')
     if (parts.length !== 3) return null
@@ -122,7 +126,7 @@ function verifyAdminToken(token: string): AdminTokenClaims | null {
     const claims = JSON.parse(
       b64urlDecode(p).toString('utf8'),
     ) as AdminTokenClaims
-    if (claims.use !== 'admin') return null
+    if (claims.use !== use) return null
     const allow = adminEmailsFromEnv()
     if (!claims.email || !allow.includes(claims.email.toLowerCase())) {
       return null
@@ -133,6 +137,14 @@ function verifyAdminToken(token: string): AdminTokenClaims | null {
   } catch {
     return null
   }
+}
+
+function verifyAdminToken(token: string): AdminTokenClaims | null {
+  return verifyTokenOfUse(token, 'admin')
+}
+
+function verifyStepUpToken(token: string): AdminTokenClaims | null {
+  return verifyTokenOfUse(token, 'admin-stepup')
 }
 
 function hashGateKey(key: string): string {
@@ -250,6 +262,7 @@ export default async function handler(
     idToken?: string
     adminToken?: string
     gateKey?: string
+    stepUpToken?: string
     action?: 'load' | 'save' | 'delete' | 'publish' | 'save-latest'
     release?: unknown
     publish?: boolean
@@ -269,6 +282,18 @@ export default async function handler(
   })
   if (!gate.ok) {
     return res.status(gate.status).json({ ok: false, error: gate.error })
+  }
+
+  // Every MUTATION (everything except 'load') additionally requires a
+  // fresh step-up token — a live passkey assertion minted in the last
+  // 5 minutes for the same admin. Reading the draft doesn't.
+  if (action !== 'load') {
+    const stepUp = verifyStepUpToken((body.stepUpToken || '').trim())
+    if (!stepUp || stepUp.email.toLowerCase() !== gate.email.toLowerCase()) {
+      return res
+        .status(403)
+        .json({ ok: false, error: 'נדרש אימות ביומטרי לפעולה הזו' })
+    }
   }
 
   try {
