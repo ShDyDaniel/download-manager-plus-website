@@ -13,6 +13,7 @@ import {
   ChevronDown,
   Terminal,
   Fingerprint,
+  Cloud,
 } from 'lucide-react'
 import {
   adminApi,
@@ -117,6 +118,11 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [logsPw, setLogsPw] = useState('')
   const [logsBusy, setLogsBusy] = useState(false)
   const [logsMsg, setLogsMsg] = useState('')
+  // Per-tier storage quota (GB), as strings for the inputs.
+  const [proGb, setProGb] = useState('')
+  const [trialGb, setTrialGb] = useState('')
+  const [storageBusy, setStorageBusy] = useState(false)
+  const [storageMsg, setStorageMsg] = useState('')
 
   useEffect(() => {
     void (async () => {
@@ -125,10 +131,15 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
           betaMode: boolean
           planMode: 'hybrid' | 'subscription'
           logsPassword?: string
+          proStorageGb?: number
+          trialStorageGb?: number
         }>('admin-get-app-config')
         setBeta(r.betaMode)
         setPlan(r.planMode)
         setLogsPw(r.logsPassword || '')
+        if (typeof r.proStorageGb === 'number') setProGb(String(r.proStorageGb))
+        if (typeof r.trialStorageGb === 'number')
+          setTrialGb(String(r.trialStorageGb))
       } catch (e) {
         onErr(e)
       } finally {
@@ -151,6 +162,36 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
       setLogsMsg(err.message || 'שמירה נכשלה')
     } finally {
       setLogsBusy(false)
+    }
+  }
+
+  async function saveStorage() {
+    const pro = parseFloat(proGb)
+    const trial = parseFloat(trialGb)
+    if (
+      !Number.isFinite(pro) ||
+      pro <= 0 ||
+      !Number.isFinite(trial) ||
+      trial <= 0
+    ) {
+      setStorageMsg('יש להזין מספרים חיוביים (GB)')
+      return
+    }
+    setStorageBusy(true)
+    setStorageMsg('')
+    try {
+      await adminApi('admin-set-app-config', {
+        proStorageGb: pro,
+        trialStorageGb: trial,
+      })
+      setStorageMsg('נשמר ✓')
+      setTimeout(() => setStorageMsg(''), 2500)
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setStorageMsg(err.message || 'שמירה נכשלה')
+    } finally {
+      setStorageBusy(false)
     }
   }
 
@@ -351,6 +392,65 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
           </Button>
         </div>
         {logsMsg && <div className="text-xs text-success">{logsMsg}</div>}
+      </div>
+
+      {/* Per-tier storage quota (GB) */}
+      <div className="space-y-3 rounded-2xl border border-border bg-card p-4 text-right">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary shadow-md shadow-primary/40">
+            <Cloud className="h-5 w-5 text-white" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-bold text-foreground">
+              מכסת אחסון (GB)
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              כמה שטח אחסון (בג'יגה-בייט) מקבל כל סוג משתמש לסבבי התיקונים.
+              השינוי חל מיד על כל המשתמשים. אפשר להזין גם שבר (למשל 1.5).
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-end gap-4">
+          <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+            מנויי Pro
+            <div className="flex items-center gap-1.5">
+              <Input
+                type="number"
+                min="0"
+                step="0.5"
+                value={proGb}
+                onChange={(e) => setProGb(e.target.value)}
+                className="w-28"
+                dir="ltr"
+              />
+              <span className="text-xs text-muted-foreground">GB</span>
+            </div>
+          </label>
+          <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+            ניסיון חינם
+            <div className="flex items-center gap-1.5">
+              <Input
+                type="number"
+                min="0"
+                step="0.5"
+                value={trialGb}
+                onChange={(e) => setTrialGb(e.target.value)}
+                className="w-28"
+                dir="ltr"
+              />
+              <span className="text-xs text-muted-foreground">GB</span>
+            </div>
+          </label>
+          <Button onClick={saveStorage} disabled={storageBusy} size="sm">
+            {storageBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Save className="h-3.5 w-3.5" />
+            )}
+            שמור
+          </Button>
+        </div>
+        {storageMsg && <div className="text-xs text-success">{storageMsg}</div>}
       </div>
     </>
   )

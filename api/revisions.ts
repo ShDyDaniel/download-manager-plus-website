@@ -1015,15 +1015,56 @@ function serverIsTrialActive(user: Record<string, unknown>): boolean {
  *  Drive and don't count against our storage).
  * ────────────────────────────────────────────────────────────── */
 const GB = 1024 * 1024 * 1024
-const STORAGE_QUOTA_PRO = 100 * GB
-const STORAGE_QUOTA_TRIAL = Math.round(1.5 * GB)
+// Defaults — used when the admin hasn't overridden the quota in
+// appConfig/global, or if that read fails. Kept here so behaviour is
+// identical to before the admin control existed.
+const DEFAULT_PRO_GB = 100
+const DEFAULT_TRIAL_GB = 1.5
 
-function storageQuotaForUser(user: Record<string, unknown>): number {
+/** Read the admin-configured per-tier storage quotas (GB → bytes) from
+ *  appConfig/global. The admin sets these in the website panel →
+ *  Settings. Falls back to the defaults on a missing/invalid value or
+ *  a read error, so storage never breaks on a config hiccup. */
+async function getStorageQuotaBytes(): Promise<{
+  proBytes: number
+  trialBytes: number
+}> {
+  try {
+    const snap = await getDb().collection('appConfig').doc('global').get()
+    const d = (snap.exists ? snap.data() : {}) as {
+      proStorageGb?: unknown
+      trialStorageGb?: unknown
+    }
+    const proGb =
+      typeof d.proStorageGb === 'number' && d.proStorageGb > 0
+        ? d.proStorageGb
+        : DEFAULT_PRO_GB
+    const trialGb =
+      typeof d.trialStorageGb === 'number' && d.trialStorageGb > 0
+        ? d.trialStorageGb
+        : DEFAULT_TRIAL_GB
+    return {
+      proBytes: Math.round(proGb * GB),
+      trialBytes: Math.round(trialGb * GB),
+    }
+  } catch (e) {
+    console.warn('[storage] quota config read failed, using defaults:', e)
+    return {
+      proBytes: Math.round(DEFAULT_PRO_GB * GB),
+      trialBytes: Math.round(DEFAULT_TRIAL_GB * GB),
+    }
+  }
+}
+
+function storageQuotaForUser(
+  user: Record<string, unknown>,
+  quota: { proBytes: number; trialBytes: number },
+): number {
   // Trial-only access → small quota. Any paid/other Pro path → full.
   if (serverIsTrialActive(user) && user.subscription !== 'pro') {
-    return STORAGE_QUOTA_TRIAL
+    return quota.trialBytes
   }
-  return STORAGE_QUOTA_PRO
+  return quota.proBytes
 }
 
 // Compute a user's CURRENT R2 usage + their quota. Usage is summed
@@ -1033,9 +1074,12 @@ function storageQuotaForUser(user: Record<string, unknown>): number {
 async function getStorageState(
   uid: string,
 ): Promise<{ usedBytes: number; limitBytes: number }> {
-  const userSnap = await getDb().collection('users').doc(uid).get()
+  const [userSnap, quota] = await Promise.all([
+    getDb().collection('users').doc(uid).get(),
+    getStorageQuotaBytes(),
+  ])
   const user = (userSnap.data() as Record<string, unknown>) || {}
-  const limitBytes = storageQuotaForUser(user)
+  const limitBytes = storageQuotaForUser(user, quota)
 
   let usedBytes = 0
   try {

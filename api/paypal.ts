@@ -6498,12 +6498,24 @@ async function handleAdminGetAppConfig(
     betaMode?: boolean
     planMode?: string
     logsPassword?: string
+    proStorageGb?: number
+    trialStorageGb?: number
   }
   return res.status(200).json({
     ok: true,
     betaMode: d.betaMode === true,
     planMode: d.planMode === 'subscription' ? 'subscription' : 'hybrid',
     logsPassword: typeof d.logsPassword === 'string' ? d.logsPassword : '',
+    // Storage quotas (GB). Defaults mirror the constants in
+    // revisions.ts so the UI shows the real value before any override.
+    proStorageGb:
+      typeof d.proStorageGb === 'number' && d.proStorageGb > 0
+        ? d.proStorageGb
+        : 100,
+    trialStorageGb:
+      typeof d.trialStorageGb === 'number' && d.trialStorageGb > 0
+        ? d.trialStorageGb
+        : 1.5,
   })
 }
 
@@ -6518,6 +6530,8 @@ async function handleAdminSetAppConfig(
     betaMode?: boolean
     planMode?: string
     logsPassword?: string
+    proStorageGb?: number
+    trialStorageGb?: number
   }
   const patch: Record<string, unknown> = {}
   if (typeof body.betaMode === 'boolean') patch.betaMode = body.betaMode
@@ -6527,6 +6541,26 @@ async function handleAdminSetAppConfig(
   // Logs/DevTools password for the desktop Ctrl+Shift+1 shortcut.
   if (typeof body.logsPassword === 'string') {
     patch.logsPassword = body.logsPassword.trim()
+  }
+  // Per-tier R2 storage quotas in GB (fractional allowed, e.g. 1.5).
+  // Bounded to a sane range so a typo can't hand out petabytes.
+  const validGb = (v: unknown): v is number =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 100000
+  if (body.proStorageGb !== undefined) {
+    if (!validGb(body.proStorageGb)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'proStorageGb לא תקין (0–100000)' })
+    }
+    patch.proStorageGb = body.proStorageGb
+  }
+  if (body.trialStorageGb !== undefined) {
+    if (!validGb(body.trialStorageGb)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'trialStorageGb לא תקין (0–100000)' })
+    }
+    patch.trialStorageGb = body.trialStorageGb
   }
   if (Object.keys(patch).length === 0) {
     return res.status(400).json({ ok: false, error: 'no fields' })
