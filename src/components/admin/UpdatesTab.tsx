@@ -8,9 +8,18 @@ import {
   Eye,
   X,
   DownloadCloud,
+  Pencil,
+  Save,
+  CheckCircle,
+  Plus,
 } from 'lucide-react'
 import { getAdminIdToken } from '../../lib/adminApi'
+import { Card } from '@/components/ui/Card'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
+import { Switch } from '@/components/ui/Switch'
 import { Portal } from '@/components/ui/Portal'
+import { cn } from '@/lib/cn'
 
 interface ReleaseDoc {
   version: string
@@ -25,8 +34,8 @@ interface ReleaseDoc {
   mandatoryExemptVersions?: string[]
 }
 
-const EMPTY: ReleaseDoc = {
-  version: '',
+const FALLBACK: ReleaseDoc = {
+  version: '1.6.5',
   notes: '',
   macUrl: '',
   winUrl: '',
@@ -42,16 +51,22 @@ export default function UpdatesTab({
 }: {
   onAuthExpired: () => void
 }) {
-  const [draft, setDraft] = useState<ReleaseDoc>(EMPTY)
-  const [latest, setLatest] = useState<ReleaseDoc | null>(null)
+  const [release, setRelease] = useState<ReleaseDoc | null>(null)
+  const [draftRelease, setDraftRelease] = useState<ReleaseDoc | null>(null)
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState('')
+  const [editingTarget, setEditingTarget] = useState<null | 'release' | 'draft'>(
+    null,
+  )
+  const [draft, setDraft] = useState<ReleaseDoc | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [success, setSuccess] = useState('')
   const [error, setError] = useState('')
-  const [msg, setMsg] = useState('')
-  const [exemptText, setExemptText] = useState('')
-  const [preview, setPreview] = useState(false)
+  const [preview, setPreview] = useState<ReleaseDoc | null>(null)
 
-  async function call(action: 'load' | 'save' | 'delete' | 'publish', release?: ReleaseDoc) {
+  async function call(
+    action: 'load' | 'save' | 'delete' | 'publish' | 'save-latest',
+    payload?: { release?: ReleaseDoc; publish?: boolean },
+  ) {
     const idToken = await getAdminIdToken()
     if (!idToken) {
       onAuthExpired()
@@ -60,7 +75,7 @@ export default function UpdatesTab({
     const r = await fetch('/api/admin/draft-release', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ idToken, action, release }),
+      body: JSON.stringify({ idToken, action, ...payload }),
     })
     if (r.status === 401 || r.status === 403) {
       onAuthExpired()
@@ -82,10 +97,8 @@ export default function UpdatesTab({
     setError('')
     try {
       const j = await call('load')
-      const d = j.draft ? { ...EMPTY, ...j.draft } : EMPTY
-      setDraft(d)
-      setExemptText((d.mandatoryExemptVersions ?? []).join(', '))
-      setLatest(j.latest ?? null)
+      setRelease(j.latest ? { ...FALLBACK, ...j.latest } : FALLBACK)
+      setDraftRelease(j.draft ? { ...FALLBACK, ...j.draft } : null)
     } catch (e) {
       if ((e as Error).message !== 'auth')
         setError((e as Error).message || 'טעינה נכשלה')
@@ -99,287 +112,602 @@ export default function UpdatesTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function act(action: 'save' | 'delete' | 'publish') {
-    if (busy) return
-    if (action === 'publish' && !window.confirm('לפרסם את הטיוטה לכל המשתמשים?'))
-      return
-    if (action === 'delete' && !window.confirm('למחוק את הטיוטה?')) return
-    setBusy(action)
+  function startEditRelease() {
+    if (!release) return
+    setDraft({ ...release })
+    setEditingTarget('release')
+    setSuccess('')
     setError('')
-    setMsg('')
+  }
+
+  function startEditDraft() {
+    let seed: ReleaseDoc | null = null
+    if (draftRelease) {
+      seed = { ...draftRelease }
+    } else if (release) {
+      const { publishedAt: _omit, ...rest } = release
+      void _omit
+      seed = { ...rest, notes: '', draft: true }
+    }
+    if (!seed) return
+    setDraft(seed)
+    setEditingTarget('draft')
+    setSuccess('')
+    setError('')
+  }
+
+  function cancelEdit() {
+    setEditingTarget(null)
+    setDraft(null)
+    setError('')
+  }
+
+  function patch<K extends keyof ReleaseDoc>(key: K, value: ReleaseDoc[K]) {
+    setDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
+  }
+
+  async function saveRelease(asDraft: boolean) {
+    if (!draft || busy) return
+    setBusy(true)
+    setError('')
     try {
-      if (action === 'save') {
-        await call('save', draft)
-        setMsg('הטיוטה נשמרה ✓')
-      } else if (action === 'delete') {
-        await call('delete')
-        setMsg('הטיוטה נמחקה')
-      } else {
-        // Persist current edits first — the server's publish branch
-        // promotes the STORED draft, so without this any unsaved
-        // changes (notes, URLs, mandatory flag) would publish stale.
-        await call('save', draft)
-        await call('publish', draft)
-        setMsg('פורסם! ✓')
-      }
-      await load()
+      const j = await call('save-latest', { release: draft, publish: !asDraft })
+      if (j.release) setRelease(j.release)
+      setEditingTarget(null)
+      setDraft(null)
+      setSuccess(asDraft ? 'נשמר כטיוטה (גלוי רק לאדמין)' : 'העדכון פורסם')
+      setTimeout(() => setSuccess(''), 2500)
     } catch (e) {
       if ((e as Error).message !== 'auth')
-        setError((e as Error).message || 'הפעולה נכשלה')
+        setError((e as Error).message || 'שמירה נכשלה')
     } finally {
-      setBusy('')
+      setBusy(false)
     }
   }
 
-  function set<K extends keyof ReleaseDoc>(k: K, v: ReleaseDoc[K]) {
-    setDraft((d) => ({ ...d, [k]: v }))
+  async function saveDraftWorkspace() {
+    if (!draft || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      const j = await call('save', { release: draft })
+      setDraftRelease(j.draft ?? draft)
+      setEditingTarget(null)
+      setDraft(null)
+      setSuccess('הטיוטה נשמרה')
+      setTimeout(() => setSuccess(''), 2500)
+    } catch (e) {
+      if ((e as Error).message !== 'auth')
+        setError((e as Error).message || 'שמירה נכשלה')
+    } finally {
+      setBusy(false)
+    }
   }
 
-  if (loading) {
+  async function publishDraft() {
+    if (!draftRelease || busy) return
+    if (!window.confirm('לפרסם את הטיוטה לכל המשתמשים?')) return
+    setBusy(true)
+    setError('')
+    try {
+      const j = await call('publish')
+      if (j.release) setRelease(j.release)
+      setDraftRelease(null)
+      setSuccess('הטיוטה פורסמה למשתמשים')
+      setTimeout(() => setSuccess(''), 2500)
+    } catch (e) {
+      if ((e as Error).message !== 'auth')
+        setError((e as Error).message || 'פרסום הטיוטה נכשל')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function discardDraft() {
+    if (busy) return
+    if (!window.confirm('למחוק את הטיוטה?')) return
+    setBusy(true)
+    setError('')
+    try {
+      await call('delete')
+      setDraftRelease(null)
+      setSuccess('הטיוטה נמחקה')
+      setTimeout(() => setSuccess(''), 2000)
+    } catch (e) {
+      if ((e as Error).message !== 'auth')
+        setError((e as Error).message || 'מחיקת הטיוטה נכשלה')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const editing = editingTarget !== null
+  const isEditingDraft = editingTarget === 'draft'
+
+  if (loading || !release) {
     return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="h-5 w-5 animate-spin text-fg-muted" />
+      <div className="flex items-center justify-center p-12">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (editing && draft) {
+    return (
+      <div className="space-y-5">
+        <header className="flex items-start justify-between">
+          <div>
+            <h2 className="text-3xl font-bold font-display text-fg">
+              {isEditingDraft ? 'עריכת טיוטה' : 'עריכת עדכון'}
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {isEditingDraft
+                ? 'טיוטה לעדכון הבא — לא נראה למשתמשים עד שתלחץ "פרסם טיוטה" בכרטיס הטיוטה.'
+                : 'שמור כטיוטה כדי להמשיך מאוחר יותר, או פרסם כדי שכל המשתמשים יקבלו את הגרסה הזאת.'}
+            </p>
+          </div>
+          <Button variant="ghost" size="sm" onClick={cancelEdit}>
+            <X className="h-4 w-4" />
+            ביטול
+          </Button>
+        </header>
+
+        <Card className="space-y-4">
+          <label className="block space-y-1.5">
+            <span className="text-xs text-muted-foreground">גרסה</span>
+            <Input
+              value={draft.version}
+              onChange={(e) => patch('version', e.target.value)}
+              dir="ltr"
+              className="text-left"
+            />
+          </label>
+
+          <label className="block space-y-1.5">
+            <span className="text-xs text-muted-foreground">תיאור / מה חדש</span>
+            <textarea
+              value={draft.notes}
+              onChange={(e) => patch('notes', e.target.value)}
+              rows={6}
+              placeholder={'• ...\n• ...'}
+              className="w-full rounded-lg border border-border bg-input/60 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+          </label>
+
+          <div className="space-y-3">
+            <div className="text-xs font-semibold text-foreground">
+              קישורי הורדה אוטומטית
+              <span className="mr-2 font-normal text-muted-foreground">
+                — מומלץ GitHub Releases (יציב, בלי הגבלת גודל)
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <UrlField label="macOS (.dmg)" value={draft.macUrl} onChange={(v) => patch('macUrl', v)} placeholder="https://github.com/.../...dmg" />
+              <UrlField label="Windows (.exe)" value={draft.winUrl} onChange={(v) => patch('winUrl', v)} placeholder="https://github.com/.../...exe" />
+            </div>
+          </div>
+
+          <div className="space-y-3 rounded-xl border border-border bg-card p-4">
+            <div className="text-xs font-semibold text-foreground">
+              קישורי גיבוי להתקנה ידנית
+              <span className="mr-2 font-normal text-muted-foreground">
+                — אופציונלי, נפתח בדפדפן כשהמשתמש לוחץ "התקן ידנית"
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <UrlField label="macOS — קישור גיבוי" value={draft.macUrlBackup} onChange={(v) => patch('macUrlBackup', v)} placeholder="https://drive.google.com/file/d/..." />
+              <UrlField label="Windows — קישור גיבוי" value={draft.winUrlBackup} onChange={(v) => patch('winUrlBackup', v)} placeholder="https://drive.google.com/file/d/..." />
+            </div>
+          </div>
+
+          <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-destructive/20 bg-destructive/[0.04] p-3">
+            <Switch
+              checked={draft.mandatory === true}
+              onCheckedChange={(v) => patch('mandatory', v)}
+            />
+            <div className="flex-1">
+              <div className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
+                עדכון חובה
+              </div>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                כשמופעל — המשתמש לא יוכל לסגור את חלון העדכון או להשתמש בתוכנה
+                בגרסה הישנה. שמור ל-bug-fix קריטיים או שינויים שוברי-תאימות.
+              </p>
+            </div>
+          </label>
+
+          {draft.mandatory && (
+            <ExemptVersionsField
+              value={draft.mandatoryExemptVersions ?? []}
+              onChange={(list) => patch('mandatoryExemptVersions', list)}
+            />
+          )}
+
+          {error && (
+            <div className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {error}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            {isEditingDraft ? (
+              <Button variant="default" onClick={saveDraftWorkspace} disabled={busy}>
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                שמור טיוטה
+              </Button>
+            ) : (
+              <>
+                <Button variant="default" onClick={() => saveRelease(false)} disabled={busy}>
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  שמור ופרסם
+                </Button>
+                <Button variant="secondary" onClick={() => saveRelease(true)} disabled={busy}>
+                  שמור כטיוטה
+                </Button>
+              </>
+            )}
+          </div>
+        </Card>
+
+        <PreviewModal release={preview} onClose={() => setPreview(null)} />
       </div>
     )
   }
 
   return (
     <div className="space-y-5">
-      <header className="flex items-start justify-between gap-3">
+      <header className="flex items-start justify-between">
         <div>
-          <h2 className="text-3xl font-bold font-display text-fg">עדכונים</h2>
-          <p className="mt-1 text-sm text-fg-muted">
-            ניהול טיוטת גרסה ופרסום עדכון למשתמשים.
+          <h2 className="text-3xl font-bold font-display text-fg">עדכונים והודעות</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            ערוך את הגרסה הזמינה למשתמשים. שינוי נכנס מיד לתוקף לכולם.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={load}
-          className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
-        >
-          <RefreshCw className="h-3.5 w-3.5" /> רענן
-        </button>
+        <Button variant="secondary" size="sm" onClick={load}>
+          <RefreshCw className="h-3.5 w-3.5" />
+          רענן
+        </Button>
       </header>
 
-      {latest && (
-        <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm">
-          <span className="text-fg-muted">גרסה מפורסמת כעת: </span>
-          <span className="font-medium text-fg" dir="ltr">
-            v{latest.version}
-          </span>
-          {latest.publishedAt && (
-            <span className="text-fg-faint">
-              {' '}· {new Date(latest.publishedAt).toLocaleDateString('he-IL')}
-            </span>
-          )}
+      {success && (
+        <div className="flex items-center gap-2 rounded-lg bg-success/10 px-3 py-2 text-xs text-success">
+          <CheckCircle className="h-3.5 w-3.5" />
+          {success}
         </div>
       )}
-
       {error && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <AlertTriangle className="h-4 w-4" /> {error}
+        <div className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {error}
         </div>
       )}
-      {msg && <div className="text-xs text-success">{msg}</div>}
 
-      <div className="space-y-3 rounded-2xl border border-border bg-card p-4">
-        <div className="text-sm font-semibold text-fg">טיוטת גרסה</div>
-        <Row label="מספר גרסה">
-          <In value={draft.version} onChange={(v) => set('version', v)} ltr placeholder="1.7.42" />
-        </Row>
-        <Row label="הערות גרסה (changelog)">
-          <textarea
-            value={draft.notes}
-            onChange={(e) => set('notes', e.target.value)}
-            rows={4}
-            className="w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm text-fg outline-none focus:border-primary"
-          />
-        </Row>
-        <Row label="קישור macOS">
-          <In value={draft.macUrl} onChange={(v) => set('macUrl', v)} ltr />
-        </Row>
-        <Row label="קישור Windows">
-          <In value={draft.winUrl} onChange={(v) => set('winUrl', v)} ltr />
-        </Row>
-        <Row label="קישור גיבוי macOS (Drive)">
-          <In value={draft.macUrlBackup} onChange={(v) => set('macUrlBackup', v)} ltr />
-        </Row>
-        <Row label="קישור גיבוי Windows (Drive)">
-          <In value={draft.winUrlBackup} onChange={(v) => set('winUrlBackup', v)} ltr />
-        </Row>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-fg">
-          <input
-            type="checkbox"
-            checked={draft.mandatory === true}
-            onChange={(e) => set('mandatory', e.target.checked)}
-            className="h-4 w-4 accent-[var(--color-primary,#d4a574)]"
-          />
-          עדכון חובה (חוסם את האפליקציה עד התקנה)
-        </label>
-
-        {draft.mandatory && (
-          <Row label="גרסאות פטורות מעדכון החובה (מופרדות בפסיק)">
-            <In
-              value={exemptText}
-              onChange={(v) => {
-                setExemptText(v)
-                const parsed = v
-                  .split(/[,\s]+/)
-                  .map((s) => s.trim())
-                  .filter(Boolean)
-                set('mandatoryExemptVersions', parsed)
-              }}
-              ltr
-              placeholder="1.7.40, 1.7.41"
-            />
-            {(draft.mandatoryExemptVersions ?? []).length > 0 && (
-              <div className="mt-1.5 flex flex-wrap gap-1.5">
-                {(draft.mandatoryExemptVersions ?? []).map((v) => (
+      {/* Published release card */}
+      <Card className="space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-2xl font-bold tabular-nums text-foreground" dir="ltr">
+                {release.version}
+              </h3>
+              <span
+                className={cn(
+                  'rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider',
+                  release.draft
+                    ? 'border border-primary/30 bg-primary/10 text-primary'
+                    : 'border border-success/30 bg-success/10 text-success',
+                )}
+              >
+                {release.draft ? 'טיוטה' : 'פורסם'}
+              </span>
+              {release.mandatory && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[10px] font-bold text-destructive">
+                  <AlertTriangle className="h-3 w-3" />
+                  חובה
+                </span>
+              )}
+              {release.mandatory &&
+                (release.mandatoryExemptVersions?.length ?? 0) > 0 && (
                   <span
-                    key={v}
-                    className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-fg-muted"
+                    className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-bold text-primary"
                     dir="ltr"
+                    title={`חריגות: ${(release.mandatoryExemptVersions ?? []).join(', ')}`}
                   >
-                    v{v}
+                    {release.mandatoryExemptVersions!.length} חריגות
                   </span>
-                ))}
+                )}
+            </div>
+            {release.publishedAt && (
+              <div className="mt-1 text-xs text-muted-foreground">
+                עודכן ב-
+                {new Date(release.publishedAt).toLocaleString('he-IL', {
+                  day: '2-digit',
+                  month: '2-digit',
+                  year: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
               </div>
             )}
-            <p className="mt-1 text-[10px] text-fg-faint">
-              משתמשים שמריצים גרסה מהרשימה הזאת יראו את חלון העדכון כאופציונלי (לא חוסם).
-            </p>
-          </Row>
+          </div>
+          <div className="flex shrink-0 gap-1">
+            <Button variant="secondary" size="sm" onClick={() => setPreview(release)}>
+              <Eye className="h-3.5 w-3.5" />
+              תצוגה מקדימה
+            </Button>
+            <Button variant="secondary" size="sm" onClick={startEditRelease}>
+              <Pencil className="h-3.5 w-3.5" />
+              ערוך
+            </Button>
+          </div>
+        </div>
+
+        {release.notes ? (
+          <pre className="whitespace-pre-wrap rounded-xl border border-border bg-card p-3 text-xs leading-relaxed text-foreground/85">
+            {release.notes}
+          </pre>
+        ) : (
+          <p className="text-xs italic text-muted-foreground">אין תיאור עדיין.</p>
         )}
 
-        <div className="flex flex-wrap items-center gap-2 pt-1">
-          <button
-            type="button"
-            onClick={() => setPreview(true)}
-            disabled={!draft.version}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm text-fg transition-colors hover:bg-white/[0.04] disabled:opacity-50"
-          >
-            <Eye className="h-4 w-4" /> תצוגה מקדימה
-          </button>
-          <button
-            type="button"
-            onClick={() => act('save')}
-            disabled={!!busy}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm text-fg transition-colors hover:bg-white/[0.04] disabled:opacity-50"
-          >
-            {busy === 'save' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            שמור טיוטה
-          </button>
-          <button
-            type="button"
-            onClick={() => act('publish')}
-            disabled={!!busy || !draft.version}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-50"
-          >
-            {busy === 'publish' ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <UploadCloud className="h-4 w-4" />
-            )}
-            פרסם עכשיו
-          </button>
-          <button
-            type="button"
-            onClick={() => act('delete')}
-            disabled={!!busy}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
-          >
-            <Trash2 className="h-4 w-4" /> מחק טיוטה
-          </button>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <UrlPreview label="macOS (.dmg)" url={release.macUrl} />
+          <UrlPreview label="Windows (.exe)" url={release.winUrl} />
+          <UrlPreview label="macOS גיבוי" url={release.macUrlBackup} />
+          <UrlPreview label="Windows גיבוי" url={release.winUrlBackup} />
         </div>
-      </div>
+      </Card>
 
-      {preview && (
-        <Portal>
-          <div
-            dir="rtl"
-            onClick={() => setPreview(false)}
-            className="fixed inset-0 z-[260] flex items-center justify-center bg-black/80 p-6 backdrop-blur-md"
-            role="dialog"
-            aria-modal="true"
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              className="relative w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
-            >
-              <button
-                type="button"
-                onClick={() => setPreview(false)}
-                className="absolute left-4 top-4 rounded-md p-1 text-muted-foreground hover:bg-popover hover:text-foreground"
-                aria-label="סגירה"
-              >
-                <X className="h-4 w-4" />
-              </button>
-              <div className="p-6 text-center">
-                <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-accent shadow-lg shadow-primary/40">
-                  <DownloadCloud className="h-6 w-6 text-white" />
-                </div>
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                  כך המשתמש יראה את חלון העדכון
-                </div>
-                <h3 className="mt-2 text-lg font-bold text-foreground">
-                  גרסה חדשה זמינה
+      {/* Draft workspace OR start-new-draft CTA */}
+      {draftRelease ? (
+        <Card className="space-y-4 border-primary/20 bg-primary/[0.02]">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-2xl font-bold tabular-nums text-foreground" dir="ltr">
+                  {draftRelease.version || '(ללא גרסה)'}
                 </h3>
-                <div className="mt-0.5 text-sm text-muted-foreground" dir="ltr">
-                  v{draft.version || '—'}
-                </div>
-                {draft.mandatory && (
-                  <span className="mt-2 inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[10px] font-semibold text-destructive">
-                    <AlertTriangle className="h-3 w-3" /> עדכון חובה
+                <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary">
+                  טיוטה
+                </span>
+                {draftRelease.mandatory && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[10px] font-bold text-destructive">
+                    <AlertTriangle className="h-3 w-3" />
+                    חובה
                   </span>
                 )}
-                {draft.notes && (
-                  <div className="mt-3 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-background/40 p-3 text-right text-xs text-foreground">
-                    {draft.notes}
-                  </div>
-                )}
-                <div className="mt-4 flex flex-col gap-2">
-                  <div className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">
-                    הורד והתקן
-                  </div>
-                  {!draft.mandatory && (
-                    <div className="text-xs text-muted-foreground">אחר כך</div>
-                  )}
-                </div>
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                עדכון בעבודה — נראה רק לאדמין עד שיתפרסם.
               </div>
             </div>
+            <div className="flex shrink-0 gap-1">
+              <Button variant="secondary" size="sm" onClick={() => setPreview(draftRelease)}>
+                <Eye className="h-3.5 w-3.5" />
+                תצוגה מקדימה
+              </Button>
+              <Button variant="secondary" size="sm" onClick={startEditDraft}>
+                <Pencil className="h-3.5 w-3.5" />
+                ערוך
+              </Button>
+            </div>
           </div>
-        </Portal>
+
+          {draftRelease.notes ? (
+            <pre className="whitespace-pre-wrap rounded-xl border border-border bg-card p-3 text-xs leading-relaxed text-foreground/85">
+              {draftRelease.notes}
+            </pre>
+          ) : (
+            <p className="text-xs italic text-muted-foreground">
+              עדיין לא הוזן תיאור לטיוטה.
+            </p>
+          )}
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <UrlPreview label="macOS (.dmg)" url={draftRelease.macUrl} />
+            <UrlPreview label="Windows (.exe)" url={draftRelease.winUrl} />
+            <UrlPreview label="macOS גיבוי" url={draftRelease.macUrlBackup} />
+            <UrlPreview label="Windows גיבוי" url={draftRelease.winUrlBackup} />
+          </div>
+
+          <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+            <Button variant="default" size="sm" onClick={publishDraft} disabled={busy}>
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UploadCloud className="h-3.5 w-3.5" />}
+              פרסם טיוטה למשתמשים
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={discardDraft}
+              disabled={busy}
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              מחק טיוטה
+            </Button>
+          </div>
+        </Card>
+      ) : (
+        <Card className="flex flex-wrap items-center justify-between gap-3 border-dashed border-border bg-card">
+          <div>
+            <div className="text-sm font-semibold text-foreground">
+              להתחיל לעבוד על הגרסה הבאה?
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              טיוטה נשמרת בנפרד ולא משנה את העדכון שכבר פורסם. תוכל לחזור אליה מתי
+              שתרצה ולפרסם רק כשהיא מוכנה.
+            </div>
+          </div>
+          <Button variant="secondary" size="sm" onClick={startEditDraft}>
+            <Plus className="h-3.5 w-3.5" />
+            התחל טיוטה חדשה
+          </Button>
+        </Card>
       )}
+
+      <PreviewModal release={preview} onClose={() => setPreview(null)} />
     </div>
   )
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+function UrlPreview({ label, url }: { label: string; url: string }) {
   return (
     <div className="space-y-1">
-      <label className="text-xs text-fg-muted">{label}</label>
-      {children}
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
+        {label}
+      </div>
+      <div
+        className={cn(
+          'truncate rounded-lg border px-2.5 py-1.5 text-xs',
+          url
+            ? 'border-border bg-card text-muted-foreground'
+            : 'border-dashed border-border bg-transparent text-muted-foreground/50',
+        )}
+        dir="ltr"
+        title={url}
+      >
+        {url || '— לא הוגדר'}
+      </div>
     </div>
   )
 }
-function In({
+
+function UrlField({
+  label,
   value,
   onChange,
-  ltr,
   placeholder,
 }: {
+  label: string
   value: string
   onChange: (v: string) => void
-  ltr?: boolean
   placeholder?: string
 }) {
   return (
-    <input
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      dir={ltr ? 'ltr' : undefined}
-      placeholder={placeholder}
-      className="w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm text-fg outline-none focus:border-primary"
-    />
+    <label className="block space-y-1">
+      <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
+        {label}
+      </span>
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        dir="ltr"
+        className="text-left text-xs"
+      />
+    </label>
+  )
+}
+
+function ExemptVersionsField({
+  value,
+  onChange,
+}: {
+  value: string[]
+  onChange: (list: string[]) => void
+}) {
+  const [text, setText] = useState(value.join(', '))
+  return (
+    <div className="space-y-1.5 rounded-xl border border-border bg-card p-3">
+      <span className="text-xs font-semibold text-foreground">
+        גרסאות פטורות מעדכון החובה (מופרדות בפסיק)
+      </span>
+      <Input
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value)
+          onChange(
+            e.target.value
+              .split(/[,\s]+/)
+              .map((s) => s.trim())
+              .filter(Boolean),
+          )
+        }}
+        dir="ltr"
+        placeholder="1.7.40, 1.7.41"
+        className="text-left"
+      />
+      {value.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          {value.map((v) => (
+            <span
+              key={v}
+              className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground"
+              dir="ltr"
+            >
+              v{v}
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="text-[10px] text-muted-foreground/70">
+        משתמשים שמריצים גרסה מהרשימה יראו את חלון העדכון כאופציונלי (לא חוסם).
+      </p>
+    </div>
+  )
+}
+
+function PreviewModal({
+  release,
+  onClose,
+}: {
+  release: ReleaseDoc | null
+  onClose: () => void
+}) {
+  if (!release) return null
+  return (
+    <Portal>
+      <div
+        dir="rtl"
+        onClick={onClose}
+        className="fixed inset-0 z-[260] flex items-center justify-center bg-black/80 p-6 backdrop-blur-md"
+        role="dialog"
+        aria-modal="true"
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="relative w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+        >
+          <button
+            type="button"
+            onClick={onClose}
+            className="absolute left-4 top-4 rounded-md p-1 text-muted-foreground hover:bg-popover hover:text-foreground"
+            aria-label="סגירה"
+          >
+            <X className="h-4 w-4" />
+          </button>
+          <div className="p-6 text-center">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-accent shadow-lg shadow-primary/40">
+              <DownloadCloud className="h-6 w-6 text-white" />
+            </div>
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              כך המשתמש יראה את חלון העדכון
+            </div>
+            <h3 className="mt-2 text-lg font-bold text-foreground">גרסה חדשה זמינה</h3>
+            <div className="mt-0.5 text-sm text-muted-foreground" dir="ltr">
+              v{release.version || '—'}
+            </div>
+            {release.mandatory && (
+              <span className="mt-2 inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[10px] font-semibold text-destructive">
+                <AlertTriangle className="h-3 w-3" /> עדכון חובה
+              </span>
+            )}
+            {release.notes && (
+              <pre className="mt-3 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-background/40 p-3 text-right text-xs text-foreground">
+                {release.notes}
+              </pre>
+            )}
+            <div className="mt-4 flex flex-col gap-2">
+              <div className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">
+                הורד והתקן
+              </div>
+              {!release.mandatory && (
+                <div className="text-xs text-muted-foreground">אחר כך</div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </Portal>
   )
 }

@@ -137,15 +137,19 @@ export default async function handler(
 
   const body = req.body as {
     idToken?: string
-    action?: 'load' | 'save' | 'delete' | 'publish'
+    action?: 'load' | 'save' | 'delete' | 'publish' | 'save-latest'
     release?: unknown
+    publish?: boolean
   }
   const idToken = (body.idToken || '').trim()
   const action = body.action
   if (!idToken) {
     return res.status(401).json({ ok: false, error: 'אסימון אימות חסר' })
   }
-  if (!action || !['load', 'save', 'delete', 'publish'].includes(action)) {
+  if (
+    !action ||
+    !['load', 'save', 'delete', 'publish', 'save-latest'].includes(action)
+  ) {
     return res.status(400).json({ ok: false, error: 'פעולה לא חוקית' })
   }
 
@@ -186,6 +190,28 @@ export default async function handler(
     if (action === 'delete') {
       await draftRef.delete().catch(() => undefined)
       return res.status(200).json({ ok: true })
+    }
+
+    // action === 'save-latest' — write directly to the LIVE release
+    // doc (edit-in-place). `publish:true` makes it visible to users
+    // (draft:false) and stamps publishedAt; otherwise it's parked as
+    // a not-yet-public draft on the latest doc.
+    if (action === 'save-latest') {
+      const r = (body.release as Partial<ReleaseDoc>) || {}
+      const cleaned = cleanDraft(r)
+      if (!cleaned.version) {
+        return res.status(400).json({ ok: false, error: 'חסר מספר גרסה' })
+      }
+      const publish = body.publish === true
+      const finalDoc: ReleaseDoc = {
+        ...cleaned,
+        draft: !publish,
+      }
+      if (publish) finalDoc.publishedAt = new Date().toISOString()
+      else if (typeof r.publishedAt === 'string')
+        finalDoc.publishedAt = r.publishedAt
+      await latestRef.set(finalDoc)
+      return res.status(200).json({ ok: true, release: finalDoc })
     }
 
     // action === 'publish' — promote draft → latest, stamp the
