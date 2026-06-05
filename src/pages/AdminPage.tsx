@@ -37,6 +37,7 @@ import {
   requestAdminCode,
   setGateKey,
   verifyAdminCode,
+  tryPasskeyLogin,
 } from '../lib/adminApi'
 import UsersTab from '../components/admin/UsersTab'
 import KeysTab from '../components/admin/KeysTab'
@@ -94,7 +95,6 @@ export default function AdminPage() {
   // (a page refresh while signed-in, or an expired 2FA token), the
   // code screen must request one itself. After the login step it must
   // NOT — login already sent it (that was the double-email bug).
-  const [codeAutoReq, setCodeAutoReq] = useState(false)
 
   // STEP 0 — IP gate. Before anything else (even before showing a
   // login form), ask the server whether this IP is allowed. If not,
@@ -125,8 +125,8 @@ export default function AdminPage() {
         if (getStoredAdminToken()) {
           setPhase('ready')
         } else {
-          // Direct landing on the code step → it must send a code.
-          setCodeAutoReq(true)
+          // Signed in but not unlocked → the unlock step tries a
+          // passkey first, falling back to the email code.
           setPhase('code')
         }
       })
@@ -152,21 +152,12 @@ export default function AdminPage() {
   }
 
   if (phase === 'login') {
-    return (
-      <AdminLogin
-        onNeedCode={() => {
-          // Login already sent the code — don't double-send.
-          setCodeAutoReq(false)
-          setPhase('code')
-        }}
-      />
-    )
+    return <AdminLogin onNeedCode={() => setPhase('code')} />
   }
 
   if (phase === 'code') {
     return (
-      <AdminCode
-        autoRequest={codeAutoReq}
+      <AdminUnlock
         onVerified={() => setPhase('ready')}
         onCancel={async () => {
           await adminSignOut()
@@ -188,7 +179,6 @@ export default function AdminPage() {
       // (keep the Firebase session) and re-prompt for a fresh code.
       onAuthExpired={() => {
         clearAdminToken()
-        setCodeAutoReq(true)
         setPhase('code')
       }}
     />
@@ -209,14 +199,10 @@ function AdminLogin({ onNeedCode }: { onNeedCode: () => void }) {
     setError(null)
     try {
       await adminSignIn(email, password)
-      // Signed in — now ask the server to email a code. This also
-      // doubles as the admin-email check: non-admins get a 403.
-      const r = await requestAdminCode()
-      if (!r.ok) {
-        await adminSignOut()
-        setError(r.error || 'אינך מורשה לגשת לפאנל הניהול.')
-        return
-      }
+      // Signed in — move to the unlock step, which tries a passkey
+      // (Touch ID / Face ID) first and falls back to the email code.
+      // The admin-only check happens there (passkey/code 403 for
+      // non-admins).
       onNeedCode()
     } catch (err) {
       setError(
@@ -258,48 +244,69 @@ function AdminLogin({ onNeedCode }: { onNeedCode: () => void }) {
           <AuthButton busy={busy}>המשך</AuthButton>
         </form>
         <p className="mt-6 text-center text-xs text-fg-muted">
-          לאחר הסיסמה יישלח קוד אימות לכתובת המייל שלך.
+          לאחר הסיסמה — אימות מהיר ב-Passkey (Touch ID / Face ID), או קוד למייל.
         </p>
       </div>
     </div>
   )
 }
-
-/* ── Step 2: email code ───────────────────────────────────────── */
-function AdminCode({
-  autoRequest,
+/* ── Step 2: unlock — passkey first, email code fallback ──────── */
+function AdminUnlock({
   onVerified,
   onCancel,
 }: {
-  autoRequest: boolean
   onVerified: () => void
   onCancel: () => void
 }) {
+  const [mode, setMode] = useState<'init' | 'passkey' | 'code'>('init')
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
+  const [pkBusy, setPkBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [resent, setResent] = useState(false)
-  // 60s resend cooldown (resets on each send).
   const [cooldown, setCooldown] = useState(0)
   useEffect(() => {
     if (cooldown <= 0) return
     const t = setTimeout(() => setCooldown((c) => Math.max(0, c - 1)), 1000)
     return () => clearTimeout(t)
   }, [cooldown])
-  // Only request a code here when we arrived WITHOUT one already being
-  // sent (refresh / expired token). After the login step, login sent
-  // it — requesting again is the double-email bug.
-  const requestedRef = useRef(false)
+
+  // Try a passkey the moment we land here. If the admin has none,
+  // fall back to emailing a code automatically.
+  const ranRef = useRef(false)
   useEffect(() => {
-    if (!autoRequest || requestedRef.current) return
-    requestedRef.current = true
-    void requestAdminCode()
-  }, [autoRequest])
-  // A code was just sent (by login or by the effect above) — start the
-  // resend cooldown immediately on mount.
-  useEffect(() => {
-    setCooldown(60)
+    if (ranRef.current) return
+    ranRef.current = true
+    void attempt()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  async function attempt() {
+    setPkBusy(true)
+    setError(null)
+    const pk = await tryPasskeyLogin()
+    setPkBusy(false)
+    if (pk.ok) return onVerified()
+    if (pk.noPasskeys) {
+      // No passkey on file → email-code path.
+      await sendCode()
+      setMode('code')
+      return
+    }
+    // Has passkeys but the assertion failed / was cancelled.
+    setMode('passkey')
+    if (pk.error) setError(pk.error)
+  }
+
+  async function sendCode() {
+    const r = await requestAdminCode()
+    if (r.ok) {
+      setCooldown(60)
+      return true
+    }
+    setError(r.error || 'אינך מורשה לגשת לפאנל הניהול.')
+    return false
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -318,55 +325,92 @@ function AdminCode({
   async function resend() {
     if (cooldown > 0) return
     setError(null)
-    const r = await requestAdminCode()
-    if (r.ok) {
+    const ok = await sendCode()
+    if (ok) {
       setResent(true)
-      setCooldown(60)
       setTimeout(() => setResent(false), 3000)
-    } else {
-      setError(r.error || 'שליחת הקוד נכשלה.')
     }
   }
 
   return (
     <div className="flex min-h-dvh items-center justify-center bg-bg px-5" dir="rtl">
       <div className="w-full max-w-sm">
-        <AuthHeader label="— אימות דו-שלבי" title="הזן את קוד הכניסה" />
-        <p className="mb-5 text-center text-xs text-fg-muted">
-          שלחנו קוד בן 6 ספרות אל <span dir="ltr">{getAdminEmail()}</span>.
-        </p>
-        <form onSubmit={submit} className="space-y-5">
-          <AuthInput
-            label="קוד אימות"
-            type="text"
-            value={code}
-            onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
-            autoFocus
-          />
-          {error && <AuthError message={error} />}
-          <AuthButton busy={busy}>כניסה</AuthButton>
-        </form>
-        <div className="mt-5 flex items-center justify-between text-xs">
-          <button
-            type="button"
-            onClick={resend}
-            disabled={cooldown > 0}
-            className="text-fg-muted transition-colors hover:text-fg disabled:opacity-50 disabled:hover:text-fg-muted"
-          >
-            {resent
-              ? 'נשלח קוד חדש ✓'
-              : cooldown > 0
-                ? `שלח שוב (${cooldown})`
-                : 'שלח קוד מחדש'}
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-fg-muted transition-colors hover:text-fg"
-          >
-            חזרה
-          </button>
-        </div>
+        <AuthHeader label="— אימות דו-שלבי" title="אימות כניסה" />
+
+        {mode === 'init' ? (
+          <p className="mt-6 text-center text-sm text-fg-muted">מאמת…</p>
+        ) : mode === 'passkey' ? (
+          <>
+            <p className="mb-5 text-center text-xs text-fg-muted">
+              אשר את הכניסה עם Touch ID / Face ID.
+            </p>
+            {error && <AuthError message={error} />}
+            <button
+              type="button"
+              onClick={attempt}
+              disabled={pkBusy}
+              className="mt-2 w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-50"
+            >
+              {pkBusy ? 'ממתין לאימות…' : 'כניסה עם Passkey'}
+            </button>
+            <div className="mt-5 flex items-center justify-between text-xs">
+              <button
+                type="button"
+                onClick={async () => {
+                  if (await sendCode()) setMode('code')
+                }}
+                className="text-fg-muted transition-colors hover:text-fg"
+              >
+                שלח קוד למייל במקום
+              </button>
+              <button
+                type="button"
+                onClick={onCancel}
+                className="text-fg-muted transition-colors hover:text-fg"
+              >
+                חזרה
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="mb-5 text-center text-xs text-fg-muted">
+              שלחנו קוד בן 6 ספרות אל <span dir="ltr">{getAdminEmail()}</span>.
+            </p>
+            <form onSubmit={submit} className="space-y-5">
+              <AuthInput
+                label="קוד אימות"
+                type="text"
+                value={code}
+                onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
+                autoFocus
+              />
+              {error && <AuthError message={error} />}
+              <AuthButton busy={busy}>כניסה</AuthButton>
+            </form>
+            <div className="mt-5 flex items-center justify-between text-xs">
+              <button
+                type="button"
+                onClick={resend}
+                disabled={cooldown > 0}
+                className="text-fg-muted transition-colors hover:text-fg disabled:opacity-50 disabled:hover:text-fg-muted"
+              >
+                {resent
+                  ? 'נשלח קוד חדש ✓'
+                  : cooldown > 0
+                    ? `שלח שוב (${cooldown})`
+                    : 'שלח קוד מחדש'}
+              </button>
+              <button
+                type="button"
+                onClick={onCancel}
+                className="text-fg-muted transition-colors hover:text-fg"
+              >
+                חזרה
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

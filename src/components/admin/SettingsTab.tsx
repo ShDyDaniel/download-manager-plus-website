@@ -12,8 +12,16 @@ import {
   Crown,
   ChevronDown,
   Terminal,
+  Fingerprint,
 } from 'lucide-react'
-import { adminApi, getAdminIdToken } from '../../lib/adminApi'
+import {
+  adminApi,
+  getAdminIdToken,
+  listPasskeys,
+  registerPasskey,
+  deletePasskey,
+  type PasskeyInfo,
+} from '../../lib/adminApi'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Switch } from '@/components/ui/Switch'
@@ -73,6 +81,7 @@ export default function SettingsTab({
         </div>
       )}
       <AppConfigCard onErr={handleErr} />
+      <PasskeysCard onErr={handleErr} />
       <PricingCard onErr={handleErr} />
       <LegalCard kind="terms" title="תנאי שימוש" onErr={handleErr} />
       <LegalCard kind="privacy" title="מדיניות פרטיות" onErr={handleErr} />
@@ -345,6 +354,133 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
         {logsMsg && <div className="text-xs text-success">{logsMsg}</div>}
       </div>
     </>
+  )
+}
+
+function PasskeysCard({ onErr }: { onErr: (e: unknown) => void }) {
+  const [list, setList] = useState<PasskeyInfo[] | null>(null)
+  const [deviceName, setDeviceName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  async function load() {
+    try {
+      setList(await listPasskeys())
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setMsg(err.message || 'טעינה נכשלה')
+    }
+  }
+  useEffect(() => {
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function register() {
+    if (busy) return
+    setBusy(true)
+    setMsg('')
+    const name =
+      deviceName.trim() ||
+      (/iphone|ipad|android/i.test(navigator.userAgent)
+        ? 'טלפון'
+        : /mac/i.test(navigator.userAgent)
+          ? 'Mac'
+          : 'מחשב')
+    const r = await registerPasskey(name)
+    setBusy(false)
+    if (r.ok) {
+      setDeviceName('')
+      setMsg('המכשיר נרשם ✓')
+      setTimeout(() => setMsg(''), 2500)
+      void load()
+    } else {
+      setMsg(r.error || 'הרישום נכשל/בוטל')
+    }
+  }
+
+  async function remove(id: string) {
+    if (!window.confirm('להסיר את המכשיר הזה? לא תוכל להיכנס איתו יותר.')) return
+    try {
+      await deletePasskey(id)
+      void load()
+    } catch (e) {
+      onErr(e)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-accent shadow-md shadow-primary/40">
+          <Fingerprint className="h-5 w-5 text-white" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-bold text-foreground">
+            מפתחות גישה (Passkeys)
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            רשום את המכשיר הזה (Touch ID במק / Face ID באייפון / Windows Hello)
+            כדי להיכנס בלי קוד מייל. אפשר לרשום כמה מכשירים — אחד למחשב ואחד
+            לטלפון. קוד המייל יישאר כגיבוי.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          value={deviceName}
+          onChange={(e) => setDeviceName(e.target.value)}
+          placeholder="שם המכשיר (אופציונלי)"
+          className="flex-1"
+        />
+        <Button onClick={register} disabled={busy} size="sm">
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Fingerprint className="h-3.5 w-3.5" />
+          )}
+          רשום מכשיר זה
+        </Button>
+      </div>
+      {msg && <div className="text-xs text-success">{msg}</div>}
+
+      {list === null ? (
+        <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> טוען…
+        </div>
+      ) : list.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          עדיין לא נרשמו מכשירים — תיכנס עם קוד מייל עד שתרשום אחד.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {list.map((p) => (
+            <div
+              key={p.id}
+              className="flex items-center justify-between gap-2 rounded-lg bg-background px-3 py-2 text-xs"
+            >
+              <span className="flex items-center gap-2 text-foreground">
+                <Fingerprint className="h-3.5 w-3.5 text-accent" />
+                {p.deviceName}
+                <span className="text-muted-foreground">
+                  · {new Date(p.createdAt).toLocaleDateString('he-IL')}
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={() => remove(p.id)}
+                className="text-muted-foreground transition-colors hover:text-destructive"
+                title="הסר"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

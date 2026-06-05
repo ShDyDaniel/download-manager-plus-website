@@ -186,6 +186,71 @@ export async function requestAdminCode(): Promise<ApiResult<unknown>> {
   return adminAuthCall('admin-2fa-request', { idToken, gateKey: getGateKey() })
 }
 
+/* ── Passkeys (WebAuthn) ───────────────────────────────────────── */
+
+/** Attempt a passkey login. Returns {ok} on success (token stored),
+ *  {noPasskeys:true} if this admin has none registered (caller should
+ *  fall back to the email code), or {error}. */
+export async function tryPasskeyLogin(): Promise<{
+  ok: boolean
+  noPasskeys?: boolean
+  error?: string
+}> {
+  const idToken = await getAdminIdToken()
+  if (!idToken) return { ok: false, error: 'לא מחובר' }
+  const opt = await adminAuthCall<{ hasPasskeys?: boolean; options?: unknown }>(
+    'admin-passkey-auth-options',
+    { idToken, gateKey: getGateKey() },
+  )
+  if (!opt.ok) return { ok: false, error: opt.error }
+  if (!opt.hasPasskeys || !opt.options) return { ok: false, noPasskeys: true }
+  const { startAuthentication } = await import('@simplewebauthn/browser')
+  let assertion
+  try {
+    assertion = await startAuthentication({ optionsJSON: opt.options as never })
+  } catch {
+    return { ok: false, error: 'האימות הביומטרי בוטל' }
+  }
+  const v = await adminAuthCall<{ adminToken: string }>(
+    'admin-passkey-auth-verify',
+    { idToken, gateKey: getGateKey(), response: assertion },
+  )
+  if (v.ok) {
+    storeAdminToken(v.adminToken)
+    return { ok: true }
+  }
+  return { ok: false, error: v.error }
+}
+
+/** Register a new passkey on THIS device (requires an unlocked admin
+ *  session — email code or an existing passkey). */
+export async function registerPasskey(
+  deviceName: string,
+): Promise<ApiResult<unknown>> {
+  try {
+    const opt = await adminApi<{ options: unknown }>('admin-passkey-reg-options')
+    const { startRegistration } = await import('@simplewebauthn/browser')
+    const att = await startRegistration({ optionsJSON: opt.options as never })
+    await adminApi('admin-passkey-reg-verify', { response: att, deviceName })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message || 'רישום נכשל' }
+  }
+}
+
+export interface PasskeyInfo {
+  id: string
+  deviceName: string
+  createdAt: number
+}
+export async function listPasskeys(): Promise<PasskeyInfo[]> {
+  const r = await adminApi<{ passkeys: PasskeyInfo[] }>('admin-passkey-list')
+  return r.passkeys || []
+}
+export async function deletePasskey(id: string): Promise<void> {
+  await adminApi('admin-passkey-delete', { id })
+}
+
 /** Verify the email code → returns + stores the 12h admin token. */
 export async function verifyAdminCode(
   code: string,
