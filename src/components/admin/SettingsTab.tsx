@@ -9,10 +9,13 @@ import {
   Sparkles,
   CheckCircle,
   GripVertical,
+  Crown,
 } from 'lucide-react'
 import { adminApi, getAdminIdToken } from '../../lib/adminApi'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { Switch } from '@/components/ui/Switch'
+import { cn } from '@/lib/cn'
 
 /**
  * Admin → Settings (web). Beta mode, plan mode, terms + privacy
@@ -85,19 +88,29 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   )
 }
 
+/* Beta + plan-mode cards — ported 1:1 from the desktop admin panel
+ * (optimistic UI, gradient icons, Switch, segmented buttons). Config
+ * is loaded once here and shared by both cards. */
 function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [beta, setBeta] = useState(false)
   const [plan, setPlan] = useState<'hybrid' | 'subscription'>('hybrid')
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState('')
-  const [msg, setMsg] = useState('')
+  const [betaBusy, setBetaBusy] = useState(false)
+  const [planBusy, setPlanBusy] = useState(false)
+  const [betaOptimistic, setBetaOptimistic] = useState<boolean | null>(null)
+  const [planOptimistic, setPlanOptimistic] = useState<
+    'hybrid' | 'subscription' | null
+  >(null)
+  const [betaErr, setBetaErr] = useState('')
+  const [planErr, setPlanErr] = useState('')
 
   useEffect(() => {
     void (async () => {
       try {
-        const r = await adminApi<{ betaMode: boolean; planMode: 'hybrid' | 'subscription' }>(
-          'admin-get-app-config',
-        )
+        const r = await adminApi<{
+          betaMode: boolean
+          planMode: 'hybrid' | 'subscription'
+        }>('admin-get-app-config')
         setBeta(r.betaMode)
         setPlan(r.planMode)
       } catch (e) {
@@ -109,76 +122,176 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function save(patch: { betaMode?: boolean; planMode?: string }, label: string) {
-    setBusy(label)
-    setMsg('')
+  const betaActive = betaOptimistic !== null ? betaOptimistic : beta
+  const planCurrent = planOptimistic ?? plan
+  const isSub = planCurrent === 'subscription'
+
+  async function toggleBeta(next?: boolean) {
+    const target = typeof next === 'boolean' ? next : !betaActive
+    if (betaBusy || target === betaActive) return
+    setBetaBusy(true)
+    setBetaErr('')
+    setBetaOptimistic(target)
     try {
-      await adminApi('admin-set-app-config', patch)
-      setMsg('נשמר ✓')
-      setTimeout(() => setMsg(''), 2000)
+      await adminApi('admin-set-app-config', { betaMode: target })
+      setBeta(target)
+      setBetaOptimistic(null)
     } catch (e) {
-      onErr(e)
+      setBetaOptimistic(null)
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setBetaErr(err.message || 'שינוי המצב נכשל')
     } finally {
-      setBusy('')
+      setBetaBusy(false)
     }
   }
 
-  if (loading)
-    return (
-      <Card title="כללי">
-        <Loader2 className="h-4 w-4 animate-spin text-fg-muted" />
-      </Card>
-    )
+  async function pickPlan(mode: 'hybrid' | 'subscription') {
+    if (planBusy || mode === planCurrent) return
+    setPlanBusy(true)
+    setPlanErr('')
+    setPlanOptimistic(mode)
+    try {
+      await adminApi('admin-set-app-config', { planMode: mode })
+      setPlan(mode)
+      setPlanOptimistic(null)
+    } catch (e) {
+      setPlanOptimistic(null)
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setPlanErr(err.message || 'שינוי המצב נכשל')
+    } finally {
+      setPlanBusy(false)
+    }
+  }
 
   return (
-    <Card title="כללי">
-      <label className="flex items-center justify-between gap-3 text-sm text-fg">
-        <span>
-          מצב בטא{' '}
-          <span className="text-xs text-fg-muted">(Pro חינם לכולם)</span>
-        </span>
-        <input
-          type="checkbox"
-          checked={beta}
-          disabled={busy === 'beta'}
-          onChange={(e) => {
-            setBeta(e.target.checked)
-            void save({ betaMode: e.target.checked }, 'beta')
-          }}
-          className="h-5 w-5 accent-[var(--color-primary,#d4a574)]"
-        />
-      </label>
-      <div className="flex items-center justify-between gap-3 text-sm text-fg">
-        <span>
-          מודל תמחור{' '}
-          <span className="text-xs text-fg-muted">
-            (היברידי = חלק חינם · מנוי = הכל ב-Pro)
-          </span>
-        </span>
-        <div className="flex gap-1.5">
+    <>
+      {/* Beta mode */}
+      <div
+        className={cn(
+          'flex w-full items-stretch gap-4 rounded-2xl border p-4 text-right transition-all',
+          betaActive
+            ? 'border-success/30 bg-success/[0.08]'
+            : 'border-border bg-card',
+        )}
+      >
+        <div className="flex flex-1 items-start gap-3">
+          <div
+            className={cn(
+              'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br shadow-md transition-all',
+              betaActive
+                ? 'from-success to-success shadow-success/40'
+                : 'from-popover to-popover shadow-lg',
+            )}
+          >
+            {betaBusy || loading ? (
+              <Loader2 className="h-5 w-5 animate-spin text-white" />
+            ) : (
+              <Sparkles className="h-5 w-5 text-white" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+              מצב בטא
+              <span
+                className={cn(
+                  'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors',
+                  betaActive
+                    ? 'bg-success/20 text-success'
+                    : 'bg-popover text-muted-foreground',
+                )}
+              >
+                {loading ? 'טוען...' : betaBusy ? 'מעדכן...' : betaActive ? 'פעיל' : 'כבוי'}
+              </span>
+              {betaOptimistic !== null && (
+                <span className="text-[10px] text-muted-foreground">
+                  ⚡ ממתין לאישור Firestore
+                </span>
+              )}
+            </div>
+            <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted-foreground">
+              {betaActive
+                ? 'כל המשתמשים מחוברים מקבלים גישה לתכונות Pro בחינם. כיבוי יחזיר כל משתמש למנוי האמיתי שלו באופן מיידי.'
+                : 'מצב רגיל — כל משתמש מקבל את התכונות לפי המנוי שלו. הפעלה תעניק לכולם Pro חינם בזמן שהוא דולק.'}
+            </p>
+            {betaErr && (
+              <div className="mt-1.5 flex items-center gap-1 text-[11px] text-destructive">
+                <AlertTriangle className="h-3 w-3" />
+                {betaErr}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center self-center">
+          <Switch
+            checked={betaActive}
+            onCheckedChange={(v) => toggleBeta(v)}
+            disabled={betaBusy || loading}
+          />
+        </div>
+      </div>
+
+      {/* Plan mode */}
+      <div
+        className={cn(
+          'flex flex-col gap-3 rounded-2xl border p-4 transition-colors',
+          isSub ? 'border-primary/30 bg-primary/[0.05]' : 'border-border bg-card',
+        )}
+      >
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary shadow-md shadow-primary/40">
+            {planBusy ? (
+              <Loader2 className="h-5 w-5 animate-spin text-white" />
+            ) : (
+              <Crown className="h-5 w-5 text-white" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+              תוכנית התשלום
+              <span className="rounded-full bg-primary/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
+                {loading ? 'טוען...' : planBusy ? 'מעדכן...' : isSub ? 'מנויים' : 'משולבת'}
+              </span>
+              {planOptimistic !== null && (
+                <span className="text-[10px] text-muted-foreground">
+                  ⚡ ממתין לאישור Firestore
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {isSub
+                ? 'מצב מנויים — רק משתמשים עם מנוי Pro יכולים להפעיל פיצ׳רים. משתמשים חינמיים יראו את התוכנה אבל לא יוכלו לעשות כלום בלי לשדרג.'
+                : 'מצב משולב — חלק מהפיצ׳רים פתוחים בחינם, חלק דורשים Pro. ברירת המחדל המקורית.'}
+            </p>
+            {planErr && (
+              <div className="mt-1.5 flex items-center gap-1 text-[11px] text-destructive">
+                <AlertTriangle className="h-3 w-3" />
+                {planErr}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
           {(['hybrid', 'subscription'] as const).map((m) => (
             <button
               key={m}
               type="button"
-              disabled={busy === 'plan'}
-              onClick={() => {
-                setPlan(m)
-                void save({ planMode: m }, 'plan')
-              }}
-              className={
-                'rounded-lg border px-3 py-1 text-xs transition-colors ' +
-                (plan === m
-                  ? 'border-primary/40 bg-primary/10 text-primary'
-                  : 'border-border text-fg-muted hover:text-fg')
-              }
+              onClick={() => pickPlan(m)}
+              disabled={planBusy || loading}
+              className={cn(
+                'rounded-xl border px-3 py-2.5 text-sm font-medium transition-all',
+                planCurrent === m
+                  ? 'border-primary/40 bg-gradient-to-br from-primary/20 to-primary/10 text-foreground shadow-md shadow-primary/30'
+                  : 'border-border bg-card text-muted-foreground hover:bg-card',
+              )}
             >
-              {m === 'hybrid' ? 'היברידי' : 'מנוי מלא'}
+              {m === 'hybrid' ? 'תוכנית משולבת' : 'תוכנית מנויים'}
             </button>
           ))}
         </div>
       </div>
-      {msg && <div className="text-xs text-success">{msg}</div>}
-    </Card>
+    </>
   )
 }
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { motion } from 'framer-motion'
 import { onAuthStateChanged } from 'firebase/auth'
 import {
   Users as UsersIcon,
@@ -420,14 +421,21 @@ function AdminShell({
                   type="button"
                   onClick={() => onTab(t.key)}
                   className={
-                    'flex shrink-0 items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ' +
+                    'relative flex shrink-0 items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ' +
                     (active
-                      ? 'bg-primary/10 font-medium text-primary'
+                      ? 'font-medium text-primary'
                       : 'text-fg-muted hover:bg-white/[0.03] hover:text-fg')
                   }
                 >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  {t.label}
+                  {active && (
+                    <motion.span
+                      layoutId="adminActivePill"
+                      transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+                      className="absolute inset-0 -z-0 rounded-lg bg-primary/10"
+                    />
+                  )}
+                  <Icon className="relative z-10 h-4 w-4 shrink-0" />
+                  <span className="relative z-10">{t.label}</span>
                 </button>
               )
             })}
