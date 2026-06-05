@@ -6,6 +6,10 @@ import {
   DownloadCloud,
   X,
   ChevronLeft,
+  Activity,
+  Clock,
+  Users as UsersIcon,
+  CalendarClock,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 
@@ -225,9 +229,9 @@ export default function DataTab({
       ) : (
         <>
           <div className="grid grid-cols-3 gap-3">
-            <Stat label="סך כניסות" value={totalCounts.toLocaleString()} />
-            <Stat label="סך זמן" value={fmtDuration(totalSeconds)} />
-            <Stat label="פעילים (7 ימים)" value={String(active7.size)} />
+            <Stat label="סך כניסות" value={totalCounts.toLocaleString()} icon={<Activity className="h-4 w-4 text-white" />} color="from-primary to-primary" />
+            <Stat label="סך זמן" value={fmtDuration(totalSeconds)} icon={<Clock className="h-4 w-4 text-white" />} color="from-accent to-primary" />
+            <Stat label="פעילים (7 ימים)" value={String(active7.size)} icon={<UsersIcon className="h-4 w-4 text-white" />} color="from-success to-success" />
           </div>
 
           {/* Per-tab usage */}
@@ -495,9 +499,9 @@ function UserUsageModal({
 
         <div className="max-h-[70vh] overflow-y-auto p-6">
           <div className="mb-5 grid grid-cols-3 gap-3">
-            <Stat label="סך כניסות" value={totalVisits.toLocaleString()} />
-            <Stat label="סך זמן" value={fmtDuration(totalSeconds)} />
-            <Stat label="ימים פעילים" value={String(daysActive)} />
+            <Stat label="סך כניסות" value={totalVisits.toLocaleString()} icon={<Activity className="h-4 w-4 text-white" />} color="from-primary to-primary" />
+            <Stat label="סך זמן" value={fmtDuration(totalSeconds)} icon={<Clock className="h-4 w-4 text-white" />} color="from-accent to-primary" />
+            <Stat label="ימים פעילים" value={String(daysActive)} icon={<CalendarClock className="h-4 w-4 text-white" />} color="from-success to-success" />
           </div>
 
           {userStats.length === 0 ? (
@@ -577,11 +581,33 @@ function UserUsageModal({
   )
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({
+  label,
+  value,
+  icon,
+  color,
+}: {
+  label: string
+  value: string
+  icon?: React.ReactNode
+  color?: string
+}) {
   return (
-    <div className="rounded-2xl border border-border bg-card p-4 text-center">
-      <div className="text-xl font-semibold text-fg">{value}</div>
-      <div className="mt-1 text-[11px] text-fg-muted">{label}</div>
+    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card p-4">
+      <div>
+        <div className="text-2xl font-semibold tabular-nums text-fg">{value}</div>
+        <div className="mt-1 text-[11px] text-fg-muted">{label}</div>
+      </div>
+      {icon && (
+        <div
+          className={
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br shadow-md ' +
+            (color || 'from-primary to-primary')
+          }
+        >
+          {icon}
+        </div>
+      )}
     </div>
   )
 }

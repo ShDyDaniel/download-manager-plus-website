@@ -387,31 +387,29 @@ function AdminShell({
   const [gateModal, setGateModal] = useState(false)
   return (
     <div className="min-h-dvh bg-bg" dir="rtl">
-      <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 pt-14 pb-10 md:flex-row md:pt-20 md:pb-16">
-        {/* Sidebar */}
-        <aside className="shrink-0 md:w-56">
-          <div className="mb-5 flex items-center justify-between md:block">
+      <div className="flex min-h-dvh flex-col md:flex-row">
+        {/* Sidebar — solid full-height panel pinned to the right (RTL),
+            matching the desktop admin shell. */}
+        <aside className="shrink-0 border-border bg-card p-4 md:min-h-dvh md:w-60 md:border-l md:p-5">
+          <div className="mb-5 flex items-center justify-between md:mb-7 md:block">
             <div>
-              <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-fg-muted">
-                — ניהול
+              <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-fg-muted">
+                ADMIN
               </div>
-              <h1
-                className="font-display text-fg"
-                style={{ fontSize: 'clamp(22px,4vw,28px)', fontWeight: 500 }}
-              >
+              <h1 className="font-display text-2xl font-bold text-fg md:mt-0.5">
                 פאנל ניהול
               </h1>
             </div>
             <button
               type="button"
               onClick={onLogout}
-              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg md:hidden"
+              className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover md:hidden"
             >
               <LogOut className="h-3.5 w-3.5" />
             </button>
           </div>
 
-          <nav className="flex gap-1.5 overflow-x-auto md:flex-col md:overflow-visible">
+          <nav className="flex gap-1.5 overflow-x-auto md:flex-col md:gap-1 md:overflow-visible">
             {TABS.map((t) => {
               const Icon = t.icon
               const active = t.key === tab
@@ -431,10 +429,10 @@ function AdminShell({
                     <motion.span
                       layoutId="adminActivePill"
                       transition={{ type: 'spring', stiffness: 380, damping: 32 }}
-                      className="absolute inset-0 -z-0 rounded-lg bg-primary/10"
+                      className="absolute inset-0 -z-0 rounded-lg bg-primary/15"
                     />
                   )}
-                  <Icon className="relative z-10 h-4 w-4 shrink-0" />
+                  <Icon className="relative z-10 h-4 w-4 shrink-0" strokeWidth={1.75} />
                   <span className="relative z-10">{t.label}</span>
                 </button>
               )
@@ -445,7 +443,7 @@ function AdminShell({
             <button
               type="button"
               onClick={() => setGateModal(true)}
-              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+              className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
             >
               <KeyRound className="h-3.5 w-3.5" />
               מפתח גישה לדף
@@ -453,7 +451,7 @@ function AdminShell({
             <button
               type="button"
               onClick={onLogout}
-              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+              className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
             >
               <LogOut className="h-3.5 w-3.5" />
               התנתקות
@@ -461,8 +459,8 @@ function AdminShell({
           </div>
         </aside>
 
-        {/* Content */}
-        <main className="min-w-0 flex-1">
+        {/* Content — fills the area left of the sidebar */}
+        <main className="min-w-0 flex-1 p-5 md:p-8 md:pt-10">
           {tab === 'users' ? (
             <UsersTab onAuthExpired={onAuthExpired} />
           ) : tab === 'keys' ? (
