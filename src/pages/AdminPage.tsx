@@ -88,6 +88,12 @@ const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
 
 type Phase = 'checking' | 'blocked' | 'loading' | 'login' | 'code' | 'ready'
 
+// One-shot guard: true exactly once per real page load (a browser
+// refresh re-evaluates the module, so it resets to true). Used to force
+// a full logout on every page (re)load — see the init effect. In-app
+// React re-renders/remounts DON'T reset it, so they never log you out.
+let adminFreshPageLoad = true
+
 export default function AdminPage() {
   const [phase, setPhase] = useState<Phase>('checking')
   const [tab, setTab] = useState<AdminTabKey>('users')
@@ -96,10 +102,10 @@ export default function AdminPage() {
   // code screen must request one itself. After the login step it must
   // NOT — login already sent it (that was the double-email bug).
 
-  // STEP 0 — IP gate. Before anything else (even before showing a
-  // login form), ask the server whether this IP is allowed. If not,
-  // the page renders nothing at all — no hint that an admin panel
-  // exists here. Only if allowed do we wire up the auth listener.
+  // STEP 0 — secret-key gate. Before anything else (even before showing
+  // a login form), ask the server whether this device's secret access
+  // key opens the gate. If not, the page renders nothing at all — no
+  // hint that an admin panel exists here. Only if open do we proceed.
   useEffect(() => {
     let cancelled = false
     let unsub: (() => void) | null = null
@@ -113,9 +119,22 @@ export default function AdminPage() {
         setPhase('blocked')
         return
       }
+      // Refresh / fresh page load == full logout. We deliberately do
+      // NOT restore an admin session across a reload: sign out of
+      // Firebase AND drop the 2FA + step-up tokens, exactly like
+      // clicking "התנתק", so the operator must authenticate from
+      // scratch every time the page loads. The module-scoped flag makes
+      // this fire once per real page load (a refresh re-runs the
+      // module); in-app re-renders don't trigger it.
+      if (adminFreshPageLoad) {
+        adminFreshPageLoad = false
+        await adminSignOut()
+        if (cancelled) return
+      }
       setPhase('loading')
-      // IP ok → resolve auth state (Firebase session persists across
-      // refreshes; the 2FA token in sessionStorage does not).
+      // Resolve auth state. After the sign-out above this is null on a
+      // fresh load → the login screen; it only stays signed-in across
+      // in-app navigation within the same page load.
       unsub = onAuthStateChanged(getClientAuth(), (user) => {
         if (cancelled) return
         if (!user) {

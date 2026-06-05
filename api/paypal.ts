@@ -1210,18 +1210,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminStepUpOptions(req, res)
       case 'admin-stepup-verify':
         return await handleAdminStepUpVerify(req, res)
-      case 'admin-ip-allowed':
-        return await handleAdminIpAllowed(req, res)
       case 'admin-gate-check':
         return await handleAdminGateCheck(req, res)
       case 'admin-gate-status':
         return await handleAdminGateStatus(req, res)
       case 'admin-set-gate-key':
         return await handleAdminSetGateKey(req, res)
-      case 'admin-get-ip-allowlist':
-        return await handleAdminGetIpAllowlist(req, res)
-      case 'admin-set-ip-allowlist':
-        return await handleAdminSetIpAllowlist(req, res)
       case 'admin-list-users':
         return await handleAdminListUsers(req, res)
       case 'admin-set-user-blocked':
@@ -6052,135 +6046,6 @@ function hasFreshStepUp(req: VercelRequest, email: string): boolean {
   const body = (req.body || {}) as { stepUpToken?: string }
   const claims = verifyStepUpToken((body.stepUpToken || '').trim())
   return !!claims && claims.email.toLowerCase() === email.toLowerCase()
-}
-
-/* ──────────────────────────────────────────────────────────────
- *  Admin IP allowlist — restricts the website /admin surface to a
- *  set of approved public IPs, configured from the DESKTOP app.
- *
- *  Design:
- *    - Stored in adminSecurity/config { ipAllowlist: string[] }
- *      (Admin SDK only — never written from a browser client).
- *    - EMPTY list = BLOCK ALL (the operator's choice): the web
- *      /admin is dark until at least one IP is approved from the
- *      desktop. The DESKTOP management endpoints are deliberately
- *      NOT IP-gated, so the operator can never lock themselves out
- *      of the list itself.
- *    - Applied to admin-2fa-request / admin-2fa-verify and the
- *      verifyAdmin2FA() data gate — i.e. the whole web admin flow.
- * ────────────────────────────────────────────────────────────── */
-
-function getClientIp(req: VercelRequest): string {
-  const xff = (req.headers['x-forwarded-for'] as string | undefined) || ''
-  const first = xff.split(',')[0]?.trim()
-  if (first) return normalizeIp(first)
-  const real = (req.headers['x-real-ip'] as string | undefined) || ''
-  if (real) return normalizeIp(real)
-  return normalizeIp((req.socket?.remoteAddress as string) || '')
-}
-
-/** Normalise for comparison: lowercase, strip an IPv4-mapped IPv6
- *  prefix (::ffff:1.2.3.4 → 1.2.3.4), drop a :port suffix on IPv4. */
-function normalizeIp(ip: string): string {
-  let s = (ip || '').trim().toLowerCase()
-  if (s.startsWith('::ffff:')) s = s.slice(7)
-  // IPv4 with port (1.2.3.4:5678) — keep only the address.
-  const m = s.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$/)
-  if (m) s = m[1]
-  return s
-}
-
-async function getAdminIpAllowlist(): Promise<string[]> {
-  try {
-    const snap = await getDb().collection('adminSecurity').doc('config').get()
-    if (!snap.exists) return []
-    const raw = (snap.data() as { ipAllowlist?: unknown }).ipAllowlist
-    if (!Array.isArray(raw)) return []
-    return raw.map((x) => normalizeIp(String(x))).filter(Boolean)
-  } catch {
-    // Fail CLOSED on a read error — security gate must not open on
-    // infrastructure hiccups.
-    return ['__read_error__']
-  }
-}
-
-async function isAdminIpAllowed(ip: string): Promise<boolean> {
-  const list = await getAdminIpAllowlist()
-  if (list.includes('__read_error__')) return false
-  // Empty = block all (operator's explicit choice).
-  if (list.length === 0) return false
-  return list.includes(normalizeIp(ip))
-}
-
-/** Public — lets /admin decide whether to render anything at all.
- *  Echoes the caller's own IP so the operator can see what to
- *  whitelist. Reveals only the caller's own IP + a boolean. */
-async function handleAdminIpAllowed(req: VercelRequest, res: VercelResponse) {
-  const ip = getClientIp(req)
-  const allowed = await isAdminIpAllowed(ip)
-  return res.status(200).json({ ok: true, allowed, ip })
-}
-
-/** Desktop-facing: read the current allowlist + the caller's IP.
- *  Gated by admin idToken only (NOT IP-gated) so the operator can
- *  always manage it from the trusted desktop app. */
-async function handleAdminGetIpAllowlist(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
-  const email = await verifyAdmin2FA(req)
-  if (!email) return res.status(403).json({ ok: false, error: 'admin only' })
-  return res.status(200).json({
-    ok: true,
-    ips: await getAdminIpAllowlist().then((l) =>
-      l.filter((x) => x !== '__read_error__'),
-    ),
-    currentIp: getClientIp(req),
-  })
-}
-
-/** Desktop-facing: replace the allowlist. NOT IP-gated (see above). */
-async function handleAdminSetIpAllowlist(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
-  const body = (req.body || {}) as { idToken?: string; ips?: unknown }
-  const email = await verifyAdminStepUp(req)
-  if (!email) return res.status(403).json({ ok: false, error: 'admin only' })
-
-  const raw = Array.isArray(body.ips) ? body.ips : []
-  const cleaned: string[] = []
-  for (const item of raw) {
-    const ip = normalizeIp(String(item))
-    if (!ip) continue
-    if (!isValidIp(ip)) {
-      return res
-        .status(400)
-        .json({ ok: false, error: `כתובת IP לא תקינה: ${item}` })
-    }
-    if (!cleaned.includes(ip)) cleaned.push(ip)
-  }
-  if (cleaned.length > 20) {
-    return res.status(400).json({ ok: false, error: 'מקסימום 20 כתובות.' })
-  }
-
-  await getDb()
-    .collection('adminSecurity')
-    .doc('config')
-    .set(
-      { ipAllowlist: cleaned, updatedAt: Date.now(), updatedBy: email },
-      { merge: true },
-    )
-  return res.status(200).json({ ok: true, ips: cleaned })
-}
-
-function isValidIp(ip: string): boolean {
-  // IPv4
-  if (/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(ip)) {
-    return ip.split('.').every((o) => Number(o) >= 0 && Number(o) <= 255)
-  }
-  // IPv6 (loose — accepts the common forms; we only string-compare).
-  return /^[0-9a-f:]+$/.test(ip) && ip.includes(':')
 }
 
 /* ──────────────────────────────────────────────────────────────
