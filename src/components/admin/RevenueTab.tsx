@@ -50,6 +50,13 @@ function subtractIls(m: Money | undefined, ils: number): Money {
   if (ils) out.ILS = (out.ILS || 0) - ils
   return out
 }
+/** Sum a list of multi-currency Money objects into one. */
+function sumMoney(list: Money[]): Money {
+  const out: Money = {}
+  for (const m of list)
+    for (const [c, v] of Object.entries(m || {})) out[c] = (out[c] || 0) + v
+  return out
+}
 
 export default function RevenueTab({
   onAuthExpired,
@@ -106,51 +113,9 @@ export default function RevenueTab({
         </div>
       ) : (
         <>
-          {/* Grand totals */}
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <Tot label="סך הכנסות (ברוטו)" value={fmt(data.totals.gross)} />
-            <Tot label="עמלות PayPal" value={fmt(data.totals.fee)} muted />
-            <Tot label="נטו (אחרי PayPal)" value={fmt(data.totals.net)} />
-            <Tot label="אחרי שותפים" value={fmt(data.totals.ownerFinal)} />
-          </div>
-
-          {/* Bottom line — full chain incl. the monthly Cloudflare cost */}
-          <div className="rounded-2xl border border-success/30 bg-success/[0.06] p-5">
-            <div className="space-y-2 text-sm">
-              <ChainLine
-                label="נשאר אחרי שותפים"
-                value={fmt(data.totals.ownerFinal)}
-              />
-              <ChainLine
-                label="עלות Cloudflare (חודשי)"
-                value={
-                  data.cloudflare
-                    ? `${data.cloudflare.costUsd.toFixed(2)} $ ≈ ${data.cloudflare.costIls.toFixed(2)} ₪`
-                    : '—'
-                }
-                muted
-                minus
-              />
-              <div className="my-1 border-t border-border" />
-              <ChainLine
-                label="נשאר לך נטו (אחרי הכל)"
-                value={fmt(
-                  subtractIls(data.totals.ownerFinal, data.cloudflare?.costIls || 0),
-                )}
-                strong
-              />
-            </div>
-            <p className="mt-3 text-[10px] leading-relaxed text-fg-faint">
-              עלות Cloudflare היא חודשית שוטפת (R2 — תשלום לפי שימוש; כרגע{' '}
-              {data.cloudflare && data.cloudflare.costUsd > 0
-                ? 'מעל החינם'
-                : '$0, מתחת ל-10GB החינמיים'}
-              ). ההכנסות מצטברות מתחילת הפעילות.
-              {data.cloudflare
-                ? ` שער המרה ≈ ${data.cloudflare.fxRate.toFixed(2)} ₪/$.`
-                : ''}
-            </p>
-          </div>
+          {/* Profit waterfall — gross → −fees → −partners → −Cloudflare
+              → what's left. One clean top-to-bottom flow, no repetition. */}
+          <PnLCard totals={data.totals} cloudflare={data.cloudflare} />
 
           {/* Per-partner totals */}
           {data.totals.partners.length > 0 && (
@@ -228,72 +193,113 @@ export default function RevenueTab({
   )
 }
 
-function Tot({
-  label,
-  value,
-  accent,
-  muted,
+/* ── Profit waterfall ─────────────────────────────────────────────
+ *  One coherent P&L statement read top-to-bottom: every line is a
+ *  single step, deductions are marked with "−" + an arrow, subtotals
+ *  get a divider, and the final take is the hero row. Replaces the old
+ *  4-card grid + separate bottom-line box (which repeated "אחרי
+ *  שותפים" twice). */
+function PnLCard({
+  totals,
+  cloudflare,
 }: {
-  label: string
-  value: string
-  accent?: boolean
-  muted?: boolean
+  totals: RevenueReport['totals']
+  cloudflare?: RevenueReport['cloudflare']
 }) {
+  const partnerTotal = sumMoney(totals.partners.map((p) => p.amount))
+  const finalNet = subtractIls(totals.ownerFinal, cloudflare?.costIls || 0)
+  const cfValue = cloudflare
+    ? `${cloudflare.costUsd.toFixed(2)} $ ≈ ${cloudflare.costIls.toFixed(2)} ₪`
+    : '—'
+  const cfState =
+    cloudflare && cloudflare.costUsd > 0
+      ? 'מעל החינם'
+      : '$0 — מתחת ל-10GB החינמיים'
   return (
-    <div
-      className={
-        'rounded-2xl border p-4 ' +
-        (accent
-          ? 'border-success/30 bg-success/[0.06]'
-          : 'border-border bg-card')
-      }
-    >
-      <div
-        className={
-          'text-lg font-semibold ' + (muted ? 'text-fg-muted' : 'text-fg')
-        }
-      >
-        {value}
+    <div className="overflow-hidden rounded-2xl border border-border bg-card">
+      <div className="border-b border-border px-5 py-3.5">
+        <h3 className="text-sm font-semibold text-fg">שורת רווח</h3>
+        <p className="mt-0.5 text-[11px] text-fg-faint">
+          מהברוטו ועד מה שנשאר לך ביד
+        </p>
       </div>
-      <div className="mt-1 text-[11px] text-fg-muted">{label}</div>
+      <div className="px-5 py-1.5">
+        <PnLRow label="הכנסות ברוטו" value={fmt(totals.gross)} />
+        <PnLRow label="עמלות PayPal" value={fmt(totals.fee)} deduct />
+        <PnLRow label="נטו (אחרי PayPal)" value={fmt(totals.net)} subtotal />
+        <PnLRow label="חלוקה לשותפים" value={fmt(partnerTotal)} deduct />
+        <PnLRow
+          label="עלות Cloudflare (חודשי)"
+          value={cfValue}
+          deduct
+        />
+        <PnLRow label="נשאר לך נטו" value={fmt(finalNet)} hero />
+      </div>
+      <div className="border-t border-border bg-background/40 px-5 py-2.5">
+        <p className="text-[10px] leading-relaxed text-fg-faint">
+          ההכנסות מצטברות מתחילת הפעילות; עלות Cloudflare היא חודשית שוטפת
+          (R2 — תשלום לפי שימוש; כרגע {cfState})
+          {cloudflare ? `, שער המרה ≈ ${cloudflare.fxRate.toFixed(2)} ₪/$` : ''}.
+        </p>
+      </div>
     </div>
   )
 }
 
-function ChainLine({
+function PnLRow({
   label,
   value,
-  muted,
-  minus,
-  strong,
+  deduct,
+  subtotal,
+  hero,
 }: {
   label: string
   value: string
-  muted?: boolean
-  minus?: boolean
-  strong?: boolean
+  deduct?: boolean
+  subtotal?: boolean
+  hero?: boolean
 }) {
   return (
-    <div className="flex items-center justify-between">
+    <div
+      className={
+        'flex items-center justify-between gap-3 ' +
+        (hero
+          ? 'mt-1.5 rounded-xl bg-success/[0.08] px-3 py-3'
+          : 'px-1 py-2.5') +
+        (subtotal ? ' border-t border-border' : '')
+      }
+    >
       <span
         className={
-          (strong ? 'font-semibold text-fg' : 'text-fg-muted') + ' text-sm'
+          'flex items-center gap-1.5 text-sm ' +
+          (hero
+            ? 'font-bold text-fg'
+            : subtotal
+              ? 'font-medium text-fg'
+              : 'text-fg-muted')
         }
       >
+        {deduct && (
+          <span className="text-fg-faint" aria-hidden>
+            ↓
+          </span>
+        )}
         {label}
       </span>
       <span
+        dir="ltr"
         className={
           'tabular-nums ' +
-          (strong
-            ? 'text-base font-bold text-success'
-            : muted
+          (hero
+            ? 'text-xl font-bold text-success'
+            : deduct
               ? 'text-fg-muted'
-              : 'text-fg')
+              : subtotal
+                ? 'text-base font-semibold text-fg'
+                : 'text-base text-fg')
         }
-        dir="ltr"
       >
-        {minus && value !== '—' ? `− ${value}` : value}
+        {deduct && value !== '—' ? `− ${value}` : value}
       </span>
     </div>
   )
