@@ -341,7 +341,7 @@ export default function DataTab({
                     key={r.uid}
                     type="button"
                     onClick={() => setSelectedUid(r.uid)}
-                    className="flex w-full items-center justify-between gap-3 rounded-lg bg-white/[0.02] px-3 py-2 text-right text-sm transition-colors hover:bg-white/[0.06]"
+                    className="flex w-full items-center justify-between gap-3 rounded-lg bg-background px-3 py-2 text-right text-sm transition-colors hover:bg-white/[0.06]"
                     title="לחצו לפירוט מלא"
                   >
                     <span className="flex min-w-0 items-center gap-1.5 text-fg">

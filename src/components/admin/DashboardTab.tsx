@@ -201,7 +201,7 @@ function UsageBar({
 
 function NotConfigured({ error, hint }: { error?: string; hint?: string }) {
   return (
-    <div className="rounded-xl border border-border bg-white/[0.02] px-4 py-3">
+    <div className="rounded-xl border border-border bg-background px-4 py-3">
       <div className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-fg-muted">
         <AlertTriangle className="h-3.5 w-3.5 text-primary" /> עדיין לא מוגדר
       </div>

@@ -670,7 +670,7 @@ function Field({
   mono?: boolean
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 rounded-lg bg-white/[0.02] px-3 py-2">
+    <div className="flex items-start justify-between gap-3 rounded-lg bg-background px-3 py-2">
       <span className="shrink-0 text-xs text-fg-muted">{label}</span>
       <span
         className={'text-left text-fg ' + (mono ? 'font-mono text-xs' : 'text-sm')}

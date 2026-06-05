@@ -117,7 +117,7 @@ export default function RevenueTab({
                 {data.totals.partners.map((p) => (
                   <div
                     key={p.code}
-                    className="flex items-center justify-between rounded-lg bg-white/[0.02] px-3 py-2 text-sm"
+                    className="flex items-center justify-between rounded-lg bg-background px-3 py-2 text-sm"
                   >
                     <span className="text-fg">{p.name}</span>
                     <span className="font-medium text-fg" dir="ltr">
@@ -216,7 +216,7 @@ function Tot({
 
 function Mini({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-white/[0.02] px-2 py-2">
+    <div className="rounded-lg bg-background px-2 py-2">
       <div className="text-sm font-medium text-fg">{value}</div>
       <div className="text-[10px] text-fg-muted">{label}</div>
     </div>

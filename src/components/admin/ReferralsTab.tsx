@@ -669,7 +669,7 @@ function PartnerCard({
                       .map(([month, rev]) => (
                         <div
                           key={month}
-                          className="flex items-center justify-between rounded-md bg-white/[0.02] px-3 py-1.5 text-xs"
+                          className="flex items-center justify-between rounded-md bg-background px-3 py-1.5 text-xs"
                         >
                           <span className="text-fg">{fmtMoney(rev)}</span>
                           <span className="tabular-nums text-fg-muted" dir="ltr">
@@ -691,7 +691,7 @@ function PartnerCard({
                     {detail.accounts.map((a) => (
                       <div
                         key={a.email}
-                        className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-3 py-1.5 text-xs"
+                        className="flex items-center justify-between gap-2 rounded-md bg-background px-3 py-1.5 text-xs"
                       >
                         <span className="truncate text-fg" dir="ltr">
                           {a.email}
@@ -857,7 +857,7 @@ function PartnerCard({
 
 function Mini({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-white/[0.02] px-3 py-2">
+    <div className="rounded-lg bg-background px-3 py-2">
       <div className="text-[10px] text-fg-muted">{label}</div>
       <div className="text-sm font-medium text-fg">{value}</div>
     </div>
