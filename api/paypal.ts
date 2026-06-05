@@ -3,6 +3,12 @@ import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getFirestore, FieldValue, type Firestore } from 'firebase-admin/firestore'
 import nodemailer from 'nodemailer'
+import {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} from '@simplewebauthn/server'
 
 // ─── Inlined PayPal + Firebase helpers ──────────────────────────
 //
@@ -1188,6 +1194,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdmin2faRequest(req, res)
       case 'admin-2fa-verify':
         return await handleAdmin2faVerify(req, res)
+      case 'admin-passkey-reg-options':
+        return await handleAdminPasskeyRegOptions(req, res)
+      case 'admin-passkey-reg-verify':
+        return await handleAdminPasskeyRegVerify(req, res)
+      case 'admin-passkey-auth-options':
+        return await handleAdminPasskeyAuthOptions(req, res)
+      case 'admin-passkey-auth-verify':
+        return await handleAdminPasskeyAuthVerify(req, res)
+      case 'admin-passkey-list':
+        return await handleAdminPasskeyList(req, res)
+      case 'admin-passkey-delete':
+        return await handleAdminPasskeyDelete(req, res)
       case 'admin-ip-allowed':
         return await handleAdminIpAllowed(req, res)
       case 'admin-gate-check':
@@ -6848,6 +6866,266 @@ async function handleAdmin2faVerify(req: VercelRequest, res: VercelResponse) {
   // Success — burn the code, mint the 12h admin token.
   await ref.delete().catch(() => undefined)
   return res.status(200).json({ ok: true, adminToken: signAdminToken(email) })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Passkeys (WebAuthn) — biometric second factor for the admin.
+ *
+ *  Replaces the email code on every login: register a passkey once
+ *  per device (Touch ID on Mac, Face ID on iPhone, Windows Hello),
+ *  then unlock with a fingerprint/face instead of typing a mailed
+ *  code. A successful assertion mints the SAME 12h adminToken the
+ *  email code does, so every downstream gate (verifyAdmin2FA) is
+ *  unchanged. The email code stays as a fallback for registering a
+ *  new device / recovery.
+ *
+ *  Storage:
+ *    adminCredentials/{credId}      { email, publicKey(b64url),
+ *                                     counter, transports[], deviceName, createdAt }
+ *    adminWebauthnChallenges/{emailKey} { challenge, kind, exp }  (temp)
+ * ────────────────────────────────────────────────────────────── */
+
+const WEBAUTHN_RP_ID = process.env.WEBAUTHN_RP_ID || 'dmplus.net'
+const WEBAUTHN_RP_NAME = 'ניהול הורדות פלוס'
+const WEBAUTHN_ORIGINS = [
+  'https://dmplus.net',
+  'https://www.dmplus.net',
+]
+
+interface AdminCredentialDoc {
+  email: string
+  publicKey: string // base64url
+  counter: number
+  transports?: string[]
+  deviceName?: string
+  createdAt: number
+}
+
+async function listAdminCredentials(
+  email: string,
+): Promise<Array<{ id: string } & AdminCredentialDoc>> {
+  const snap = await getDb()
+    .collection('adminCredentials')
+    .where('email', '==', email.toLowerCase())
+    .get()
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as AdminCredentialDoc) }))
+}
+
+async function saveWebauthnChallenge(
+  email: string,
+  challenge: string,
+  kind: 'reg' | 'auth',
+) {
+  await getDb()
+    .collection('adminWebauthnChallenges')
+    .doc(sanitizeEmailKey(email))
+    .set({ challenge, kind, exp: Date.now() + 5 * 60 * 1000 })
+}
+
+async function takeWebauthnChallenge(
+  email: string,
+  kind: 'reg' | 'auth',
+): Promise<string | null> {
+  const ref = getDb()
+    .collection('adminWebauthnChallenges')
+    .doc(sanitizeEmailKey(email))
+  const snap = await ref.get()
+  if (!snap.exists) return null
+  const d = snap.data() as { challenge?: string; kind?: string; exp?: number }
+  await ref.delete().catch(() => undefined)
+  if (d.kind !== kind) return null
+  if (!d.exp || d.exp < Date.now()) return null
+  return d.challenge || null
+}
+
+/** Registration step 1 — options. Gated by full 2FA (the admin must
+ *  already be unlocked, via email code or an existing passkey, to add
+ *  a new one). */
+async function handleAdminPasskeyRegOptions(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const email = await verifyAdmin2FA(req)
+  if (!email) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const existing = await listAdminCredentials(email)
+  const options = await generateRegistrationOptions({
+    rpName: WEBAUTHN_RP_NAME,
+    rpID: WEBAUTHN_RP_ID,
+    userID: new TextEncoder().encode(email),
+    userName: email,
+    attestationType: 'none',
+    excludeCredentials: existing.map((c) => ({ id: c.id })),
+    authenticatorSelection: {
+      residentKey: 'preferred',
+      userVerification: 'preferred',
+    },
+  })
+  await saveWebauthnChallenge(email, options.challenge, 'reg')
+  return res.status(200).json({ ok: true, options })
+}
+
+/** Registration step 2 — verify + store the new credential. */
+async function handleAdminPasskeyRegVerify(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const email = await verifyAdmin2FA(req)
+  if (!email) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const body = (req.body || {}) as { response?: unknown; deviceName?: string }
+  const expectedChallenge = await takeWebauthnChallenge(email, 'reg')
+  if (!expectedChallenge) {
+    return res.status(400).json({ ok: false, error: 'אין אתגר תקף' })
+  }
+  let verification
+  try {
+    verification = await verifyRegistrationResponse({
+      response: body.response as never,
+      expectedChallenge,
+      expectedOrigin: WEBAUTHN_ORIGINS,
+      expectedRPID: WEBAUTHN_RP_ID,
+    })
+  } catch (err) {
+    return res
+      .status(400)
+      .json({ ok: false, error: (err as Error).message || 'אימות נכשל' })
+  }
+  if (!verification.verified || !verification.registrationInfo) {
+    return res.status(400).json({ ok: false, error: 'רישום נכשל' })
+  }
+  const cred = verification.registrationInfo.credential
+  const doc: AdminCredentialDoc = {
+    email: email.toLowerCase(),
+    publicKey: Buffer.from(cred.publicKey).toString('base64url'),
+    counter: cred.counter,
+    transports: cred.transports || [],
+    deviceName: (body.deviceName || '').toString().slice(0, 60) || 'מכשיר',
+    createdAt: Date.now(),
+  }
+  await getDb().collection('adminCredentials').doc(cred.id).set(doc)
+  return res.status(200).json({ ok: true })
+}
+
+/** Login step 1 — options. Gated only by gate-key + Firebase admin
+ *  password (NO adminToken — that's what we're trying to obtain). */
+async function handleAdminPasskeyAuthOptions(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as { idToken?: string; gateKey?: string }
+  if (!(await isAdminGateOpen(body.gateKey))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const email = await verifyAdminEmail(body.idToken || '')
+  if (!email) return res.status(403).json({ ok: false, error: 'admin only' })
+  const creds = await listAdminCredentials(email)
+  if (creds.length === 0) {
+    return res.status(200).json({ ok: true, hasPasskeys: false })
+  }
+  const options = await generateAuthenticationOptions({
+    rpID: WEBAUTHN_RP_ID,
+    allowCredentials: creds.map((c) => ({
+      id: c.id,
+      transports: c.transports as never,
+    })),
+    userVerification: 'preferred',
+  })
+  await saveWebauthnChallenge(email, options.challenge, 'auth')
+  return res.status(200).json({ ok: true, hasPasskeys: true, options })
+}
+
+/** Login step 2 — verify assertion → mint the 12h admin token. */
+async function handleAdminPasskeyAuthVerify(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    gateKey?: string
+    response?: { id?: string }
+  }
+  if (!(await isAdminGateOpen(body.gateKey))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const email = await verifyAdminEmail(body.idToken || '')
+  if (!email) return res.status(403).json({ ok: false, error: 'admin only' })
+  const credId = body.response?.id || ''
+  if (!credId) return res.status(400).json({ ok: false, error: 'חסר מזהה' })
+  const ref = getDb().collection('adminCredentials').doc(credId)
+  const snap = await ref.get()
+  if (!snap.exists) {
+    return res.status(400).json({ ok: false, error: 'מפתח לא מוכר' })
+  }
+  const credDoc = snap.data() as AdminCredentialDoc
+  if (credDoc.email.toLowerCase() !== email.toLowerCase()) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const expectedChallenge = await takeWebauthnChallenge(email, 'auth')
+  if (!expectedChallenge) {
+    return res.status(400).json({ ok: false, error: 'אין אתגר תקף' })
+  }
+  let verification
+  try {
+    verification = await verifyAuthenticationResponse({
+      response: body.response as never,
+      expectedChallenge,
+      expectedOrigin: WEBAUTHN_ORIGINS,
+      expectedRPID: WEBAUTHN_RP_ID,
+      credential: {
+        id: credId,
+        publicKey: new Uint8Array(Buffer.from(credDoc.publicKey, 'base64url')),
+        counter: credDoc.counter,
+        transports: credDoc.transports as never,
+      },
+    })
+  } catch (err) {
+    return res
+      .status(400)
+      .json({ ok: false, error: (err as Error).message || 'אימות נכשל' })
+  }
+  if (!verification.verified) {
+    return res.status(400).json({ ok: false, error: 'האימות נכשל' })
+  }
+  await ref
+    .update({ counter: verification.authenticationInfo.newCounter })
+    .catch(() => undefined)
+  return res.status(200).json({ ok: true, adminToken: signAdminToken(email) })
+}
+
+/** List the admin's registered passkeys (for the management UI). */
+async function handleAdminPasskeyList(req: VercelRequest, res: VercelResponse) {
+  const email = await verifyAdmin2FA(req)
+  if (!email) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const creds = await listAdminCredentials(email)
+  return res.status(200).json({
+    ok: true,
+    passkeys: creds.map((c) => ({
+      id: c.id,
+      deviceName: c.deviceName || 'מכשיר',
+      createdAt: c.createdAt,
+    })),
+  })
+}
+
+/** Remove a registered passkey (only if it belongs to the caller). */
+async function handleAdminPasskeyDelete(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const email = await verifyAdmin2FA(req)
+  if (!email) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const body = (req.body || {}) as { id?: string }
+  const id = (body.id || '').trim()
+  if (!id) return res.status(400).json({ ok: false, error: 'missing id' })
+  const ref = getDb().collection('adminCredentials').doc(id)
+  const snap = await ref.get()
+  if (snap.exists) {
+    const d = snap.data() as AdminCredentialDoc
+    if (d.email.toLowerCase() !== email.toLowerCase()) {
+      return res.status(403).json({ ok: false, error: 'forbidden' })
+    }
+    await ref.delete().catch(() => undefined)
+  }
+  return res.status(200).json({ ok: true })
 }
 
 /** Latin slug from a partner name (non-latin → empty → random base). */
