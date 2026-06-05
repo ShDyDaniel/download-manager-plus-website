@@ -325,7 +325,11 @@ function LegalCard({
   useEffect(() => {
     void (async () => {
       try {
-        const r = await fetch(`/api/paypal?action=get-${kind}`, { method: 'GET' })
+        const r = await fetch('/api/paypal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: `get-${kind}` }),
+        })
         const j = (await r.json()) as {
           ok: boolean
           version?: number
@@ -592,7 +596,12 @@ function PricingCard({ onErr }: { onErr: (e: unknown) => void }) {
     let alive = true
     ;(async () => {
       try {
-        const r = await fetch('/api/paypal?action=get-pricing')
+        const r = await fetch('/api/paypal?action=get-pricing', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+          cache: 'no-store',
+        })
         const j = (await r.json()) as {
           ok: boolean
           monthly?: PlanPrice
