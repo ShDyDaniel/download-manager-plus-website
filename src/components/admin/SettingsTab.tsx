@@ -332,6 +332,30 @@ function LegalCard({
       next.splice(to, 0, moved)
       return next
     })
+    // Keep collapse state attached to the right section after the move.
+    setOpenSections((prev) => {
+      const next = new Set<number>()
+      for (const idx of prev) {
+        if (idx === from) next.add(to)
+        else if (from < to && idx > from && idx <= to) next.add(idx - 1)
+        else if (to < from && idx >= to && idx < from) next.add(idx + 1)
+        else next.add(idx)
+      }
+      return next
+    })
+  }
+
+  function removeSection(i: number) {
+    setSections(sections.filter((_, j) => j !== i))
+    // Re-index open sections so the wrong one doesn't appear expanded.
+    setOpenSections((prev) => {
+      const next = new Set<number>()
+      for (const idx of prev) {
+        if (idx < i) next.add(idx)
+        else if (idx > i) next.add(idx - 1)
+      }
+      return next
+    })
   }
 
   useEffect(() => {
@@ -451,7 +475,7 @@ function LegalCard({
               </button>
               <button
                 type="button"
-                onClick={() => setSections(sections.filter((_, j) => j !== i))}
+                onClick={() => removeSection(i)}
                 className="text-fg-muted hover:text-destructive"
               >
                 <Trash2 className="h-4 w-4" />

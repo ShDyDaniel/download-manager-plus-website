@@ -115,6 +115,10 @@ export default function UpdatesTab({
         await call('delete')
         setMsg('הטיוטה נמחקה')
       } else {
+        // Persist current edits first — the server's publish branch
+        // promotes the STORED draft, so without this any unsaved
+        // changes (notes, URLs, mandatory flag) would publish stale.
+        await call('save', draft)
         await call('publish', draft)
         setMsg('פורסם! ✓')
       }

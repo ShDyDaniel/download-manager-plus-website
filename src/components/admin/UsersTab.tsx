@@ -30,6 +30,8 @@ function isAdminEmail(email: string): boolean {
 interface KeySummary {
   id: string
   key: string
+  redeemedBy?: string | null
+  redeemedByEmail?: string | null
   expiresAt?: string | null
   redeemedAt?: string | null
   createdAt?: string
@@ -42,6 +44,14 @@ interface KeySummary {
   subscriptionPlanDays?: number | null
   planDays?: number | null
   buyerEmail?: string | null
+  nonPaidGrant?: boolean
+  grantReason?: string | null
+  grantedByAdmin?: string | null
+  subscriptionCancelledAt?: string | null
+  subscriptionCancelReason?: string | null
+  autoRedeemedFromWebhook?: boolean
+  billingHistory?: unknown[]
+  replacedPriorKeys?: unknown[]
 }
 
 interface UserDoc {
