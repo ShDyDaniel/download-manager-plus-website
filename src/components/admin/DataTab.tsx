@@ -38,8 +38,13 @@ const TAB_LABELS: Record<string, string> = {
 const TAB_ORDER = ['downloads', 'youtube', 'quotes', 'payments', 'convert', 'settings']
 
 function fmtDuration(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return '0 שנ׳'
   if (sec < 60) return `${Math.round(sec)} שנ׳`
-  if (sec < 3600) return `${Math.floor(sec / 60)} דק׳`
+  if (sec < 3600) {
+    const m = Math.floor(sec / 60)
+    const s = Math.round(sec % 60)
+    return s ? `${m} דק׳ ${s} שנ׳` : `${m} דק׳`
+  }
   const h = Math.floor(sec / 3600)
   const m = Math.floor((sec % 3600) / 60)
   return m ? `${h} שע׳ ${m} דק׳` : `${h} שע׳`

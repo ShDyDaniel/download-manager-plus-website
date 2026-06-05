@@ -95,6 +95,7 @@ export default function FeedbackTab({
   )
   const open = (items ?? []).filter((it) => !it.resolved)
   const openCount = open.length
+  const handledCount = (items ?? []).filter((it) => it.resolved).length
   const openBugs = open.filter((it) => it.kind === 'bug').length
   const openFeatures = open.filter((it) => it.kind === 'feature').length
 
@@ -127,7 +128,7 @@ export default function FeedbackTab({
           פתוחים ({openCount})
         </Tab>
         <Tab active={view === 'handled'} onClick={() => setView('handled')}>
-          טופלו
+          טופלו ({handledCount})
         </Tab>
       </div>
 

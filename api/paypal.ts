@@ -6400,6 +6400,26 @@ async function handleAdminApproveTrial(
       .doc(uid)
       .update({ subscription: 'free' })
       .catch(() => undefined)
+    // Also release any redeemed product keys — otherwise a user who is
+    // Pro via a key (not via subscription:'pro') would keep Pro access
+    // and the trial would be silently masked.
+    try {
+      const keysSnap = await db
+        .collection('productKeys')
+        .where('redeemedBy', '==', uid)
+        .get()
+      await Promise.all(
+        keysSnap.docs.map((k) =>
+          k.ref.update({
+            redeemedBy: null,
+            redeemedByEmail: null,
+            redeemedAt: null,
+          }),
+        ),
+      )
+    } catch (err) {
+      console.warn('[admin] release keys on trial-demote failed:', err)
+    }
   }
 
   const now = new Date()
@@ -6630,19 +6650,29 @@ async function setLegalDoc(
   if (!(await verifyAdmin2FA(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  const body = (req.body || {}) as { version?: number; sections?: unknown }
+  const body = (req.body || {}) as {
+    version?: number
+    sections?: unknown
+    lastUpdated?: unknown
+  }
   const sections = cleanSections(body.sections)
   if (!sections.length) {
     return res.status(400).json({ ok: false, error: 'אין תוכן' })
   }
   const version = Math.max(0, Math.floor(Number(body.version) || 0))
-  await getDb()
-    .collection('appConfig')
-    .doc(doc)
-    .set(
-      { version, sections, lastUpdated: new Date().toISOString() },
-      { merge: true },
-    )
+  const payload: Record<string, unknown> = {
+    version,
+    sections,
+    // machine timestamp for our own auditing
+    updatedAt: new Date().toISOString(),
+  }
+  // `lastUpdated` is the HUMAN-READABLE date shown to end users in the
+  // legal modal (e.g. "20 במאי 2026"). Persist it verbatim when the
+  // admin provided one — never clobber it with a raw ISO string.
+  if (typeof body.lastUpdated === 'string' && body.lastUpdated.trim()) {
+    payload.lastUpdated = body.lastUpdated.trim()
+  }
+  await getDb().collection('appConfig').doc(doc).set(payload, { merge: true })
   return res.status(200).json({ ok: true })
 }
 

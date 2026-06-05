@@ -35,6 +35,7 @@ const TEST_EMAILS: { kind: string; label: string }[] = [
   { kind: 'welcome-subscription', label: 'ברוכים הבאים — מנוי' },
   { kind: 'pro-activated', label: 'אישור הפעלת Pro' },
   { kind: 'cancellation', label: 'אישור ביטול מנוי' },
+  { kind: 'capture-key', label: 'מפתח לאחר רכישה (legacy)' },
   { kind: 'reset-password', label: 'איפוס סיסמה' },
   { kind: 'renewal-extension', label: 'הארכת מנוי' },
   { kind: 'expiry-reminder', label: 'תזכורת לפני פקיעה' },
@@ -307,6 +308,8 @@ function LegalCard({
 }) {
   const [sections, setSections] = useState<Section[]>([])
   const [version, setVersion] = useState(0)
+  const [liveVersion, setLiveVersion] = useState(0)
+  const [lastUpdated, setLastUpdated] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
@@ -369,9 +372,12 @@ function LegalCard({
         const j = (await r.json()) as {
           ok: boolean
           version?: number
+          lastUpdated?: string
           sections?: Section[]
         }
         setVersion(j.version || 0)
+        setLiveVersion(j.version || 0)
+        setLastUpdated(j.lastUpdated || '')
         setSections(j.sections || [])
       } catch {
         /* ignore */
@@ -382,10 +388,25 @@ function LegalCard({
   }, [kind])
 
   async function save() {
+    // Bumping the version forces every user to re-accept on next login —
+    // confirm before doing that, like the desktop does.
+    if (
+      version > liveVersion &&
+      !window.confirm(
+        'העלאת מספר הגרסה תכריח את כל המשתמשים לאשר מחדש את המסמך בכניסה הבאה. להמשיך?',
+      )
+    ) {
+      return
+    }
     setBusy(true)
     setMsg('')
     try {
-      await adminApi(`admin-set-${kind}`, { version, sections })
+      await adminApi(`admin-set-${kind}`, {
+        version,
+        sections,
+        lastUpdated: lastUpdated.trim() || undefined,
+      })
+      setLiveVersion(version)
       setMsg('נשמר ופורסם ✓')
       setTimeout(() => setMsg(''), 2500)
     } catch (e) {
@@ -404,7 +425,7 @@ function LegalCard({
 
   return (
     <Card title={title}>
-      <div className="flex items-center gap-2 text-xs text-fg-muted">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
         <span>גרסה:</span>
         <input
           type="number"
@@ -412,8 +433,22 @@ function LegalCard({
           onChange={(e) => setVersion(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
           className="w-20 rounded-lg border border-border bg-transparent px-2 py-1 text-sm text-fg outline-none focus:border-primary"
         />
+        {version > liveVersion && (
+          <span className="rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive">
+            מצריך אישור מחדש
+          </span>
+        )}
         <span className="text-fg-faint">(העלאת הגרסה תכריח אישור מחדש)</span>
       </div>
+      <label className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
+        <span>תאריך עדכון (מוצג למשתמש):</span>
+        <input
+          value={lastUpdated}
+          onChange={(e) => setLastUpdated(e.target.value)}
+          placeholder="לדוגמה: 20 במאי 2026"
+          className="flex-1 rounded-lg border border-border bg-transparent px-2 py-1 text-sm text-fg outline-none focus:border-primary"
+        />
+      </label>
 
       <div className="space-y-3">
         {sections.map((s, i) => (
