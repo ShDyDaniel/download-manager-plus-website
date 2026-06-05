@@ -7,6 +7,7 @@ import {
   Activity,
   BarChart3,
   ExternalLink,
+  Cloud,
 } from 'lucide-react'
 import { getAdminIdToken } from '../../lib/adminApi'
 
@@ -25,8 +26,32 @@ interface AdminUsage {
     requestsLimit?: number
     error?: string
   }
+  r2?: {
+    configured: boolean
+    usedBytes?: number
+    usedGb?: number
+    roundCount?: number
+    freeStorageGb?: number
+    costStorage?: number
+    costWorkersBase?: number
+    costTotal?: number
+    error?: string
+  }
   vercel: { configured: boolean; dashboardUrl: string }
   fetchedAt: number
+}
+
+function fmtGb(gb?: number): string {
+  return (gb || 0).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+function fmtUsd(v?: number): string {
+  return (v || 0).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
 }
 
 export default function DashboardTab({
@@ -110,13 +135,28 @@ export default function DashboardTab({
             )}
           </Section>
 
-          <Section icon={<Activity className="h-5 w-5" />} title="Cloudflare Worker" sub="בקשות · 24 שעות אחרונות">
+          <Section icon={<Activity className="h-5 w-5" />} title="Cloudflare Worker" sub="בקשות · החודש (כולל 10M בתוכנית)">
             {usage.cloudflare.configured ? (
-              <UsageBar label="בקשות" used={usage.cloudflare.requests || 0} limit={usage.cloudflare.requestsLimit || 100000} />
+              <UsageBar label="בקשות" used={usage.cloudflare.requests || 0} limit={usage.cloudflare.requestsLimit || 10000000} />
             ) : (
               <NotConfigured
                 error={usage.cloudflare.error}
                 hint="הגדר CF_API_TOKEN ו-CF_ACCOUNT_ID במשתני הסביבה של Vercel כדי לראות את מספר הבקשות ל-Worker."
+              />
+            )}
+          </Section>
+
+          <Section
+            icon={<Cloud className="h-5 w-5" />}
+            title="Cloudflare R2 — אחסון ועלות"
+            sub="שטח בשימוש + עלות חודשית צפויה"
+          >
+            {usage.r2?.configured ? (
+              <R2Panel r2={usage.r2} />
+            ) : (
+              <NotConfigured
+                error={usage.r2?.error}
+                hint="לא ניתן לחשב את האחסון כרגע."
               />
             )}
           </Section>
@@ -195,6 +235,68 @@ function UsageBar({
       <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
         <div className={'h-full rounded-full ' + tone} style={{ width: `${pct}%` }} />
       </div>
+    </div>
+  )
+}
+
+function R2Panel({ r2 }: { r2: NonNullable<AdminUsage['r2']> }) {
+  const usedGb = r2.usedGb || 0
+  const freeGb = r2.freeStorageGb || 10
+  const pct = Math.min(100, freeGb > 0 ? (usedGb / freeGb) * 100 : 0)
+  const overFree = usedGb > freeGb
+  const tone = overFree ? 'bg-accent' : pct >= 70 ? 'bg-accent' : 'bg-primary'
+  return (
+    <div className="space-y-4">
+      {/* GB in use, relative to the free 10GB */}
+      <div>
+        <div className="mb-1.5 flex items-center justify-between text-xs">
+          <span className="text-fg-muted">אחסון בשימוש</span>
+          <span className="tabular-nums text-fg" dir="ltr">
+            {fmtGb(usedGb)} GB
+            {r2.roundCount != null && (
+              <span className="text-fg-faint"> · {r2.roundCount} סבבים</span>
+            )}
+          </span>
+        </div>
+        <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
+          <div className={'h-full rounded-full ' + tone} style={{ width: `${pct}%` }} />
+        </div>
+        <p className="mt-1 text-[10px] text-fg-faint">
+          {freeGb}GB ראשונים חינם
+          {overFree
+            ? ` · חורגים ב-${fmtGb(usedGb - freeGb)}GB בתשלום`
+            : ' · עדיין בתוך החינם'}
+        </p>
+      </div>
+
+      {/* Projected monthly cost breakdown */}
+      <div className="rounded-xl border border-border bg-background p-3 text-xs">
+        <div className="flex items-center justify-between py-1">
+          <span className="text-fg-muted">בסיס Workers Paid</span>
+          <span className="tabular-nums text-fg" dir="ltr">
+            ${fmtUsd(r2.costWorkersBase)}
+          </span>
+        </div>
+        <div className="flex items-center justify-between py-1">
+          <span className="text-fg-muted">אחסון (מעבר ל-{freeGb}GB)</span>
+          <span className="tabular-nums text-fg" dir="ltr">
+            ${fmtUsd(r2.costStorage)}
+          </span>
+        </div>
+        <div className="my-2 border-t border-border" />
+        <div className="flex items-center justify-between py-1">
+          <span className="font-semibold text-fg">עלות חודשית צפויה</span>
+          <span className="tabular-nums text-base font-bold text-primary" dir="ltr">
+            ${fmtUsd(r2.costTotal)}
+          </span>
+        </div>
+      </div>
+
+      <p className="text-[10px] leading-relaxed text-fg-faint">
+        אומדן לפי האחסון הנוכחי + בסיס Workers Paid. תעבורה (egress) חינם
+        ב-R2, ופעולות קריאה/כתיבה בדרך כלל בתוך החינם. החשבונית המדויקת
+        תמיד בלוח הבקרה של Cloudflare.
+      </p>
     </div>
   )
 }

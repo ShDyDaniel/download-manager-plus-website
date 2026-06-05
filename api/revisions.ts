@@ -4442,7 +4442,12 @@ async function fetchCloudflareUsage() {
   }
   try {
     const end = new Date()
-    const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
+    // Month-to-date — matches Cloudflare's billing period now that we're
+    // on the paid Workers plan (10M requests/month included), instead of
+    // the old free-tier 100K/day cap.
+    const start = new Date(
+      Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1, 0, 0, 0),
+    )
     const query = `query($acc:String!,$start:Time!,$end:Time!){
       viewer { accounts(filter:{accountTag:$acc}) {
         workersInvocationsAdaptive(limit:10000, filter:{datetime_geq:$start, datetime_leq:$end}) {
@@ -4469,7 +4474,61 @@ async function fetchCloudflareUsage() {
     if (j.errors) throw new Error('cf graphql error')
     const rows = j.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive || []
     const requests = rows.reduce((acc, row) => acc + (row.sum?.requests || 0), 0)
-    return { configured: true, requests, requestsLimit: 100000 }
+    // Workers Paid plan: 10M requests/month included (then $0.30/M).
+    return { configured: true, requests, requestsLimit: 10_000_000 }
+  } catch (err) {
+    return { configured: false, error: String((err as Error)?.message || err) }
+  }
+}
+
+/* ── Cloudflare R2 storage + projected monthly cost ──────────────
+ *  We compute "GB in use" by summing every active, R2-backed round's
+ *  video size from our own DB (one scan; accurate + no dependency on
+ *  R2 analytics permissions). Cost is the projected MONTHLY bill at the
+ *  current usage, using Cloudflare's public R2 + Workers-Paid rates:
+ *    - Workers Paid base:      $5.00 / month (enables R2 + 10M req)
+ *    - R2 storage:             $0.015 / GB-month, first 10 GB free
+ *    - R2 egress:              FREE
+ *    - Class A/B operations:   first 1M / 10M free — at solo-creator
+ *      scale these stay within the free tier, so they're noted but not
+ *      added (the exact invoice is always on the Cloudflare dashboard).
+ *  Update these constants if Cloudflare changes pricing. */
+const R2_FREE_STORAGE_GB = 10
+const R2_STORAGE_USD_PER_GB_MONTH = 0.015
+const WORKERS_PAID_BASE_USD = 5
+const BYTES_PER_GB = 1024 * 1024 * 1024
+
+async function fetchR2Usage() {
+  try {
+    // Sum the actual stored bytes: every R2-backed, non-archived round.
+    let usedBytes = 0
+    let roundCount = 0
+    const snap = await getDb().collection('revisionProjects').get()
+    for (const d of snap.docs) {
+      const r = d.data() as {
+        r2Key?: string
+        videoSizeBytes?: number
+        status?: string
+      }
+      if (r.r2Key && r.status !== 'archived') {
+        usedBytes += Number(r.videoSizeBytes) || 0
+        roundCount += 1
+      }
+    }
+    const usedGb = usedBytes / BYTES_PER_GB
+    const billableGb = Math.max(0, usedGb - R2_FREE_STORAGE_GB)
+    const costStorage = billableGb * R2_STORAGE_USD_PER_GB_MONTH
+    const costTotal = costStorage + WORKERS_PAID_BASE_USD
+    return {
+      configured: true,
+      usedBytes,
+      usedGb,
+      roundCount,
+      freeStorageGb: R2_FREE_STORAGE_GB,
+      costStorage,
+      costWorkersBase: WORKERS_PAID_BASE_USD,
+      costTotal,
+    }
   } catch (err) {
     return { configured: false, error: String((err as Error)?.message || err) }
   }
@@ -4482,15 +4541,17 @@ async function handleAdminUsage(req: VercelRequest, res: VercelResponse) {
   if (verified.email !== 'dyshalts@gmail.com') {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  const [firestore, cloudflare] = await Promise.all([
+  const [firestore, cloudflare, r2] = await Promise.all([
     fetchFirestoreUsage(),
     fetchCloudflareUsage(),
+    fetchR2Usage(),
   ])
   res.setHeader('Cache-Control', 'no-store')
   return res.status(200).json({
     ok: true,
     firestore,
     cloudflare,
+    r2,
     vercel: { configured: false, dashboardUrl: 'https://vercel.com/dashboard/usage' },
     fetchedAt: Date.now(),
   })
