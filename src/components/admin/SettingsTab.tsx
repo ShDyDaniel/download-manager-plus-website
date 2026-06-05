@@ -40,6 +40,51 @@ interface Section {
   paragraphs: string[]
 }
 
+/** Built-in accessibility statement, used to SEED the editor the first
+ *  time (before anything is published to appConfig/accessibility). Each
+ *  bullet is its own paragraph so it's individually movable. Mirrors the
+ *  fallback text in AccessibilityModal.tsx. */
+const ACCESSIBILITY_DEFAULT: { lastUpdated: string; sections: Section[] } = {
+  lastUpdated: 'יוני 2026',
+  sections: [
+    {
+      title: 'המחויבות שלנו',
+      paragraphs: [
+        'אתר "ניהול הורדות פלוס" (dmplus.net) רואה חשיבות רבה במתן שירות שוויוני לכלל המשתמשים, ופועל להנגיש את האתר כך שיהיה נגיש גם לאנשים עם מוגבלות. אנו משקיעים מאמצים ומשאבים על מנת לאפשר גלישה נוחה ושוויונית ככל הניתן.',
+      ],
+    },
+    {
+      title: 'רמת הנגישות באתר',
+      paragraphs: [
+        'האתר הונגש בהתאם להוראות תקנות שוויון זכויות לאנשים עם מוגבלות (התאמות נגישות לשירות), התשע"ג–2013, ובכפוף לתקן הישראלי ת"י 5568 המבוסס על הנחיות WCAG 2.0 ברמה AA, ככל שניתן.',
+      ],
+    },
+    {
+      title: 'מה הונגש באתר',
+      paragraphs: [
+        'תפריט נגישות צף הזמין מכל עמוד באתר.',
+        'התאמות הניתנות להפעלה: הגדלת/הקטנת טקסט, ניגודיות גבוהה, היפוך צבעים, גווני אפור, הדגשת קישורים, גופן קריא, ריווח טקסט מוגדל, עצירת אנימציות, סמן עכבר גדול והדגשת מיקוד מקלדת.',
+        'ניווט מלא באמצעות מקלדת וסדר טאבים הגיוני.',
+        'מבנה כותרות סמנטי ותוויות לרכיבי הטופס.',
+        'תאימות לקוראי מסך נפוצים.',
+        'שמירת ההעדפות של המשתמש בין עמודים וביקורים.',
+      ],
+    },
+    {
+      title: 'הסתייגות ומגבלות ידועות',
+      paragraphs: [
+        'למרות מאמצינו להנגיש את כלל הדפים והרכיבים, ייתכן שיימצאו חלקים שטרם הונגשו במלואם או שאינם נתמכים באופן מיטבי בכל הדפדפנים והטכנולוגיות המסייעות. אנו ממשיכים לפעול לשיפור הנגישות באופן שוטף.',
+      ],
+    },
+    {
+      title: 'פנייה בנושא נגישות',
+      paragraphs: [
+        'נתקלתם בבעיית נגישות, או שיש לכם הצעה לשיפור? נשמח לקבל פנייה בכתובת help.dm.plus@gmail.com ונטפל בה בהקדם.',
+      ],
+    },
+  ],
+}
+
 const TEST_EMAILS: { kind: string; label: string }[] = [
   { kind: 'verify-signup', label: 'קוד אימות הרשמה' },
   { kind: 'verify-existing', label: 'קוד אימות למשתמש קיים' },
@@ -706,8 +751,22 @@ function LegalCard({
         }
         setVersion(j.version || 0)
         setLiveVersion(j.version || 0)
-        setLastUpdated(j.lastUpdated || '')
-        setSections(j.sections || [])
+        const fetchedSections = j.sections || []
+        // Seed the accessibility editor from the built-in statement when
+        // nothing's been published yet — so the admin starts from the
+        // real content (as editable categories) instead of a blank page.
+        // Until they hit save, the DB stays empty and the public modal
+        // keeps showing its built-in fallback; saving publishes this.
+        if (kind === 'accessibility' && fetchedSections.length === 0) {
+          setSections(ACCESSIBILITY_DEFAULT.sections.map((s) => ({
+            title: s.title,
+            paragraphs: [...s.paragraphs],
+          })))
+          setLastUpdated(j.lastUpdated || ACCESSIBILITY_DEFAULT.lastUpdated)
+        } else {
+          setLastUpdated(j.lastUpdated || '')
+          setSections(fetchedSections)
+        }
       } catch {
         /* ignore */
       } finally {
