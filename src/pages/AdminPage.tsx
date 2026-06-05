@@ -30,6 +30,7 @@ import {
   captureGateKeyFromUrl,
   checkAdminGate,
   clearAdminToken,
+  consumeWebauthnCeremonyReload,
   generateGateKey,
   getAdminEmail,
   getGateStatus,
@@ -126,10 +127,20 @@ export default function AdminPage() {
       // scratch every time the page loads. The module-scoped flag makes
       // this fire once per real page load (a refresh re-runs the
       // module); in-app re-renders don't trigger it.
+      //
+      // EXCEPTION — mobile biometric reload: iOS Safari often reloads a
+      // backgrounded tab when the Face ID / passkey sheet dismisses.
+      // That reload is NOT a user refresh, and logging out there traps
+      // the user in a prompt → reload → logout loop (the panel becomes
+      // unusable on phones). So if a WebAuthn ceremony was started in
+      // the last ~2 min, treat this load as that reload and KEEP the
+      // session.
       if (adminFreshPageLoad) {
         adminFreshPageLoad = false
-        await adminSignOut()
-        if (cancelled) return
+        if (!consumeWebauthnCeremonyReload()) {
+          await adminSignOut()
+          if (cancelled) return
+        }
       }
       setPhase('loading')
       // Resolve auth state. After the sign-out above this is null on a

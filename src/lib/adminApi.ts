@@ -192,6 +192,7 @@ export async function tryPasskeyLogin(): Promise<{
   if (!opt.hasPasskeys || !opt.options) return { ok: false, noPasskeys: true }
   const { startAuthentication } = await import('@simplewebauthn/browser')
   let assertion
+  markWebauthnCeremony()
   try {
     assertion = await startAuthentication({ optionsJSON: opt.options as never })
   } catch {
@@ -230,6 +231,7 @@ export async function registerPasskey(
       extra,
     )
     const { startRegistration } = await import('@simplewebauthn/browser')
+    markWebauthnCeremony()
     const att = await startRegistration({ optionsJSON: opt.options as never })
     await adminApi('admin-passkey-reg-verify', {
       response: att,
@@ -366,6 +368,47 @@ export function clearStepUpToken(): void {
   }
 }
 
+/* ── WebAuthn ceremony marker (mobile reload guard) ─────────────────
+ *
+ * iOS Safari frequently RELOADS a backgrounded tab when the system
+ * Face ID / passkey sheet dismisses and control returns to the page.
+ * That reload would otherwise trip our "page load == full logout"
+ * rule (see AdminPage), trapping the user in a
+ * prompt → reload → logout → re-login loop where no admin action can
+ * ever complete on a phone.
+ *
+ * Fix: stamp a timestamp right BEFORE every WebAuthn ceremony. We do
+ * NOT clear it when the ceremony resolves — on iOS the reload happens
+ * just AFTER the sheet returns, so clearing-on-finish would be too
+ * early. Instead the next page load consumes the marker: if it's
+ * fresh (≤2 min), that load was almost certainly the ceremony reload,
+ * so we SKIP the logout. A genuine manual refresh more than 2 min
+ * after the last biometric still logs out as intended.
+ */
+const WEBAUTHN_ACTIVE_KEY = 'dmplus.admin.webauthn.active.v1'
+const WEBAUTHN_ACTIVE_TTL_MS = 2 * 60 * 1000
+
+function markWebauthnCeremony(): void {
+  try {
+    sessionStorage.setItem(WEBAUTHN_ACTIVE_KEY, String(Date.now()))
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Read-and-clear: returns true if a WebAuthn ceremony was started in
+ *  the last 2 minutes (i.e. THIS page load is most likely the reload
+ *  that the biometric sheet triggered). Always clears the marker. */
+export function consumeWebauthnCeremonyReload(): boolean {
+  try {
+    const ts = Number(sessionStorage.getItem(WEBAUTHN_ACTIVE_KEY) || '0')
+    sessionStorage.removeItem(WEBAUTHN_ACTIVE_KEY)
+    return ts > 0 && Date.now() - ts < WEBAUTHN_ACTIVE_TTL_MS
+  } catch {
+    return false
+  }
+}
+
 /**
  * Ensure we hold a valid step-up token, prompting a fresh passkey
  * assertion if not. Returns the token. Throws:
@@ -389,9 +432,11 @@ async function ensureStepUp(): Promise<string> {
     err.code = 'no-passkey'
     throw err
   }
-  // 2) Drive the biometric prompt.
+  // 2) Drive the biometric prompt. Mark the ceremony first so that if
+  //    iOS reloads the tab on return, the next load won't log us out.
   const { startAuthentication } = await import('@simplewebauthn/browser')
   let assertion
+  markWebauthnCeremony()
   try {
     assertion = await startAuthentication({ optionsJSON: opt.options as never })
   } catch {
