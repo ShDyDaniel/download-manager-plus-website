@@ -150,7 +150,7 @@ export default function ReferralsTab({
         <button
           type="button"
           onClick={load}
-          className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+          className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
         >
           <RefreshCw className="h-3.5 w-3.5" /> רענן
         </button>
