@@ -6586,11 +6586,13 @@ async function handleAdminGetAppConfig(
   const d = (snap.exists ? snap.data() : {}) as {
     betaMode?: boolean
     planMode?: string
+    logsPassword?: string
   }
   return res.status(200).json({
     ok: true,
     betaMode: d.betaMode === true,
     planMode: d.planMode === 'subscription' ? 'subscription' : 'hybrid',
+    logsPassword: typeof d.logsPassword === 'string' ? d.logsPassword : '',
   })
 }
 
@@ -6601,11 +6603,19 @@ async function handleAdminSetAppConfig(
   if (!(await verifyAdmin2FA(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  const body = (req.body || {}) as { betaMode?: boolean; planMode?: string }
+  const body = (req.body || {}) as {
+    betaMode?: boolean
+    planMode?: string
+    logsPassword?: string
+  }
   const patch: Record<string, unknown> = {}
   if (typeof body.betaMode === 'boolean') patch.betaMode = body.betaMode
   if (body.planMode === 'hybrid' || body.planMode === 'subscription') {
     patch.planMode = body.planMode
+  }
+  // Logs/DevTools password for the desktop Ctrl+Shift+1 shortcut.
+  if (typeof body.logsPassword === 'string') {
+    patch.logsPassword = body.logsPassword.trim()
   }
   if (Object.keys(patch).length === 0) {
     return res.status(400).json({ ok: false, error: 'no fields' })

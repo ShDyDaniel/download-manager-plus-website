@@ -11,6 +11,7 @@ import {
   GripVertical,
   Crown,
   ChevronDown,
+  Terminal,
 } from 'lucide-react'
 import { adminApi, getAdminIdToken } from '../../lib/adminApi'
 import { Button } from '@/components/ui/Button'
@@ -105,6 +106,9 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
   >(null)
   const [betaErr, setBetaErr] = useState('')
   const [planErr, setPlanErr] = useState('')
+  const [logsPw, setLogsPw] = useState('')
+  const [logsBusy, setLogsBusy] = useState(false)
+  const [logsMsg, setLogsMsg] = useState('')
 
   useEffect(() => {
     void (async () => {
@@ -112,9 +116,11 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
         const r = await adminApi<{
           betaMode: boolean
           planMode: 'hybrid' | 'subscription'
+          logsPassword?: string
         }>('admin-get-app-config')
         setBeta(r.betaMode)
         setPlan(r.planMode)
+        setLogsPw(r.logsPassword || '')
       } catch (e) {
         onErr(e)
       } finally {
@@ -123,6 +129,22 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  async function saveLogsPw() {
+    setLogsBusy(true)
+    setLogsMsg('')
+    try {
+      await adminApi('admin-set-app-config', { logsPassword: logsPw.trim() })
+      setLogsMsg('נשמר ✓')
+      setTimeout(() => setLogsMsg(''), 2500)
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setLogsMsg(err.message || 'שמירה נכשלה')
+    } finally {
+      setLogsBusy(false)
+    }
+  }
 
   const betaActive = betaOptimistic !== null ? betaOptimistic : beta
   const planCurrent = planOptimistic ?? plan
@@ -292,6 +314,35 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Logs password — unlocks the desktop Ctrl+Shift+1 logs window */}
+      <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary shadow-md shadow-primary/40">
+            <Terminal className="h-5 w-5 text-white" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-bold text-foreground">סיסמת לוגים (תוכנה)</div>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              הסיסמה שפותחת את חלון הלוגים בתוכנה דרך הקיצור הסודי
+              Ctrl+Shift+1. אם ריק — נעשה שימוש בסיסמת ברירת המחדל המובנית.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            value={logsPw}
+            onChange={(e) => setLogsPw(e.target.value)}
+            placeholder="סיסמת לוגים"
+            className="flex-1"
+          />
+          <Button onClick={saveLogsPw} disabled={logsBusy} size="sm">
+            {logsBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+            שמור
+          </Button>
+        </div>
+        {logsMsg && <div className="text-xs text-success">{logsMsg}</div>}
       </div>
     </>
   )
