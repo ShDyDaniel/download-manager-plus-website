@@ -3021,7 +3021,7 @@ async function handleSyncPlans(req: VercelRequest, res: VercelResponse) {
   // Step-up gate: gateKey + idToken + adminToken + fresh passkey
   // step-up token. Syncing PayPal plans is a sensitive catalog
   // mutation; it runs right after admin-set-pricing (also step-up) so
-  // the same 5-minute step-up token covers both — no second prompt.
+  // the same 2-minute step-up token covers both — no second prompt.
   const admin = await verifyAdminStepUp(req)
   if (!admin) {
     return res.status(403).json({ ok: false, error: 'admin only' })
@@ -5965,7 +5965,7 @@ async function verifyAdmin2FA(req: VercelRequest): Promise<string | null> {
  *  The 12h adminToken proves "this person logged in with a second
  *  factor at some point in the last 12h". That's enough to LOOK at
  *  data, but every MUTATION additionally requires a STEP-UP token:
- *  a short-lived (5 min) token minted ONLY by a fresh passkey
+ *  a short-lived (2 min) token minted ONLY by a fresh passkey
  *  (biometric) assertion. So even if an attacker somehow obtained a
  *  live adminToken, they could not change anything without also
  *  producing a fresh Face-ID / Touch-ID / Windows-Hello signature on
@@ -5973,12 +5973,12 @@ async function verifyAdmin2FA(req: VercelRequest): Promise<string | null> {
  *  requirement: every admin action is "signed" by proof of a real,
  *  present admin — not just a one-time check at login.
  *
- *  Reusable within its 5-minute window (so a single logical save that
+ *  Reusable within its 2-minute window (so a single logical save that
  *  fans out into two API calls doesn't prompt twice), then it expires
  *  and the next mutation prompts for a fresh biometric.
  * ────────────────────────────────────────────────────────────── */
 
-const ADMIN_STEPUP_TTL_SECONDS = 5 * 60
+const ADMIN_STEPUP_TTL_SECONDS = 2 * 60
 
 interface AdminStepUpClaims {
   email: string
@@ -6034,7 +6034,7 @@ function verifyStepUpToken(token: string): AdminStepUpClaims | null {
 }
 
 /** Gate for every admin MUTATION. Requires the full 2FA gate AND a
- *  fresh step-up token (≤5 min old, minted by a passkey assertion) for
+ *  fresh step-up token (≤2 min old, minted by a passkey assertion) for
  *  the SAME admin email. Returns the email, or null (caller 403s with
  *  error code 'stepup-required' so the client knows to re-prompt). */
 async function verifyAdminStepUp(req: VercelRequest): Promise<string | null> {
@@ -7154,7 +7154,7 @@ async function handleAdminPasskeyDelete(
 /* ── Step-up (per-action re-verification) endpoints ──────────────
  *  Both require the full 2FA gate first (you must already be logged
  *  in). They drive a FRESH passkey assertion whose only product is a
- *  5-minute step-up token, which the mutation endpoints then demand.
+ *  2-minute step-up token, which the mutation endpoints then demand.
  */
 
 /** Step-up step 1 — issue a fresh authentication challenge for the
@@ -7184,8 +7184,8 @@ async function handleAdminStepUpOptions(
   return res.status(200).json({ ok: true, hasPasskeys: true, options })
 }
 
-/** Step-up step 2 — verify the assertion → mint a 5-min step-up
- *  token. The token is what unlocks mutations for the next 5 min. */
+/** Step-up step 2 — verify the assertion → mint a 2-min step-up
+ *  token. The token is what unlocks mutations for the next 2 min. */
 async function handleAdminStepUpVerify(
   req: VercelRequest,
   res: VercelResponse,

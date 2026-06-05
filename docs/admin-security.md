@@ -16,15 +16,15 @@
    gateKey + idToken + adminToken.
 5. **כל פעולת שינוי** (`set-*`, `create-*`, `delete-*`, `grant-*`, `approve/revoke`,
    פרסום עדכון וכו') דורשת `verifyAdminStepUp` — כלומר את כל מה שב-(4) **ועוד**
-   **step-up token טרי**: token ל-5 דקות שנוצר **רק** מחתימת Passkey חיה
+   **step-up token טרי**: token ל-2 דקות שנוצר **רק** מחתימת Passkey חיה
    (Face ID / Touch ID / Windows Hello) על אחד המכשירים הרשומים.
 
 המשמעות: גם אם תוקף השיג איכשהו את ה-`adminToken` החי (או פרץ ל-login), הוא לא
 יכול **לשנות** כלום בלי חתימה ביומטרית טרייה מהמכשיר הפיזי של דניאל. כל פעולה
 "חתומה" בהוכחת נוכחות אמיתית — בדיוק הדרישה המרכזית.
 
-ה-step-up token הוא HMAC HS256 (`use:'admin-stepup'`, 5 דק'), נחתם באותו סוד
-שרת. תקף שוב לחלון של 5 דקות כדי ששמירה אחת שמתפצלת לשתי קריאות (למשל מחיר +
+ה-step-up token הוא HMAC HS256 (`use:'admin-stepup'`, 2 דק'), נחתם באותו סוד
+שרת. תקף שוב לחלון של 2 דקות כדי ששמירה אחת שמתפצלת לשתי קריאות (למשל מחיר +
 סנכרון PayPal) לא תבקש פעמיים — אחר כך פג ופעולה הבאה מבקשת חתימה חדשה.
 
 > הערה: גם `api/admin/draft-release.ts` (קובץ נפרד) מאמת את אותם שלושת הגורמים +
@@ -87,7 +87,7 @@ auth לכל פעולה רגישה. כך שגם אם מישהו פרץ לחשבו
    המלא (כולל `admin-set-ip-allowlist`, revenue, referrals, receipts, sync-plans,
    send-test-email, test-sumit, send-marketing-email, grant-pro, migrate-email).
 2. ✅ **step-up per-action:** כל פעולת שינוי דורשת `verifyAdminStepUp` — חתימת
-   Passkey טרייה (token ל-5 דק'). מומש כ-`admin-stepup-options` + `admin-stepup-verify`.
+   Passkey טרייה (token ל-2 דק'). מומש כ-`admin-stepup-options` + `admin-stepup-verify`.
 3. ✅ **Passkey/WebAuthn לאתר:** רישום + התחברות + step-up, כולם מאומתים בשרת.
 4. ✅ **web-only:** פאנל הניהול הוסר מהתוכנה (Electron); נשאר רק קיצור סודי
    (Ctrl+Shift+1) לפתיחת לוגים עם סיסמה.

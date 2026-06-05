@@ -286,7 +286,7 @@ export default async function handler(
 
   // Every MUTATION (everything except 'load') additionally requires a
   // fresh step-up token — a live passkey assertion minted in the last
-  // 5 minutes for the same admin. Reading the draft doesn't.
+  // 2 minutes for the same admin. Reading the draft doesn't.
   if (action !== 'load') {
     const stepUp = verifyStepUpToken((body.stepUpToken || '').trim())
     if (!stepUp || stepUp.email.toLowerCase() !== gate.email.toLowerCase()) {

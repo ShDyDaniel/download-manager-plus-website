@@ -288,7 +288,7 @@ export async function setGateKey(newKey: string): Promise<void> {
 /* ── Step-up (per-action re-verification) ───────────────────────────
  *
  * Every admin MUTATION requires a fresh STEP-UP token on top of the
- * 12h admin session: a 5-minute token minted ONLY by a live passkey
+ * 12h admin session: a 2-minute token minted ONLY by a live passkey
  * (Face ID / Touch ID / Windows Hello) assertion. So changing anything
  * always needs a present, biometric-verified admin — not just a login
  * that happened hours ago. Reads don't need it.
@@ -402,12 +402,12 @@ async function ensureStepUp(): Promise<string> {
     err.code = 'cancelled'
     throw err
   }
-  // 3) Exchange the assertion for a 5-min step-up token.
+  // 3) Exchange the assertion for a 2-min step-up token.
   const v = await adminApi<{ stepUpToken: string; expiresInSeconds: number }>(
     'admin-stepup-verify',
     { response: assertion },
   )
-  storeStepUpToken(v.stepUpToken, v.expiresInSeconds || 300)
+  storeStepUpToken(v.stepUpToken, v.expiresInSeconds || 120)
   return v.stepUpToken
 }
 
