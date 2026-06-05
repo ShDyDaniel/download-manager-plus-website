@@ -172,6 +172,7 @@ export default function KeysTab({
   const used = keys?.filter((k) => k.redeemedBy).length ?? 0
 
   const presets: { label: string; val: number | null }[] = [
+    { label: '7 ימים', val: 7 },
     { label: '30 יום', val: 30 },
     { label: '90 יום', val: 90 },
     { label: 'שנה', val: 365 },
