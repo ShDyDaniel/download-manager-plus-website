@@ -1,18 +1,31 @@
-import { useEffect } from 'react'
-import { Accessibility } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Accessibility, Loader2 } from 'lucide-react'
 
 /**
  * הצהרת נגישות — accessibility statement, required for Israeli websites
  * under the Equal Rights for Persons with Disabilities regulations
  * (תקנות שוויון זכויות לאנשים עם מוגבלות).
  *
- * Presented purely as an in-place modal (opened from the footer link
- * and from the accessibility widget's "הצהרת הנגישות שלנו" link). There
- * is intentionally no standalone /accessibility route — every entry
- * point opens this modal so the experience is consistent with the
- * Terms / Privacy modals.
+ * Now part of the legal-docs SYSTEM: the admin can edit it in the panel
+ * (Settings → הצהרת נגישות), and it's stored in appConfig/accessibility.
+ * This modal fetches that doc (get-accessibility); if the admin has
+ * published sections we render them, otherwise we fall back to the
+ * built-in legally-complete statement below so there's ALWAYS a correct
+ * statement visible — even before any customization.
+ *
+ * Opened from the footer link and the accessibility widget. No
+ * standalone route — consistent with the Terms / Privacy modals.
  */
+interface A11ySection {
+  title: string
+  paragraphs: string[]
+}
+
 export function AccessibilityModal({ onClose }: { onClose: () => void }) {
+  // null = still loading; [] = loaded-but-empty (→ use the fallback).
+  const [sections, setSections] = useState<A11ySection[] | null>(null)
+  const [lastUpdated, setLastUpdated] = useState('')
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -20,6 +33,33 @@ export function AccessibilityModal({ onClose }: { onClose: () => void }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const r = await fetch('/api/paypal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'get-accessibility' }),
+        })
+        const j = (await r.json()) as {
+          sections?: A11ySection[]
+          lastUpdated?: string
+        }
+        if (!alive) return
+        setSections(Array.isArray(j.sections) ? j.sections : [])
+        setLastUpdated(typeof j.lastUpdated === 'string' ? j.lastUpdated : '')
+      } catch {
+        if (alive) setSections([]) // network error → built-in fallback
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const hasDbContent = sections !== null && sections.length > 0
 
   return (
     <div
@@ -50,7 +90,15 @@ export function AccessibilityModal({ onClose }: { onClose: () => void }) {
           </svg>
         </button>
 
-        <AccessibilityStatementBody />
+        {sections === null ? (
+          <div className="flex items-center gap-2 py-10 text-sm text-fg-muted">
+            <Loader2 className="h-4 w-4 animate-spin" /> טוען…
+          </div>
+        ) : hasDbContent ? (
+          <DbStatementBody sections={sections} lastUpdated={lastUpdated} />
+        ) : (
+          <AccessibilityStatementBody />
+        )}
 
         <button
           type="button"
@@ -61,6 +109,48 @@ export function AccessibilityModal({ onClose }: { onClose: () => void }) {
         </button>
       </div>
     </div>
+  )
+}
+
+/* Admin-published version (from appConfig/accessibility). Same heading
+ * hierarchy + look as the built-in fallback. */
+function DbStatementBody({
+  sections,
+  lastUpdated,
+}: {
+  sections: A11ySection[]
+  lastUpdated: string
+}) {
+  return (
+    <>
+      <div className="mb-6 flex items-center gap-3">
+        <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+          <Accessibility className="h-5 w-5" />
+        </span>
+        <h2
+          className="font-display text-fg"
+          style={{ fontSize: 'clamp(24px,4vw,32px)', fontWeight: 500 }}
+        >
+          הצהרת נגישות
+        </h2>
+      </div>
+      <div className="space-y-7 text-sm leading-relaxed text-fg-secondary">
+        {sections.map((s, i) => (
+          <Section key={i} title={s.title}>
+            <div className="space-y-2.5">
+              {s.paragraphs.map((p, pi) => (
+                <p key={pi}>{p}</p>
+              ))}
+            </div>
+          </Section>
+        ))}
+        {lastUpdated && (
+          <p className="border-t border-border/60 pt-6 text-xs text-fg-muted">
+            הצהרת הנגישות עודכנה לאחרונה ב{lastUpdated}.
+          </p>
+        )}
+      </div>
+    </>
   )
 }
 

@@ -14,6 +14,8 @@ import {
   Terminal,
   Fingerprint,
   Cloud,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react'
 import {
   adminApi,
@@ -85,6 +87,7 @@ export default function SettingsTab({
       <PricingCard onErr={handleErr} />
       <LegalCard kind="terms" title="תנאי שימוש" onErr={handleErr} />
       <LegalCard kind="privacy" title="מדיניות פרטיות" onErr={handleErr} />
+      <LegalCard kind="accessibility" title="הצהרת נגישות" onErr={handleErr} />
       <EmailToolsCard onErr={handleErr} />
       <SumitTestCard onErr={handleErr} />
     </div>
@@ -588,7 +591,7 @@ function LegalCard({
   title,
   onErr,
 }: {
-  kind: 'terms' | 'privacy'
+  kind: 'terms' | 'privacy' | 'accessibility'
   title: string
   onErr: (e: unknown) => void
 }) {
@@ -643,6 +646,46 @@ function LegalCard({
         if (idx < i) next.add(idx)
         else if (idx > i) next.add(idx - 1)
       }
+      return next
+    })
+  }
+
+  // ── Paragraph-level edits within a section ────────────────────
+  function updateParagraph(si: number, pi: number, value: string) {
+    setSections((prev) => {
+      const next = [...prev]
+      const paras = [...next[si].paragraphs]
+      paras[pi] = value
+      next[si] = { ...next[si], paragraphs: paras }
+      return next
+    })
+  }
+  function addParagraph(si: number) {
+    setSections((prev) => {
+      const next = [...prev]
+      next[si] = { ...next[si], paragraphs: [...next[si].paragraphs, ''] }
+      return next
+    })
+  }
+  function removeParagraph(si: number, pi: number) {
+    setSections((prev) => {
+      const next = [...prev]
+      next[si] = {
+        ...next[si],
+        paragraphs: next[si].paragraphs.filter((_, j) => j !== pi),
+      }
+      return next
+    })
+  }
+  function moveParagraph(si: number, from: number, to: number) {
+    setSections((prev) => {
+      const paras = prev[si].paragraphs
+      if (to < 0 || to >= paras.length) return prev
+      const next = [...prev]
+      const arr = [...paras]
+      const [moved] = arr.splice(from, 1)
+      arr.splice(to, 0, moved)
+      next[si] = { ...next[si], paragraphs: arr }
       return next
     })
   }
@@ -771,6 +814,28 @@ function LegalCard({
               >
                 <GripVertical className="h-4 w-4" />
               </span>
+              {/* Explicit up/down for the SECTION (reliable everywhere,
+                  unlike drag). */}
+              <div className="flex flex-col">
+                <button
+                  type="button"
+                  onClick={() => moveSection(i, i - 1)}
+                  disabled={i === 0}
+                  title="העלה סעיף"
+                  className="text-fg-faint transition-colors hover:text-fg disabled:opacity-25"
+                >
+                  <ArrowUp className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => moveSection(i, i + 1)}
+                  disabled={i === sections.length - 1}
+                  title="הורד סעיף"
+                  className="text-fg-faint transition-colors hover:text-fg disabled:opacity-25"
+                >
+                  <ArrowDown className="h-3.5 w-3.5" />
+                </button>
+              </div>
               <input
                 value={s.title}
                 onChange={(e) => {
@@ -778,7 +843,7 @@ function LegalCard({
                   next[i] = { ...s, title: e.target.value }
                   setSections(next)
                 }}
-                placeholder="כותרת הסעיף"
+                placeholder="כותרת הקטגוריה"
                 className="flex-1 rounded-lg border border-border bg-transparent px-3 py-1.5 text-sm font-medium text-fg outline-none focus:border-primary"
               />
               <button
@@ -797,29 +862,67 @@ function LegalCard({
               <button
                 type="button"
                 onClick={() => removeSection(i)}
+                title="מחק קטגוריה"
                 className="text-fg-muted hover:text-destructive"
               >
                 <Trash2 className="h-4 w-4" />
               </button>
             </div>
             {openSections.has(i) ? (
-              <textarea
-                value={s.paragraphs.join('\n\n')}
-                onChange={(e) => {
-                  const next = [...sections]
-                  next[i] = {
-                    ...s,
-                    paragraphs: e.target.value
-                      .split(/\n\s*\n/)
-                      .map((p) => p.trim())
-                      .filter(Boolean),
-                  }
-                  setSections(next)
-                }}
-                rows={6}
-                placeholder="פסקאות (שורה ריקה מפרידה בין פסקאות)"
-                className="w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm text-fg outline-none focus:border-primary"
-              />
+              <div className="space-y-2">
+                {s.paragraphs.length === 0 && (
+                  <div className="px-1 text-[11px] text-fg-faint">
+                    אין עדיין פסקאות — הוסיפו אחת למטה.
+                  </div>
+                )}
+                {s.paragraphs.map((p, pi) => (
+                  <div key={pi} className="flex items-start gap-2">
+                    {/* Per-paragraph move up/down */}
+                    <div className="flex flex-col pt-1">
+                      <button
+                        type="button"
+                        onClick={() => moveParagraph(i, pi, pi - 1)}
+                        disabled={pi === 0}
+                        title="העלה פסקה"
+                        className="text-fg-faint transition-colors hover:text-fg disabled:opacity-25"
+                      >
+                        <ArrowUp className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => moveParagraph(i, pi, pi + 1)}
+                        disabled={pi === s.paragraphs.length - 1}
+                        title="הורד פסקה"
+                        className="text-fg-faint transition-colors hover:text-fg disabled:opacity-25"
+                      >
+                        <ArrowDown className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <textarea
+                      value={p}
+                      onChange={(e) => updateParagraph(i, pi, e.target.value)}
+                      rows={3}
+                      placeholder={`פסקה ${pi + 1}`}
+                      className="flex-1 rounded-lg border border-border bg-transparent px-3 py-2 text-sm text-fg outline-none focus:border-primary"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeParagraph(i, pi)}
+                      title="מחק פסקה"
+                      className="pt-1 text-fg-muted hover:text-destructive"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => addParagraph(i)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1 text-[11px] text-fg-muted hover:text-fg"
+                >
+                  <Plus className="h-3 w-3" /> הוסף פסקה
+                </button>
+              </div>
             ) : (
               <div className="px-1 text-[11px] text-fg-faint">
                 {s.paragraphs.length} פסקאות — לחצו לפתיחה
@@ -835,7 +938,7 @@ function LegalCard({
           onClick={() => setSections([...sections, { title: '', paragraphs: [] }])}
           className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted hover:text-fg"
         >
-          <Plus className="h-3.5 w-3.5" /> הוסף סעיף
+          <Plus className="h-3.5 w-3.5" /> הוסף קטגוריה
         </button>
         <button
           type="button"

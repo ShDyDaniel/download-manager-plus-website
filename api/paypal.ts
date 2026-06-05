@@ -1252,6 +1252,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSetTerms(req, res)
       case 'admin-set-privacy':
         return await handleAdminSetPrivacy(req, res)
+      case 'admin-set-accessibility':
+        return await handleAdminSetAccessibility(req, res)
       case 'admin-list-feedback':
         return await handleAdminListFeedback(req, res)
       case 'admin-set-feedback-resolved':
@@ -5473,6 +5475,46 @@ async function handleGetPrivacy(_req: VercelRequest, res: VercelResponse) {
   }
 }
 
+/* ─────────────────────────────────────────────────────────────
+ *  get-accessibility — public read of appConfig/accessibility.
+ *  Same shape as terms/privacy. When the doc is missing we return
+ *  EMPTY sections (not a stub): the public AccessibilityModal falls
+ *  back to its built-in legally-complete statement in that case, so
+ *  there's always something correct to show even before the admin
+ *  customizes it.
+ * ───────────────────────────────────────────────────────────── */
+async function handleGetAccessibility(
+  _req: VercelRequest,
+  res: VercelResponse,
+) {
+  try {
+    const db = getDb()
+    const snap = await db.collection('appConfig').doc('accessibility').get()
+    res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=600')
+    if (!snap.exists) {
+      return res.status(200).json({ ok: true, version: 0, lastUpdated: '', sections: [] })
+    }
+    const data = snap.data() as {
+      version?: number
+      lastUpdated?: string
+      sections?: Array<{ title: string; paragraphs: string[] }>
+    }
+    return res.status(200).json({
+      ok: true,
+      version: typeof data.version === 'number' ? data.version : 0,
+      lastUpdated:
+        typeof data.lastUpdated === 'string' ? data.lastUpdated : '',
+      sections: Array.isArray(data.sections) ? data.sections : [],
+    })
+  } catch (err) {
+    console.error('[paypal/get-accessibility] failed:', err)
+    return res.status(500).json({
+      ok: false,
+      error: 'לא הצלחנו לטעון את הצהרת הנגישות כרגע. נסו שוב.',
+    })
+  }
+}
+
 async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {
   // Full admin gate (gateKey + idToken + 12h adminToken). Granting Pro
   // mutates a user's entitlement — a bare idToken is not enough.
@@ -6650,10 +6692,16 @@ async function handleAdminSetTerms(req: VercelRequest, res: VercelResponse) {
 async function handleAdminSetPrivacy(req: VercelRequest, res: VercelResponse) {
   return setLegalDoc(req, res, 'privacy')
 }
+async function handleAdminSetAccessibility(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  return setLegalDoc(req, res, 'accessibility')
+}
 async function setLegalDoc(
   req: VercelRequest,
   res: VercelResponse,
-  doc: 'terms' | 'privacy',
+  doc: 'terms' | 'privacy' | 'accessibility',
 ) {
   // Publishing legal docs bumps the version → forces EVERY user to
   // re-accept on next login. Step-up required.
