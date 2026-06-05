@@ -16,7 +16,6 @@ import {
 } from 'lucide-react'
 import {
   adminApi,
-  getAdminIdToken,
   listPasskeys,
   registerPasskey,
   deletePasskey,
@@ -770,15 +769,8 @@ function SumitTestCard({ onErr }: { onErr: (e: unknown) => void }) {
     setSending(true)
     setResult(null)
     try {
-      const idToken = await getAdminIdToken()
-      if (!idToken) return onErr({ code: 'auth' })
-      const r = await fetch('/api/paypal?action=admin-test-sumit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken, targetEmail: target.trim() }),
-      })
-      const j = await r.json()
-      setResult(j)
+      const j = await adminApi('admin-test-sumit', { targetEmail: target.trim() })
+      setResult(j as never)
     } catch (e) {
       onErr(e)
     } finally {
@@ -932,24 +924,16 @@ function PricingCard({ onErr }: { onErr: (e: unknown) => void }) {
       await adminApi('admin-set-pricing', payload)
       // 2) Sync PayPal Plans server-side. Soft-fail: the price is saved
       //    regardless, and the next subscription attempt lazy-syncs.
+      //    Routed through adminApi() so the full admin gate (idToken +
+      //    12h adminToken + gateKey) is attached — sync-plans is a
+      //    sensitive PayPal catalog mutation, not an idToken-only call.
       try {
-        const idToken = await getAdminIdToken()
-        if (idToken) {
-          const r = await fetch('/api/paypal?action=sync-plans', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ idToken }),
-          })
-          const j = (await r.json()) as { ok: boolean; error?: string }
-          if (!r.ok || !j.ok) {
-            setError(
-              `המחיר נשמר אבל סנכרון ל-PayPal נכשל (${j.error || 'שגיאה'}). הסנכרון יתבצע אוטומטית בעת הרכישה הבאה.`,
-            )
-          }
-        }
-      } catch {
+        await adminApi('sync-plans')
+      } catch (e) {
+        const err = e as Error & { code?: string }
+        if (err.code === 'auth') return onErr(err)
         setError(
-          'המחיר נשמר אבל סנכרון ל-PayPal נכשל. הסנכרון יתבצע אוטומטית בעת הרכישה הבאה.',
+          `המחיר נשמר אבל סנכרון ל-PayPal נכשל (${err.message || 'שגיאה'}). הסנכרון יתבצע אוטומטית בעת הרכישה הבאה.`,
         )
       }
       setSavedAt(new Date().toISOString())
@@ -1229,15 +1213,7 @@ function EmailToolsCard({ onErr }: { onErr: (e: unknown) => void }) {
     setSending(true)
     setMsg('')
     try {
-      const idToken = await getAdminIdToken()
-      if (!idToken) return onErr({ code: 'auth' })
-      const r = await fetch('/api/paypal?action=admin-send-test-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken, targetEmail: target.trim(), kind }),
-      })
-      const j = (await r.json()) as { ok: boolean; error?: string }
-      if (!j.ok) throw new Error(j.error || 'השליחה נכשלה')
+      await adminApi('admin-send-test-email', { targetEmail: target.trim(), kind })
       setMsg('נשלח ✓')
       setTimeout(() => setMsg(''), 2500)
     } catch (e) {

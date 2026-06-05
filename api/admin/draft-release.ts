@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
@@ -72,34 +73,144 @@ function adminEmailsFromEnv(): string[] {
     .filter(Boolean)
 }
 
-async function verifyAdmin(
-  idToken: string,
-): Promise<
+/* ── Admin token (2FA) + gate-key verification ──────────────────
+ *
+ * This endpoint lives in its OWN file (separate from api/paypal.ts,
+ * which owns signAdminToken / verifyAdmin2FA), so we re-implement the
+ * exact same crypto here. It MUST stay byte-for-byte compatible with
+ * paypal.ts:
+ *   - tokenSecret()  → process.env.RENEW_TOKEN_SECRET as UTF-8
+ *   - adminToken     → HS256 JWT, use:'admin', 12h, signed with that
+ *   - gateKey        → HMAC-SHA256(gateKey, secret) compared to the
+ *                      stored adminSecurity/config.gateKeyHash
+ * If you change the token format in paypal.ts, change it here too.
+ */
+
+function tokenSecret(): Buffer {
+  const s = process.env.RENEW_TOKEN_SECRET
+  if (!s) throw new Error('RENEW_TOKEN_SECRET env var not set')
+  return Buffer.from(s, 'utf8')
+}
+
+function b64urlDecode(s: string): Buffer {
+  const padded = s
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .padEnd(s.length + ((4 - (s.length % 4)) % 4), '=')
+  return Buffer.from(padded, 'base64')
+}
+
+interface AdminTokenClaims {
+  email: string
+  use: 'admin'
+  iat: number
+  exp: number
+}
+
+function verifyAdminToken(token: string): AdminTokenClaims | null {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    const [h, p, s] = parts
+    const expected = crypto
+      .createHmac('sha256', tokenSecret())
+      .update(`${h}.${p}`)
+      .digest()
+    const actual = b64urlDecode(s)
+    if (expected.length !== actual.length) return null
+    if (!crypto.timingSafeEqual(expected, actual)) return null
+    const claims = JSON.parse(
+      b64urlDecode(p).toString('utf8'),
+    ) as AdminTokenClaims
+    if (claims.use !== 'admin') return null
+    const allow = adminEmailsFromEnv()
+    if (!claims.email || !allow.includes(claims.email.toLowerCase())) {
+      return null
+    }
+    const now = Math.floor(Date.now() / 1000)
+    if (claims.exp && claims.exp < now) return null
+    return claims
+  } catch {
+    return null
+  }
+}
+
+function hashGateKey(key: string): string {
+  return crypto.createHmac('sha256', tokenSecret()).update(key).digest('hex')
+}
+
+async function isAdminGateOpen(providedKey?: string): Promise<boolean> {
+  let stored: string | null
+  try {
+    const snap = await getFirestore(getFirebase())
+      .collection('adminSecurity')
+      .doc('config')
+      .get()
+    const h = snap.exists
+      ? (snap.data() as { gateKeyHash?: unknown }).gateKeyHash
+      : null
+    stored = typeof h === 'string' && h.length > 0 ? h : null
+  } catch {
+    // Fail CLOSED on read error.
+    return false
+  }
+  if (!stored) return true // no key configured → open (bootstrap)
+  const key = (providedKey || '').trim()
+  if (!key) return false
+  const a = Buffer.from(hashGateKey(key), 'utf8')
+  const b = Buffer.from(stored, 'utf8')
+  if (a.length !== b.length) return false
+  return crypto.timingSafeEqual(a, b)
+}
+
+/**
+ * Full admin gate — mirrors verifyAdmin2FA() in api/paypal.ts. Three
+ * independent factors, all required:
+ *   1. gateKey       — the secret access key (outermost gate)
+ *   2. idToken       — a live Firebase admin session
+ *   3. adminToken    — the 12h HMAC token minted only by passing the
+ *                      email code OR a passkey assertion
+ * A stolen idToken alone (or a leaked gateKey alone) can't publish a
+ * release — exactly what the user asked for: every admin action is
+ * "signed" by proof of a real, recently-2FA'd admin.
+ */
+async function verifyAdmin(body: {
+  idToken?: string
+  adminToken?: string
+  gateKey?: string
+}): Promise<
   | { ok: true; uid: string; email: string }
   | { ok: false; status: number; error: string }
 > {
+  // 1) Outermost gate — the secret access key.
+  if (!(await isAdminGateOpen(body.gateKey))) {
+    return { ok: false, status: 403, error: 'אין גישה' }
+  }
+  // 2) Live Firebase admin session.
   const app = getFirebase()
   const auth = getAuth(app)
-  const db = getFirestore(app)
   let decoded
   try {
-    decoded = await auth.verifyIdToken(idToken)
+    decoded = await auth.verifyIdToken((body.idToken || '').trim())
   } catch {
     return { ok: false, status: 401, error: 'אימות נכשל — התחברו מחדש' }
   }
   const email = (decoded.email || '').toLowerCase().trim()
   const uid = decoded.uid
   const allow = adminEmailsFromEnv()
-  // Hard ADMIN_EMAILS allowlist ONLY. The previous fallback path
-  // ("else check users/{uid}.role === 'admin'") was removed: it
-  // depended entirely on Firestore rules to prevent a regular user
-  // from writing `role:'admin'` to their own doc via the client
-  // SDK, and a permissive rules file would silently turn it into a
-  // self-promotion vulnerability. ADMIN_EMAILS lives in Vercel env
-  // vars where only the operator can touch it — no Firestore-rules
-  // dependency.
-  if (email && allow.includes(email)) return { ok: true, uid, email }
-  return { ok: false, status: 403, error: 'אין הרשאת אדמין' }
+  // Hard ADMIN_EMAILS allowlist ONLY — sourced from Vercel env vars,
+  // never from a client-writable Firestore field, so there's no
+  // self-promotion ("role:'admin'") vulnerability to worry about.
+  if (!email || !allow.includes(email)) {
+    return { ok: false, status: 403, error: 'אין הרשאת אדמין' }
+  }
+  // 3) The 2FA admin token — proves a real second factor was passed
+  //    recently, and binds the action to the same admin email.
+  const claims = verifyAdminToken((body.adminToken || '').trim())
+  if (!claims || claims.email.toLowerCase() !== email) {
+    return { ok: false, status: 403, error: 'נדרש אימות דו-שלבי מחדש' }
+  }
+  return { ok: true, uid, email }
 }
 
 /** Normalize a posted ReleaseDoc — drop unknown fields, drop
@@ -137,15 +248,13 @@ export default async function handler(
 
   const body = req.body as {
     idToken?: string
+    adminToken?: string
+    gateKey?: string
     action?: 'load' | 'save' | 'delete' | 'publish' | 'save-latest'
     release?: unknown
     publish?: boolean
   }
-  const idToken = (body.idToken || '').trim()
   const action = body.action
-  if (!idToken) {
-    return res.status(401).json({ ok: false, error: 'אסימון אימות חסר' })
-  }
   if (
     !action ||
     !['load', 'save', 'delete', 'publish', 'save-latest'].includes(action)
@@ -153,7 +262,11 @@ export default async function handler(
     return res.status(400).json({ ok: false, error: 'פעולה לא חוקית' })
   }
 
-  const gate = await verifyAdmin(idToken)
+  const gate = await verifyAdmin({
+    idToken: body.idToken,
+    adminToken: body.adminToken,
+    gateKey: body.gateKey,
+  })
   if (!gate.ok) {
     return res.status(gate.status).json({ ok: false, error: gate.error })
   }

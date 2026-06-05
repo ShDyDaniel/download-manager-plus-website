@@ -13,7 +13,11 @@ import {
   CheckCircle,
   Plus,
 } from 'lucide-react'
-import { getAdminIdToken } from '../../lib/adminApi'
+import {
+  getAdminIdToken,
+  getStoredAdminToken,
+  getGateKey,
+} from '../../lib/adminApi'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -68,14 +72,23 @@ export default function UpdatesTab({
     payload?: { release?: ReleaseDoc; publish?: boolean },
   ) {
     const idToken = await getAdminIdToken()
-    if (!idToken) {
+    const adminToken = getStoredAdminToken()
+    // Both factors are required server-side now (full admin gate).
+    // Missing either means the 2FA session lapsed → bounce to login.
+    if (!idToken || !adminToken) {
       onAuthExpired()
       throw new Error('auth')
     }
     const r = await fetch('/api/admin/draft-release', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ idToken, action, ...payload }),
+      body: JSON.stringify({
+        idToken,
+        adminToken,
+        gateKey: getGateKey(),
+        action,
+        ...payload,
+      }),
     })
     if (r.status === 401 || r.status === 403) {
       onAuthExpired()

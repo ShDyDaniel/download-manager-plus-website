@@ -3014,38 +3014,13 @@ async function handleAdminSetPricing(req: VercelRequest, res: VercelResponse) {
 }
 
 async function handleSyncPlans(req: VercelRequest, res: VercelResponse) {
-  const body = req.body as { idToken?: string }
-  const idToken = (body.idToken || '').trim()
-  if (!idToken) {
-    return res.status(400).json({ ok: false, error: 'missing idToken' })
-  }
-  const apiKey = process.env.FIREBASE_WEB_API_KEY
-  if (!apiKey) {
-    return res
-      .status(500)
-      .json({ ok: false, error: 'FIREBASE_WEB_API_KEY not set' })
-  }
-  let email: string
-  try {
-    const r = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken }),
-      },
-    )
-    const json = (await r.json()) as IdentityResponse
-    if (!r.ok || !json.users?.[0]?.email) {
-      return res.status(401).json({ ok: false, error: 'invalid id token' })
-    }
-    email = json.users[0].email.toLowerCase()
-  } catch (err) {
-    console.error('sync-plans token verify failed', err)
-    return res.status(502).json({ ok: false, error: 'token verify failed' })
-  }
-  if (!ADMIN_EMAILS.includes(email)) {
-    return res.status(403).json({ ok: false, error: 'not an admin' })
+  // Full admin gate: gateKey + Firebase idToken + 12h adminToken.
+  // The web PricingCard calls this via adminApi(), which attaches all
+  // three, so syncing PayPal plans (a sensitive catalog mutation) is
+  // no longer reachable with a bare idToken.
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
   }
   const pricing = await loadCurrentPricing()
   // Admin saves always force a backfill+dedupe pass — even when
@@ -4403,20 +4378,11 @@ async function handleAdminMigrateEmailVerified(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  const body = req.body as { idToken?: string }
-  const idToken = (body.idToken || '').trim()
-  if (!idToken) {
-    return res.status(401).json({ ok: false, error: 'missing id token' })
-  }
-  let email: string
-  try {
-    const { getAuth } = await import('firebase-admin/auth')
-    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken, true)
-    email = (decoded.email || '').toLowerCase()
-  } catch {
-    return res.status(401).json({ ok: false, error: 'invalid id token' })
-  }
-  if (!ADMIN_EMAILS.includes(email)) {
+  // Full admin gate (gateKey + idToken + 12h adminToken). This bulk
+  // mutation marks EVERY user as email-verified — a bare idToken is
+  // not enough.
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) {
     return res.status(403).json({ ok: false, error: 'admin only' })
   }
   const { getAuth } = await import('firebase-admin/auth')
@@ -4852,13 +4818,16 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
 }
 
 async function handleAdminSendTestEmail(req: VercelRequest, res: VercelResponse) {
-  const body = req.body as { idToken?: string; targetEmail?: string; kind?: string }
-  const idToken = (body.idToken || '').trim()
+  // Full admin gate (gateKey + idToken + 12h adminToken). Sending mail
+  // on the brand's behalf is a sensitive action — bare idToken is not
+  // enough.
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+  const body = req.body as { targetEmail?: string; kind?: string }
   const targetEmail = (body.targetEmail || '').trim().toLowerCase()
   const kind = (body.kind || '').trim() as TestEmailKind
-  if (!idToken) {
-    return res.status(401).json({ ok: false, error: 'missing id token' })
-  }
   if (!targetEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetEmail)) {
     return res.status(400).json({ ok: false, error: 'כתובת מייל יעד לא תקינה' })
   }
@@ -4880,17 +4849,6 @@ async function handleAdminSendTestEmail(req: VercelRequest, res: VercelResponse)
   ]
   if (!allowed.includes(kind)) {
     return res.status(400).json({ ok: false, error: `unknown template: ${kind}` })
-  }
-  let email: string
-  try {
-    const { getAuth } = await import('firebase-admin/auth')
-    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken)
-    email = (decoded.email || '').toLowerCase()
-  } catch {
-    return res.status(401).json({ ok: false, error: 'invalid id token' })
-  }
-  if (!ADMIN_EMAILS.includes(email)) {
-    return res.status(403).json({ ok: false, error: 'admin only' })
   }
 
   const { subject, html } = buildTestEmail(kind)
@@ -4924,21 +4882,12 @@ async function handleAdminSendTestEmail(req: VercelRequest, res: VercelResponse)
  *  email it. Returns the RAW SUMIT response so we can confirm the API
  *  contract + see the document URL / any error message. */
 async function handleAdminTestSumit(req: VercelRequest, res: VercelResponse) {
-  const body = req.body as { idToken?: string; targetEmail?: string }
-  const idToken = (body.idToken || '').trim()
+  // Full admin gate (gateKey + idToken + 12h adminToken).
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const email = admin
+  const body = req.body as { targetEmail?: string }
   const targetEmail = (body.targetEmail || '').trim().toLowerCase()
-  if (!idToken) return res.status(401).json({ ok: false, error: 'missing id token' })
-  let email: string
-  try {
-    const { getAuth } = await import('firebase-admin/auth')
-    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken)
-    email = (decoded.email || '').toLowerCase()
-  } catch {
-    return res.status(401).json({ ok: false, error: 'invalid id token' })
-  }
-  if (!ADMIN_EMAILS.includes(email)) {
-    return res.status(403).json({ ok: false, error: 'admin only' })
-  }
   if (!sumitConfigured()) {
     return res.status(400).json({
       ok: false,
@@ -5054,36 +5003,27 @@ async function handleAdminSendMarketingEmail(
   req: VercelRequest,
   res: VercelResponse,
 ) {
+  // Full admin gate (gateKey + idToken + 12h adminToken). Mass-mailing
+  // the entire opted-in user base is one of the most sensitive actions
+  // in the panel — a bare idToken is not enough.
+  const adminEmail = await verifyAdmin2FA(req)
+  if (!adminEmail) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
   const body = req.body as {
-    idToken?: string
     subject?: string
     heading?: string
     contentHtml?: string
     dryRun?: boolean
   }
-  const idToken = (body.idToken || '').trim()
   const subject = (body.subject || '').trim().slice(0, 200)
   const heading = (body.heading || '').trim().slice(0, 100)
   const contentHtml = (body.contentHtml || '').trim()
   const dryRun = body.dryRun === true
-  if (!idToken) {
-    return res.status(401).json({ ok: false, error: 'missing id token' })
-  }
   if (!subject || !heading || !contentHtml) {
     return res
       .status(400)
       .json({ ok: false, error: 'יש למלא subject + heading + contentHtml' })
-  }
-  let adminEmail: string
-  try {
-    const { getAuth } = await import('firebase-admin/auth')
-    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken)
-    adminEmail = (decoded.email || '').toLowerCase()
-  } catch {
-    return res.status(401).json({ ok: false, error: 'invalid id token' })
-  }
-  if (!ADMIN_EMAILS.includes(adminEmail)) {
-    return res.status(403).json({ ok: false, error: 'admin only' })
   }
 
   const db = getDb()
@@ -5536,20 +5476,21 @@ async function handleGetPrivacy(_req: VercelRequest, res: VercelResponse) {
 }
 
 async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {
+  // Full admin gate (gateKey + idToken + 12h adminToken). Granting Pro
+  // mutates a user's entitlement — a bare idToken is not enough.
+  const adminEmail = await verifyAdmin2FA(req)
+  if (!adminEmail) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
   const body = req.body as {
-    idToken?: string
     targetEmail?: string
     days?: number
     reason?: string
   }
-  const idToken = (body.idToken || '').trim()
   const targetEmail = (body.targetEmail || '').trim().toLowerCase()
   const days = typeof body.days === 'number' ? Math.floor(body.days) : 30
   const reason = (body.reason || '').slice(0, 200) || 'admin grant'
 
-  if (!idToken) {
-    return res.status(401).json({ ok: false, error: 'missing id token' })
-  }
   if (!targetEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetEmail)) {
     return res.status(400).json({ ok: false, error: 'כתובת מייל יעד לא תקינה' })
   }
@@ -5557,17 +5498,6 @@ async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {
     return res
       .status(400)
       .json({ ok: false, error: 'מספר ימים לא תקין (1–1825)' })
-  }
-  let adminEmail: string
-  try {
-    const { getAuth } = await import('firebase-admin/auth')
-    const decoded = await getAuth(getFirebase()).verifyIdToken(idToken)
-    adminEmail = (decoded.email || '').toLowerCase()
-  } catch {
-    return res.status(401).json({ ok: false, error: 'invalid id token' })
-  }
-  if (!ADMIN_EMAILS.includes(adminEmail)) {
-    return res.status(403).json({ ok: false, error: 'admin only' })
   }
 
   // Look up the target Firebase user by email so we can bind the
@@ -5784,7 +5714,7 @@ async function handleAdminRevenueReport(
   res: VercelResponse,
 ) {
   const body = (req.body || {}) as { idToken?: string }
-  const admin = await verifyAdminEmail(body.idToken || '')
+  const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
 
   const db = getDb()
@@ -6099,8 +6029,7 @@ async function handleAdminGetIpAllowlist(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  const body = (req.body || {}) as { idToken?: string }
-  const email = await verifyAdminEmail(body.idToken || '')
+  const email = await verifyAdmin2FA(req)
   if (!email) return res.status(403).json({ ok: false, error: 'admin only' })
   return res.status(200).json({
     ok: true,
@@ -6117,7 +6046,7 @@ async function handleAdminSetIpAllowlist(
   res: VercelResponse,
 ) {
   const body = (req.body || {}) as { idToken?: string; ips?: unknown }
-  const email = await verifyAdminEmail(body.idToken || '')
+  const email = await verifyAdmin2FA(req)
   if (!email) return res.status(403).json({ ok: false, error: 'admin only' })
 
   const raw = Array.isArray(body.ips) ? body.ips : []
@@ -7148,7 +7077,7 @@ async function handleAdminCreateReferral(
     loginEmail?: string
     password?: string
   }
-  const admin = await verifyAdminEmail(body.idToken || '')
+  const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const name = (body.name || '').trim().slice(0, 80)
   if (!name) return res.status(400).json({ ok: false, error: 'יש להזין שם' })
@@ -7227,7 +7156,7 @@ async function handleAdminListReferrals(
   res: VercelResponse,
 ) {
   const body = req.body as { idToken?: string }
-  const admin = await verifyAdminEmail(body.idToken || '')
+  const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const db = getDb()
   const snap = await db
@@ -7255,7 +7184,7 @@ async function handleAdminListReceipts(
   res: VercelResponse,
 ) {
   const body = req.body as { idToken?: string }
-  const admin = await verifyAdminEmail(body.idToken || '')
+  const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   try {
     const snap = await getDb()
@@ -7301,7 +7230,7 @@ async function handleAdminDeleteReferral(
   res: VercelResponse,
 ) {
   const body = req.body as { idToken?: string; code?: string }
-  const admin = await verifyAdminEmail(body.idToken || '')
+  const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const code = (body.code || '').trim()
   if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
@@ -7319,7 +7248,7 @@ async function handleAdminReferralReport(
   res: VercelResponse,
 ) {
   const body = req.body as { idToken?: string }
-  const admin = await verifyAdminEmail(body.idToken || '')
+  const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const db = getDb()
   const partnersSnap = await db
@@ -7397,7 +7326,7 @@ async function handleAdminReferralDetail(
   res: VercelResponse,
 ) {
   const body = req.body as { idToken?: string; code?: string }
-  const admin = await verifyAdminEmail(body.idToken || '')
+  const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const code = (body.code || '').trim()
   if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
@@ -7467,7 +7396,7 @@ async function handleAdminReferralExport(
     fromMs?: number
     toMs?: number
   }
-  const admin = await verifyAdminEmail(body.idToken || '')
+  const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const code = (body.code || '').trim()
   if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
@@ -7782,7 +7711,7 @@ async function handleAdminSetReferralCredentials(
     loginEmail?: string
     password?: string
   }
-  const admin = await verifyAdminEmail(body.idToken || '')
+  const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const code = (body.code || '').trim()
   const loginEmail = (body.loginEmail || '').trim().toLowerCase()
@@ -7833,7 +7762,7 @@ async function handleAdminSetReferralCommission(
   res: VercelResponse,
 ) {
   const body = req.body as { idToken?: string; code?: string }
-  const admin = await verifyAdminEmail(body.idToken || '')
+  const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const code = (body.code || '').trim()
   if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
@@ -7877,7 +7806,7 @@ async function handleAdminSetReferralVisibility(
     code?: string
     visibility?: { revenue?: boolean; earnings?: boolean; counts?: boolean }
   }
-  const admin = await verifyAdminEmail(body.idToken || '')
+  const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const code = (body.code || '').trim()
   if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
