@@ -27,7 +27,9 @@
  * Largest Contentful Paint isn't blocked on font load — the cost
  * is one re-layout when the web fonts arrive, which is preferable
  * to invisible text. */
-@import url('https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;600;700;800;900&family=Inter:wght@400;500;600&display=swap');
+/* Fonts are now SELF-HOSTED (see src/fonts.css, imported in main.tsx).
+ * No Google Fonts request on page load → no visitor IP sent to Google
+ * (privacy) and one fewer third-party request (speed). */
 
 @tailwind base;
 @tailwind components;
