@@ -459,8 +459,10 @@ function AdminShell({
           </div>
         </aside>
 
-        {/* Content — fills the area left of the sidebar */}
+        {/* Content — centered comfortable-width column (like the desktop
+            app), not stretched to the full width of the window. */}
         <main className="min-w-0 flex-1 p-5 md:p-8 md:pt-10">
+          <div className="mx-auto w-full max-w-3xl">
           {tab === 'users' ? (
             <UsersTab onAuthExpired={onAuthExpired} />
           ) : tab === 'keys' ? (
@@ -486,6 +488,7 @@ function AdminShell({
           ) : (
             <TabPlaceholder tab={tab} />
           )}
+          </div>
         </main>
       </div>
       {gateModal && <GateKeyModal onClose={() => setGateModal(false)} />}
