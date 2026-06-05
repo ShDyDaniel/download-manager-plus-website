@@ -4482,20 +4482,21 @@ async function fetchCloudflareUsage() {
 }
 
 /* ── Cloudflare R2 storage + projected monthly cost ──────────────
- *  We compute "GB in use" by summing every active, R2-backed round's
- *  video size from our own DB (one scan; accurate + no dependency on
- *  R2 analytics permissions). Cost is the projected MONTHLY bill at the
- *  current usage, using Cloudflare's public R2 + Workers-Paid rates:
- *    - Workers Paid base:      $5.00 / month (enables R2 + 10M req)
- *    - R2 storage:             $0.015 / GB-month, first 10 GB free
- *    - R2 egress:              FREE
- *    - Class A/B operations:   first 1M / 10M free — at solo-creator
- *      scale these stay within the free tier, so they're noted but not
- *      added (the exact invoice is always on the Cloudflare dashboard).
+ *  Account is on the "R2 Paid" subscription: $0.00/month base, pay
+ *  PER USAGE only (confirmed on the Cloudflare billing page). So there
+ *  is NO fixed monthly fee — the bill is purely usage above the free
+ *  tier, using Cloudflare's public R2 rates:
+ *    - R2 storage:           $0.015 / GB-month, first 10 GB free
+ *    - R2 egress:            FREE
+ *    - Class A operations:   $4.50 / million, first 1M free
+ *    - Class B operations:   $0.36 / million, first 10M free
+ *  At solo-creator scale the operations stay within the free tier, so
+ *  storage above 10 GB is effectively the only cost. We compute "GB in
+ *  use" by summing every active, R2-backed round's video size from our
+ *  own DB (one scan; accurate, no R2-analytics permission needed).
  *  Update these constants if Cloudflare changes pricing. */
 const R2_FREE_STORAGE_GB = 10
 const R2_STORAGE_USD_PER_GB_MONTH = 0.015
-const WORKERS_PAID_BASE_USD = 5
 const BYTES_PER_GB = 1024 * 1024 * 1024
 
 async function fetchR2Usage() {
@@ -4518,7 +4519,8 @@ async function fetchR2Usage() {
     const usedGb = usedBytes / BYTES_PER_GB
     const billableGb = Math.max(0, usedGb - R2_FREE_STORAGE_GB)
     const costStorage = billableGb * R2_STORAGE_USD_PER_GB_MONTH
-    const costTotal = costStorage + WORKERS_PAID_BASE_USD
+    // No fixed base on R2 Paid → total is purely storage overage.
+    const costTotal = costStorage
     return {
       configured: true,
       usedBytes,
@@ -4526,7 +4528,6 @@ async function fetchR2Usage() {
       roundCount,
       freeStorageGb: R2_FREE_STORAGE_GB,
       costStorage,
-      costWorkersBase: WORKERS_PAID_BASE_USD,
       costTotal,
     }
   } catch (err) {

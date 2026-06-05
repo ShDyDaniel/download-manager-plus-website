@@ -33,7 +33,6 @@ interface AdminUsage {
     roundCount?: number
     freeStorageGb?: number
     costStorage?: number
-    costWorkersBase?: number
     costTotal?: number
     error?: string
   }
@@ -272,9 +271,9 @@ function R2Panel({ r2 }: { r2: NonNullable<AdminUsage['r2']> }) {
       {/* Projected monthly cost breakdown */}
       <div className="rounded-xl border border-border bg-background p-3 text-xs">
         <div className="flex items-center justify-between py-1">
-          <span className="text-fg-muted">בסיס Workers Paid</span>
+          <span className="text-fg-muted">תוכנית R2 Paid (בסיס)</span>
           <span className="tabular-nums text-fg" dir="ltr">
-            ${fmtUsd(r2.costWorkersBase)}
+            $0.00 · לפי שימוש
           </span>
         </div>
         <div className="flex items-center justify-between py-1">
@@ -293,9 +292,9 @@ function R2Panel({ r2 }: { r2: NonNullable<AdminUsage['r2']> }) {
       </div>
 
       <p className="text-[10px] leading-relaxed text-fg-faint">
-        אומדן לפי האחסון הנוכחי + בסיס Workers Paid. תעבורה (egress) חינם
-        ב-R2, ופעולות קריאה/כתיבה בדרך כלל בתוך החינם. החשבונית המדויקת
-        תמיד בלוח הבקרה של Cloudflare.
+        אתה על R2 Paid — אין דמי-מנוי קבועים, משלמים רק לפי שימוש. תעבורה
+        (egress) חינם, ופעולות קריאה/כתיבה בדרך כלל בתוך החינם — לכן כל עוד
+        אתה מתחת ל-{freeGb}GB העלות היא $0. החשבונית המדויקת תמיד ב-Cloudflare.
       </p>
     </div>
   )
