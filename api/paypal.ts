@@ -5707,6 +5707,46 @@ function revSub(a: RevMoney, b: RevMoney): RevMoney {
   return out
 }
 
+/** Current projected MONTHLY Cloudflare R2 cost (USD). Account is on
+ *  "R2 Paid" ($0 base + usage): only storage beyond the free 10 GB is
+ *  billed, at $0.015/GB-month (egress + typical ops are free). Summed
+ *  from our own DB so it needs no R2-analytics permission. Mirrors
+ *  fetchR2Usage() in revisions.ts — keep the rates in sync. */
+async function computeCloudflareMonthlyUsd(): Promise<number> {
+  try {
+    const GB = 1024 * 1024 * 1024
+    let bytes = 0
+    const snap = await getDb().collection('revisionProjects').get()
+    for (const d of snap.docs) {
+      const r = d.data() as {
+        r2Key?: string
+        videoSizeBytes?: number
+        status?: string
+      }
+      if (r.r2Key && r.status !== 'archived') bytes += Number(r.videoSizeBytes) || 0
+    }
+    const gb = bytes / GB
+    return Math.max(0, gb - 10) * 0.015
+  } catch (e) {
+    console.warn('[revenue] cloudflare cost calc failed:', e)
+    return 0
+  }
+}
+
+/** Live USD→ILS rate (best-effort; falls back to ~3.7 on any error) so
+ *  the Cloudflare USD cost can be folded into the ₪ bottom line. */
+async function usdToIls(): Promise<number> {
+  try {
+    const r = await fetch('https://open.er-api.com/v6/latest/USD')
+    const j = (await r.json()) as { rates?: { ILS?: number } }
+    const rate = j?.rates?.ILS
+    if (typeof rate === 'number' && rate > 0) return rate
+  } catch {
+    /* ignore — use fallback */
+  }
+  return 3.7
+}
+
 async function handleAdminRevenueReport(
   req: VercelRequest,
   res: VercelResponse,
@@ -5836,6 +5876,14 @@ async function handleAdminRevenueReport(
     },
   )
 
+  // Cloudflare R2 monthly infra cost — the last deduction in the chain
+  // (gross → −PayPal → −partners → −Cloudflare = real bottom line).
+  const [cfUsd, fxRate] = await Promise.all([
+    computeCloudflareMonthlyUsd(),
+    usdToIls(),
+  ])
+  const cfIls = cfUsd * fxRate
+
   return res.status(200).json({
     ok: true,
     months: monthsOut,
@@ -5845,6 +5893,11 @@ async function handleAdminRevenueReport(
       net: totalNet,
       partners: partnerTotals.sort((a, b) => a.name.localeCompare(b.name)),
       ownerFinal: revSub(totalNet, totalPayoutAll),
+    },
+    cloudflare: {
+      costUsd: cfUsd,
+      costIls: cfIls,
+      fxRate,
     },
   })
 }

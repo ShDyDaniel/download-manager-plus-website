@@ -25,6 +25,11 @@ interface RevenueReport {
     partners: PartnerRow[]
     ownerFinal: Money
   }
+  cloudflare?: {
+    costUsd: number
+    costIls: number
+    fxRate: number
+  }
 }
 
 const SYM: Record<string, string> = { ILS: '₪', USD: '$', EUR: '€' }
@@ -37,6 +42,13 @@ function fmt(m?: Money): string {
 function fmtMonth(m: string): string {
   if (m === 'unknown') return 'ללא תאריך'
   return `${m.slice(5, 7)}/${m.slice(0, 4)}`
+}
+/** Subtract a ₪ amount (the converted Cloudflare cost) from the ILS
+ *  bucket of a multi-currency Money, leaving other currencies intact. */
+function subtractIls(m: Money | undefined, ils: number): Money {
+  const out: Money = { ...(m || {}) }
+  if (ils) out.ILS = (out.ILS || 0) - ils
+  return out
 }
 
 export default function RevenueTab({
@@ -99,11 +111,45 @@ export default function RevenueTab({
             <Tot label="סך הכנסות (ברוטו)" value={fmt(data.totals.gross)} />
             <Tot label="עמלות PayPal" value={fmt(data.totals.fee)} muted />
             <Tot label="נטו (אחרי PayPal)" value={fmt(data.totals.net)} />
-            <Tot
-              label="נשאר לך בסוף (אחרי שותפים)"
-              value={fmt(data.totals.ownerFinal)}
-              accent
-            />
+            <Tot label="אחרי שותפים" value={fmt(data.totals.ownerFinal)} />
+          </div>
+
+          {/* Bottom line — full chain incl. the monthly Cloudflare cost */}
+          <div className="rounded-2xl border border-success/30 bg-success/[0.06] p-5">
+            <div className="space-y-2 text-sm">
+              <ChainLine
+                label="נשאר אחרי שותפים"
+                value={fmt(data.totals.ownerFinal)}
+              />
+              <ChainLine
+                label="עלות Cloudflare (חודשי)"
+                value={
+                  data.cloudflare
+                    ? `${data.cloudflare.costUsd.toFixed(2)} $ ≈ ${data.cloudflare.costIls.toFixed(2)} ₪`
+                    : '—'
+                }
+                muted
+                minus
+              />
+              <div className="my-1 border-t border-border" />
+              <ChainLine
+                label="נשאר לך נטו (אחרי הכל)"
+                value={fmt(
+                  subtractIls(data.totals.ownerFinal, data.cloudflare?.costIls || 0),
+                )}
+                strong
+              />
+            </div>
+            <p className="mt-3 text-[10px] leading-relaxed text-fg-faint">
+              עלות Cloudflare היא חודשית שוטפת (R2 — תשלום לפי שימוש; כרגע{' '}
+              {data.cloudflare && data.cloudflare.costUsd > 0
+                ? 'מעל החינם'
+                : '$0, מתחת ל-10GB החינמיים'}
+              ). ההכנסות מצטברות מתחילת הפעילות.
+              {data.cloudflare
+                ? ` שער המרה ≈ ${data.cloudflare.fxRate.toFixed(2)} ₪/$.`
+                : ''}
+            </p>
           </div>
 
           {/* Per-partner totals */}
@@ -210,6 +256,45 @@ function Tot({
         {value}
       </div>
       <div className="mt-1 text-[11px] text-fg-muted">{label}</div>
+    </div>
+  )
+}
+
+function ChainLine({
+  label,
+  value,
+  muted,
+  minus,
+  strong,
+}: {
+  label: string
+  value: string
+  muted?: boolean
+  minus?: boolean
+  strong?: boolean
+}) {
+  return (
+    <div className="flex items-center justify-between">
+      <span
+        className={
+          (strong ? 'font-semibold text-fg' : 'text-fg-muted') + ' text-sm'
+        }
+      >
+        {label}
+      </span>
+      <span
+        className={
+          'tabular-nums ' +
+          (strong
+            ? 'text-base font-bold text-success'
+            : muted
+              ? 'text-fg-muted'
+              : 'text-fg')
+        }
+        dir="ltr"
+      >
+        {minus && value !== '—' ? `− ${value}` : value}
+      </span>
     </div>
   )
 }
