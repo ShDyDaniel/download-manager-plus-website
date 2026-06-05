@@ -708,8 +708,12 @@ function Stat({
       </div>
       <div
         className={
-          'flex h-9 w-9 items-center justify-center rounded-xl text-white ' +
-          (success ? 'bg-success' : accent ? 'bg-accent' : 'bg-primary')
+          'flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-md ' +
+          (success
+            ? 'from-success to-success shadow-success/40'
+            : accent
+              ? 'from-accent to-primary shadow-accent/40'
+              : 'from-primary to-accent shadow-primary/40')
         }
       >
         {icon}
