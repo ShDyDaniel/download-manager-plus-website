@@ -211,37 +211,15 @@ async function uploadNoteMedia(
   return { r2Key: json.key }
 }
 
-/** Build a URL the browser can use to fetch a note's media. Goes
- *  through the Vercel proxy which re-auths server-side per request
- *  (the file itself is private to the editor's Drive).
+/** Resolve a note's media to a URL used DIRECTLY as <img>/<audio> src.
+ *  note-media-url hands back either a presigned R2 GET (for R2-backed
+ *  notes) or a Cloudflare Worker URL (for legacy Drive notes) — both
+ *  serve the bytes straight to the browser with ZERO Vercel transfer.
  *
- *  Includes `&r=<roundId>` for grouped projects so the proxy can
- *  resolve which round (= which Drive notes folder) the note
- *  belongs to. */
-function noteMediaUrl(
-  shareToken: string,
-  noteId: string,
-  kind: 'image' | 'audio',
-  passwordToken: string | null,
-  roundId: string | null,
-): string {
-  const params = new URLSearchParams({
-    action: 'note-media',
-    token: shareToken,
-    note: noteId,
-    kind,
-  })
-  if (passwordToken) params.set('t', passwordToken)
-  if (roundId) params.set('r', roundId)
-  return `${API}?${params.toString()}`
-}
-
-/** Resolve a note's media to a Cloudflare Worker URL (Drive →
- *  Cloudflare → browser, ZERO Vercel egress). Asks Vercel for a
- *  short-lived signed Worker URL (tiny JSON), and the returned URL is
- *  used directly as <img>/<audio> src. Falls back to the legacy Vercel
- *  byte URL if the worker action is unavailable (e.g. CLOUDFLARE_
- *  STREAM_BASE not configured), so nothing breaks during rollout. */
+ *  We return the URL as-is (no fetch-to-blob): a plain <img src>/<audio
+ *  src> needs no CORS, and there is deliberately NO Vercel byte-proxy
+ *  fallback — if the signed URL can't be minted we surface the error
+ *  (broken media) rather than ever routing the bytes through Vercel. */
 async function fetchNoteMediaSrc(
   shareToken: string,
   noteId: string,
@@ -249,41 +227,21 @@ async function fetchNoteMediaSrc(
   passwordToken: string | null,
   roundId: string | null,
 ): Promise<string> {
-  // Prefer the Cloudflare Worker (Drive → Cloudflare → browser). We
-  // fetch the bytes as a blob (not a bare <img src>) so we can FALL
-  // BACK to the legacy Vercel byte endpoint if anything fails —
-  // including the case where the Worker hasn't been redeployed yet
-  // and doesn't understand `?m=`. This keeps media from ever
-  // breaking during rollout. Returned object URLs are revoked by the
-  // caller (NoteItem) on unmount.
-  try {
-    const r = await fetch(`${API}?action=note-media-url`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        shareToken,
-        noteId,
-        kind,
-        passwordToken: passwordToken || undefined,
-        roundId: roundId || undefined,
-      }),
-    })
-    if (r.ok) {
-      const j = (await r.json()) as { ok: boolean; url?: string }
-      if (j.ok && j.url) {
-        const media = await fetch(j.url)
-        if (media.ok) return URL.createObjectURL(await media.blob())
-      }
-    }
-  } catch {
-    /* fall through to legacy */
-  }
-  // Legacy fallback — bytes straight from Vercel.
-  const legacy = await fetch(
-    noteMediaUrl(shareToken, noteId, kind, passwordToken, roundId),
-  )
-  if (!legacy.ok) throw new Error(`media ${legacy.status}`)
-  return URL.createObjectURL(await legacy.blob())
+  const r = await fetch(`${API}?action=note-media-url`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      shareToken,
+      noteId,
+      kind,
+      passwordToken: passwordToken || undefined,
+      roundId: roundId || undefined,
+    }),
+  })
+  if (!r.ok) throw new Error(`note-media-url ${r.status}`)
+  const j = (await r.json()) as { ok: boolean; url?: string }
+  if (!j.ok || !j.url) throw new Error('note-media-url failed')
+  return j.url
 }
 /** localStorage flag — true once the viewer has seen the "how this
  *  works" onboarding for this specific share token + viewer email.

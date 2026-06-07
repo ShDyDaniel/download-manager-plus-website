@@ -669,35 +669,25 @@ export async function fetchNoteMediaAsObjectUrl(
 ): Promise<string> {
   const token = getSessionToken()
   if (!token) throw new Error('יש להתחבר מחדש')
-  // Two-step: ask Vercel for a short-lived Cloudflare Worker URL
-  // (tiny JSON — no file bytes through Vercel), then fetch the actual
-  // bytes from the Worker (Drive → Cloudflare → here). Falls back to
-  // the legacy byte endpoint if the Worker isn't configured.
+  // Ask Vercel for a short-lived signed URL (tiny JSON — no file bytes
+  // through Vercel): a presigned R2 GET for R2 notes, or a Cloudflare
+  // Worker URL for legacy Drive notes. Then fetch the bytes from R2 /
+  // Cloudflare directly. There is deliberately NO Vercel byte-proxy
+  // fallback — if the signed URL can't be minted we throw (broken media
+  // placeholder) rather than ever routing the bytes through Vercel.
   const urlResp = await fetch(`${API_BASE}?action=note-media-owner-url`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sessionToken: token, projectId, noteId, kind }),
   })
-  if (urlResp.ok) {
-    const json = (await urlResp.json()) as
-      | { ok: true; url: string }
-      | { ok: false; error: string }
-    if (json.ok && json.url) {
-      const media = await fetch(json.url)
-      if (!media.ok) throw new Error(`טעינת המדיה נכשלה (${media.status})`)
-      return URL.createObjectURL(await media.blob())
-    }
-  }
-  // Fallback — legacy byte stream through Vercel (used only if the
-  // media worker URL action is unavailable, e.g. CLOUDFLARE_STREAM_BASE
-  // not set on this deployment).
-  const r = await fetch(`${API_BASE}?action=note-media-owner`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionToken: token, projectId, noteId, kind }),
-  })
-  if (!r.ok) throw new Error(`טעינת המדיה נכשלה (${r.status})`)
-  return URL.createObjectURL(await r.blob())
+  if (!urlResp.ok) throw new Error(`טעינת המדיה נכשלה (${urlResp.status})`)
+  const json = (await urlResp.json()) as
+    | { ok: true; url: string }
+    | { ok: false; error: string }
+  if (!json.ok || !json.url) throw new Error('טעינת המדיה נכשלה')
+  const media = await fetch(json.url)
+  if (!media.ok) throw new Error(`טעינת המדיה נכשלה (${media.status})`)
+  return URL.createObjectURL(await media.blob())
 }
 
 /* ──────────────────────────────────────────────────────────────
