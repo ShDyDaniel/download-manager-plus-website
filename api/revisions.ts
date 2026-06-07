@@ -4594,6 +4594,12 @@ async function handleAdminUsage(req: VercelRequest, res: VercelResponse) {
       killCacheRev = { value: true, ts: Date.now() }
       cfg.killSwitch = true
       autoTripped = true
+      const which = overRead
+        ? `קריאות ${reads.toLocaleString()}/${cfg.dailyReadCeiling.toLocaleString()}`
+        : `כתיבות ${writes.toLocaleString()}/${cfg.dailyWriteCeiling.toLocaleString()}`
+      await sendTelegramAlert(
+        `🚨 מצב תחזוקה נדלק אוטומטית — נחצתה התקרה היומית (${which}). האתר והתוכנה חסומים עד שתכבה ידנית ב"הגדרות".`,
+      )
     } catch {
       /* if the write fails, leave the switch as-is */
     }
@@ -5994,6 +6000,24 @@ async function isSiteKilledRev(): Promise<boolean> {
     return v
   } catch {
     return false // fail open
+  }
+}
+
+/** Best-effort Telegram alert (mirror of api/paypal.ts). Used to push
+ *  the auto-trip event so an automatic shutdown is never silent. */
+async function sendTelegramAlert(text: string): Promise<void> {
+  try {
+    const token = process.env.TELEGRAM_BOT_TOKEN
+    const chatId =
+      process.env.TELEGRAM_ALERT_CHAT_ID || process.env.TELEGRAM_CHAT_ID
+    if (!token || !chatId) return
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+    })
+  } catch (e) {
+    console.error('[telegram-alert] failed:', e)
   }
 }
 

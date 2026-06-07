@@ -1154,6 +1154,44 @@ function primeKillCache(value: boolean): void {
   killCache = { value, ts: Date.now() }
 }
 
+/* ── Telegram alerts (operational push to the owner) ───────────────
+ *  Reuses the same bot as the feedback forwarder. Critical events
+ *  (failed webhook, failed customer payment, dispute, kill-switch,
+ *  server errors) are pushed so a failure is never silent. Best-effort:
+ *  any error is swallowed — an alert can NEVER break the main flow.
+ *  Set TELEGRAM_ALERT_CHAT_ID to route alerts to a dedicated chat;
+ *  otherwise they go to TELEGRAM_CHAT_ID (the feedback chat). */
+async function sendTelegramAlert(text: string): Promise<void> {
+  try {
+    const token = process.env.TELEGRAM_BOT_TOKEN
+    const chatId =
+      process.env.TELEGRAM_ALERT_CHAT_ID || process.env.TELEGRAM_CHAT_ID
+    if (!token || !chatId) return
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        disable_web_page_preview: true,
+      }),
+    })
+  } catch (e) {
+    console.error('[telegram-alert] failed:', e)
+  }
+}
+
+/** De-dupe burst alerts: at most one alert per key per window, so an
+ *  incident that throws repeatedly doesn't flood the chat. */
+const recentAlerts = new Map<string, number>()
+function alertNotThrottled(key: string, windowMs = 60_000): boolean {
+  const now = Date.now()
+  const last = recentAlerts.get(key) || 0
+  if (now - last < windowMs) return false
+  recentAlerts.set(key, now)
+  return true
+}
+
 /* ── Vercel invocation counter (self-metered) ──────────────────────
  *  Vercel's Hobby plan exposes no usage API, so we count function
  *  invocations ourselves: every call to this endpoint is exactly one
@@ -1379,6 +1417,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
     console.error(`[paypal/${action}] failed:`, err)
+    // Push a (throttled) alert so a server-side 500 isn't silent.
+    if (alertNotThrottled(`err:${action}`)) {
+      await sendTelegramAlert(
+        `🔴 שגיאת שרת ב-API\nפעולה: ${action || '(empty)'}\n${message}`,
+      )
+    }
     return res.status(500).json({ ok: false, error: message })
   }
 }
@@ -1506,6 +1550,35 @@ async function handleWebhook(req: VercelRequest, res: VercelResponse) {
     },
     { merge: true },
   )
+
+  // ── Operational alerts to the owner's Telegram ──────────────────
+  // One concise push per meaningful outcome. Awaited (not fire-and-
+  // forget) so it isn't truncated when the serverless function returns.
+  try {
+    if (!result.ok) {
+      await sendTelegramAlert(
+        `🔴 Webhook נכשל (${event.event_type})\n${result.error || result.summary}\nאירוע: ${event.id}`,
+      )
+    } else if (event.event_type === 'BILLING.SUBSCRIPTION.PAYMENT.FAILED') {
+      await sendTelegramAlert(`⚠️ חיוב נכשל ללקוח\n${result.summary}`)
+    } else if (event.event_type === 'CUSTOMER.DISPUTE.CREATED') {
+      await sendTelegramAlert(
+        `🚨 נפתחה מחלוקת (dispute) ב-PayPal — דורש טיפול ידני\nאירוע: ${event.id}`,
+      )
+    } else if (
+      event.event_type === 'PAYMENT.SALE.COMPLETED' &&
+      !/ignored|without/i.test(result.summary)
+    ) {
+      await sendTelegramAlert(`💰 תשלום התקבל\n${result.summary}`)
+    } else if (
+      event.event_type === 'BILLING.SUBSCRIPTION.ACTIVATED' &&
+      !/ignored/i.test(result.summary)
+    ) {
+      await sendTelegramAlert(`🎉 מנוי חדש הופעל\n${result.summary}`)
+    }
+  } catch {
+    /* alerts are best-effort — never fail the webhook over them */
+  }
 
   return res.status(200).json({ ok: true, status: result.summary })
 }
@@ -6814,7 +6887,14 @@ async function handleAdminSetAppConfig(
   // Reflect a kill-switch change in this instance's cache immediately so
   // the operator sees maintenance mode engage/disengage without waiting
   // out the 30s TTL.
-  if (typeof body.killSwitch === 'boolean') primeKillCache(body.killSwitch)
+  if (typeof body.killSwitch === 'boolean') {
+    primeKillCache(body.killSwitch)
+    await sendTelegramAlert(
+      body.killSwitch
+        ? '🟠 מצב תחזוקה (Kill-switch) הופעל ידנית — האתר והתוכנה חסומים למשתמשים.'
+        : '✅ מצב תחזוקה (Kill-switch) כובה — השירות חזר לפעול.',
+    )
+  }
   return res.status(200).json({ ok: true })
 }
 
