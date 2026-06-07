@@ -1,7 +1,20 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
-import { getFirestore, FieldValue, type Firestore } from 'firebase-admin/firestore'
+import {
+  getFirestore,
+  FieldValue,
+  Timestamp,
+  type Firestore,
+} from 'firebase-admin/firestore'
+import {
+  S3Client,
+  PutObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectCommand,
+  GetObjectCommand,
+} from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import nodemailer from 'nodemailer'
 import {
   generateRegistrationOptions,
@@ -1191,6 +1204,138 @@ function alertNotThrottled(key: string, windowMs = 60_000): boolean {
   return true
 }
 
+/* ─────────────────────────────────────────────────────────────
+ *  Backups — full logical snapshot of Firestore → Cloudflare R2
+ *
+ *  One JSON object per backup under the `backups/` prefix in the same
+ *  R2 bucket used for revision media (free up to 10GB). Every document
+ *  is captured by its FULL PATH (via collectionGroup) so nested
+ *  subcollections (e.g. notes) are included and a restore is exact.
+ *  Firestore Timestamps are tagged so they survive the JSON round-trip.
+ *
+ *  Cost: R2 storage is tiny (KBs–MBs); the only Firestore cost is the
+ *  reads to build a backup (~1 read/doc), well within the free daily
+ *  allowance at this scale. Same R2 creds as api/revisions.ts.
+ * ───────────────────────────────────────────────────────────── */
+const BACKUP_BUCKET = process.env.R2_BUCKET || ''
+const BACKUP_PREFIX = 'backups/'
+/** Collections captured in a backup. collectionGroup() matches each by
+ *  name at ANY depth, so this covers both top-level collections and
+ *  nested subcollections like `notes`. Transient/regenerable data
+ *  (rate limits, login codes, webhook-dedupe log, etc.) is excluded. */
+const BACKUP_COLLECTIONS = [
+  'productKeys',
+  'users',
+  'appConfig',
+  'referralPartners',
+  'receipts',
+  'trialFingerprints',
+  'usageStats',
+  'feedback',
+  'integrations',
+  'pendingSubscriptions',
+  'adminCredentials',
+  'adminSecurity',
+  'revisionProjects',
+  'revisionGroups',
+  'notes',
+]
+let _backupR2: S3Client | null = null
+function getBackupR2(): S3Client {
+  if (_backupR2) return _backupR2
+  const accountId = process.env.R2_ACCOUNT_ID
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY
+  if (!accountId || !accessKeyId || !secretAccessKey || !BACKUP_BUCKET) {
+    throw new Error(
+      'R2 env vars missing (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET)',
+    )
+  }
+  _backupR2 = new S3Client({
+    region: 'auto',
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId, secretAccessKey },
+  })
+  return _backupR2
+}
+
+/** Firestore Timestamp → tagged JSON (and back) so date fields survive
+ *  a JSON round-trip. Everything else is plain JSON (their docs mostly
+ *  use ISO strings already). */
+function serializeForBackup(v: unknown): unknown {
+  if (v === null || typeof v !== 'object') return v
+  const t = v as { toDate?: () => Date; seconds?: number }
+  if (typeof t.toDate === 'function' && typeof t.seconds === 'number') {
+    return { __t: 'ts', v: t.toDate().toISOString() }
+  }
+  if (Array.isArray(v)) return v.map(serializeForBackup)
+  const out: Record<string, unknown> = {}
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    out[k] = serializeForBackup(val)
+  }
+  return out
+}
+function reviveFromBackup(v: unknown): unknown {
+  if (v === null || typeof v !== 'object') return v
+  if (Array.isArray(v)) return v.map(reviveFromBackup)
+  const rec = v as Record<string, unknown>
+  if (rec.__t === 'ts' && typeof rec.v === 'string') {
+    return Timestamp.fromDate(new Date(rec.v))
+  }
+  const out: Record<string, unknown> = {}
+  for (const [k, val] of Object.entries(rec)) out[k] = reviveFromBackup(val)
+  return out
+}
+
+interface BackupPayload {
+  version: number
+  createdAt: string
+  type: string
+  collections: string[]
+  docCount: number
+  docs: Array<{ path: string; data: unknown }>
+}
+
+/** Read every backed-up collection (including nested) into a payload. */
+async function buildBackupPayload(type: string): Promise<BackupPayload> {
+  const db = getDb()
+  const docs: Array<{ path: string; data: unknown }> = []
+  for (const name of BACKUP_COLLECTIONS) {
+    const snap = await db.collectionGroup(name).get()
+    for (const d of snap.docs) {
+      docs.push({ path: d.ref.path, data: serializeForBackup(d.data()) })
+    }
+  }
+  return {
+    version: 1,
+    createdAt: new Date().toISOString(),
+    type,
+    collections: BACKUP_COLLECTIONS,
+    docCount: docs.length,
+    docs,
+  }
+}
+
+/** Build a backup and upload it to R2. Returns its key + size. */
+async function createBackup(
+  type: 'manual' | 'auto' | 'prerestore',
+): Promise<{ key: string; sizeBytes: number; docCount: number; createdAt: string }> {
+  const payload = await buildBackupPayload(type)
+  const body = JSON.stringify(payload)
+  const sizeBytes = Buffer.byteLength(body, 'utf8')
+  const stamp = payload.createdAt.replace(/[:.]/g, '-')
+  const key = `${BACKUP_PREFIX}${type}-${stamp}.json`
+  await getBackupR2().send(
+    new PutObjectCommand({
+      Bucket: BACKUP_BUCKET,
+      Key: key,
+      Body: body,
+      ContentType: 'application/json',
+    }),
+  )
+  return { key, sizeBytes, docCount: payload.docCount, createdAt: payload.createdAt }
+}
+
 /* ── Vercel invocation counter (self-metered) ──────────────────────
  *  Vercel's Hobby plan exposes no usage API, so we count function
  *  invocations ourselves: every call to this endpoint is exactly one
@@ -1390,6 +1535,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminGetAppConfig(req, res)
       case 'admin-set-app-config':
         return await handleAdminSetAppConfig(req, res)
+      case 'admin-create-backup':
+        return await handleAdminCreateBackup(req, res)
+      case 'admin-list-backups':
+        return await handleAdminListBackups(req, res)
+      case 'admin-delete-backup':
+        return await handleAdminDeleteBackup(req, res)
+      case 'admin-download-backup':
+        return await handleAdminDownloadBackup(req, res)
+      case 'admin-restore-backup':
+        return await handleAdminRestoreBackup(req, res)
       case 'admin-set-terms':
         return await handleAdminSetTerms(req, res)
       case 'admin-set-privacy':
@@ -6895,6 +7050,152 @@ async function handleAdminSetAppConfig(
     )
   }
   return res.status(200).json({ ok: true })
+}
+
+/* ── Backup admin actions ─────────────────────────────────────── */
+
+/** Create a manual backup now (admin-only). */
+async function handleAdminCreateBackup(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  try {
+    const info = await createBackup('manual')
+    return res.status(200).json({ ok: true, backup: info })
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ ok: false, error: (e as Error)?.message || 'גיבוי נכשל' })
+  }
+}
+
+/** List every backup in R2 with date + size + type. */
+async function handleAdminListBackups(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  try {
+    const out = await getBackupR2().send(
+      new ListObjectsV2Command({ Bucket: BACKUP_BUCKET, Prefix: BACKUP_PREFIX }),
+    )
+    const backups = (out.Contents || [])
+      .map((o) => {
+        const key = o.Key || ''
+        const fname = key.slice(BACKUP_PREFIX.length)
+        const type = fname.split('-')[0] || 'auto' // manual | auto | prerestore
+        return {
+          key,
+          type,
+          sizeBytes: o.Size || 0,
+          createdAt: o.LastModified
+            ? new Date(o.LastModified).toISOString()
+            : null,
+        }
+      })
+      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+    const totalBytes = backups.reduce((s, b) => s + b.sizeBytes, 0)
+    return res
+      .status(200)
+      .json({ ok: true, backups, count: backups.length, totalBytes })
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ ok: false, error: (e as Error)?.message || 'טעינה נכשלה' })
+  }
+}
+
+/** Delete a single backup (step-up gated — destructive). */
+async function handleAdminDeleteBackup(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const key = (req.body as { key?: string })?.key
+  if (typeof key !== 'string' || !key.startsWith(BACKUP_PREFIX)) {
+    return res.status(400).json({ ok: false, error: 'invalid key' })
+  }
+  await getBackupR2().send(
+    new DeleteObjectCommand({ Bucket: BACKUP_BUCKET, Key: key }),
+  )
+  return res.status(200).json({ ok: true })
+}
+
+/** Short-lived presigned download URL for a backup (admin-only). */
+async function handleAdminDownloadBackup(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const key = (req.body as { key?: string })?.key
+  if (typeof key !== 'string' || !key.startsWith(BACKUP_PREFIX)) {
+    return res.status(400).json({ ok: false, error: 'invalid key' })
+  }
+  const url = await getSignedUrl(
+    getBackupR2(),
+    new GetObjectCommand({ Bucket: BACKUP_BUCKET, Key: key }),
+    { expiresIn: 600 },
+  )
+  return res.status(200).json({ ok: true, url })
+}
+
+/** Restore a backup into Firestore (step-up gated — DANGEROUS). Always
+ *  snapshots the CURRENT state first ("prerestore") so a bad restore is
+ *  itself reversible. Documents are upserted by path; docs created AFTER
+ *  the backup are left untouched (not deleted). */
+async function handleAdminRestoreBackup(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const key = (req.body as { key?: string })?.key
+  if (typeof key !== 'string' || !key.startsWith(BACKUP_PREFIX)) {
+    return res.status(400).json({ ok: false, error: 'invalid key' })
+  }
+  // 1) Safety snapshot of the current state before we overwrite anything.
+  let safetyBackupKey = ''
+  try {
+    safetyBackupKey = (await createBackup('prerestore')).key
+  } catch {
+    /* if the safety snapshot fails, still proceed — the chosen backup
+       is the user's explicit intent. */
+  }
+  // 2) Fetch + parse the chosen backup.
+  const obj = await getBackupR2().send(
+    new GetObjectCommand({ Bucket: BACKUP_BUCKET, Key: key }),
+  )
+  const text = await (obj.Body as { transformToString: () => Promise<string> }).transformToString()
+  const payload = JSON.parse(text) as BackupPayload
+  if (!Array.isArray(payload.docs)) {
+    return res.status(400).json({ ok: false, error: 'גיבוי פגום' })
+  }
+  // 3) Write back in batches (Firestore caps a batch at 500 writes).
+  const db = getDb()
+  let restored = 0
+  const CHUNK = 400
+  for (let i = 0; i < payload.docs.length; i += CHUNK) {
+    const batch = db.batch()
+    for (const item of payload.docs.slice(i, i + CHUNK)) {
+      if (!item || typeof item.path !== 'string') continue
+      batch.set(
+        db.doc(item.path),
+        reviveFromBackup(item.data) as FirebaseFirestore.DocumentData,
+      )
+      restored += 1
+    }
+    await batch.commit()
+  }
+  await sendTelegramAlert(
+    `♻️ בוצע שחזור גיבוי\n${restored} מסמכים שוחזרו מ-${key}\n(גיבוי בטיחות נשמר: ${safetyBackupKey || 'לא נוצר'})`,
+  )
+  return res.status(200).json({
+    ok: true,
+    restored,
+    total: payload.docs.length,
+    safetyBackupKey,
+  })
 }
 
 interface LegalSection {

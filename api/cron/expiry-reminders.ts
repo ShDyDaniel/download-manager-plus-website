@@ -2,7 +2,12 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getFirestore } from 'firebase-admin/firestore'
-import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import {
+  S3Client,
+  DeleteObjectCommand,
+  PutObjectCommand,
+  ListObjectsV2Command,
+} from '@aws-sdk/client-s3'
 import nodemailer from 'nodemailer'
 
 /**
@@ -400,6 +405,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // grace window. Runs in this same daily cron (Hobby = 1 cron).
     const purgeResults = await runStoragePurgeSweep(db)
 
+    // ─── Daily Firestore backup → R2 ──────────────────────────
+    // Free safety net: one full logical snapshot per day, kept for 30
+    // days. Manageable from the admin "גיבוי" tab.
+    const backupResults = await runFirestoreBackupSweep(db, getR2OrNull())
+
     return res.status(200).json({
       ok: true,
       scanned: results.length,
@@ -409,6 +419,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       results,
       annual: annualResults,
       purge: purgeResults,
+      backup: backupResults,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
@@ -621,6 +632,106 @@ function getR2OrNull(): S3Client | null {
 async function r2Delete(r2: S3Client, key: string): Promise<void> {
   if (!key) return
   await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }))
+}
+
+/* ── Daily Firestore backup → R2 ───────────────────────────────────
+ *  Twin of api/paypal.ts createBackup('auto'). KEEP BACKUP_COLLECTIONS
+ *  + serializeForBackup in sync with paypal.ts. Writes one JSON
+ *  snapshot per day under backups/auto-*.json and prunes to the most
+ *  recent BACKUP_KEEP_AUTO. Skips silently if R2 isn't configured. */
+const BACKUP_PREFIX = 'backups/'
+const BACKUP_KEEP_AUTO = 30
+const BACKUP_COLLECTIONS = [
+  'productKeys',
+  'users',
+  'appConfig',
+  'referralPartners',
+  'receipts',
+  'trialFingerprints',
+  'usageStats',
+  'feedback',
+  'integrations',
+  'pendingSubscriptions',
+  'adminCredentials',
+  'adminSecurity',
+  'revisionProjects',
+  'revisionGroups',
+  'notes',
+]
+function serializeForBackup(v: unknown): unknown {
+  if (v === null || typeof v !== 'object') return v
+  const t = v as { toDate?: () => Date; seconds?: number }
+  if (typeof t.toDate === 'function' && typeof t.seconds === 'number') {
+    return { __t: 'ts', v: t.toDate().toISOString() }
+  }
+  if (Array.isArray(v)) return v.map(serializeForBackup)
+  const out: Record<string, unknown> = {}
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    out[k] = serializeForBackup(val)
+  }
+  return out
+}
+
+async function runFirestoreBackupSweep(
+  db: FirebaseFirestore.Firestore,
+  r2: S3Client | null,
+): Promise<{
+  ok: boolean
+  key?: string
+  docCount?: number
+  pruned?: number
+  error?: string
+}> {
+  if (!r2) return { ok: false, error: 'R2 not configured' }
+  try {
+    const docs: Array<{ path: string; data: unknown }> = []
+    for (const name of BACKUP_COLLECTIONS) {
+      const snap = await db.collectionGroup(name).get()
+      for (const d of snap.docs) {
+        docs.push({ path: d.ref.path, data: serializeForBackup(d.data()) })
+      }
+    }
+    const createdAt = new Date().toISOString()
+    const body = JSON.stringify({
+      version: 1,
+      createdAt,
+      type: 'auto',
+      collections: BACKUP_COLLECTIONS,
+      docCount: docs.length,
+      docs,
+    })
+    const key = `${BACKUP_PREFIX}auto-${createdAt.replace(/[:.]/g, '-')}.json`
+    await r2.send(
+      new PutObjectCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        Body: body,
+        ContentType: 'application/json',
+      }),
+    )
+    // Prune old auto snapshots (keep the most recent N). Manual + pre-
+    // restore backups use other prefixes and are left untouched.
+    let pruned = 0
+    const listed = await r2.send(
+      new ListObjectsV2Command({
+        Bucket: R2_BUCKET,
+        Prefix: `${BACKUP_PREFIX}auto-`,
+      }),
+    )
+    const autos = (listed.Contents || [])
+      .filter((o) => o.Key)
+      .sort(
+        (a, b) =>
+          (b.LastModified?.getTime() || 0) - (a.LastModified?.getTime() || 0),
+      )
+    for (const o of autos.slice(BACKUP_KEEP_AUTO)) {
+      await r2Delete(r2, o.Key as string)
+      pruned += 1
+    }
+    return { ok: true, key, docCount: docs.length, pruned }
+  } catch (e) {
+    return { ok: false, error: (e as Error)?.message || 'backup failed' }
+  }
 }
 
 // Operators always keep access — mirror the hardcoded admin set used

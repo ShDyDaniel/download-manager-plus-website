@@ -9,6 +9,7 @@ import {
   Activity,
   Share2,
   DownloadCloud,
+  DatabaseBackup,
   MessageSquare,
   Coins,
   Receipt,
@@ -50,6 +51,7 @@ import ReferralsTab from '../components/admin/ReferralsTab'
 import FeedbackTab from '../components/admin/FeedbackTab'
 import UpdatesTab from '../components/admin/UpdatesTab'
 import ReceiptsTab from '../components/admin/ReceiptsTab'
+import BackupTab from '../components/admin/BackupTab'
 import SettingsTab from '../components/admin/SettingsTab'
 
 /**
@@ -71,6 +73,7 @@ type AdminTabKey =
   | 'updates'
   | 'feedback'
   | 'receipts'
+  | 'backup'
   | 'settings'
 
 const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
@@ -84,6 +87,7 @@ const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
   { key: 'referrals', label: 'שותפים', icon: Share2 },
   { key: 'updates', label: 'עדכונים', icon: DownloadCloud },
   { key: 'feedback', label: 'דיווחים והצעות', icon: MessageSquare },
+  { key: 'backup', label: 'גיבוי', icon: DatabaseBackup },
   { key: 'settings', label: 'הגדרות', icon: SettingsIcon },
 ]
 
@@ -557,6 +561,8 @@ function AdminShell({
             <UpdatesTab onAuthExpired={onAuthExpired} />
           ) : tab === 'receipts' ? (
             <ReceiptsTab onAuthExpired={onAuthExpired} />
+          ) : tab === 'backup' ? (
+            <BackupTab onAuthExpired={onAuthExpired} />
           ) : tab === 'settings' ? (
             <SettingsTab onAuthExpired={onAuthExpired} />
           ) : (
