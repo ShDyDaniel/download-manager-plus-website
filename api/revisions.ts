@@ -159,15 +159,15 @@ const R2_PRESIGN_TTL = 60 * 60 // 1 hour
 // Public Cloudflare Worker that proxies ALL media bytes — video,
 // note images/audio, and Drive→R2 import — so that ZERO media ever
 // streams through Vercel (Vercel egress is what blew past the 10GB
-// free tier). The env var lets us repoint at another worker without
-// a redeploy, but the hardcoded default is the live production worker
-// so a missing/blank env var can NEVER silently route gigabytes of
-// video back through Vercel again. The worker hostname is public (the
-// browser fetches it directly), so hardcoding it leaks nothing.
-const WORKER_STREAM_BASE = (
-  process.env.CLOUDFLARE_STREAM_BASE ||
-  'https://dmplus-stream.danielshaltss.workers.dev'
-)
+// free tier). The worker base lives in config (CLOUDFLARE_STREAM_BASE),
+// NOT in the code, so we can repoint the worker without a redeploy.
+//
+// CRITICAL: if this is blank we FAIL SAFE — media URL builders refuse
+// and the byte-proxy endpoints return an error. We NEVER fall back to
+// streaming bytes through Vercel; that silent fallback is exactly what
+// caused the egress blow-up. So a missing env var breaks playback
+// loudly (easy to spot + fix) instead of quietly costing money.
+const WORKER_STREAM_BASE = (process.env.CLOUDFLARE_STREAM_BASE || '')
   .trim()
   .replace(/\/$/, '')
 
@@ -635,6 +635,13 @@ async function handleDriveImportInit(req: VercelRequest, res: VercelResponse) {
     })
   }
   const cfBase = WORKER_STREAM_BASE
+  if (!cfBase) {
+    return res.status(500).json({
+      ok: false,
+      error: 'stream-base-not-configured',
+      message: 'ייבוא מקישור אינו מוגדר בשרת (חסר CLOUDFLARE_STREAM_BASE).',
+    })
+  }
 
   const body = (req.body || {}) as { driveUrl?: string }
   const fileId = extractDriveFileId(String(body.driveUrl || ''))
@@ -4074,6 +4081,11 @@ async function handleStreamVideo(req: VercelRequest, res: VercelResponse) {
     res.status(400).send('shareToken required')
     return
   }
+  // FAIL SAFE: no worker base → refuse, never stream bytes through Vercel.
+  if (!WORKER_STREAM_BASE) {
+    res.status(500).send('stream worker not configured')
+    return
+  }
   const passwordToken = String(req.query.t || '').trim()
   const roundId = String(req.query.r || '').trim()
   const download = String(req.query.d || '').trim() === '1'
@@ -4097,6 +4109,12 @@ async function handleGetStreamToken(req: VercelRequest, res: VercelResponse) {
   const shareToken = String(body.shareToken || '').trim()
   if (!shareToken) {
     return res.status(400).json({ ok: false, error: 'shareToken required' })
+  }
+  // FAIL SAFE: no worker base → refuse, never mint a Vercel URL.
+  if (!WORKER_STREAM_BASE) {
+    return res
+      .status(500)
+      .json({ ok: false, error: 'stream-not-configured' })
   }
   const resolved = await resolvePublicRound(
     shareToken,
@@ -4684,10 +4702,11 @@ function unpackMediaToken(token: string): MediaTokenClaims | null {
 }
 
 /** Build the Worker media URL for a resolved (owner, fileId) pair.
- *  Always points at the Cloudflare Worker (base hardcoded) so note
- *  images/audio never stream through Vercel either. */
+ *  Returns null when no worker base is configured — the caller then
+ *  returns an error rather than a Vercel byte URL (fail safe). */
 function mintMediaWorkerUrl(ownerUid: string, driveFileId: string): string | null {
   const cfBase = WORKER_STREAM_BASE
+  if (!cfBase) return null
   const tok = packMediaToken(ownerUid, driveFileId)
   return `${cfBase}/?m=${encodeURIComponent(tok)}`
 }
