@@ -7685,6 +7685,7 @@ async function handleGetPopup(req: VercelRequest, res: VercelResponse) {
     })
     const freq = String(d.frequency || 'daily')
     const target = String(d.target || 'both')
+    const size = String(d.size || 'medium')
     return res.status(200).json({
       ok: true,
       popup: {
@@ -7698,6 +7699,8 @@ async function handleGetPopup(req: VercelRequest, res: VercelResponse) {
         hasImage: Boolean(imageUrl),
         frequency: ['always', 'daily', 'once'].includes(freq) ? freq : 'daily',
         target: ['web', 'desktop', 'both'].includes(target) ? target : 'both',
+        size: ['small', 'medium', 'large'].includes(size) ? size : 'medium',
+        linkUrl: String(d.linkUrl || ''),
       },
     })
   } catch (e) {
@@ -7763,6 +7766,8 @@ async function handleAdminSetPopup(req: VercelRequest, res: VercelResponse) {
     driveUrl?: string
     frequency?: string
     target?: string
+    size?: string
+    linkUrl?: string
   }
   const patch = {
     enabled: b.enabled === true,
@@ -7779,6 +7784,10 @@ async function handleAdminSetPopup(req: VercelRequest, res: VercelResponse) {
     target: ['web', 'desktop', 'both'].includes(String(b.target))
       ? b.target
       : 'both',
+    size: ['small', 'medium', 'large'].includes(String(b.size))
+      ? b.size
+      : 'medium',
+    linkUrl: String(b.linkUrl || '').slice(0, 1000),
     id: `${Date.now()}`,
     updatedAt: new Date().toISOString(),
   }

@@ -12,6 +12,14 @@ interface Popup {
   imageUrl: string
   frequency: 'always' | 'daily' | 'once'
   target: 'web' | 'desktop' | 'both'
+  size?: 'small' | 'medium' | 'large'
+  linkUrl?: string
+}
+
+const SIZE_MAX_W: Record<'small' | 'medium' | 'large', string> = {
+  small: 'max-w-sm',
+  medium: 'max-w-lg',
+  large: 'max-w-3xl',
 }
 
 function shouldShow(p: Popup): boolean {
@@ -73,7 +81,16 @@ export function SitePopup() {
   }, [])
 
   if (!open || !popup) return null
-  const { title, body, imageUrl } = popup
+  const { title, body, imageUrl, linkUrl } = popup
+  const maxW = SIZE_MAX_W[popup.size || 'medium']
+  const isExternal = /^https?:\/\//i.test(linkUrl || '')
+  const img = imageUrl ? (
+    <img
+      src={imageUrl}
+      alt=""
+      className="max-h-[60vh] w-full bg-black/20 object-contain"
+    />
+  ) : null
   return (
     <div
       className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 p-4"
@@ -81,7 +98,7 @@ export function SitePopup() {
     >
       <div
         dir="rtl"
-        className="relative w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+        className={`relative w-full ${maxW} overflow-hidden rounded-2xl border border-border bg-card shadow-2xl`}
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -92,13 +109,20 @@ export function SitePopup() {
         >
           <X className="h-4 w-4" />
         </button>
-        {imageUrl ? (
-          <img
-            src={imageUrl}
-            alt=""
-            className="max-h-[60vh] w-full bg-black/20 object-contain"
-          />
-        ) : null}
+        {img && linkUrl ? (
+          <a
+            href={linkUrl}
+            {...(isExternal
+              ? { target: '_blank', rel: 'noopener noreferrer' }
+              : {})}
+            onClick={() => setOpen(false)}
+            className="block cursor-pointer"
+          >
+            {img}
+          </a>
+        ) : (
+          img
+        )}
         {(title || body) && (
           <div className="p-5 text-center">
             {title && <div className="text-lg font-bold text-fg">{title}</div>}

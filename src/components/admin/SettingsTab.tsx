@@ -812,6 +812,8 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [r2Preview, setR2Preview] = useState('') // presigned/local preview for an uploaded image
   const [frequency, setFrequency] = useState<'always' | 'daily' | 'once'>('daily')
   const [target, setTarget] = useState<'web' | 'desktop' | 'both'>('both')
+  const [size, setSize] = useState<'small' | 'medium' | 'large'>('medium')
+  const [linkUrl, setLinkUrl] = useState('')
   const [uploading, setUploading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
@@ -835,6 +837,8 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
             imageUrl?: string
             frequency?: 'always' | 'daily' | 'once'
             target?: 'web' | 'desktop' | 'both'
+            size?: 'small' | 'medium' | 'large'
+            linkUrl?: string
           }
         }
         const p = j.popup || {}
@@ -846,6 +850,8 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
         if (p.imageSource === 'r2') setR2Preview(p.imageUrl || '')
         if (p.frequency) setFrequency(p.frequency)
         if (p.target) setTarget(p.target)
+        if (p.size) setSize(p.size)
+        setLinkUrl(p.linkUrl || '')
       } catch {
         /* ignore */
       } finally {
@@ -902,6 +908,8 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
         driveUrl: driveUrl.trim(),
         frequency,
         target,
+        size,
+        linkUrl: linkUrl.trim(),
       })
       setMsg('נשמר ✓')
       setTimeout(() => setMsg(''), 2500)
@@ -1066,6 +1074,35 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
                   </option>
                 ))}
               </select>
+            </div>
+          </div>
+
+          {/* Size + click-through link */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                גודל הפופאפ
+              </label>
+              <select
+                value={size}
+                onChange={(e) => setSize(e.target.value as typeof size)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-fg outline-none focus:border-primary"
+              >
+                <option value="small">קטן</option>
+                <option value="medium">בינוני</option>
+                <option value="large">גדול</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                קישור בלחיצה על התמונה — אפשר להשאיר ריק
+              </label>
+              <Input
+                dir="ltr"
+                value={linkUrl}
+                onChange={(e) => setLinkUrl(e.target.value)}
+                placeholder="/buy או https://example.com"
+              />
             </div>
           </div>
 
