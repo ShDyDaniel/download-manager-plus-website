@@ -167,47 +167,27 @@ type State =
 const EMAIL_KEY_PREFIX = 'dmplus.review.email.'
 const PWD_TOKEN_KEY_PREFIX = 'dmplus.review.pwd.'
 
-/** Strip the `data:<mime>;base64,` prefix off a data URL so we can
- *  send just the base64 payload to upload-note-media. The server
- *  rebuilds the buffer from the raw bytes. */
-function stripDataUrl(dataUrl: string): { mime: string; base64: string } | null {
-  const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl)
-  if (!m) return null
-  return { mime: m[1], base64: m[2] }
-}
-
-/** Read a Blob into base64 (without the data: prefix). MediaRecorder
- *  hands us a Blob for audio; the only way to send it as JSON to the
- *  upload endpoint is to base64-encode the bytes. */
-async function blobToBase64(blob: Blob): Promise<string> {
-  const arr = new Uint8Array(await blob.arrayBuffer())
-  // btoa needs a binary string. Chunk to avoid stack overflow on
-  // large blobs (>~125 KB) — String.fromCharCode(...arr) blows up
-  // with "Maximum call stack size exceeded" past a few hundred KB.
-  let binary = ''
-  const chunk = 0x8000
-  for (let i = 0; i < arr.length; i += chunk) {
-    binary += String.fromCharCode(...arr.subarray(i, i + chunk))
-  }
-  return btoa(binary)
-}
-
-/** POST a media blob/data-URL to upload-note-media. Returns the
- *  Drive fileId the server stored it under.
+/** Upload a note's screenshot / voice-note STRAIGHT to R2 and return
+ *  the R2 key (the server never touches the bytes — zero Vercel
+ *  egress, same as the video parts).
+ *
+ *  Two hops:
+ *    1. ask the server for a short-lived presigned PUT URL
+ *       (note-media-upload-url) — a tiny JSON round-trip.
+ *    2. PUT the blob to that URL → the bytes flow browser → R2.
+ *  The browser sets Content-Type from the blob automatically; R2
+ *  stores it, so note-media-url can serve it back with the right type.
  *
  *  `roundId` is required for new-style project groups (one share
- *  token, many rounds — server needs to know which round's notes
- *  folder to deposit the attachment in). Legacy single-round
- *  projects ignore it. */
+ *  token, many rounds). Legacy single-round projects ignore it. */
 async function uploadNoteMedia(
   shareToken: string,
   passwordToken: string | null,
   roundId: string | null,
   kind: 'image' | 'audio',
-  mimeType: string,
-  base64: string,
-): Promise<{ driveFileId?: string; r2Key?: string }> {
-  const r = await fetch(`${API}?action=upload-note-media`, {
+  blob: Blob,
+): Promise<{ r2Key: string }> {
+  const r = await fetch(`${API}?action=note-media-upload-url`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -215,16 +195,20 @@ async function uploadNoteMedia(
       passwordToken,
       roundId,
       kind,
-      mimeType,
-      dataBase64: base64,
+      contentType: blob.type || (kind === 'image' ? 'image/jpeg' : 'audio/webm'),
+      sizeBytes: blob.size,
     }),
   })
-  // R2-backed rounds return { r2Key }; Drive-backed return { driveFileId }.
   const json = (await r.json()) as
-    | { ok: true; driveFileId?: string; r2Key?: string; mimeType: string }
+    | { ok: true; url: string; key: string }
     | { ok: false; error: string }
   if (!json.ok) throw new Error(json.error || 'העלאה נכשלה')
-  return { driveFileId: json.driveFileId, r2Key: json.r2Key }
+  // Bytes go browser → R2 directly. Never through Vercel.
+  const put = await fetch(json.url, { method: 'PUT', body: blob })
+  if (!put.ok) {
+    throw new Error(`העלאת המדיה ל-R2 נכשלה (${put.status})`)
+  }
+  return { r2Key: json.key }
 }
 
 /** Build a URL the browser can use to fetch a note's media. Goes
@@ -1764,41 +1748,35 @@ function ReviewWorkspace({
     try {
       const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
 
-      // ── Phase 1: upload media to Drive ──
-      // Done sequentially because each call hits the editor's
-      // refresh-token rotation; parallel calls would race on token
-      // refresh and waste quota.
-      let screenshotDriveFileId: string | null = null
-      let audioDriveFileId: string | null = null
+      // ── Phase 1: upload media STRAIGHT to R2 ──
+      // Note media now always lands in R2 via a presigned PUT — the
+      // bytes go browser → R2 and never touch Vercel. Drive file-ids
+      // stay null (legacy field kept only for old notes).
+      const screenshotDriveFileId: string | null = null
+      const audioDriveFileId: string | null = null
       let screenshotR2Key: string | null = null
       let audioR2Key: string | null = null
       if (screenshotToSave) {
-        const parsed = stripDataUrl(screenshotToSave)
-        if (parsed) {
-          const up = await uploadNoteMedia(
-            token,
-            passwordToken,
-            roundId,
-            'image',
-            parsed.mime,
-            parsed.base64,
-          )
-          screenshotDriveFileId = up.driveFileId || null
-          screenshotR2Key = up.r2Key || null
-        }
+        // data URL → Blob so we can PUT the raw bytes to R2.
+        const blob = await (await fetch(screenshotToSave)).blob()
+        const up = await uploadNoteMedia(
+          token,
+          passwordToken,
+          roundId,
+          'image',
+          blob,
+        )
+        screenshotR2Key = up.r2Key
       }
       if (audioBlob) {
-        const base64 = await blobToBase64(audioBlob)
         const up = await uploadNoteMedia(
           token,
           passwordToken,
           roundId,
           'audio',
-          audioBlob.type || 'audio/webm',
-          base64,
+          audioBlob,
         )
-        audioDriveFileId = up.driveFileId || null
-        audioR2Key = up.r2Key || null
+        audioR2Key = up.r2Key
       }
 
       // ── Phase 2: create the note pointing at the fileIds/keys ──

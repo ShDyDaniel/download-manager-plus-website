@@ -339,6 +339,23 @@ async function r2PresignGet(key: string, ttl = 60 * 60): Promise<string> {
   )
 }
 
+// Presign a one-shot PUT so the browser uploads note media (screenshots
+// / voice notes) STRAIGHT to R2 — zero bytes through Vercel, same as the
+// video multipart parts. We deliberately sign only Bucket+Key: the
+// browser still sends Content-Type + Content-Length as unsigned headers
+// and R2 stores them, so we avoid signed-header mismatches (e.g. an
+// `audio/webm;codecs=opus` blob type vs a stripped `audio/webm`).
+async function r2PresignPut(
+  key: string,
+  ttl = R2_PRESIGN_TTL,
+): Promise<string> {
+  return getSignedUrl(
+    getR2(),
+    new PutObjectCommand({ Bucket: R2_BUCKET, Key: key }),
+    { expiresIn: ttl },
+  )
+}
+
 async function r2HeadSize(key: string): Promise<number> {
   try {
     const r = await getR2().send(
@@ -3505,6 +3522,11 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
  *  These caps also keep us under Vercel Hobby's ~4.5 MB body cap.
  * ────────────────────────────────────────────────────────────── */
 const NOTE_MEDIA_MAX_BASE64 = 5 * 1024 * 1024 // 5 MB encoded
+// Raw-byte cap for the direct-to-R2 path (note-media-upload-url). The
+// browser uploads the blob straight to R2, so there's no Vercel body
+// limit to worry about — this is just a sane abuse ceiling. 8 MB covers
+// a high-res screenshot or a couple minutes of Opus comfortably.
+const NOTE_MEDIA_MAX_BYTES = 8 * 1024 * 1024 // 8 MB raw
 
 /** Find-or-create the "קבצי תיקונים" subfolder inside the project's
  *  root Drive folder. Mirrors the desktop's ensureFolder helper but
@@ -3775,6 +3797,89 @@ async function handleUploadNoteMedia(req: VercelRequest, res: VercelResponse) {
     driveFileId: uploadJson.id,
     mimeType,
   })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Action: note-media-upload-url  (PUBLIC — gated by share + password)
+ *
+ *  POST /api/revisions?action=note-media-upload-url
+ *  Body: { shareToken, passwordToken?, roundId?, kind, contentType, sizeBytes }
+ *  Returns: { ok, url, key }
+ *
+ *  The browser then PUTs the screenshot / voice-note blob STRAIGHT to
+ *  R2 via `url` — zero bytes through Vercel, exactly like the video
+ *  multipart parts. Note media now ALWAYS lands in R2 (even for
+ *  Drive-backed rounds): it's tiny, and it's the only way a public
+ *  reviewer — who has no Drive credentials — can upload without us
+ *  proxying the bytes. The returned `key` is attached to the note via
+ *  add-note (screenshotR2Key / audioR2Key), and note-media-url already
+ *  serves R2 keys with a presigned GET, so playback stays Vercel-free.
+ * ────────────────────────────────────────────────────────────── */
+async function handleNoteMediaUploadUrl(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+    roundId?: string
+    kind?: 'image' | 'audio'
+    contentType?: string
+    sizeBytes?: number
+  }
+  const shareToken = String(body.shareToken || '').trim()
+  const kind = body.kind
+  const sizeBytes = Math.floor(Number(body.sizeBytes) || 0)
+  if (!shareToken) return res.status(400).json({ ok: false, error: 'shareToken' })
+  if (kind !== 'image' && kind !== 'audio') {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'kind חייב להיות image או audio' })
+  }
+  if (sizeBytes <= 0) {
+    return res.status(400).json({ ok: false, error: 'sizeBytes חסר' })
+  }
+  if (sizeBytes > NOTE_MEDIA_MAX_BYTES) {
+    return res.status(413).json({
+      ok: false,
+      error: kind === 'image' ? 'התמונה גדולה מדי' : 'ההקלטה ארוכה מדי',
+    })
+  }
+
+  const resolved = await resolvePublicRound(
+    shareToken,
+    body.roundId,
+    body.passwordToken,
+  )
+  if (!resolved.ok) {
+    return res.status(resolved.status).json({ ok: false, error: resolved.error })
+  }
+  const { roundData, group } = resolved
+  if (roundData.locked === true) {
+    return res.status(423).json({
+      ok: false,
+      error: 'הסבב סגור לתיקונים. אי אפשר להעלות מדיה חדשה.',
+    })
+  }
+
+  const ownerUid = String(group?.ownerUid || roundData.ownerUid || '')
+  const ct = String(body.contentType || '').split(';')[0].trim().toLowerCase()
+  const ext =
+    kind === 'image'
+      ? ct.includes('png')
+        ? 'png'
+        : 'jpg'
+      : ct.includes('mp4') || ct.includes('mpeg') || ct.includes('m4a')
+        ? 'm4a'
+        : 'webm'
+  const key = buildNoteMediaKey(ownerUid, ext)
+  try {
+    const url = await r2PresignPut(key)
+    return res.status(200).json({ ok: true, url, key })
+  } catch (e) {
+    console.error('[note-media-upload-url] presign failed:', e)
+    return res.status(500).json({ ok: false, error: 'presign failed' })
+  }
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -6279,6 +6384,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleUpdateNoteStatus(req, res)
       case 'upload-note-media':
         return await handleUploadNoteMedia(req, res)
+      case 'note-media-upload-url':
+        return await handleNoteMediaUploadUrl(req, res)
       case 'note-media':
         return await handleNoteMedia(req, res)
       case 'note-media-owner':
