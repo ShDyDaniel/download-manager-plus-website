@@ -40,7 +40,13 @@ interface AdminUsage {
     costTotal?: number
     error?: string
   }
-  vercel: { configured: boolean; dashboardUrl: string }
+  vercel: {
+    configured: boolean
+    invocations?: number
+    invocationsLimit?: number
+    month?: string
+    dashboardUrl: string
+  }
   protection?: {
     killSwitch: boolean
     autoKill: boolean
@@ -188,15 +194,43 @@ export default function DashboardTab({
             )}
           </Section>
 
-          <Section icon={<BarChart3 className="h-5 w-5" />} title="Vercel" sub="אין API ציבורי ב-Hobby">
-            <a
-              href={usage.vercel.dashboardUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
-            >
-              <ExternalLink className="h-3.5 w-3.5" /> פתח את דשבורד Vercel
-            </a>
+          <Section
+            icon={<BarChart3 className="h-5 w-5" />}
+            title="Vercel — קריאות פונקציות"
+            sub="מד עצמאי · החודש"
+          >
+            {usage.vercel.configured ? (
+              <div className="space-y-3">
+                <UsageBar
+                  label="קריאות פונקציות (החודש)"
+                  used={usage.vercel.invocations || 0}
+                  limit={usage.vercel.invocationsLimit || 100000}
+                />
+                <a
+                  href={usage.vercel.dashboardUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" /> דשבורד Vercel (מספר רשמי)
+                </a>
+                <p className="text-[10px] leading-relaxed text-fg-faint">
+                  ל-Vercel אין API שימוש ב-Hobby, אז אנחנו סופרים בעצמנו: כל בקשה
+                  ל-/api נספרת כ-invocation אחת (בקירוב, עם batching זול של כמה
+                  כתיבות ביום). 100K הוא התקרה החודשית של Hobby — מעבר אליה Vercel
+                  עוצרת דיפלויים. למספר המדויק־רשמי, פתח את דשבורד Vercel.
+                </p>
+              </div>
+            ) : (
+              <a
+                href={usage.vercel.dashboardUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+              >
+                <ExternalLink className="h-3.5 w-3.5" /> פתח את דשבורד Vercel
+              </a>
+            )}
           </Section>
 
           <p className="pt-1 text-center text-[10px] text-fg-faint">

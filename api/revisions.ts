@@ -4558,11 +4558,12 @@ async function handleAdminUsage(req: VercelRequest, res: VercelResponse) {
   if (verified.email !== 'dyshalts@gmail.com') {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  const [firestore, cloudflare, r2, cfg] = await Promise.all([
+  const [firestore, cloudflare, r2, cfg, vc] = await Promise.all([
     fetchFirestoreUsage(),
     fetchCloudflareUsage(),
     fetchR2Usage(),
     readProtectionConfig(),
+    readVercelInvocations(),
   ])
 
   // Auto-trip: if the ceiling guard is armed and today's usage crossed
@@ -4594,7 +4595,13 @@ async function handleAdminUsage(req: VercelRequest, res: VercelResponse) {
     firestore,
     cloudflare,
     r2,
-    vercel: { configured: false, dashboardUrl: 'https://vercel.com/dashboard/usage' },
+    vercel: {
+      configured: true,
+      invocations: vc.invocations,
+      invocationsLimit: 100000,
+      month: vc.month,
+      dashboardUrl: 'https://vercel.com/dashboard/usage',
+    },
     protection: {
       killSwitch: cfg.killSwitch,
       autoKill: cfg.autoKill,
@@ -5980,11 +5987,63 @@ async function isSiteKilledRev(): Promise<boolean> {
   }
 }
 
+/* ── Vercel invocation counter (self-metered) — twin of api/paypal.ts.
+ *  Every call to this endpoint is one Vercel function invocation. We
+ *  count in memory and flush to metrics/vercelUsage only in batches
+ *  (a few writes/day), so it costs effectively nothing. */
+let vcPendingRev = 0
+let vcLastFlushTsRev = Date.now()
+const VC_FLUSH_THRESHOLD_REV = 200
+const VC_FLUSH_WINDOW_MS_REV = 2 * 60 * 60 * 1000
+function recordVercelInvocation(): void {
+  vcPendingRev += 1
+  const now = Date.now()
+  if (
+    vcPendingRev < VC_FLUSH_THRESHOLD_REV &&
+    now - vcLastFlushTsRev < VC_FLUSH_WINDOW_MS_REV
+  )
+    return
+  const n = vcPendingRev
+  vcPendingRev = 0
+  vcLastFlushTsRev = now
+  const month = new Date().toISOString().slice(0, 7)
+  getDb()
+    .collection('metrics')
+    .doc('vercelUsage')
+    .set(
+      { counts: { [month]: FieldValue.increment(n) }, updatedAt: now },
+      { merge: true },
+    )
+    .catch(() => {
+      vcPendingRev += n
+    })
+}
+
+/** Read this month's self-metered Vercel invocation count for the
+ *  dashboard (one read per dashboard open). */
+async function readVercelInvocations(): Promise<{
+  invocations: number
+  month: string
+}> {
+  const month = new Date().toISOString().slice(0, 7)
+  try {
+    const snap = await getDb().collection('metrics').doc('vercelUsage').get()
+    const counts =
+      (snap.exists
+        ? (snap.data() as { counts?: Record<string, number> }).counts
+        : {}) || {}
+    return { invocations: Math.round(counts[month] || 0), month }
+  } catch {
+    return { invocations: 0, month }
+  }
+}
+
 /* ──────────────────────────────────────────────────────────────
  *  Dispatcher
  * ────────────────────────────────────────────────────────────── */
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  recordVercelInvocation()
   const action = String(req.query.action || '').trim()
   // Maintenance mode: block all revision traffic except the admin
   // dashboard's own status read.

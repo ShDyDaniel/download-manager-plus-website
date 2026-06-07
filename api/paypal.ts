@@ -1154,11 +1154,48 @@ function primeKillCache(value: boolean): void {
   killCache = { value, ts: Date.now() }
 }
 
+/* ── Vercel invocation counter (self-metered) ──────────────────────
+ *  Vercel's Hobby plan exposes no usage API, so we count function
+ *  invocations ourselves: every call to this endpoint is exactly one
+ *  invocation. To keep this practically free we accumulate IN MEMORY
+ *  and flush to Firestore (metrics/vercelUsage, keyed by month) only
+ *  once a batch fills OR the window elapses — a few writes/day, never
+ *  one per request, and reads only happen when the dashboard opens.
+ *  Best-effort: never blocks or fails a request; a failed flush is
+ *  restored so the next request retries. Slightly under-counts (the
+ *  unflushed in-memory tail), which is fine for a rough gauge.
+ *  See the twin copy in api/revisions.ts. */
+let vcPending = 0
+let vcLastFlushTs = Date.now()
+const VC_FLUSH_THRESHOLD = 200
+const VC_FLUSH_WINDOW_MS = 2 * 60 * 60 * 1000
+function recordVercelInvocation(): void {
+  vcPending += 1
+  const now = Date.now()
+  if (vcPending < VC_FLUSH_THRESHOLD && now - vcLastFlushTs < VC_FLUSH_WINDOW_MS)
+    return
+  const n = vcPending
+  vcPending = 0
+  vcLastFlushTs = now
+  const month = new Date().toISOString().slice(0, 7)
+  getDb()
+    .collection('metrics')
+    .doc('vercelUsage')
+    .set(
+      { counts: { [month]: FieldValue.increment(n) }, updatedAt: now },
+      { merge: true },
+    )
+    .catch(() => {
+      vcPending += n
+    })
+}
+
 /* ─────────────────────────────────────────────────────────────
  *  Dispatcher
  * ───────────────────────────────────────────────────────────── */
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  recordVercelInvocation()
   // Action can come from query string or body; both work so the
   // PayPal Dashboard webhook URL can use ?action=webhook in the URL
   // without needing custom body params.
