@@ -1549,6 +1549,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminBackupSummary(req, res)
       case 'admin-restore-backup':
         return await handleAdminRestoreBackup(req, res)
+      case 'admin-list-client-errors':
+        return await handleAdminListClientErrors(req, res)
+      case 'admin-get-client-error':
+        return await handleAdminGetClientError(req, res)
+      case 'admin-resolve-client-error':
+        return await handleAdminResolveClientError(req, res)
+      case 'admin-delete-client-error':
+        return await handleAdminDeleteClientError(req, res)
+      case 'admin-clear-client-errors':
+        return await handleAdminClearClientErrors(req, res)
       case 'admin-set-terms':
         return await handleAdminSetTerms(req, res)
       case 'admin-set-privacy':
@@ -7315,6 +7325,110 @@ async function handleAdminRestoreBackup(
     total: payload.docs.length,
     safetyBackupKey,
   })
+}
+
+/* ── Client error logs (admin views of the aggregated clientErrors) ── */
+
+/** Grouped list: one row per unique error, newest first. No samples. */
+async function handleAdminListClientErrors(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const snap = await getDb().collection('clientErrors').get()
+  const errors = snap.docs
+    .map((d) => {
+      const x = d.data() as Record<string, unknown>
+      return {
+        fingerprint: d.id,
+        level: x.level || 'error',
+        message: x.message || '',
+        count: x.count || 0,
+        deviceCount: x.deviceCount || 0,
+        firstSeenAt: x.firstSeenAt || null,
+        lastSeenAt: x.lastSeenAt || null,
+        lastVersion: x.lastVersion || '?',
+        lastPlatform: x.lastPlatform || '?',
+        resolved: x.resolved === true,
+      }
+    })
+    .sort((a, b) =>
+      String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')),
+    )
+  const open = errors.filter((e) => !e.resolved).length
+  return res.status(200).json({ ok: true, errors, count: errors.length, open })
+}
+
+/** Full detail for one error group, including sample occurrences. */
+async function handleAdminGetClientError(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const fp = String((req.body as { fingerprint?: string })?.fingerprint || '')
+  if (!fp) return res.status(400).json({ ok: false, error: 'fingerprint' })
+  const snap = await getDb().collection('clientErrors').doc(fp).get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'not found' })
+  return res.status(200).json({ ok: true, error: { id: snap.id, ...snap.data() } })
+}
+
+/** Mark an error resolved / unresolved (low-risk toggle, 2FA). */
+async function handleAdminResolveClientError(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { fingerprint?: string; resolved?: boolean }
+  const fp = String(body.fingerprint || '')
+  if (!fp) return res.status(400).json({ ok: false, error: 'fingerprint' })
+  await getDb()
+    .collection('clientErrors')
+    .doc(fp)
+    .set({ resolved: body.resolved === true }, { merge: true })
+  return res.status(200).json({ ok: true })
+}
+
+/** Delete one error group (step-up). */
+async function handleAdminDeleteClientError(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const fp = String((req.body as { fingerprint?: string })?.fingerprint || '')
+  if (!fp) return res.status(400).json({ ok: false, error: 'fingerprint' })
+  await getDb().collection('clientErrors').doc(fp).delete()
+  return res.status(200).json({ ok: true })
+}
+
+/** Clear ALL error logs (step-up). Batched delete. */
+async function handleAdminClearClientErrors(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const db = getDb()
+  const snap = await db.collection('clientErrors').get()
+  let deleted = 0
+  const CHUNK = 400
+  for (let i = 0; i < snap.docs.length; i += CHUNK) {
+    const batch = db.batch()
+    for (const d of snap.docs.slice(i, i + CHUNK)) {
+      batch.delete(d.ref)
+      deleted += 1
+    }
+    await batch.commit()
+  }
+  return res.status(200).json({ ok: true, deleted })
 }
 
 interface LegalSection {

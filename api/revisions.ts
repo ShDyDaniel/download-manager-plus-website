@@ -6021,6 +6021,137 @@ async function sendTelegramAlert(text: string): Promise<void> {
   }
 }
 
+/* ── Client error logging (desktop → server aggregation) ──────────
+ *  The desktop app batches errors into a local file and uploads them
+ *  here (every few hours / on launch). We GROUP identical errors by a
+ *  fingerprint (normalized message + top stack frames) so the admin
+ *  Logs tab shows ONE row per unique bug with an occurrence count +
+ *  how many devices hit it; click a row to see individual samples. */
+function normalizeErrMessage(msg: string): string {
+  return String(msg || '')
+    .replace(/0x[0-9a-fA-F]+/g, '0xN')
+    .replace(/[A-Za-z]:\\[^\s'"]+|\/[^\s'")]+/g, 'PATH') // file paths
+    .replace(/\b\d[\d.,:_-]*\b/g, 'N') // numbers / ids / timestamps
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300)
+}
+function stackSignature(stack: string): string {
+  if (!stack) return ''
+  const frames = String(stack)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('at ') || /:\d+:\d+/.test(l))
+    .slice(0, 3)
+    .map((l) =>
+      l
+        .replace(/:\d+:\d+/g, '') // strip line:col
+        .replace(/([A-Za-z]:\\|\/)[^\s)]+[\\/]/g, '') // strip dir paths
+        .replace(/\?[^\s):]+/g, ''), // strip query strings
+    )
+  return frames.join(' | ').slice(0, 400)
+}
+function errorFingerprint(level: string, message: string, stack: string): string {
+  const basis = `${level}::${normalizeErrMessage(message)}::${stackSignature(stack)}`
+  return crypto.createHash('sha1').update(basis).digest('hex').slice(0, 24)
+}
+
+interface ClientLogEntry {
+  at?: string
+  level?: string
+  message?: string
+  stack?: string
+  context?: unknown
+}
+
+async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const body = (req.body || {}) as {
+    deviceId?: string
+    appVersion?: string
+    platform?: string
+    entries?: ClientLogEntry[]
+  }
+  const entries = Array.isArray(body.entries) ? body.entries.slice(0, 500) : []
+  if (entries.length === 0) return res.status(200).json({ ok: true, ingested: 0 })
+  const deviceId = String(body.deviceId || 'unknown').slice(0, 80)
+  const appVersion = String(body.appVersion || '?').slice(0, 40)
+  const platform = String(body.platform || '?').slice(0, 40)
+  const email = verified.email || '?'
+
+  // Group this upload's entries by fingerprint first, so a runaway loop
+  // (same error ×1000) costs ONE write, not 1000.
+  const groups = new Map<
+    string,
+    { level: string; message: string; samples: ClientLogEntry[]; count: number }
+  >()
+  for (const e of entries) {
+    const level = String(e.level || 'error').slice(0, 16)
+    const message = String(e.message || '').slice(0, 1000)
+    const stack = String(e.stack || '').slice(0, 4000)
+    if (!message && !stack) continue
+    const fp = errorFingerprint(level, message, stack)
+    let g = groups.get(fp)
+    if (!g) {
+      g = { level, message, samples: [], count: 0 }
+      groups.set(fp, g)
+    }
+    g.count += 1
+    if (g.samples.length < 10) {
+      g.samples.push({ at: e.at, message, stack, context: e.context })
+    }
+  }
+
+  const db = getDb()
+  const now = new Date().toISOString()
+  let ingested = 0
+  // Cap groups processed per upload so a pathological file can't trigger
+  // hundreds of writes. Most-frequent first.
+  const sorted = [...groups.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 50)
+  for (const [fp, g] of sorted) {
+    const ref = db.collection('clientErrors').doc(fp)
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref)
+      const prev = (snap.exists ? snap.data() : {}) as {
+        devices?: string[]
+        samples?: unknown[]
+        firstSeenAt?: string
+      }
+      const devices = new Set<string>(Array.isArray(prev.devices) ? prev.devices : [])
+      devices.add(deviceId)
+      const fresh = g.samples.map((s) => ({
+        at: s.at || now,
+        deviceId,
+        email,
+        appVersion,
+        platform,
+        message: s.message,
+        stack: s.stack,
+        context: typeof s.context === 'undefined' ? null : s.context,
+      }))
+      const samples = [...fresh, ...(Array.isArray(prev.samples) ? prev.samples : [])].slice(0, 30)
+      const patch: Record<string, unknown> = {
+        fingerprint: fp,
+        level: g.level,
+        message: g.message,
+        count: FieldValue.increment(g.count),
+        devices: Array.from(devices).slice(0, 200),
+        deviceCount: Math.min(devices.size, 200),
+        samples,
+        firstSeenAt: prev.firstSeenAt || now,
+        lastSeenAt: now,
+        lastVersion: appVersion,
+        lastPlatform: platform,
+      }
+      if (!snap.exists) patch.resolved = false // never un-resolve on re-ingest
+      tx.set(ref, patch, { merge: true })
+    })
+    ingested += g.count
+  }
+  return res.status(200).json({ ok: true, ingested, groups: sorted.length })
+}
+
 /* ── Vercel invocation counter (self-metered) — twin of api/paypal.ts.
  *  Every call to this endpoint is one Vercel function invocation. We
  *  count in memory and flush to metrics/vercelUsage only in batches
@@ -6186,6 +6317,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAuthMedia(req, res)
       case 'admin-usage':
         return await handleAdminUsage(req, res)
+      case 'client-log-ingest':
+        return await handleClientLogIngest(req, res)
       case 'get-stream-token':
         return await handleGetStreamToken(req, res)
       case 'stream-video':
