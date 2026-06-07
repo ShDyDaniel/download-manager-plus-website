@@ -1336,6 +1336,55 @@ async function createBackup(
   return { key, sizeBytes, docCount: payload.docCount, createdAt: payload.createdAt }
 }
 
+/* ── Outgoing-email counter ────────────────────────────────────────
+ *  Gmail SMTP caps a free account at ~500 emails/day. We count every
+ *  send into metrics/emailSends (UTC hourly buckets) so the dashboard
+ *  can show "sent in the last 24h" vs that cap. Email volume is low
+ *  (≤500/day by definition), so one increment per send is negligible.
+ *  Fire-and-forget — counting must never affect the email itself. */
+function recordEmailSent(): void {
+  try {
+    const bucket = new Date().toISOString().slice(0, 13) // YYYY-MM-DDTHH
+    void getDb()
+      .collection('metrics')
+      .doc('emailSends')
+      .set(
+        {
+          hours: { [bucket]: FieldValue.increment(1) },
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true },
+      )
+      .catch(() => {})
+  } catch {
+    /* never let counting break email sending */
+  }
+}
+/** nodemailer transporter that counts every sendMail. A Proxy keeps all
+ *  other methods + the original types intact, so call sites are
+ *  unchanged. Replaces direct nodemailer.createTransport() calls. */
+function makeCountedTransport(
+  config: Record<string, unknown>,
+): ReturnType<typeof nodemailer.createTransport> {
+  const t = nodemailer.createTransport(
+    config as unknown as Parameters<typeof nodemailer.createTransport>[0],
+  )
+  return new Proxy(t, {
+    get(target, prop, recv) {
+      const val = Reflect.get(target, prop, recv)
+      if (prop === 'sendMail' && typeof val === 'function') {
+        return (...args: unknown[]) => {
+          recordEmailSent()
+          return (val as (...a: unknown[]) => unknown).apply(target, args)
+        }
+      }
+      return typeof val === 'function'
+        ? (val as (...a: unknown[]) => unknown).bind(target)
+        : val
+    },
+  }) as ReturnType<typeof nodemailer.createTransport>
+}
+
 /* ── Vercel invocation counter (self-metered) ──────────────────────
  *  Vercel's Hobby plan exposes no usage API, so we count function
  *  invocations ourselves: every call to this endpoint is exactly one
@@ -3635,7 +3684,7 @@ async function sendReceiptEmail(args: {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
@@ -3758,7 +3807,7 @@ async function sendSubscriptionWelcomeEmail(args: {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
@@ -3839,7 +3888,7 @@ async function sendPlanSwitchEmail(args: {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
@@ -3962,7 +4011,7 @@ async function sendProActivatedEmail(args: {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
@@ -4045,7 +4094,7 @@ async function sendCancellationEmail(args: {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
@@ -4115,7 +4164,7 @@ async function sendPaymentFailedEmail(args: {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
@@ -4299,7 +4348,7 @@ async function handleSignupRequestCode(req: VercelRequest, res: VercelResponse) 
       .status(500)
       .json({ ok: false, error: 'שירות שליחת המייל לא מוגדר. פנה לתמיכה.' })
   }
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     host: 'smtp.gmail.com',
     port: 465,
     secure: true,
@@ -4578,7 +4627,7 @@ async function handleVerifyExistingRequestCode(
       .status(500)
       .json({ ok: false, error: 'שירות שליחת המייל לא מוגדר. פנה לתמיכה.' })
   }
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     host: 'smtp.gmail.com',
     port: 465,
     secure: true,
@@ -5203,7 +5252,7 @@ async function handleAdminSendTestEmail(req: VercelRequest, res: VercelResponse)
   if (!user || !pass) {
     return res.status(500).json({ ok: false, error: 'GMAIL credentials not set' })
   }
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
@@ -5394,7 +5443,7 @@ async function handleAdminSendMarketingEmail(
   if (!user || !pass) {
     return res.status(500).json({ ok: false, error: 'GMAIL credentials not set' })
   }
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
@@ -7632,7 +7681,7 @@ async function handleAdmin2faRequest(req: VercelRequest, res: VercelResponse) {
       .status(500)
       .json({ ok: false, error: 'שירות שליחת המייל לא מוגדר.' })
   }
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     host: 'smtp.gmail.com',
     port: 465,
     secure: true,

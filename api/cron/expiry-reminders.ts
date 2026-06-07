@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
-import { getFirestore } from 'firebase-admin/firestore'
+import { getFirestore, FieldValue } from 'firebase-admin/firestore'
 import {
   S3Client,
   DeleteObjectCommand,
@@ -9,6 +9,50 @@ import {
   ListObjectsV2Command,
 } from '@aws-sdk/client-s3'
 import nodemailer from 'nodemailer'
+
+/* ── Outgoing-email counter (twin of api/paypal.ts) ─────────────────
+ *  Counts every email into metrics/emailSends (UTC hourly buckets) so
+ *  the admin dashboard can show sent-in-24h vs the ~500/day Gmail cap.
+ *  The cron is a bulk sender (renewal reminders), so this matters most. */
+function recordEmailSent(): void {
+  try {
+    const bucket = new Date().toISOString().slice(0, 13)
+    void getFirestore(getFirebase())
+      .collection('metrics')
+      .doc('emailSends')
+      .set(
+        {
+          hours: { [bucket]: FieldValue.increment(1) },
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true },
+      )
+      .catch(() => {})
+  } catch {
+    /* never let counting break email sending */
+  }
+}
+function makeCountedTransport(
+  config: Record<string, unknown>,
+): ReturnType<typeof nodemailer.createTransport> {
+  const t = nodemailer.createTransport(
+    config as unknown as Parameters<typeof nodemailer.createTransport>[0],
+  )
+  return new Proxy(t, {
+    get(target, prop, recv) {
+      const val = Reflect.get(target, prop, recv)
+      if (prop === 'sendMail' && typeof val === 'function') {
+        return (...args: unknown[]) => {
+          recordEmailSent()
+          return (val as (...a: unknown[]) => unknown).apply(target, args)
+        }
+      }
+      return typeof val === 'function'
+        ? (val as (...a: unknown[]) => unknown).bind(target)
+        : val
+    },
+  }) as ReturnType<typeof nodemailer.createTransport>
+}
 
 /**
  * Daily Vercel cron — scans `productKeys` for licenses that fall
@@ -201,7 +245,7 @@ async function sendReminderEmail(
   if (!user || !pass) {
     throw new Error('GMAIL_USER / GMAIL_APP_PASSWORD not set')
   }
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
@@ -526,7 +570,7 @@ async function sendAnnualReportEmail(args: {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
@@ -1025,7 +1069,7 @@ async function sendPurgeWarningEmail(
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })

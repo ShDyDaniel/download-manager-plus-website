@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Cloud,
   ShieldAlert,
+  Mail,
 } from 'lucide-react'
 import { getAdminIdToken } from '../../lib/adminApi'
 
@@ -48,6 +49,12 @@ interface AdminUsage {
     invocationsLimit?: number
     month?: string
     dashboardUrl: string
+  }
+  email?: {
+    configured: boolean
+    sent24h?: number
+    limit?: number
+    error?: string
   }
   protection?: {
     killSwitch: boolean
@@ -181,6 +188,33 @@ export default function DashboardTab({
               <NotConfigured
                 error={usage.cloudflare.error}
                 hint="הגדר CF_API_TOKEN ו-CF_ACCOUNT_ID במשתני הסביבה של Vercel כדי לראות את מספר הבקשות ל-Worker."
+              />
+            )}
+          </Section>
+
+          <Section
+            icon={<Mail className="h-5 w-5" />}
+            title="מיילים שנשלחו"
+            sub="Gmail SMTP · 24 שעות אחרונות"
+          >
+            {usage.email?.configured ? (
+              <>
+                <UsageBar
+                  label="מיילים (24 שעות)"
+                  used={usage.email.sent24h || 0}
+                  limit={usage.email.limit || 500}
+                />
+                <p className="mt-3 text-[10px] leading-relaxed text-fg-faint">
+                  Gmail SMTP מוגבל ל-~500 מיילים ביום. זה כולל הכול — אימותים,
+                  מפתחות, קבלות, תזכורות ודיוור. אם מתקרבים לתקרה, מיילים נוספים
+                  עלולים להיכשל עד למחרת. (זו אחת הסיבות לעבור בעתיד לספק דיוור
+                  ייעודי.)
+                </p>
+              </>
+            ) : (
+              <NotConfigured
+                error={usage.email?.error}
+                hint="עדיין לא נשלחו מיילים מאז ההפעלה, או שאין נתונים."
               />
             )}
           </Section>

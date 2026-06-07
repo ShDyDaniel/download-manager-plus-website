@@ -1,8 +1,52 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
-import { getFirestore } from 'firebase-admin/firestore'
+import { getFirestore, FieldValue } from 'firebase-admin/firestore'
 import nodemailer from 'nodemailer'
+
+/* ── Outgoing-email counter (twin of api/paypal.ts) ─────────────────
+ *  Counts every email into metrics/emailSends (UTC hourly buckets) so
+ *  the admin dashboard can show sent-in-24h vs the ~500/day Gmail cap.
+ *  Fire-and-forget; never affects the email itself. */
+function recordEmailSent(): void {
+  try {
+    const bucket = new Date().toISOString().slice(0, 13)
+    void getFirestore(getFirebase())
+      .collection('metrics')
+      .doc('emailSends')
+      .set(
+        {
+          hours: { [bucket]: FieldValue.increment(1) },
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true },
+      )
+      .catch(() => {})
+  } catch {
+    /* never let counting break email sending */
+  }
+}
+function makeCountedTransport(
+  config: Record<string, unknown>,
+): ReturnType<typeof nodemailer.createTransport> {
+  const t = nodemailer.createTransport(
+    config as unknown as Parameters<typeof nodemailer.createTransport>[0],
+  )
+  return new Proxy(t, {
+    get(target, prop, recv) {
+      const val = Reflect.get(target, prop, recv)
+      if (prop === 'sendMail' && typeof val === 'function') {
+        return (...args: unknown[]) => {
+          recordEmailSent()
+          return (val as (...a: unknown[]) => unknown).apply(target, args)
+        }
+      }
+      return typeof val === 'function'
+        ? (val as (...a: unknown[]) => unknown).bind(target)
+        : val
+    },
+  }) as ReturnType<typeof nodemailer.createTransport>
+}
 
 // NOTE: loadCurrentPricing is duplicated inline here (and in
 // pricing.ts, paypal.ts) on purpose. We tried sharing it via a
@@ -486,7 +530,7 @@ async function sendLicenseEmail(
   // ("abcd efgh ijkl mnop"). The SMTP server accepts both forms, but
   // stripping spaces makes it more forgiving against accidental
   // copy/paste with the visible spacing.
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
@@ -567,7 +611,7 @@ async function sendRenewalEmail(
   if (!user || !pass) {
     throw new Error('GMAIL_USER / GMAIL_APP_PASSWORD not set')
   }
-  const transporter = nodemailer.createTransport({
+  const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })

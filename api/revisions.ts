@@ -4561,6 +4561,28 @@ async function fetchR2Usage() {
   }
 }
 
+/* Emails sent in the last 24h vs the ~500/day Gmail SMTP cap. Summed
+ * from the UTC hourly buckets written by recordEmailSent() across the
+ * email-sending endpoints (metrics/emailSends). */
+async function fetchEmailUsage() {
+  try {
+    const snap = await getDb().collection('metrics').doc('emailSends').get()
+    const hours =
+      (snap.exists
+        ? (snap.data() as { hours?: Record<string, number> }).hours
+        : {}) || {}
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000
+    let sent24h = 0
+    for (const [bucket, n] of Object.entries(hours)) {
+      const t = Date.parse(`${bucket}:00:00Z`) // bucket = YYYY-MM-DDTHH
+      if (Number.isFinite(t) && t >= cutoff) sent24h += Number(n) || 0
+    }
+    return { configured: true, sent24h, limit: 500 }
+  } catch (err) {
+    return { configured: false, error: String((err as Error)?.message || err) }
+  }
+}
+
 async function handleAdminUsage(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -4568,12 +4590,13 @@ async function handleAdminUsage(req: VercelRequest, res: VercelResponse) {
   if (verified.email !== 'dyshalts@gmail.com') {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  const [firestore, cloudflare, r2, cfg, vc] = await Promise.all([
+  const [firestore, cloudflare, r2, cfg, vc, email] = await Promise.all([
     fetchFirestoreUsage(),
     fetchCloudflareUsage(),
     fetchR2Usage(),
     readProtectionConfig(),
     readVercelInvocations(),
+    fetchEmailUsage(),
   ])
 
   // Auto-trip: if the ceiling guard is armed and today's usage crossed
@@ -4625,6 +4648,7 @@ async function handleAdminUsage(req: VercelRequest, res: VercelResponse) {
       dailyWriteCeiling: cfg.dailyWriteCeiling,
       autoTripped,
     },
+    email,
     fetchedAt: Date.now(),
   })
 }
