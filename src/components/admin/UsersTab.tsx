@@ -13,6 +13,7 @@ import {
   AlertTriangle,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
+import { cachedAdminApi } from '../../lib/adminCache'
 import { KeyDetailsModal } from './KeyDetailsModal'
 
 /**
@@ -120,13 +121,16 @@ export default function UsersTab({
   const [error, setError] = useState('')
   const [keyModal, setKeyModal] = useState<KeySummary | null>(null)
 
-  async function load() {
+  // force = bypass the session cache (refresh button + after a mutation).
+  // A plain mount uses the cache, so bouncing back to this tab within a
+  // few minutes costs zero reads.
+  async function load(force = false) {
     setError('')
     try {
-      const r = await adminApi<{
+      const r = await cachedAdminApi<{
         users: UserDoc[]
         keysByUid: Record<string, KeySummary>
-      }>('admin-list-users')
+      }>('admin-list-users', {}, { force })
       setUsers(r.users)
       setKeysByUid(r.keysByUid || {})
     } catch (e) {
@@ -171,7 +175,7 @@ export default function UsersTab({
         </div>
         <button
           type="button"
-          onClick={load}
+          onClick={() => load(true)}
           className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
         >
           <RefreshCw className="h-3.5 w-3.5" />
@@ -223,7 +227,7 @@ export default function UsersTab({
               key={u.uid}
               user={u}
               redeemedKey={keysByUid[u.uid] ?? null}
-              onChange={load}
+              onChange={() => load(true)}
               onAuthExpired={onAuthExpired}
               onShowKey={(k) => setKeyModal(k)}
             />
