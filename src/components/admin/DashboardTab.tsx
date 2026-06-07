@@ -9,9 +9,8 @@ import {
   ExternalLink,
   Cloud,
   ShieldAlert,
-  Power,
 } from 'lucide-react'
-import { adminApi, getAdminIdToken } from '../../lib/adminApi'
+import { getAdminIdToken } from '../../lib/adminApi'
 
 interface AdminUsage {
   firestore: {
@@ -20,6 +19,9 @@ interface AdminUsage {
     readsLimit?: number
     writes?: number
     writesLimit?: number
+    costReads?: number
+    costWrites?: number
+    costTotal?: number
     error?: string
   }
   cloudflare: {
@@ -139,33 +141,19 @@ export default function DashboardTab({
                   {usage.protection.autoTripped
                     ? ' המתג הופעל אוטומטית בעקבות חציית התקרה.'
                     : ''}{' '}
-                  כבה אותו בכרטיס "מתג חירום והגנת עלות" כדי להחזיר את השירות.
+                  כבה אותו ב"הגדרות → מתג חירום והגנת עלות" כדי להחזיר את השירות.
                 </div>
               </div>
             </div>
           )}
 
-          <ProtectionCard
-            protection={usage.protection}
-            firestore={usage.firestore}
-            onSaved={load}
-            onAuthExpired={onAuthExpired}
-          />
-
-          <Section icon={<Cpu className="h-5 w-5" />} title="דאטאבייס" sub="Firestore · 24 שעות אחרונות">
+          <Section
+            icon={<Cpu className="h-5 w-5" />}
+            title="דאטאבייס — שימוש ועלות"
+            sub="Firestore · 24 שעות אחרונות"
+          >
             {usage.firestore.configured ? (
-              <>
-                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-                  <UsageBar label="קריאות (היום)" used={usage.firestore.reads || 0} limit={usage.firestore.readsLimit || 50000} freeTier />
-                  <UsageBar label="כתיבות (היום)" used={usage.firestore.writes || 0} limit={usage.firestore.writesLimit || 20000} freeTier />
-                </div>
-                <p className="mt-3 text-[10px] leading-relaxed text-fg-faint">
-                  המספרים הם השימוש בפועל מול מכסת החינם היומית. אתה בתוכנית
-                  בתשלום — <strong className="text-fg-muted">אין חסימה</strong> במכסה;
-                  מעבר אליה החיוב הוא לפי שימוש (~$0.03 ל-100K קריאות, ~$0.18 ל-100K
-                  כתיבות). ההגנה מפני הפתעות היא ה-kill-switch, לא המכסה הזו.
-                </p>
-              </>
+              <DbPanel firestore={usage.firestore} protection={usage.protection} />
             ) : (
               <NotConfigured
                 error={usage.firestore.error}
@@ -363,265 +351,121 @@ function NotConfigured({ error, hint }: { error?: string; hint?: string }) {
   )
 }
 
-/* ── Cost protection / emergency kill switch ────────────────────────
- *  The control the operator asked for: a master maintenance switch, an
- *  optional daily reads/writes ceiling, and an opt-in auto-trip that
- *  flips the switch when a ceiling is crossed. Setting any of these is
- *  a step-up (passkey) mutation. The switch itself costs ~0 DB ops: the
- *  flag is cached server-side per instance and the ceiling is checked
- *  against the free Cloud Monitoring numbers, not Firestore. */
-function Toggle({
-  on,
-  onClick,
-  disabled,
-  danger,
-}: {
-  on: boolean
-  onClick: () => void
-  disabled?: boolean
-  danger?: boolean
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      disabled={disabled}
-      onClick={onClick}
-      className={
-        'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ' +
-        (on ? (danger ? 'bg-destructive' : 'bg-primary') : 'bg-white/[0.12]')
-      }
-    >
-      <span
-        className={
-          'inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ' +
-          (on ? 'translate-x-[-22px]' : 'translate-x-[-2px]')
-        }
-      />
-    </button>
-  )
-}
-
-function ProtectionCard({
-  protection,
+/* ── Database (Firestore) usage + projected cost ──────────────────
+ *  Mirrors the R2 panel: live read/write bars + a monthly cost
+ *  breakdown box. When a daily ceiling is configured (in Settings →
+ *  מתג חירום והגנת עלות) the bar fills against that ceiling; otherwise
+ *  against the free daily allowance. */
+function DbPanel({
   firestore,
-  onSaved,
-  onAuthExpired,
+  protection,
 }: {
-  protection?: AdminUsage['protection']
   firestore: AdminUsage['firestore']
-  onSaved: () => void
-  onAuthExpired: () => void
+  protection?: AdminUsage['protection']
 }) {
-  const [kill, setKill] = useState(false)
-  const [autoKill, setAutoKill] = useState(false)
-  const [readCeiling, setReadCeiling] = useState('0')
-  const [writeCeiling, setWriteCeiling] = useState('0')
-  const [saving, setSaving] = useState(false)
-  const [err, setErr] = useState('')
-
-  // Sync local editor state whenever the server values arrive/refresh.
-  useEffect(() => {
-    setKill(protection?.killSwitch === true)
-    setAutoKill(protection?.autoKill === true)
-    setReadCeiling(String(protection?.dailyReadCeiling || 0))
-    setWriteCeiling(String(protection?.dailyWriteCeiling || 0))
-  }, [
-    protection?.killSwitch,
-    protection?.autoKill,
-    protection?.dailyReadCeiling,
-    protection?.dailyWriteCeiling,
-  ])
-
-  async function save(fields: Record<string, unknown>) {
-    setSaving(true)
-    setErr('')
-    try {
-      await adminApi('admin-set-app-config', fields)
-      onSaved()
-    } catch (e) {
-      const error = e as Error & { code?: string }
-      if (error.code === 'auth') return onAuthExpired()
-      setErr(error.message || 'שמירה נכשלה')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  function toggleKill() {
-    const next = !kill
-    if (
-      next &&
-      !window.confirm(
-        'להפעיל מצב תחזוקה? כל המשתמשים ייחסמו מהאתר ומהתוכנה (פאנל הניהול ימשיך לעבוד) עד שתכבה ידנית.',
-      )
-    )
-      return
-    setKill(next)
-    void save({ killSwitch: next })
-  }
-
-  function saveSettings() {
-    const rc = Math.max(0, Math.floor(Number(readCeiling) || 0))
-    const wc = Math.max(0, Math.floor(Number(writeCeiling) || 0))
-    void save({ autoKill, dailyReadCeiling: rc, dailyWriteCeiling: wc })
-  }
-
-  const reads = firestore.configured ? firestore.reads || 0 : 0
-  const writes = firestore.configured ? firestore.writes || 0 : 0
-  const rc = Math.max(0, Math.floor(Number(readCeiling) || 0))
-  const wc = Math.max(0, Math.floor(Number(writeCeiling) || 0))
-
+  const reads = firestore.reads || 0
+  const writes = firestore.writes || 0
+  const freeReads = firestore.readsLimit || 50000
+  const freeWrites = firestore.writesLimit || 20000
+  const readCeiling = protection?.dailyReadCeiling || 0
+  const writeCeiling = protection?.dailyWriteCeiling || 0
   return (
-    <div
-      className={
-        'overflow-hidden rounded-2xl border bg-card ' +
-        (kill ? 'border-destructive/50' : 'border-border')
-      }
-    >
-      <div className="flex items-center gap-3 border-b border-border px-5 py-4">
-        <div
-          className={
-            'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ' +
-            (kill
-              ? 'bg-destructive/15 text-destructive'
-              : 'bg-primary/10 text-primary')
-          }
-        >
-          <Power className="h-5 w-5" />
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+        <DbBar
+          label="קריאות (היום)"
+          used={reads}
+          freeLimit={freeReads}
+          ceiling={readCeiling}
+        />
+        <DbBar
+          label="כתיבות (היום)"
+          used={writes}
+          freeLimit={freeWrites}
+          ceiling={writeCeiling}
+        />
+      </div>
+
+      {/* Projected monthly cost — same layout as the R2 cost box */}
+      <div className="rounded-xl border border-border bg-background p-3 text-xs">
+        <div className="flex items-center justify-between py-1">
+          <span className="text-fg-muted">תוכנית Blaze (בסיס)</span>
+          <span className="tabular-nums text-fg" dir="ltr">
+            $0.00 · לפי שימוש
+          </span>
         </div>
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-fg">מתג חירום והגנת עלות</h3>
-          <p className="text-[11px] text-fg-faint">
-            עצירת חירום של המערכת + תקרת קריאות/כתיבות יומית
-          </p>
+        <div className="flex items-center justify-between py-1">
+          <span className="text-fg-muted">
+            קריאות (מעבר ל-{freeReads.toLocaleString()}/יום)
+          </span>
+          <span className="tabular-nums text-fg" dir="ltr">
+            ${fmtUsd(firestore.costReads)}
+          </span>
+        </div>
+        <div className="flex items-center justify-between py-1">
+          <span className="text-fg-muted">
+            כתיבות (מעבר ל-{freeWrites.toLocaleString()}/יום)
+          </span>
+          <span className="tabular-nums text-fg" dir="ltr">
+            ${fmtUsd(firestore.costWrites)}
+          </span>
+        </div>
+        <div className="my-2 border-t border-border" />
+        <div className="flex items-center justify-between py-1">
+          <span className="font-semibold text-fg">עלות חודשית צפויה</span>
+          <span className="tabular-nums text-base font-bold text-primary" dir="ltr">
+            ${fmtUsd(firestore.costTotal)}
+          </span>
         </div>
       </div>
 
-      <div className="space-y-4 px-5 py-4">
-        {/* Master kill switch */}
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background px-4 py-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 text-sm font-medium text-fg">
-              <ShieldAlert
-                className={'h-4 w-4 ' + (kill ? 'text-destructive' : 'text-fg-muted')}
-              />
-              מצב תחזוקה (Kill-switch)
-            </div>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
-              {kill
-                ? 'פעיל — האתר והתוכנה חסומים למשתמשים. לחיצה תכבה ותחזיר את השירות.'
-                : 'כבוי — הכל עובד כרגיל. הפעלה חוסמת מיידית את כל המשתמשים (פאנל הניהול ממשיך לעבוד).'}
-            </p>
-          </div>
-          <Toggle on={kill} onClick={toggleKill} disabled={saving} danger />
-        </div>
-
-        {/* Daily ceilings + auto-trip */}
-        <div className="rounded-xl border border-border bg-background px-4 py-3">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-medium text-fg">
-                חסימה אוטומטית בחציית תקרה
-              </div>
-              <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
-                כשמופעל — אם השימוש היומי חוצה תקרה, מצב התחזוקה נדלק אוטומטית.
-                בודק מול נתוני הניטור (חינם), לא מבצע קריאות למסד.
-              </p>
-            </div>
-            <Toggle on={autoKill} onClick={() => setAutoKill((v) => !v)} disabled={saving} />
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <CeilingInput
-              label="תקרת קריאות ליום"
-              value={readCeiling}
-              onChange={setReadCeiling}
-              used={reads}
-              ceiling={rc}
-            />
-            <CeilingInput
-              label="תקרת כתיבות ליום"
-              value={writeCeiling}
-              onChange={setWriteCeiling}
-              used={writes}
-              ceiling={wc}
-            />
-          </div>
-          <p className="mt-2 text-[10px] text-fg-faint">
-            0 = ללא תקרה. התקרה רק מתריעה/חוסמת לפי הבחירה למעלה — היא לא משנה את
-            החיוב בפועל.
-          </p>
-
-          <div className="mt-3 flex items-center justify-end gap-2">
-            {err && <span className="text-[11px] text-destructive">{err}</span>}
-            <button
-              type="button"
-              onClick={saveSettings}
-              disabled={saving}
-              className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-            >
-              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-              שמור הגדרות
-            </button>
-          </div>
-        </div>
-
-        <p className="text-[10px] leading-relaxed text-fg-faint">
-          זו עצירה ברמת האפליקציה (תחזוקה) — מיידית והפיכה, מצוינת לפיתוח או
-          לחסימת ניצול לרעה. כגיבוי-אסון מוחלט מול עלות בלתי-צפויה קיים גם
-          ה-kill-switch ברמת החיוב של Google Cloud (Budget → Cloud Function שמכבה
-          חיוב), שמתואר ב-<span dir="ltr">docs/killswitch</span>.
-        </p>
-      </div>
+      <p className="text-[10px] leading-relaxed text-fg-faint">
+        אתה בתוכנית בתשלום (Blaze) — מכסת החינם היומית (
+        {freeReads.toLocaleString()} קריאות · {freeWrites.toLocaleString()} כתיבות){' '}
+        <strong className="text-fg-muted">אינה חוסמת</strong>; מעבר אליה החיוב לפי
+        שימוש (~$0.03 ל-100K קריאות, ~$0.18 ל-100K כתיבות). העלות היא הערכה לפי 24
+        השעות האחרונות × 30. שליטה ותקרת חסימה נמצאות ב"הגדרות → מתג חירום והגנת
+        עלות".
+      </p>
     </div>
   )
 }
 
-function CeilingInput({
+function DbBar({
   label,
-  value,
-  onChange,
   used,
+  freeLimit,
   ceiling,
 }: {
   label: string
-  value: string
-  onChange: (v: string) => void
   used: number
+  freeLimit: number
   ceiling: number
 }) {
-  const pct = ceiling > 0 ? Math.min(100, (used / ceiling) * 100) : 0
+  // When a ceiling is set, the bar measures progress toward the ceiling
+  // (the auto-block point); otherwise toward the free daily allowance
+  // (the point where cost begins).
+  const limit = ceiling > 0 ? ceiling : freeLimit
+  const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0
   const tone =
     pct >= 90 ? 'bg-destructive' : pct >= 70 ? 'bg-accent' : 'bg-primary'
   return (
     <div>
-      <label className="mb-1 block text-[11px] text-fg-muted">{label}</label>
-      <input
-        type="number"
-        min={0}
-        inputMode="numeric"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        dir="ltr"
-        className="w-full rounded-md border border-border bg-card px-3 py-1.5 text-sm text-fg tabular-nums outline-none focus:border-primary"
-      />
-      {ceiling > 0 ? (
-        <>
-          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
-            <div
-              className={'h-full rounded-full ' + tone}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          <p className="mt-1 text-[10px] text-fg-faint" dir="ltr">
-            {used.toLocaleString()} / {ceiling.toLocaleString()} היום
-          </p>
-        </>
-      ) : (
-        <p className="mt-1 text-[10px] text-fg-faint">ללא תקרה</p>
-      )}
+      <div className="mb-1.5 flex items-center justify-between text-xs">
+        <span className="text-fg-muted">{label}</span>
+        <span className="tabular-nums text-fg" dir="ltr">
+          {used.toLocaleString()} / {limit.toLocaleString()}
+          {ceiling > 0 ? null : <span className="text-fg-faint"> חינם</span>}
+        </span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
+        <div className={'h-full rounded-full ' + tone} style={{ width: `${pct}%` }} />
+      </div>
+      <p className="mt-1 text-[10px] text-fg-faint">
+        {ceiling > 0
+          ? `מכסת חינם ${freeLimit.toLocaleString()} · תקרת חסימה ${ceiling.toLocaleString()}`
+          : `${freeLimit.toLocaleString()} חינם ליום · מעבר לכך תשלום לפי שימוש`}
+      </p>
     </div>
   )
 }

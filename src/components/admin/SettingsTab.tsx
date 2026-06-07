@@ -16,9 +16,12 @@ import {
   Cloud,
   ArrowUp,
   ArrowDown,
+  ShieldAlert,
+  Power,
 } from 'lucide-react'
 import {
   adminApi,
+  getAdminIdToken,
   listPasskeys,
   registerPasskey,
   deletePasskey,
@@ -128,6 +131,7 @@ export default function SettingsTab({
         </div>
       )}
       <AppConfigCard onErr={handleErr} />
+      <ProtectionCard onErr={handleErr} />
       <PasskeysCard onErr={handleErr} />
       <PricingCard onErr={handleErr} />
       <LegalCard kind="terms" title="תנאי שימוש" onErr={handleErr} />
@@ -501,6 +505,284 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
         {storageMsg && <div className="text-xs text-success">{storageMsg}</div>}
       </div>
     </>
+  )
+}
+
+/* ── Cost protection / emergency kill switch ────────────────────────
+ *  Master maintenance switch + optional daily reads/writes ceiling with
+ *  an opt-in auto-trip. Setting any of these is a step-up (passkey)
+ *  mutation. The switch itself costs ~0 DB ops: the flag is cached
+ *  server-side per instance, and the ceiling is checked against the
+ *  free Cloud Monitoring numbers, not Firestore. Lives here in Settings
+ *  (live status is mirrored on the Dashboard's database card). */
+function ProtectionCard({ onErr }: { onErr: (e: unknown) => void }) {
+  const [loading, setLoading] = useState(true)
+  const [kill, setKill] = useState(false)
+  const [autoKill, setAutoKill] = useState(false)
+  const [readCeiling, setReadCeiling] = useState('0')
+  const [writeCeiling, setWriteCeiling] = useState('0')
+  const [reads, setReads] = useState(0)
+  const [writes, setWrites] = useState(0)
+  const [killBusy, setKillBusy] = useState(false)
+  const [saveBusy, setSaveBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  async function load() {
+    try {
+      const idToken = await getAdminIdToken()
+      if (!idToken) throw Object.assign(new Error('auth'), { code: 'auth' })
+      const resp = await fetch('/api/revisions?action=admin-usage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      })
+      if (resp.status === 401 || resp.status === 403)
+        throw Object.assign(new Error('auth'), { code: 'auth' })
+      const j = (await resp.json()) as {
+        firestore?: { configured?: boolean; reads?: number; writes?: number }
+        protection?: {
+          killSwitch?: boolean
+          autoKill?: boolean
+          dailyReadCeiling?: number
+          dailyWriteCeiling?: number
+        }
+      }
+      const p = j.protection || {}
+      setKill(p.killSwitch === true)
+      setAutoKill(p.autoKill === true)
+      setReadCeiling(String(p.dailyReadCeiling || 0))
+      setWriteCeiling(String(p.dailyWriteCeiling || 0))
+      if (j.firestore?.configured) {
+        setReads(j.firestore.reads || 0)
+        setWrites(j.firestore.writes || 0)
+      }
+    } catch (e) {
+      onErr(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function toggleKill(next: boolean) {
+    if (
+      next &&
+      !window.confirm(
+        'להפעיל מצב תחזוקה? כל המשתמשים ייחסמו מהאתר ומהתוכנה (פאנל הניהול ימשיך לעבוד) עד שתכבה ידנית.',
+      )
+    )
+      return
+    setKillBusy(true)
+    setMsg('')
+    try {
+      await adminApi('admin-set-app-config', { killSwitch: next })
+      setKill(next)
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setMsg(err.message || 'שמירה נכשלה')
+    } finally {
+      setKillBusy(false)
+    }
+  }
+
+  async function saveSettings() {
+    const rc = Math.max(0, Math.floor(Number(readCeiling) || 0))
+    const wc = Math.max(0, Math.floor(Number(writeCeiling) || 0))
+    setSaveBusy(true)
+    setMsg('')
+    try {
+      await adminApi('admin-set-app-config', {
+        autoKill,
+        dailyReadCeiling: rc,
+        dailyWriteCeiling: wc,
+      })
+      setMsg('נשמר ✓')
+      setTimeout(() => setMsg(''), 2500)
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setMsg(err.message || 'שמירה נכשלה')
+    } finally {
+      setSaveBusy(false)
+    }
+  }
+
+  const rc = Math.max(0, Math.floor(Number(readCeiling) || 0))
+  const wc = Math.max(0, Math.floor(Number(writeCeiling) || 0))
+
+  return (
+    <>
+      {/* Master kill switch */}
+      <div
+        className={cn(
+          'flex w-full items-stretch gap-4 rounded-2xl border p-4 text-right transition-all',
+          kill
+            ? 'border-destructive/40 bg-destructive/[0.08]'
+            : 'border-border bg-card',
+        )}
+      >
+        <div className="flex flex-1 items-start gap-3">
+          <div
+            className={cn(
+              'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br shadow-md transition-all',
+              kill
+                ? 'from-destructive to-destructive shadow-destructive/40'
+                : 'from-popover to-popover shadow-lg',
+            )}
+          >
+            {killBusy || loading ? (
+              <Loader2 className="h-5 w-5 animate-spin text-white" />
+            ) : (
+              <Power className="h-5 w-5 text-white" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+              מצב תחזוקה (Kill-switch)
+              <span
+                className={cn(
+                  'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors',
+                  kill
+                    ? 'bg-destructive/20 text-destructive'
+                    : 'bg-popover text-muted-foreground',
+                )}
+              >
+                {loading ? 'טוען...' : killBusy ? 'מעדכן...' : kill ? 'פעיל' : 'כבוי'}
+              </span>
+            </div>
+            <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted-foreground">
+              {kill
+                ? 'פעיל — האתר והתוכנה חסומים לכל המשתמשים (פאנל הניהול ממשיך לעבוד). כיבוי יחזיר את השירות מיידית.'
+                : 'כבוי — הכל עובד כרגיל. הפעלה חוסמת מיידית את כל המשתמשים — מצוין לעצירת חירום בזמן פיתוח או מתקפה.'}
+            </p>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center self-center">
+          <Switch
+            checked={kill}
+            onCheckedChange={(v) => toggleKill(v)}
+            disabled={killBusy || loading}
+          />
+        </div>
+      </div>
+
+      {/* Daily ceilings + auto-trip */}
+      <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary shadow-md shadow-primary/40">
+            <ShieldAlert className="h-5 w-5 text-white" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-bold text-foreground">
+                חסימה אוטומטית בחציית תקרה
+              </div>
+              <Switch
+                checked={autoKill}
+                onCheckedChange={(v) => setAutoKill(v)}
+                disabled={saveBusy || loading}
+              />
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              כשמופעל — אם השימוש היומי חוצה תקרה, מצב התחזוקה נדלק אוטומטית.
+              הבדיקה מול נתוני הניטור (חינם), בלי קריאות נוספות למסד.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <CeilingField
+            label="תקרת קריאות ליום"
+            value={readCeiling}
+            onChange={setReadCeiling}
+            used={reads}
+            ceiling={rc}
+          />
+          <CeilingField
+            label="תקרת כתיבות ליום"
+            value={writeCeiling}
+            onChange={setWriteCeiling}
+            used={writes}
+            ceiling={wc}
+          />
+        </div>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          0 = ללא תקרה. התקרה רק מתריעה/חוסמת לפי הבחירה למעלה — היא לא משנה את
+          החיוב בפועל.
+        </p>
+
+        <div className="flex items-center justify-end gap-3">
+          {msg && <span className="text-xs text-muted-foreground">{msg}</span>}
+          <Button onClick={saveSettings} disabled={saveBusy || loading} size="sm">
+            {saveBusy ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4" />
+            )}
+            שמור הגדרות
+          </Button>
+        </div>
+
+        <p className="border-t border-border pt-3 text-[11px] leading-relaxed text-muted-foreground">
+          זו עצירה ברמת האפליקציה — מיידית והפיכה. כגיבוי-אסון מוחלט מול עלות
+          בלתי-צפויה קיים גם ה-kill-switch ברמת החיוב של Google Cloud (Budget →
+          Cloud Function שמכבה חיוב), שמתואר ב-
+          <span dir="ltr">docs/killswitch</span>.
+        </p>
+      </div>
+    </>
+  )
+}
+
+function CeilingField({
+  label,
+  value,
+  onChange,
+  used,
+  ceiling,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  used: number
+  ceiling: number
+}) {
+  const pct = ceiling > 0 ? Math.min(100, (used / ceiling) * 100) : 0
+  const tone =
+    pct >= 90 ? 'bg-destructive' : pct >= 70 ? 'bg-accent' : 'bg-primary'
+  return (
+    <div>
+      <label className="mb-1 block text-xs text-muted-foreground">{label}</label>
+      <Input
+        type="number"
+        min={0}
+        inputMode="numeric"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        dir="ltr"
+        className="tabular-nums"
+      />
+      {ceiling > 0 ? (
+        <>
+          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+            <div
+              className={'h-full rounded-full ' + tone}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <p className="mt-1 text-[10px] text-muted-foreground" dir="ltr">
+            {used.toLocaleString()} / {ceiling.toLocaleString()} היום
+          </p>
+        </>
+      ) : (
+        <p className="mt-1 text-[10px] text-muted-foreground">ללא תקרה</p>
+      )}
+    </div>
   )
 }
 

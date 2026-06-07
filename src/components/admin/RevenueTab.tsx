@@ -32,22 +32,25 @@ interface RevenueReport {
   }
 }
 
-/** Live Firestore reads/writes over the last 24h (from admin-usage),
- *  used to estimate the monthly database cost line. */
+/** Live Firestore usage + projected monthly cost (from admin-usage). */
 interface DbUsage {
   configured: boolean
   reads: number
   writes: number
+  /** Server-computed monthly USD (preferred). */
+  costTotal?: number
 }
 
 /* Firestore free tier is PER DAY; overage is pay-per-use. Rates match
- * the dashboard caption. Monthly estimate = daily overage × 30. */
+ * the dashboard caption. Monthly estimate = daily overage × 30. Used as
+ * a fallback only — the server now returns costTotal directly. */
 const FS_FREE_READS_DAY = 50_000
 const FS_FREE_WRITES_DAY = 20_000
 const FS_READ_USD_PER = 0.03 / 100_000
 const FS_WRITE_USD_PER = 0.18 / 100_000
 function estimateDbMonthlyUsd(u: DbUsage | null): number {
   if (!u || !u.configured) return 0
+  if (typeof u.costTotal === 'number') return u.costTotal
   const billReads = Math.max(0, u.reads - FS_FREE_READS_DAY) * 30
   const billWrites = Math.max(0, u.writes - FS_FREE_WRITES_DAY) * 30
   return billReads * FS_READ_USD_PER + billWrites * FS_WRITE_USD_PER
@@ -109,12 +112,18 @@ export default function RevenueTab({
           body: JSON.stringify({ idToken }),
         })
         const j = (await resp.json()) as {
-          firestore?: { configured?: boolean; reads?: number; writes?: number }
+          firestore?: {
+            configured?: boolean
+            reads?: number
+            writes?: number
+            costTotal?: number
+          }
         }
         setDb({
           configured: j.firestore?.configured === true,
           reads: j.firestore?.reads || 0,
           writes: j.firestore?.writes || 0,
+          costTotal: j.firestore?.costTotal,
         })
       }
     } catch {

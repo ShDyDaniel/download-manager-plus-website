@@ -4419,12 +4419,24 @@ async function fetchFirestoreUsage() {
       firestoreMetricSum(projectId, token, 'firestore.googleapis.com/document/read_count'),
       firestoreMetricSum(projectId, token, 'firestore.googleapis.com/document/write_count'),
     ])
+    const r = Math.round(reads)
+    const w = Math.round(writes)
+    // Projected MONTHLY cost: today's overage above the free daily
+    // allowance × 30, at Firestore's published rates. Matches the
+    // dashboard caption ($0.03 / 100K reads, $0.18 / 100K writes).
+    const costReads =
+      (Math.max(0, r - FS_FREE_READS_DAY) * 30 * FS_READ_USD_PER_100K) / 100_000
+    const costWrites =
+      (Math.max(0, w - FS_FREE_WRITES_DAY) * 30 * FS_WRITE_USD_PER_100K) / 100_000
     return {
       configured: true,
-      reads: Math.round(reads),
-      readsLimit: 50000,
-      writes: Math.round(writes),
-      writesLimit: 20000,
+      reads: r,
+      readsLimit: FS_FREE_READS_DAY,
+      writes: w,
+      writesLimit: FS_FREE_WRITES_DAY,
+      costReads,
+      costWrites,
+      costTotal: costReads + costWrites,
     }
   } catch (err) {
     return {
@@ -4495,6 +4507,13 @@ async function fetchCloudflareUsage() {
 const R2_FREE_STORAGE_GB = 10
 const R2_STORAGE_USD_PER_GB_MONTH = 0.015
 const BYTES_PER_GB = 1024 * 1024 * 1024
+
+/* Firestore (Blaze) free DAILY allowance + published overage rates.
+ * Used to project the monthly database cost from the live 24h counts. */
+const FS_FREE_READS_DAY = 50_000
+const FS_FREE_WRITES_DAY = 20_000
+const FS_READ_USD_PER_100K = 0.03
+const FS_WRITE_USD_PER_100K = 0.18
 
 async function fetchR2Usage() {
   try {
