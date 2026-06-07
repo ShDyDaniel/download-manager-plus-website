@@ -4483,8 +4483,18 @@ async function fetchCloudflareUsage() {
     if (j.errors) throw new Error('cf graphql error')
     const rows = j.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive || []
     const requests = rows.reduce((acc, row) => acc + (row.sum?.requests || 0), 0)
-    // Free Workers plan: 100K requests/day included.
-    return { configured: true, requests, requestsLimit: 100000 }
+    // Free Workers plan: 100K requests/day included, and NO overage
+    // billing — beyond the daily cap requests are throttled (the Worker
+    // stops responding until the next day), not charged. So monthly cost
+    // on Free is always $0. (Workers Paid would be $5/mo incl 10M req/mo,
+    // then $0.30 per additional million.)
+    return {
+      configured: true,
+      requests,
+      requestsLimit: 100000,
+      plan: 'free',
+      costTotal: 0,
+    }
   } catch (err) {
     return { configured: false, error: String((err as Error)?.message || err) }
   }

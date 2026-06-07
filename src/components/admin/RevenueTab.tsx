@@ -295,8 +295,13 @@ function PnLCard({
         <PnLRow label="נטו (אחרי PayPal)" value={fmt(totals.net)} subtotal />
         <PnLRow label="חלוקה לשותפים" value={fmt(partnerTotal)} deduct />
         <PnLRow
-          label="עלות Cloudflare (חודשי)"
+          label="עלות Cloudflare R2 (חודשי)"
           value={cfValue}
+          deduct
+        />
+        <PnLRow
+          label="עלות Cloudflare Worker (חודשי)"
+          value="0.00 $ ≈ 0.00 ₪"
           deduct
         />
         <PnLRow
@@ -309,8 +314,9 @@ function PnLCard({
       <div className="border-t border-border bg-background/40 px-5 py-2.5">
         <p className="text-[10px] leading-relaxed text-fg-faint">
           ההכנסות מצטברות מתחילת הפעילות; עלויות התשתית חודשיות שוטפות.
-          Cloudflare (R2 — לפי שימוש; כרגע {cfState}); מסד נתונים (Firestore —
-          הערכה לפי השימוש ב-24 השעות האחרונות × 30; כרגע {dbState})
+          Cloudflare R2 (לפי שימוש; כרגע {cfState}); Cloudflare Worker (תוכנית
+          חינמית — $0; מעבר ל-100K בקשות ביום נחסם, לא מחויב); מסד נתונים
+          (Firestore — הערכה לפי השימוש ב-24 השעות האחרונות × 30; כרגע {dbState})
           {cloudflare ? `; שער המרה ≈ ${cloudflare.fxRate.toFixed(2)} ₪/$` : ''}.
         </p>
       </div>

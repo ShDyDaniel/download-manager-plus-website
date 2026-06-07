@@ -28,6 +28,8 @@ interface AdminUsage {
     configured: boolean
     requests?: number
     requestsLimit?: number
+    plan?: string
+    costTotal?: number
     error?: string
   }
   r2?: {
@@ -168,9 +170,13 @@ export default function DashboardTab({
             )}
           </Section>
 
-          <Section icon={<Activity className="h-5 w-5" />} title="Cloudflare Worker" sub="בקשות · 24 שעות (100K כלולים בחינם ליום)">
+          <Section
+            icon={<Activity className="h-5 w-5" />}
+            title="Cloudflare Worker — בקשות ועלות"
+            sub="Workers Free · 24 שעות אחרונות"
+          >
             {usage.cloudflare.configured ? (
-              <UsageBar label="בקשות (היום)" used={usage.cloudflare.requests || 0} limit={usage.cloudflare.requestsLimit || 100000} freeTier />
+              <WorkerPanel cloudflare={usage.cloudflare} />
             ) : (
               <NotConfigured
                 error={usage.cloudflare.error}
@@ -364,6 +370,58 @@ function R2Panel({ r2 }: { r2: NonNullable<AdminUsage['r2']> }) {
         אתה על R2 Paid — אין דמי-מנוי קבועים, משלמים רק לפי שימוש. תעבורה
         (egress) חינם, ופעולות קריאה/כתיבה בדרך כלל בתוך החינם — לכן כל עוד
         אתה מתחת ל-{freeGb}GB העלות היא $0. החשבונית המדויקת תמיד ב-Cloudflare.
+      </p>
+    </div>
+  )
+}
+
+/* ── Cloudflare Worker usage + cost (mirrors the R2 panel) ─────────
+ *  Account is on the FREE Workers plan: 100K requests/day included,
+ *  and there is NO overage billing — beyond the cap the Worker is
+ *  throttled (stops responding until the next day), not charged. So the
+ *  projected monthly cost is always $0 here. The caption explains what
+ *  upgrading to Workers Paid would cost. */
+function WorkerPanel({ cloudflare }: { cloudflare: AdminUsage['cloudflare'] }) {
+  const requests = cloudflare.requests || 0
+  const freeLimit = cloudflare.requestsLimit || 100000
+  return (
+    <div className="space-y-4">
+      <UsageBar
+        label="בקשות (היום)"
+        used={requests}
+        limit={freeLimit}
+        freeTier
+      />
+
+      {/* Projected monthly cost — same layout as the R2 cost box */}
+      <div className="rounded-xl border border-border bg-background p-3 text-xs">
+        <div className="flex items-center justify-between py-1">
+          <span className="text-fg-muted">תוכנית</span>
+          <span className="tabular-nums text-fg" dir="ltr">
+            Workers Free · $0.00
+          </span>
+        </div>
+        <div className="flex items-center justify-between py-1">
+          <span className="text-fg-muted">בקשות (היום)</span>
+          <span className="tabular-nums text-fg" dir="ltr">
+            {requests.toLocaleString()} / {freeLimit.toLocaleString()}
+          </span>
+        </div>
+        <div className="my-2 border-t border-border" />
+        <div className="flex items-center justify-between py-1">
+          <span className="font-semibold text-fg">עלות חודשית צפויה</span>
+          <span className="tabular-nums text-base font-bold text-primary" dir="ltr">
+            $0.00
+          </span>
+        </div>
+      </div>
+
+      <p className="text-[10px] leading-relaxed text-fg-faint">
+        בתוכנית החינמית: עד 100,000 בקשות ביום — חינם. אם עוברים את זה, ה-Worker
+        <strong className="text-fg-muted"> מפסיק לענות עד איפוס למחרת</strong> (לא
+        מחויב כסף, אבל השירות נופל זמנית). כדי להתרחב צריך Workers Paid: $5 לחודש
+        שכוללים 10M בקשות, ואז ~$0.30 לכל מיליון בקשות נוסף (ו-$0.02 לכל מיליון
+        CPU-ms). החשבונית המדויקת תמיד ב-Cloudflare.
       </p>
     </div>
   )
