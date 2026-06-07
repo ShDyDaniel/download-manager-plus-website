@@ -1,0 +1,12 @@
+{
+  "name": "billing-killswitch",
+  "version": "1.0.0",
+  "description": "Cloud Function that disables GCP billing when a budget is exceeded (cost circuit-breaker).",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@google-cloud/billing": "^4.1.0"
+  }
+}
