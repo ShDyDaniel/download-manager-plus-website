@@ -6003,13 +6003,13 @@ async function isSiteKilledRev(): Promise<boolean> {
   }
 }
 
-/** Best-effort Telegram alert (mirror of api/paypal.ts). Used to push
+/** Best-effort Telegram alert (mirror of api/paypal.ts). Uses the
+ *  DEDICATED alert bot + chat (separate from the feedback bot). Pushes
  *  the auto-trip event so an automatic shutdown is never silent. */
 async function sendTelegramAlert(text: string): Promise<void> {
   try {
-    const token = process.env.TELEGRAM_BOT_TOKEN
-    const chatId =
-      process.env.TELEGRAM_ALERT_CHAT_ID || process.env.TELEGRAM_CHAT_ID
+    const token = process.env.TELEGRAM_ALERT_BOT_TOKEN
+    const chatId = process.env.TELEGRAM_ALERT_CHAT_ID
     if (!token || !chatId) return
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',

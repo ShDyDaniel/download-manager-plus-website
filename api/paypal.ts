@@ -1155,17 +1155,16 @@ function primeKillCache(value: boolean): void {
 }
 
 /* ── Telegram alerts (operational push to the owner) ───────────────
- *  Reuses the same bot as the feedback forwarder. Critical events
- *  (failed webhook, failed customer payment, dispute, kill-switch,
- *  server errors) are pushed so a failure is never silent. Best-effort:
- *  any error is swallowed — an alert can NEVER break the main flow.
- *  Set TELEGRAM_ALERT_CHAT_ID to route alerts to a dedicated chat;
- *  otherwise they go to TELEGRAM_CHAT_ID (the feedback chat). */
+ *  Uses a DEDICATED alert bot + chat, separate from the feedback bot,
+ *  so operational alerts (failed webhook, failed customer payment,
+ *  dispute, kill-switch, server errors) land in their own group.
+ *  Configure TELEGRAM_ALERT_BOT_TOKEN + TELEGRAM_ALERT_CHAT_ID; if
+ *  either is missing, alerts are simply skipped. Best-effort: any error
+ *  is swallowed — an alert can NEVER break the main flow. */
 async function sendTelegramAlert(text: string): Promise<void> {
   try {
-    const token = process.env.TELEGRAM_BOT_TOKEN
-    const chatId =
-      process.env.TELEGRAM_ALERT_CHAT_ID || process.env.TELEGRAM_CHAT_ID
+    const token = process.env.TELEGRAM_ALERT_BOT_TOKEN
+    const chatId = process.env.TELEGRAM_ALERT_CHAT_ID
     if (!token || !chatId) return
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
