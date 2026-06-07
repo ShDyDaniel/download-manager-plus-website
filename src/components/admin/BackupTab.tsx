@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   RefreshCw,
   Loader2,
@@ -8,15 +8,24 @@ import {
   RotateCcw,
   Trash2,
   Plus,
+  Upload,
   ShieldCheck,
+  ChevronDown,
+  Save,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 
 interface BackupItem {
   key: string
-  type: string // manual | auto | prerestore
+  type: string // manual | auto | prerestore | uploaded
   sizeBytes: number
   createdAt: string | null
+}
+interface BackupSummary {
+  createdAt: string | null
+  type: string | null
+  docCount: number
+  collections: Array<{ name: string; count: number }>
 }
 
 function fmtBytes(n: number): string {
@@ -43,7 +52,35 @@ const TYPE_META: Record<string, { label: string; cls: string }> = {
   manual: { label: 'ידני', cls: 'bg-primary/15 text-primary' },
   auto: { label: 'אוטומטי', cls: 'bg-white/[0.08] text-fg-muted' },
   prerestore: { label: 'לפני שחזור', cls: 'bg-accent/15 text-accent' },
+  uploaded: { label: 'הועלה', cls: 'bg-success/15 text-success' },
 }
+
+// Friendly Hebrew names for the collections, so the breakdown is readable.
+const COLLECTION_LABELS: Record<string, string> = {
+  productKeys: 'מפתחות / רישיונות',
+  users: 'משתמשים',
+  appConfig: 'הגדרות מערכת',
+  referralPartners: 'שותפים',
+  receipts: 'קבלות',
+  trialFingerprints: 'טביעות ניסיון',
+  usageStats: 'סטטיסטיקות שימוש',
+  feedback: 'פניות ודיווחים',
+  integrations: 'אינטגרציות',
+  pendingSubscriptions: 'מנויים בהמתנה',
+  adminCredentials: 'מפתחות אדמין (Passkey)',
+  adminSecurity: 'אבטחת אדמין',
+  revisionProjects: 'סבבי תיקונים',
+  revisionGroups: 'קבוצות סבבים',
+  notes: 'הערות',
+}
+
+const INTERVALS = [
+  { v: 1, label: 'כל יום' },
+  { v: 3, label: 'כל 3 ימים' },
+  { v: 7, label: 'כל שבוע' },
+  { v: 14, label: 'כל שבועיים' },
+  { v: 30, label: 'כל חודש' },
+]
 
 export default function BackupTab({
   onAuthExpired,
@@ -53,33 +90,23 @@ export default function BackupTab({
   const [backups, setBackups] = useState<BackupItem[] | null>(null)
   const [totalBytes, setTotalBytes] = useState(0)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [creating, setCreating] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [busyKey, setBusyKey] = useState('')
   const [busyAction, setBusyAction] = useState<'restore' | 'delete' | 'download' | ''>('')
-  const [notice, setNotice] = useState('')
+  const fileRef = useRef<HTMLInputElement>(null)
 
-  async function load() {
-    setError('')
-    try {
-      const r = await adminApi<{
-        backups: BackupItem[]
-        count: number
-        totalBytes: number
-      }>('admin-list-backups')
-      setBackups(r.backups || [])
-      setTotalBytes(r.totalBytes || 0)
-    } catch (e) {
-      const err = e as Error & { code?: string }
-      if (err.code === 'auth') return onAuthExpired()
-      setError(err.message || 'טעינה נכשלה')
-      setBackups([])
-    }
-  }
+  // Expand-to-inspect
+  const [expanded, setExpanded] = useState('')
+  const [summaries, setSummaries] = useState<Record<string, BackupSummary>>({})
+  const [summaryLoading, setSummaryLoading] = useState('')
 
-  useEffect(() => {
-    void load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // Settings (frequency + telegram notify)
+  const [intervalDays, setIntervalDays] = useState(1)
+  const [notify, setNotify] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsMsg, setSettingsMsg] = useState('')
 
   function flash(msg: string) {
     setNotice(msg)
@@ -89,6 +116,58 @@ export default function BackupTab({
     const err = e as Error & { code?: string }
     if (err.code === 'auth') return onAuthExpired()
     setError(err.message || 'הפעולה נכשלה')
+  }
+
+  async function load() {
+    setError('')
+    try {
+      const r = await adminApi<{
+        backups: BackupItem[]
+        totalBytes: number
+      }>('admin-list-backups')
+      setBackups(r.backups || [])
+      setTotalBytes(r.totalBytes || 0)
+    } catch (e) {
+      handleErr(e)
+      setBackups([])
+    }
+  }
+  async function loadSettings() {
+    try {
+      const r = await adminApi<{
+        backupIntervalDays?: number
+        backupNotify?: boolean
+      }>('admin-get-app-config')
+      setIntervalDays(r.backupIntervalDays || 1)
+      setNotify(r.backupNotify === true)
+    } catch (e) {
+      handleErr(e)
+    }
+  }
+
+  useEffect(() => {
+    void load()
+    void loadSettings()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function saveSettings() {
+    setSettingsSaving(true)
+    setSettingsMsg('')
+    try {
+      await adminApi('admin-set-app-config', {
+        backupIntervalDays: intervalDays,
+        backupNotify: notify,
+      })
+      setSettingsMsg('נשמר ✓')
+      setTimeout(() => setSettingsMsg(''), 2500)
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setSettingsMsg(err.message || 'שמירה נכשלה')
+    } finally {
+      setSettingsSaving(false)
+    }
   }
 
   async function createNow() {
@@ -108,6 +187,47 @@ export default function BackupTab({
       handleErr(e)
     } finally {
       setCreating(false)
+    }
+  }
+
+  async function onFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-picking the same file
+    if (!file) return
+    setUploading(true)
+    setError('')
+    try {
+      const content = await file.text()
+      const r = await adminApi<{ docCount: number }>('admin-upload-backup', {
+        content,
+      })
+      flash(`קובץ הועלה ✓ (${r.docCount.toLocaleString()} מסמכים)`)
+      await load()
+    } catch (e2) {
+      handleErr(e2)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function toggleExpand(item: BackupItem) {
+    if (expanded === item.key) {
+      setExpanded('')
+      return
+    }
+    setExpanded(item.key)
+    if (summaries[item.key]) return
+    setSummaryLoading(item.key)
+    try {
+      const r = await adminApi<BackupSummary>('admin-backup-summary', {
+        key: item.key,
+      })
+      setSummaries((s) => ({ ...s, [item.key]: r }))
+    } catch (e) {
+      handleErr(e)
+      setExpanded('')
+    } finally {
+      setSummaryLoading('')
     }
   }
 
@@ -160,7 +280,12 @@ export default function BackupTab({
       const r = await adminApi<{ url: string }>('admin-download-backup', {
         key: item.key,
       })
-      window.open(r.url, '_blank', 'noopener')
+      const a = document.createElement('a')
+      a.href = r.url
+      a.rel = 'noopener'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
     } catch (e) {
       handleErr(e)
     } finally {
@@ -171,27 +296,40 @@ export default function BackupTab({
 
   return (
     <div className="space-y-5">
-      <header className="flex items-start justify-between gap-3">
+      <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-3xl font-bold font-display text-fg">גיבוי</h2>
           <p className="mt-1 text-sm text-fg-muted">
-            גיבוי מלא של מסד הנתונים נשמר ב-Cloudflare R2. גיבוי אוטומטי רץ פעם
-            ביום (נשמרים 30 הימים האחרונים), ואפשר ליצור/לשחזר/למחוק ידנית.
+            גיבוי מלא של מסד הנתונים נשמר ב-Cloudflare R2. אפשר ליצור, לשחזר,
+            להוריד, להעלות ולמחוק — ולקבוע כל כמה זמן רץ גיבוי אוטומטי.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={load}
-            className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
+            className="flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 text-xs text-fg transition-colors hover:bg-popover"
           >
             <RefreshCw className="h-3.5 w-3.5" /> רענן
           </button>
           <button
             type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            className="flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-50"
+          >
+            {uploading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Upload className="h-3.5 w-3.5" />
+            )}
+            העלה קובץ
+          </button>
+          <button
+            type="button"
             onClick={createNow}
             disabled={creating}
-            className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="flex items-center gap-1.5 whitespace-nowrap rounded-md bg-primary px-3.5 py-2 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             {creating ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -200,6 +338,13 @@ export default function BackupTab({
             )}
             צור גיבוי עכשיו
           </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/json,.json"
+            onChange={onFilePicked}
+            className="hidden"
+          />
         </div>
       </header>
 
@@ -213,6 +358,60 @@ export default function BackupTab({
           <AlertTriangle className="h-4 w-4" /> {error}
         </div>
       )}
+
+      {/* Settings: frequency + telegram notify */}
+      <div className="rounded-2xl border border-border bg-card p-5">
+        <h3 className="mb-3 text-sm font-semibold text-fg">הגדרות גיבוי אוטומטי</h3>
+        <div className="flex flex-wrap items-end gap-5">
+          <div>
+            <label className="mb-1 block text-[11px] text-fg-muted">
+              כל כמה זמן לגבות אוטומטית
+            </label>
+            <select
+              value={intervalDays}
+              onChange={(e) => setIntervalDays(Number(e.target.value))}
+              className="rounded-md border border-border bg-background px-3 py-2 text-sm text-fg outline-none focus:border-primary"
+            >
+              {INTERVALS.map((o) => (
+                <option key={o.v} value={o.v}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <label className="flex cursor-pointer items-center gap-2 pb-2 text-sm text-fg">
+            <input
+              type="checkbox"
+              checked={notify}
+              onChange={(e) => setNotify(e.target.checked)}
+              className="h-4 w-4 accent-primary"
+            />
+            שלח עדכון בטלגרם כשמתבצע גיבוי אוטומטי
+          </label>
+          <div className="flex items-center gap-3 pb-1">
+            {settingsMsg && (
+              <span className="text-xs text-fg-muted">{settingsMsg}</span>
+            )}
+            <button
+              type="button"
+              onClick={saveSettings}
+              disabled={settingsSaving}
+              className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {settingsSaving ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Save className="h-3.5 w-3.5" />
+              )}
+              שמור הגדרות
+            </button>
+          </div>
+        </div>
+        <p className="mt-2 text-[10px] text-fg-faint">
+          הגיבוי רץ פעם ביום, אבל שומר עותק חדש רק אם עבר הזמן שבחרת מאז הגיבוי
+          האוטומטי האחרון. נשמרים 30 העותקים האוטומטיים האחרונים.
+        </p>
+      </div>
 
       {/* Summary */}
       {backups && (
@@ -240,71 +439,118 @@ export default function BackupTab({
           {backups.map((b) => {
             const meta = TYPE_META[b.type] || TYPE_META.auto
             const rowBusy = busyKey === b.key
+            const isOpen = expanded === b.key
+            const sum = summaries[b.key]
             return (
               <div
                 key={b.key}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3"
+                className="overflow-hidden rounded-xl border border-border bg-card"
               >
-                <div className="flex min-w-0 items-center gap-3">
-                  <span
-                    className={
-                      'shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ' +
-                      meta.cls
-                    }
+                <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpand(b)}
+                    className="flex min-w-0 flex-1 items-center gap-3 text-right"
                   >
-                    {meta.label}
-                  </span>
-                  <div className="min-w-0">
-                    <div className="text-sm text-fg">{fmtDate(b.createdAt)}</div>
-                    <div className="text-[11px] text-fg-faint" dir="ltr">
-                      {fmtBytes(b.sizeBytes)}
-                    </div>
+                    <ChevronDown
+                      className={
+                        'h-4 w-4 shrink-0 text-fg-faint transition-transform ' +
+                        (isOpen ? 'rotate-180' : '')
+                      }
+                    />
+                    <span
+                      className={
+                        'shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ' +
+                        meta.cls
+                      }
+                    >
+                      {meta.label}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm text-fg">
+                        {fmtDate(b.createdAt)}
+                      </span>
+                      <span className="block text-[11px] text-fg-faint" dir="ltr">
+                        {fmtBytes(b.sizeBytes)}
+                      </span>
+                    </span>
+                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => download(b)}
+                      disabled={rowBusy}
+                      className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs text-fg-muted transition-colors hover:bg-popover hover:text-fg disabled:opacity-50"
+                    >
+                      {rowBusy && busyAction === 'download' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Download className="h-3.5 w-3.5" />
+                      )}
+                      הורד
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => restore(b)}
+                      disabled={rowBusy}
+                      className="flex items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-xs text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+                    >
+                      {rowBusy && busyAction === 'restore' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RotateCcw className="h-3.5 w-3.5" />
+                      )}
+                      שחזר
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => del(b)}
+                      disabled={rowBusy}
+                      className="flex items-center gap-1 rounded-md border border-destructive/30 px-2.5 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+                    >
+                      {rowBusy && busyAction === 'delete' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                      מחק
+                    </button>
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => download(b)}
-                    disabled={rowBusy}
-                    title="הורד"
-                    className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs text-fg-muted transition-colors hover:bg-popover hover:text-fg disabled:opacity-50"
-                  >
-                    {rowBusy && busyAction === 'download' ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+
+                {/* Expanded: what's inside this backup */}
+                {isOpen && (
+                  <div className="border-t border-border bg-background/40 px-4 py-3">
+                    {summaryLoading === b.key ? (
+                      <div className="flex items-center gap-2 text-xs text-fg-muted">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> טוען תוכן…
+                      </div>
+                    ) : sum ? (
+                      <>
+                        <div className="mb-2 text-xs text-fg-muted">
+                          סה״כ <strong className="text-fg">{sum.docCount.toLocaleString()}</strong> מסמכים
+                        </div>
+                        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                          {sum.collections.map((c) => (
+                            <div
+                              key={c.name}
+                              className="flex items-center justify-between rounded-md bg-card px-3 py-1.5 text-xs"
+                            >
+                              <span className="text-fg-muted">
+                                {COLLECTION_LABELS[c.name] || c.name}
+                              </span>
+                              <span className="tabular-nums text-fg">
+                                {c.count.toLocaleString()}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
                     ) : (
-                      <Download className="h-3.5 w-3.5" />
+                      <div className="text-xs text-fg-faint">אין מידע.</div>
                     )}
-                    הורד
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => restore(b)}
-                    disabled={rowBusy}
-                    title="שחזר"
-                    className="flex items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-xs text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
-                  >
-                    {rowBusy && busyAction === 'restore' ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <RotateCcw className="h-3.5 w-3.5" />
-                    )}
-                    שחזר
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => del(b)}
-                    disabled={rowBusy}
-                    title="מחק"
-                    className="flex items-center gap-1 rounded-md border border-destructive/30 px-2.5 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
-                  >
-                    {rowBusy && busyAction === 'delete' ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-3.5 w-3.5" />
-                    )}
-                    מחק
-                  </button>
-                </div>
+                  </div>
+                )}
               </div>
             )
           })}

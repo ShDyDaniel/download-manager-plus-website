@@ -1543,6 +1543,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminDeleteBackup(req, res)
       case 'admin-download-backup':
         return await handleAdminDownloadBackup(req, res)
+      case 'admin-upload-backup':
+        return await handleAdminUploadBackup(req, res)
+      case 'admin-backup-summary':
+        return await handleAdminBackupSummary(req, res)
       case 'admin-restore-backup':
         return await handleAdminRestoreBackup(req, res)
       case 'admin-set-terms':
@@ -6931,6 +6935,8 @@ async function handleAdminGetAppConfig(
     autoKill?: boolean
     dailyReadCeiling?: number
     dailyWriteCeiling?: number
+    backupIntervalDays?: number
+    backupNotify?: boolean
   }
   return res.status(200).json({
     ok: true,
@@ -6958,6 +6964,13 @@ async function handleAdminGetAppConfig(
       typeof d.dailyWriteCeiling === 'number' && d.dailyWriteCeiling > 0
         ? d.dailyWriteCeiling
         : 0,
+    // Backups: how often the daily cron actually creates a snapshot
+    // (1 = every day) and whether to ping Telegram when it does.
+    backupIntervalDays:
+      typeof d.backupIntervalDays === 'number' && d.backupIntervalDays >= 1
+        ? d.backupIntervalDays
+        : 1,
+    backupNotify: d.backupNotify === true,
   })
 }
 
@@ -6978,6 +6991,8 @@ async function handleAdminSetAppConfig(
     autoKill?: boolean
     dailyReadCeiling?: number
     dailyWriteCeiling?: number
+    backupIntervalDays?: number
+    backupNotify?: boolean
   }
   const patch: Record<string, unknown> = {}
   if (typeof body.betaMode === 'boolean') patch.betaMode = body.betaMode
@@ -7030,6 +7045,19 @@ async function handleAdminSetAppConfig(
         .json({ ok: false, error: 'תקרת כתיבות לא תקינה' })
     }
     patch.dailyWriteCeiling = Math.round(body.dailyWriteCeiling)
+  }
+  // ── Backups ────────────────────────────────────────────────────
+  if (body.backupIntervalDays !== undefined) {
+    const n = Number(body.backupIntervalDays)
+    if (!Number.isFinite(n) || n < 1 || n > 365) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'תדירות גיבוי לא תקינה (1–365 ימים)' })
+    }
+    patch.backupIntervalDays = Math.round(n)
+  }
+  if (typeof body.backupNotify === 'boolean') {
+    patch.backupNotify = body.backupNotify
   }
   if (Object.keys(patch).length === 0) {
     return res.status(400).json({ ok: false, error: 'no fields' })
@@ -7131,12 +7159,103 @@ async function handleAdminDownloadBackup(
   if (typeof key !== 'string' || !key.startsWith(BACKUP_PREFIX)) {
     return res.status(400).json({ ok: false, error: 'invalid key' })
   }
+  // Force a real file download (not an in-browser JSON view) by setting
+  // Content-Disposition on the presigned response.
+  const filename = key.slice(BACKUP_PREFIX.length) || 'backup.json'
   const url = await getSignedUrl(
     getBackupR2(),
-    new GetObjectCommand({ Bucket: BACKUP_BUCKET, Key: key }),
+    new GetObjectCommand({
+      Bucket: BACKUP_BUCKET,
+      Key: key,
+      ResponseContentDisposition: `attachment; filename="${filename}"`,
+      ResponseContentType: 'application/json',
+    }),
     { expiresIn: 600 },
   )
   return res.status(200).json({ ok: true, url })
+}
+
+/** Upload a backup JSON file (e.g. one previously downloaded) back into
+ *  R2 so it shows in the list and can be restored. Validates structure
+ *  + caps size. Admin-only (2FA); restoring it still needs step-up. */
+async function handleAdminUploadBackup(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const content = (req.body as { content?: string })?.content
+  if (typeof content !== 'string' || !content.trim()) {
+    return res.status(400).json({ ok: false, error: 'קובץ ריק' })
+  }
+  if (Buffer.byteLength(content, 'utf8') > 6 * 1024 * 1024) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'הקובץ גדול מדי (מקסימום 6MB דרך ההעלאה)' })
+  }
+  let parsed: BackupPayload
+  try {
+    parsed = JSON.parse(content) as BackupPayload
+  } catch {
+    return res.status(400).json({ ok: false, error: 'קובץ אינו JSON תקין' })
+  }
+  if (!parsed || !Array.isArray(parsed.docs)) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'הקובץ אינו גיבוי תקין (חסר docs)' })
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const key = `${BACKUP_PREFIX}uploaded-${stamp}.json`
+  await getBackupR2().send(
+    new PutObjectCommand({
+      Bucket: BACKUP_BUCKET,
+      Key: key,
+      Body: content,
+      ContentType: 'application/json',
+    }),
+  )
+  return res.status(200).json({ ok: true, key, docCount: parsed.docs.length })
+}
+
+/** Inspect a backup: per-collection document counts + metadata, so the
+ *  admin can see exactly what a snapshot contains. */
+async function handleAdminBackupSummary(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const key = (req.body as { key?: string })?.key
+  if (typeof key !== 'string' || !key.startsWith(BACKUP_PREFIX)) {
+    return res.status(400).json({ ok: false, error: 'invalid key' })
+  }
+  const obj = await getBackupR2().send(
+    new GetObjectCommand({ Bucket: BACKUP_BUCKET, Key: key }),
+  )
+  const text = await (
+    obj.Body as { transformToString: () => Promise<string> }
+  ).transformToString()
+  const payload = JSON.parse(text) as BackupPayload
+  const counts: Record<string, number> = {}
+  for (const d of payload.docs || []) {
+    // The top path segment is the (top-level) collection name; nested
+    // docs (e.g. notes) are grouped under their nearest collection id.
+    const segs = (d.path || '').split('/')
+    const col = segs.length >= 2 ? segs[segs.length - 2] : segs[0] || '—'
+    counts[col] = (counts[col] || 0) + 1
+  }
+  const collections = Object.entries(counts)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count)
+  return res.status(200).json({
+    ok: true,
+    createdAt: payload.createdAt || null,
+    type: payload.type || null,
+    docCount: payload.docCount ?? (payload.docs || []).length,
+    collections,
+  })
 }
 
 /** Restore a backup into Firestore (step-up gated — DANGEROUS). Always

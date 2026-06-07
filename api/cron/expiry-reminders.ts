@@ -672,11 +672,29 @@ function serializeForBackup(v: unknown): unknown {
   return out
 }
 
+/** Best-effort Telegram alert (twin of api/paypal.ts). */
+async function backupTelegramAlert(text: string): Promise<void> {
+  try {
+    const token = process.env.TELEGRAM_ALERT_BOT_TOKEN
+    const chatId = process.env.TELEGRAM_ALERT_CHAT_ID
+    if (!token || !chatId) return
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+    })
+  } catch {
+    /* ignore */
+  }
+}
+
 async function runFirestoreBackupSweep(
   db: FirebaseFirestore.Firestore,
   r2: S3Client | null,
 ): Promise<{
   ok: boolean
+  skipped?: boolean
+  reason?: string
   key?: string
   docCount?: number
   pruned?: number
@@ -684,6 +702,45 @@ async function runFirestoreBackupSweep(
 }> {
   if (!r2) return { ok: false, error: 'R2 not configured' }
   try {
+    // Read the configured cadence + notify flag.
+    let intervalDays = 1
+    let notify = false
+    try {
+      const cfgSnap = await db.collection('appConfig').doc('global').get()
+      const cfg = (cfgSnap.exists ? cfgSnap.data() : {}) as {
+        backupIntervalDays?: number
+        backupNotify?: boolean
+      }
+      if (typeof cfg.backupIntervalDays === 'number' && cfg.backupIntervalDays >= 1) {
+        intervalDays = Math.round(cfg.backupIntervalDays)
+      }
+      notify = cfg.backupNotify === true
+    } catch {
+      /* defaults: daily, no notify */
+    }
+
+    // List existing auto snapshots (for the due-check + pruning).
+    const listed = await r2.send(
+      new ListObjectsV2Command({
+        Bucket: R2_BUCKET,
+        Prefix: `${BACKUP_PREFIX}auto-`,
+      }),
+    )
+    const autos = (listed.Contents || [])
+      .filter((o) => o.Key)
+      .sort(
+        (a, b) =>
+          (b.LastModified?.getTime() || 0) - (a.LastModified?.getTime() || 0),
+      )
+
+    // Due-check: skip if the newest auto backup is younger than the
+    // configured interval (the cron itself still runs daily on Hobby).
+    const newest = autos[0]?.LastModified?.getTime() || 0
+    const ageMs = Date.now() - newest
+    if (newest && ageMs < intervalDays * 24 * 60 * 60 * 1000) {
+      return { ok: true, skipped: true, reason: 'not due yet' }
+    }
+
     const docs: Array<{ path: string; data: unknown }> = []
     for (const name of BACKUP_COLLECTIONS) {
       const snap = await db.collectionGroup(name).get()
@@ -700,6 +757,7 @@ async function runFirestoreBackupSweep(
       docCount: docs.length,
       docs,
     })
+    const sizeBytes = Buffer.byteLength(body, 'utf8')
     const key = `${BACKUP_PREFIX}auto-${createdAt.replace(/[:.]/g, '-')}.json`
     await r2.send(
       new PutObjectCommand({
@@ -710,23 +768,17 @@ async function runFirestoreBackupSweep(
       }),
     )
     // Prune old auto snapshots (keep the most recent N). Manual + pre-
-    // restore backups use other prefixes and are left untouched.
+    // restore + uploaded backups use other prefixes and are left alone.
     let pruned = 0
-    const listed = await r2.send(
-      new ListObjectsV2Command({
-        Bucket: R2_BUCKET,
-        Prefix: `${BACKUP_PREFIX}auto-`,
-      }),
-    )
-    const autos = (listed.Contents || [])
-      .filter((o) => o.Key)
-      .sort(
-        (a, b) =>
-          (b.LastModified?.getTime() || 0) - (a.LastModified?.getTime() || 0),
-      )
-    for (const o of autos.slice(BACKUP_KEEP_AUTO)) {
+    for (const o of autos.slice(BACKUP_KEEP_AUTO - 1)) {
+      // -1 because we just added one above (not in `autos` yet).
       await r2Delete(r2, o.Key as string)
       pruned += 1
+    }
+    if (notify) {
+      await backupTelegramAlert(
+        `💾 גיבוי אוטומטי בוצע\n${docs.length} מסמכים · ${(sizeBytes / 1024).toFixed(0)} KB`,
+      )
     }
     return { ok: true, key, docCount: docs.length, pruned }
   } catch (e) {
