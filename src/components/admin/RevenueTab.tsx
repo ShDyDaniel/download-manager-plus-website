@@ -1,6 +1,30 @@
 import { useEffect, useState } from 'react'
 import { RefreshCw, Loader2, AlertTriangle, Coins } from 'lucide-react'
-import { adminApi, getAdminIdToken } from '../../lib/adminApi'
+import { getAdminIdToken } from '../../lib/adminApi'
+import {
+  cachedAdminApi,
+  peekAdminCache,
+  cachedCall,
+  peekCall,
+} from '../../lib/adminCache'
+
+type UsageResp = {
+  firestore?: {
+    configured?: boolean
+    reads?: number
+    writes?: number
+    costTotal?: number
+  }
+}
+function dbFromUsage(j: UsageResp | undefined): DbUsage | null {
+  if (!j?.firestore) return null
+  return {
+    configured: j.firestore.configured === true,
+    reads: j.firestore.reads || 0,
+    writes: j.firestore.writes || 0,
+    costTotal: j.firestore.costTotal,
+  }
+}
 
 type Money = Record<string, number>
 interface PartnerRow {
@@ -87,47 +111,57 @@ export default function RevenueTab({
 }: {
   onAuthExpired: () => void
 }) {
-  const [data, setData] = useState<RevenueReport | null>(null)
-  const [db, setDb] = useState<DbUsage | null>(null)
+  const [data, setData] = useState<RevenueReport | null>(
+    peekAdminCache<RevenueReport>('admin-revenue-report') ?? null,
+  )
+  const [db, setDb] = useState<DbUsage | null>(
+    dbFromUsage(peekCall<UsageResp>('admin-usage')),
+  )
   const [error, setError] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
 
-  async function load() {
+  async function load(force = false) {
     setError('')
+    if (force) setRefreshing(true)
     try {
-      const r = await adminApi<RevenueReport>('admin-revenue-report')
+      const r = await cachedAdminApi<RevenueReport>(
+        'admin-revenue-report',
+        {},
+        { force },
+      )
       setData(r)
     } catch (e) {
       const err = e as Error & { code?: string }
-      if (err.code === 'auth') return onAuthExpired()
+      if (err.code === 'auth') {
+        if (force) setRefreshing(false)
+        return onAuthExpired()
+      }
       setError(err.message || 'טעינה נכשלה')
     }
-    // Live Firestore usage → estimated monthly DB cost. Best-effort: a
-    // failure here just hides the DB line, it never blocks the report.
+    // Live Firestore usage → estimated monthly DB cost. Shares the
+    // admin-usage cache with the dashboard. Best-effort: a failure here
+    // just hides the DB line, it never blocks the report.
     try {
       const idToken = await getAdminIdToken()
       if (idToken) {
-        const resp = await fetch('/api/revisions?action=admin-usage', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idToken }),
-        })
-        const j = (await resp.json()) as {
-          firestore?: {
-            configured?: boolean
-            reads?: number
-            writes?: number
-            costTotal?: number
-          }
-        }
-        setDb({
-          configured: j.firestore?.configured === true,
-          reads: j.firestore?.reads || 0,
-          writes: j.firestore?.writes || 0,
-          costTotal: j.firestore?.costTotal,
-        })
+        const j = await cachedCall<UsageResp>(
+          'admin-usage',
+          async () => {
+            const resp = await fetch('/api/revisions?action=admin-usage', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ idToken }),
+            })
+            return (await resp.json()) as UsageResp
+          },
+          { force },
+        )
+        setDb(dbFromUsage(j))
       }
     } catch {
       setDb(null)
+    } finally {
+      if (force) setRefreshing(false)
     }
   }
 
@@ -147,10 +181,14 @@ export default function RevenueTab({
         </div>
         <button
           type="button"
-          onClick={load}
-          className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
+          onClick={() => load(true)}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-60"
         >
-          <RefreshCw className="h-3.5 w-3.5" /> רענן
+          <RefreshCw
+            className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`}
+          />{' '}
+          {refreshing ? 'מרענן…' : 'רענן'}
         </button>
       </header>
 

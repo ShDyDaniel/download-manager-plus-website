@@ -12,6 +12,7 @@ import {
   CalendarClock,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
+import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
 
 interface UsageStatsDoc {
   uid: string
@@ -55,13 +56,23 @@ export default function DataTab({
 }: {
   onAuthExpired: () => void
 }) {
-  const [stats, setStats] = useState<UsageStatsDoc[] | null>(null)
-  const [users, setUsers] = useState<UserDoc[]>([])
+  const [stats, setStats] = useState<UsageStatsDoc[] | null>(
+    peekAdminCache<{ stats: UsageStatsDoc[] }>('admin-list-usage-stats')?.stats ??
+      null,
+  )
+  const [users, setUsers] = useState<UserDoc[]>(
+    peekAdminCache<{ users: UserDoc[] }>('admin-list-users')?.users ?? [],
+  )
   const [pageViews, setPageViews] = useState<Record<
     string,
     Record<string, number>
-  > | null>(null)
+  > | null>(
+    peekAdminCache<{ days: Record<string, Record<string, number>> }>(
+      'admin-pageviews',
+    )?.days ?? null,
+  )
   const [error, setError] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
   const [pulling, setPulling] = useState(false)
   const [pullMsg, setPullMsg] = useState<string | null>(null)
   const [selectedUid, setSelectedUid] = useState<string | null>(null)
@@ -72,12 +83,17 @@ export default function DataTab({
     setError(err.message || 'טעינה נכשלה')
   }
 
-  async function load() {
+  async function load(force = false) {
     setError('')
+    if (force) setRefreshing(true)
     try {
       const [s, u] = await Promise.all([
-        adminApi<{ stats: UsageStatsDoc[] }>('admin-list-usage-stats'),
-        adminApi<{ users: UserDoc[] }>('admin-list-users'),
+        cachedAdminApi<{ stats: UsageStatsDoc[] }>(
+          'admin-list-usage-stats',
+          {},
+          { force },
+        ),
+        cachedAdminApi<{ users: UserDoc[] }>('admin-list-users', {}, { force }),
       ])
       setStats(s.stats)
       setUsers(u.users)
@@ -86,12 +102,14 @@ export default function DataTab({
     }
     // Page-view counts — non-critical, don't let a failure blank the tab.
     try {
-      const pv = await adminApi<{
+      const pv = await cachedAdminApi<{
         days: Record<string, Record<string, number>>
-      }>('admin-pageviews')
+      }>('admin-pageviews', {}, { force })
       setPageViews(pv.days || {})
     } catch {
       /* ignore */
+    } finally {
+      if (force) setRefreshing(false)
     }
   }
 
@@ -107,7 +125,7 @@ export default function DataTab({
     try {
       await adminApi('admin-issue-usage-pull')
       await new Promise((r) => setTimeout(r, 4000))
-      await load()
+      await load(true)
       setPullMsg('הנתונים נמשכו ✓')
       setTimeout(() => setPullMsg(null), 3000)
     } catch (e) {
@@ -225,10 +243,14 @@ export default function DataTab({
           </button>
           <button
             type="button"
-            onClick={load}
-            className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
+            onClick={() => load(true)}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-60"
           >
-            <RefreshCw className="h-3.5 w-3.5" /> רענן
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`}
+            />{' '}
+            {refreshing ? 'מרענן…' : 'רענן'}
           </button>
         </div>
       </header>

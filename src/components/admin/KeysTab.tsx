@@ -14,6 +14,7 @@ import {
   Infinity as InfinityIcon,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
+import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
 import { KeyDetailsModal } from './KeyDetailsModal'
 
 interface KeyDoc {
@@ -57,8 +58,11 @@ export default function KeysTab({
 }: {
   onAuthExpired: () => void
 }) {
-  const [keys, setKeys] = useState<KeyDoc[] | null>(null)
+  const [keys, setKeys] = useState<KeyDoc[] | null>(
+    peekAdminCache<{ keys: KeyDoc[] }>('admin-list-keys')?.keys ?? null,
+  )
   const [busy, setBusy] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
@@ -78,13 +82,20 @@ export default function KeysTab({
     setError(err.message || 'שגיאה')
   }
 
-  async function load() {
+  async function load(force = false) {
     setError('')
+    if (force) setRefreshing(true)
     try {
-      const r = await adminApi<{ keys: KeyDoc[] }>('admin-list-keys')
+      const r = await cachedAdminApi<{ keys: KeyDoc[] }>(
+        'admin-list-keys',
+        {},
+        { force },
+      )
       setKeys(r.keys)
     } catch (e) {
       handleErr(e)
+    } finally {
+      if (force) setRefreshing(false)
     }
   }
 
@@ -119,7 +130,7 @@ export default function KeysTab({
     setError('')
     try {
       await adminApi('admin-create-key', { expiresAt: exp })
-      await load()
+      await load(true)
     } catch (e) {
       handleErr(e)
     } finally {
@@ -133,7 +144,7 @@ export default function KeysTab({
     setBusy(true)
     try {
       await adminApi('admin-delete-key', { keyId: id })
-      await load()
+      await load(true)
     } catch (e) {
       handleErr(e)
     } finally {
@@ -149,7 +160,7 @@ export default function KeysTab({
       await adminApi('admin-set-key-expiry', { keyId: id, expiresAt: iso })
       setExtendingId(null)
       setExtendDate('')
-      await load()
+      await load(true)
     } catch (e) {
       handleErr(e)
     } finally {
@@ -184,10 +195,14 @@ export default function KeysTab({
         </div>
         <button
           type="button"
-          onClick={load}
-          className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
+          onClick={() => load(true)}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-60"
         >
-          <RefreshCw className="h-3.5 w-3.5" /> רענן
+          <RefreshCw
+            className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`}
+          />{' '}
+          {refreshing ? 'מרענן…' : 'רענן'}
         </button>
       </header>
 

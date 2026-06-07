@@ -12,6 +12,7 @@ import {
   Mail,
 } from 'lucide-react'
 import { getAdminIdToken } from '../../lib/adminApi'
+import { cachedCall, peekCall } from '../../lib/adminCache'
 
 interface AdminUsage {
   firestore: {
@@ -84,26 +85,39 @@ export default function DashboardTab({
 }: {
   onAuthExpired: () => void
 }) {
-  const [usage, setUsage] = useState<AdminUsage | null>(null)
-  const [loading, setLoading] = useState(true)
+  const usageSeed = peekCall<AdminUsage>('admin-usage') ?? null
+  const [usage, setUsage] = useState<AdminUsage | null>(usageSeed)
+  const [loading, setLoading] = useState(!usageSeed)
   const [error, setError] = useState('')
 
-  async function load() {
-    setLoading(true)
+  async function load(force = false) {
+    if (force || !usage) setLoading(true)
     setError('')
     try {
       const idToken = await getAdminIdToken()
       if (!idToken) return onAuthExpired()
-      const r = await fetch('/api/revisions?action=admin-usage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken }),
-      })
-      if (r.status === 403 || r.status === 401) return onAuthExpired()
-      const j = (await r.json()) as AdminUsage & { ok?: boolean }
+      const j = await cachedCall<AdminUsage & { ok?: boolean }>(
+        'admin-usage',
+        async () => {
+          const r = await fetch('/api/revisions?action=admin-usage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken }),
+          })
+          if (r.status === 403 || r.status === 401) {
+            const e = new Error('auth') as Error & { code?: string }
+            e.code = 'auth'
+            throw e
+          }
+          return (await r.json()) as AdminUsage & { ok?: boolean }
+        },
+        { force },
+      )
       setUsage(j)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'טעינה נכשלה')
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setError(err instanceof Error ? err.message : 'טעינה נכשלה')
     } finally {
       setLoading(false)
     }
@@ -125,12 +139,12 @@ export default function DashboardTab({
         </div>
         <button
           type="button"
-          onClick={load}
+          onClick={() => load(true)}
           disabled={loading}
           className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-50"
         >
           <RefreshCw className={'h-3.5 w-3.5 ' + (loading ? 'animate-spin' : '')} />
-          רענן
+          {loading ? 'מרענן…' : 'רענן'}
         </button>
       </header>
 

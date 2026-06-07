@@ -12,6 +12,7 @@ import {
   Hash,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
+import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
 
 interface ErrorRow {
   fingerprint: string
@@ -67,9 +68,15 @@ export default function LogsTab({
 }: {
   onAuthExpired: () => void
 }) {
-  const [errors, setErrors] = useState<ErrorRow[] | null>(null)
-  const [open, setOpen] = useState(0)
+  const logSeed = peekAdminCache<{ errors: ErrorRow[]; open: number }>(
+    'admin-list-client-errors',
+  )
+  const [errors, setErrors] = useState<ErrorRow[] | null>(
+    logSeed?.errors ?? null,
+  )
+  const [open, setOpen] = useState(logSeed?.open ?? 0)
   const [error, setError] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
   const [showResolved, setShowResolved] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [busyKey, setBusyKey] = useState('')
@@ -85,17 +92,22 @@ export default function LogsTab({
     setError(err.message || 'הפעולה נכשלה')
   }
 
-  async function load() {
+  async function load(force = false) {
     setError('')
+    if (force) setRefreshing(true)
     try {
-      const r = await adminApi<{ errors: ErrorRow[]; open: number }>(
+      const r = await cachedAdminApi<{ errors: ErrorRow[]; open: number }>(
         'admin-list-client-errors',
+        {},
+        { force },
       )
       setErrors(r.errors || [])
       setOpen(r.open || 0)
     } catch (e) {
       handleErr(e)
       setErrors([])
+    } finally {
+      if (force) setRefreshing(false)
     }
   }
 
@@ -133,7 +145,7 @@ export default function LogsTab({
         fingerprint: row.fingerprint,
         resolved: !row.resolved,
       })
-      await load()
+      await load(true)
     } catch (e) {
       handleErr(e)
     } finally {
@@ -148,7 +160,7 @@ export default function LogsTab({
     setBusyAction('delete')
     try {
       await adminApi('admin-delete-client-error', { fingerprint: row.fingerprint })
-      await load()
+      await load(true)
     } catch (e) {
       handleErr(e)
     } finally {
@@ -162,7 +174,7 @@ export default function LogsTab({
     setClearing(true)
     try {
       await adminApi('admin-clear-client-errors')
-      await load()
+      await load(true)
     } catch (e) {
       handleErr(e)
     } finally {
@@ -185,10 +197,14 @@ export default function LogsTab({
         <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
-            onClick={load}
-            className="flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 text-xs text-fg transition-colors hover:bg-popover"
+            onClick={() => load(true)}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-60"
           >
-            <RefreshCw className="h-3.5 w-3.5" /> רענן
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`}
+            />{' '}
+            {refreshing ? 'מרענן…' : 'רענן'}
           </button>
           {(errors?.length || 0) > 0 && (
             <button

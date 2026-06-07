@@ -12,6 +12,7 @@ import {
   FileText,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
+import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
 
 interface ReferralDetail {
   accounts: { email: string; createdAt: string; paid: boolean }[]
@@ -54,7 +55,11 @@ export default function ReferralsTab({
 }: {
   onAuthExpired: () => void
 }) {
-  const [partners, setPartners] = useState<Partner[] | null>(null)
+  const [partners, setPartners] = useState<Partner[] | null>(
+    peekAdminCache<{ partners: Partner[] }>('admin-referral-report')?.partners ??
+      null,
+  )
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
@@ -74,14 +79,21 @@ export default function ReferralsTab({
     setError(err.message || 'שגיאה')
   }
 
-  async function load() {
+  async function load(force = false) {
     setError('')
+    if (force) setRefreshing(true)
     try {
-      const r = await adminApi<{ partners: Partner[] }>('admin-referral-report')
+      const r = await cachedAdminApi<{ partners: Partner[] }>(
+        'admin-referral-report',
+        {},
+        { force },
+      )
       setPartners(r.partners)
     } catch (e) {
       handleErr(e)
       setPartners([])
+    } finally {
+      if (force) setRefreshing(false)
     }
   }
 
@@ -110,7 +122,7 @@ export default function ReferralsTab({
       setPassword('')
       setCommType('none')
       setCommValue('')
-      await load()
+      await load(true)
     } catch (e) {
       handleErr(e)
     } finally {
@@ -122,7 +134,7 @@ export default function ReferralsTab({
     if (!window.confirm(`למחוק את השותף "${p.name}"? הפעולה אינה הפיכה.`)) return
     try {
       await adminApi('admin-delete-referral', { code: p.code })
-      await load()
+      await load(true)
     } catch (e) {
       handleErr(e)
     }
@@ -149,10 +161,14 @@ export default function ReferralsTab({
         </div>
         <button
           type="button"
-          onClick={load}
-          className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
+          onClick={() => load(true)}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-60"
         >
-          <RefreshCw className="h-3.5 w-3.5" /> רענן
+          <RefreshCw
+            className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`}
+          />{' '}
+          {refreshing ? 'מרענן…' : 'רענן'}
         </button>
       </header>
 

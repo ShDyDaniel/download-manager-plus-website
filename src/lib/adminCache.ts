@@ -52,6 +52,32 @@ export async function cachedAdminApi<T>(
 }
 
 /**
+ * Generic cached call for reads that DON'T go through adminApi (e.g. the
+ * dashboard's direct fetch to /api/revisions?action=admin-usage). Same
+ * TTL + force semantics, keyed by an explicit string you choose.
+ */
+export async function cachedCall<T>(
+  key: string,
+  fn: () => Promise<T>,
+  opts: { ttlMs?: number; force?: boolean } = {},
+): Promise<T> {
+  const ttl = opts.ttlMs ?? DEFAULT_TTL_MS
+  const hit = cache.get(key)
+  if (!opts.force && hit && Date.now() - hit.at < ttl) {
+    return hit.data as T
+  }
+  const data = await fn()
+  cache.set(key, { at: Date.now(), data })
+  return data
+}
+
+/** Synchronous peek for a cachedCall key. */
+export function peekCall<T>(key: string): T | undefined {
+  const hit = cache.get(key)
+  return hit ? (hit.data as T) : undefined
+}
+
+/**
  * Synchronous peek — returns the cached snapshot immediately (any age),
  * or undefined if we've never loaded it this session. Use it to seed a
  * tab's initial state so re-entering shows the data instantly with NO
