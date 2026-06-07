@@ -128,6 +128,7 @@ export default function UsersTab({
   )
   const [search, setSearch] = useState('')
   const [error, setError] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
   const [keyModal, setKeyModal] = useState<KeySummary | null>(null)
 
   // force = bypass the session cache (refresh button + after a mutation).
@@ -135,6 +136,7 @@ export default function UsersTab({
   // few minutes costs zero reads.
   async function load(force = false) {
     setError('')
+    if (force) setRefreshing(true)
     try {
       const r = await cachedAdminApi<{
         users: UserDoc[]
@@ -146,6 +148,8 @@ export default function UsersTab({
       const err = e as Error & { code?: string }
       if (err.code === 'auth') return onAuthExpired()
       setError(err.message || 'טעינה נכשלה')
+    } finally {
+      if (force) setRefreshing(false)
     }
   }
 
@@ -185,10 +189,13 @@ export default function UsersTab({
         <button
           type="button"
           onClick={() => load(true)}
-          className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
+          disabled={refreshing}
+          className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-60"
         >
-          <RefreshCw className="h-3.5 w-3.5" />
-          רענן
+          <RefreshCw
+            className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`}
+          />
+          {refreshing ? 'מרענן…' : 'רענן'}
         </button>
       </header>
 
