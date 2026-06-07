@@ -57,6 +57,10 @@ export default function DataTab({
 }) {
   const [stats, setStats] = useState<UsageStatsDoc[] | null>(null)
   const [users, setUsers] = useState<UserDoc[]>([])
+  const [pageViews, setPageViews] = useState<Record<
+    string,
+    Record<string, number>
+  > | null>(null)
   const [error, setError] = useState('')
   const [pulling, setPulling] = useState(false)
   const [pullMsg, setPullMsg] = useState<string | null>(null)
@@ -79,6 +83,15 @@ export default function DataTab({
       setUsers(u.users)
     } catch (e) {
       handleErr(e)
+    }
+    // Page-view counts — non-critical, don't let a failure blank the tab.
+    try {
+      const pv = await adminApi<{
+        days: Record<string, Record<string, number>>
+      }>('admin-pageviews')
+      setPageViews(pv.days || {})
+    } catch {
+      /* ignore */
     }
   }
 
@@ -226,6 +239,8 @@ export default function DataTab({
           <AlertTriangle className="h-4 w-4" /> {error}
         </div>
       )}
+
+      <PageViewsCard pageViews={pageViews} />
 
       {stats === null ? (
         <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-10 text-sm text-fg-muted">
@@ -613,6 +628,83 @@ function Stat({
           {icon}
         </div>
       )}
+    </div>
+  )
+}
+
+/* Website visit counts (home / buy / account), raw + last 7 days. */
+const PV_PAGES = [
+  { key: 'home', label: 'דף הבית' },
+  { key: 'buy', label: 'דף קנייה' },
+  { key: 'account', label: 'דף פרופיל' },
+] as const
+
+function PageViewsCard({
+  pageViews,
+}: {
+  pageViews: Record<string, Record<string, number>> | null
+}) {
+  if (!pageViews) return null
+  const days = Object.keys(pageViews).sort() // YYYY-MM-DD ascending
+  const totals: Record<string, number> = { home: 0, buy: 0, account: 0 }
+  for (const d of days) {
+    for (const p of PV_PAGES) totals[p.key] += Number(pageViews[d]?.[p.key] || 0)
+  }
+  const grand = totals.home + totals.buy + totals.account
+  const last7 = days.slice(-7).reverse()
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5">
+      <div className="mb-3 text-sm font-semibold text-fg">כניסות לאתר</div>
+      {grand === 0 ? (
+        <div className="py-4 text-center text-sm text-fg-muted">
+          עדיין אין כניסות מתועדות.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            {PV_PAGES.map((p) => (
+              <div
+                key={p.key}
+                className="rounded-xl bg-background px-3 py-3 text-center"
+              >
+                <div className="text-2xl font-bold tabular-nums text-fg">
+                  {totals[p.key].toLocaleString()}
+                </div>
+                <div className="mt-1 text-[11px] text-fg-muted">{p.label}</div>
+              </div>
+            ))}
+          </div>
+          {last7.length > 0 && (
+            <div className="mt-4">
+              <div className="mb-1.5 text-[11px] uppercase tracking-wide text-fg-muted">
+                7 הימים האחרונים
+              </div>
+              <div className="space-y-1">
+                {last7.map((d) => (
+                  <div
+                    key={d}
+                    className="flex items-center justify-between rounded-md bg-background px-3 py-1.5 text-xs"
+                  >
+                    <span className="text-fg-muted" dir="ltr">
+                      {d}
+                    </span>
+                    <span className="tabular-nums text-fg">
+                      בית {Number(pageViews[d]?.home || 0)} · קנייה{' '}
+                      {Number(pageViews[d]?.buy || 0)} · פרופיל{' '}
+                      {Number(pageViews[d]?.account || 0)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      <p className="mt-3 text-[10px] text-fg-faint">
+        ספירת כניסות גולמית (פעם אחת לכל ביקור בדפדפן), בלי עוגיות ובלי מידע
+        אישי.
+      </p>
     </div>
   )
 }

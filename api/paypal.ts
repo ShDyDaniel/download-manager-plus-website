@@ -1385,6 +1385,87 @@ function makeCountedTransport(
   }) as ReturnType<typeof nodemailer.createTransport>
 }
 
+/* ── Page-view counter (self-metered) ──────────────────────────────
+ *  Counts visits to the marketing / buy / account pages. Accumulated
+ *  IN MEMORY and flushed to metrics/pageViews (per-day, per-page) in
+ *  batches, so even heavy landing-page traffic costs only a few writes
+ *  per day. The client de-dupes once per page per browser session, and
+ *  a slight under-count on cold starts is fine (it's a rough gauge). */
+const pvPending: Record<string, number> = {} // "YYYY-MM-DD|page" -> count
+let pvLastFlushTs = Date.now()
+const PV_FLUSH_THRESHOLD = 50
+const PV_FLUSH_WINDOW_MS = 30 * 60 * 1000
+function pvTotalPending(): number {
+  let s = 0
+  for (const k in pvPending) s += pvPending[k]
+  return s
+}
+function recordPageView(page: string): void {
+  try {
+    const day = new Date().toISOString().slice(0, 10) // YYYY-MM-DD (UTC)
+    const key = `${day}|${page}`
+    pvPending[key] = (pvPending[key] || 0) + 1
+    const now = Date.now()
+    if (
+      pvTotalPending() < PV_FLUSH_THRESHOLD &&
+      now - pvLastFlushTs < PV_FLUSH_WINDOW_MS
+    )
+      return
+    void flushPageViews()
+  } catch {
+    /* counting must never throw */
+  }
+}
+async function flushPageViews(): Promise<void> {
+  const snapshot = { ...pvPending }
+  for (const k in pvPending) delete pvPending[k]
+  pvLastFlushTs = Date.now()
+  if (Object.keys(snapshot).length === 0) return
+  try {
+    const days: Record<string, Record<string, FirebaseFirestore.FieldValue>> = {}
+    for (const [k, n] of Object.entries(snapshot)) {
+      const [day, page] = k.split('|')
+      days[day] = days[day] || {}
+      days[day][page] = FieldValue.increment(n)
+    }
+    await getDb()
+      .collection('metrics')
+      .doc('pageViews')
+      .set(
+        { days, updatedAt: new Date().toISOString() } as Record<string, unknown>,
+        { merge: true },
+      )
+  } catch {
+    // Restore the counts so the next flush retries them.
+    for (const [k, n] of Object.entries(snapshot)) {
+      pvPending[k] = (pvPending[k] || 0) + n
+    }
+  }
+}
+
+/** Public: record a page view (home / buy / account). No auth — the
+ *  client de-dupes per session; the server only accepts the 3 pages. */
+function handleTrackPageview(req: VercelRequest, res: VercelResponse) {
+  const page = String((req.body as { page?: string })?.page || '')
+  if (page === 'home' || page === 'buy' || page === 'account') {
+    recordPageView(page)
+  }
+  return res.status(200).json({ ok: true })
+}
+/** Admin: return the per-day, per-page visit counts. */
+async function handleAdminPageViews(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  await flushPageViews().catch(() => {}) // include the in-memory tail
+  const snap = await getDb().collection('metrics').doc('pageViews').get()
+  const days =
+    (snap.exists
+      ? (snap.data() as { days?: Record<string, Record<string, number>> }).days
+      : {}) || {}
+  return res.status(200).json({ ok: true, days })
+}
+
 /* ── Vercel invocation counter (self-metered) ──────────────────────
  *  Vercel's Hobby plan exposes no usage API, so we count function
  *  invocations ourselves: every call to this endpoint is exactly one
@@ -1620,6 +1701,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSetFeedbackResolved(req, res)
       case 'admin-delete-feedback':
         return await handleAdminDeleteFeedback(req, res)
+      case 'track-pageview':
+        return handleTrackPageview(req, res)
+      case 'admin-pageviews':
+        return await handleAdminPageViews(req, res)
       case 'get-pricing':
         return await handleGetPricing(req, res)
       case 'get-terms':

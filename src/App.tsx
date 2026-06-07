@@ -8,6 +8,7 @@ import {
   useNavigate,
 } from 'react-router-dom'
 import { captureRefFromUrl, getStoredRef } from './lib/referral'
+import { trackPageview } from './lib/pageview'
 import { Hero } from './components/Hero'
 import { RevisionsHighlight } from './components/RevisionsHighlight'
 import { Features } from './components/Features'
@@ -142,6 +143,15 @@ function AnimatedRoutes() {
       { replace: true },
     )
   }, [location.pathname, location.search, location.hash, navigate])
+
+  // Count visits to the marketing / buy / account pages (raw, no
+  // cookies; de-duped per session inside trackPageview).
+  useEffect(() => {
+    const p = location.pathname
+    if (p === '/') trackPageview('home')
+    else if (p === '/buy') trackPageview('buy')
+    else if (p === '/account') trackPageview('account')
+  }, [location.pathname])
 
   // /review/:token is the public client-review surface — clients
   // who land there shouldn't see a transition animation flash from
