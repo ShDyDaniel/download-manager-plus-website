@@ -4442,12 +4442,9 @@ async function fetchCloudflareUsage() {
   }
   try {
     const end = new Date()
-    // Month-to-date — matches Cloudflare's billing period now that we're
-    // on the paid Workers plan (10M requests/month included), instead of
-    // the old free-tier 100K/day cap.
-    const start = new Date(
-      Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1, 0, 0, 0),
-    )
+    // Last 24h. The account is on the FREE Workers plan (only R2 is on a
+    // paid subscription), so the relevant allowance is 100K requests/day.
+    const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
     const query = `query($acc:String!,$start:Time!,$end:Time!){
       viewer { accounts(filter:{accountTag:$acc}) {
         workersInvocationsAdaptive(limit:10000, filter:{datetime_geq:$start, datetime_leq:$end}) {
@@ -4474,8 +4471,8 @@ async function fetchCloudflareUsage() {
     if (j.errors) throw new Error('cf graphql error')
     const rows = j.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive || []
     const requests = rows.reduce((acc, row) => acc + (row.sum?.requests || 0), 0)
-    // Workers Paid plan: 10M requests/month included (then $0.30/M).
-    return { configured: true, requests, requestsLimit: 10_000_000 }
+    // Free Workers plan: 100K requests/day included.
+    return { configured: true, requests, requestsLimit: 100000 }
   } catch (err) {
     return { configured: false, error: String((err as Error)?.message || err) }
   }

@@ -122,10 +122,18 @@ export default function DashboardTab({
         <div className="space-y-3.5">
           <Section icon={<Cpu className="h-5 w-5" />} title="דאטאבייס" sub="Firestore · 24 שעות אחרונות">
             {usage.firestore.configured ? (
-              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-                <UsageBar label="קריאות" used={usage.firestore.reads || 0} limit={usage.firestore.readsLimit || 50000} />
-                <UsageBar label="כתיבות" used={usage.firestore.writes || 0} limit={usage.firestore.writesLimit || 20000} />
-              </div>
+              <>
+                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                  <UsageBar label="קריאות (היום)" used={usage.firestore.reads || 0} limit={usage.firestore.readsLimit || 50000} freeTier />
+                  <UsageBar label="כתיבות (היום)" used={usage.firestore.writes || 0} limit={usage.firestore.writesLimit || 20000} freeTier />
+                </div>
+                <p className="mt-3 text-[10px] leading-relaxed text-fg-faint">
+                  המספרים הם השימוש בפועל מול מכסת החינם היומית. אתה בתוכנית
+                  בתשלום — <strong className="text-fg-muted">אין חסימה</strong> במכסה;
+                  מעבר אליה החיוב הוא לפי שימוש (~$0.03 ל-100K קריאות, ~$0.18 ל-100K
+                  כתיבות). ההגנה מפני הפתעות היא ה-kill-switch, לא המכסה הזו.
+                </p>
+              </>
             ) : (
               <NotConfigured
                 error={usage.firestore.error}
@@ -134,9 +142,9 @@ export default function DashboardTab({
             )}
           </Section>
 
-          <Section icon={<Activity className="h-5 w-5" />} title="Cloudflare Worker" sub="בקשות · החודש (כולל 10M בתוכנית)">
+          <Section icon={<Activity className="h-5 w-5" />} title="Cloudflare Worker" sub="בקשות · 24 שעות (100K כלולים בחינם ליום)">
             {usage.cloudflare.configured ? (
-              <UsageBar label="בקשות" used={usage.cloudflare.requests || 0} limit={usage.cloudflare.requestsLimit || 10000000} />
+              <UsageBar label="בקשות (היום)" used={usage.cloudflare.requests || 0} limit={usage.cloudflare.requestsLimit || 100000} freeTier />
             ) : (
               <NotConfigured
                 error={usage.cloudflare.error}
@@ -215,10 +223,15 @@ function UsageBar({
   label,
   used,
   limit,
+  freeTier,
 }: {
   label: string
   used: number
   limit: number
+  /** When true, `limit` is the FREE-tier allowance (not a hard cap) —
+   *  the value reads "used / limit חינם" and the bar shows how much of
+   *  the free allowance is used, never implying a wall. */
+  freeTier?: boolean
 }) {
   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0
   const tone =
@@ -229,6 +242,8 @@ function UsageBar({
         <span className="text-fg-muted">{label}</span>
         <span className="tabular-nums text-fg" dir="ltr">
           {used.toLocaleString()} / {limit.toLocaleString()}
+          {freeTier ? ' ' : ''}
+          {freeTier ? <span className="text-fg-faint">חינם</span> : null}
         </span>
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
