@@ -1098,6 +1098,63 @@ interface KeyDoc {
 }
 
 /* ─────────────────────────────────────────────────────────────
+ *  Kill switch (maintenance mode)
+ *
+ *  A master switch stored in appConfig/global.killSwitch. When ON,
+ *  the user-facing data actions below return 503 ("under maintenance")
+ *  while EVERY admin / auth / passkey / webhook action stays alive so
+ *  the operator can always turn it back off and PayPal events are not
+ *  lost.
+ *
+ *  Cost discipline: the flag is cached in-memory per serverless
+ *  instance for KILL_TTL_MS, so checking it costs at most ~1 Firestore
+ *  read per instance per 30s — NOT one read per request. It also fails
+ *  OPEN: any read error is treated as "not killed" so a transient
+ *  Firestore hiccup can never brick the live site.
+ * ───────────────────────────────────────────────────────────── */
+let killCache: { value: boolean; ts: number } | null = null
+const KILL_TTL_MS = 30_000
+/** Public actions blocked while maintenance mode is ON. Admin, auth,
+ *  passkey, gate, webhook and the static get-* config reads are NOT
+ *  here — they must keep working so the operator can recover and the
+ *  marketing pages still render. */
+const KILL_BLOCKED_ACTIONS = new Set<string>([
+  'create-subscription',
+  'session',
+  'restore-session',
+  'sso',
+  'status',
+  'cancel',
+  'billing-history',
+  'signup-request-code',
+  'signup-verify-code',
+  'verify-existing-request-code',
+  'verify-existing-confirm-code',
+  'mint-renew-token',
+  'update-marketing-opt-in',
+  'partner-login',
+  'partner-stats',
+])
+async function isSiteKilled(): Promise<boolean> {
+  const now = Date.now()
+  if (killCache && now - killCache.ts < KILL_TTL_MS) return killCache.value
+  try {
+    const snap = await getDb().collection('appConfig').doc('global').get()
+    const v =
+      snap.exists && (snap.data() as { killSwitch?: boolean }).killSwitch === true
+    killCache = { value: v, ts: now }
+    return v
+  } catch {
+    return false // fail open — never brick the site on a read error
+  }
+}
+/** Let a config write update the cache immediately (so the operator
+ *  sees the switch take effect without waiting out the TTL). */
+function primeKillCache(value: boolean): void {
+  killCache = { value, ts: Date.now() }
+}
+
+/* ─────────────────────────────────────────────────────────────
  *  Dispatcher
  * ───────────────────────────────────────────────────────────── */
 
@@ -1116,6 +1173,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // GETs for anything else to keep the surface area tight.
   if (req.method !== 'POST' && !(req.method === 'GET' && action === 'unsubscribe')) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
+  }
+
+  // Maintenance mode: short-circuit user-facing data actions while the
+  // kill switch is ON. Admin/auth/webhook actions are never in the set,
+  // so the operator can always turn it back off.
+  if (KILL_BLOCKED_ACTIONS.has(action) && (await isSiteKilled())) {
+    return res.status(503).json({
+      ok: false,
+      maintenance: true,
+      error: 'המערכת בתחזוקה זמנית. נסה שוב בעוד כמה דקות.',
+    })
   }
 
   try {
@@ -6595,6 +6663,10 @@ async function handleAdminGetAppConfig(
     logsPassword?: string
     proStorageGb?: number
     trialStorageGb?: number
+    killSwitch?: boolean
+    autoKill?: boolean
+    dailyReadCeiling?: number
+    dailyWriteCeiling?: number
   }
   return res.status(200).json({
     ok: true,
@@ -6611,6 +6683,17 @@ async function handleAdminGetAppConfig(
       typeof d.trialStorageGb === 'number' && d.trialStorageGb > 0
         ? d.trialStorageGb
         : 1.5,
+    // Cost protection / kill switch. 0 = off (no ceiling).
+    killSwitch: d.killSwitch === true,
+    autoKill: d.autoKill === true,
+    dailyReadCeiling:
+      typeof d.dailyReadCeiling === 'number' && d.dailyReadCeiling > 0
+        ? d.dailyReadCeiling
+        : 0,
+    dailyWriteCeiling:
+      typeof d.dailyWriteCeiling === 'number' && d.dailyWriteCeiling > 0
+        ? d.dailyWriteCeiling
+        : 0,
   })
 }
 
@@ -6627,6 +6710,10 @@ async function handleAdminSetAppConfig(
     logsPassword?: string
     proStorageGb?: number
     trialStorageGb?: number
+    killSwitch?: boolean
+    autoKill?: boolean
+    dailyReadCeiling?: number
+    dailyWriteCeiling?: number
   }
   const patch: Record<string, unknown> = {}
   if (typeof body.betaMode === 'boolean') patch.betaMode = body.betaMode
@@ -6657,6 +6744,29 @@ async function handleAdminSetAppConfig(
     }
     patch.trialStorageGb = body.trialStorageGb
   }
+  // ── Cost protection / kill switch ──────────────────────────────
+  if (typeof body.killSwitch === 'boolean') patch.killSwitch = body.killSwitch
+  if (typeof body.autoKill === 'boolean') patch.autoKill = body.autoKill
+  // Ceilings: 0 (or any non-positive) means "off". Bound to a sane max
+  // so a typo can't set an absurd value. Daily read/write counts.
+  const validCeiling = (v: unknown): v is number =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1_000_000_000
+  if (body.dailyReadCeiling !== undefined) {
+    if (!validCeiling(body.dailyReadCeiling)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'תקרת קריאות לא תקינה' })
+    }
+    patch.dailyReadCeiling = Math.round(body.dailyReadCeiling)
+  }
+  if (body.dailyWriteCeiling !== undefined) {
+    if (!validCeiling(body.dailyWriteCeiling)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'תקרת כתיבות לא תקינה' })
+    }
+    patch.dailyWriteCeiling = Math.round(body.dailyWriteCeiling)
+  }
   if (Object.keys(patch).length === 0) {
     return res.status(400).json({ ok: false, error: 'no fields' })
   }
@@ -6664,6 +6774,10 @@ async function handleAdminSetAppConfig(
     .collection('appConfig')
     .doc('global')
     .set(patch, { merge: true })
+  // Reflect a kill-switch change in this instance's cache immediately so
+  // the operator sees maintenance mode engage/disengage without waiting
+  // out the 30s TTL.
+  if (typeof body.killSwitch === 'boolean') primeKillCache(body.killSwitch)
   return res.status(200).json({ ok: true })
 }
 

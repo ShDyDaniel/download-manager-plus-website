@@ -8,8 +8,10 @@ import {
   BarChart3,
   ExternalLink,
   Cloud,
+  ShieldAlert,
+  Power,
 } from 'lucide-react'
-import { getAdminIdToken } from '../../lib/adminApi'
+import { adminApi, getAdminIdToken } from '../../lib/adminApi'
 
 interface AdminUsage {
   firestore: {
@@ -37,6 +39,13 @@ interface AdminUsage {
     error?: string
   }
   vercel: { configured: boolean; dashboardUrl: string }
+  protection?: {
+    killSwitch: boolean
+    autoKill: boolean
+    dailyReadCeiling: number
+    dailyWriteCeiling: number
+    autoTripped: boolean
+  }
   fetchedAt: number
 }
 
@@ -120,6 +129,29 @@ export default function DashboardTab({
         </div>
       ) : usage ? (
         <div className="space-y-3.5">
+          {usage.protection?.killSwitch && (
+            <div className="flex items-start gap-2.5 rounded-2xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0" />
+              <div>
+                <div className="font-semibold">המערכת כרגע בתחזוקה (Kill-switch פעיל)</div>
+                <div className="mt-0.5 text-[12px] text-destructive/90">
+                  משתמשים חסומים מהאתר והתוכנה — רק פאנל הניהול עובד.
+                  {usage.protection.autoTripped
+                    ? ' המתג הופעל אוטומטית בעקבות חציית התקרה.'
+                    : ''}{' '}
+                  כבה אותו בכרטיס "מתג חירום והגנת עלות" כדי להחזיר את השירות.
+                </div>
+              </div>
+            </div>
+          )}
+
+          <ProtectionCard
+            protection={usage.protection}
+            firestore={usage.firestore}
+            onSaved={load}
+            onAuthExpired={onAuthExpired}
+          />
+
           <Section icon={<Cpu className="h-5 w-5" />} title="דאטאבייס" sub="Firestore · 24 שעות אחרונות">
             {usage.firestore.configured ? (
               <>
@@ -326,6 +358,269 @@ function NotConfigured({ error, hint }: { error?: string; hint?: string }) {
         <p className="mt-1.5 text-[10px] text-fg-faint" dir="ltr">
           {error}
         </p>
+      )}
+    </div>
+  )
+}
+
+/* ── Cost protection / emergency kill switch ────────────────────────
+ *  The control the operator asked for: a master maintenance switch, an
+ *  optional daily reads/writes ceiling, and an opt-in auto-trip that
+ *  flips the switch when a ceiling is crossed. Setting any of these is
+ *  a step-up (passkey) mutation. The switch itself costs ~0 DB ops: the
+ *  flag is cached server-side per instance and the ceiling is checked
+ *  against the free Cloud Monitoring numbers, not Firestore. */
+function Toggle({
+  on,
+  onClick,
+  disabled,
+  danger,
+}: {
+  on: boolean
+  onClick: () => void
+  disabled?: boolean
+  danger?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      disabled={disabled}
+      onClick={onClick}
+      className={
+        'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ' +
+        (on ? (danger ? 'bg-destructive' : 'bg-primary') : 'bg-white/[0.12]')
+      }
+    >
+      <span
+        className={
+          'inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ' +
+          (on ? 'translate-x-[-22px]' : 'translate-x-[-2px]')
+        }
+      />
+    </button>
+  )
+}
+
+function ProtectionCard({
+  protection,
+  firestore,
+  onSaved,
+  onAuthExpired,
+}: {
+  protection?: AdminUsage['protection']
+  firestore: AdminUsage['firestore']
+  onSaved: () => void
+  onAuthExpired: () => void
+}) {
+  const [kill, setKill] = useState(false)
+  const [autoKill, setAutoKill] = useState(false)
+  const [readCeiling, setReadCeiling] = useState('0')
+  const [writeCeiling, setWriteCeiling] = useState('0')
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState('')
+
+  // Sync local editor state whenever the server values arrive/refresh.
+  useEffect(() => {
+    setKill(protection?.killSwitch === true)
+    setAutoKill(protection?.autoKill === true)
+    setReadCeiling(String(protection?.dailyReadCeiling || 0))
+    setWriteCeiling(String(protection?.dailyWriteCeiling || 0))
+  }, [
+    protection?.killSwitch,
+    protection?.autoKill,
+    protection?.dailyReadCeiling,
+    protection?.dailyWriteCeiling,
+  ])
+
+  async function save(fields: Record<string, unknown>) {
+    setSaving(true)
+    setErr('')
+    try {
+      await adminApi('admin-set-app-config', fields)
+      onSaved()
+    } catch (e) {
+      const error = e as Error & { code?: string }
+      if (error.code === 'auth') return onAuthExpired()
+      setErr(error.message || 'שמירה נכשלה')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function toggleKill() {
+    const next = !kill
+    if (
+      next &&
+      !window.confirm(
+        'להפעיל מצב תחזוקה? כל המשתמשים ייחסמו מהאתר ומהתוכנה (פאנל הניהול ימשיך לעבוד) עד שתכבה ידנית.',
+      )
+    )
+      return
+    setKill(next)
+    void save({ killSwitch: next })
+  }
+
+  function saveSettings() {
+    const rc = Math.max(0, Math.floor(Number(readCeiling) || 0))
+    const wc = Math.max(0, Math.floor(Number(writeCeiling) || 0))
+    void save({ autoKill, dailyReadCeiling: rc, dailyWriteCeiling: wc })
+  }
+
+  const reads = firestore.configured ? firestore.reads || 0 : 0
+  const writes = firestore.configured ? firestore.writes || 0 : 0
+  const rc = Math.max(0, Math.floor(Number(readCeiling) || 0))
+  const wc = Math.max(0, Math.floor(Number(writeCeiling) || 0))
+
+  return (
+    <div
+      className={
+        'overflow-hidden rounded-2xl border bg-card ' +
+        (kill ? 'border-destructive/50' : 'border-border')
+      }
+    >
+      <div className="flex items-center gap-3 border-b border-border px-5 py-4">
+        <div
+          className={
+            'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ' +
+            (kill
+              ? 'bg-destructive/15 text-destructive'
+              : 'bg-primary/10 text-primary')
+          }
+        >
+          <Power className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold text-fg">מתג חירום והגנת עלות</h3>
+          <p className="text-[11px] text-fg-faint">
+            עצירת חירום של המערכת + תקרת קריאות/כתיבות יומית
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-4 px-5 py-4">
+        {/* Master kill switch */}
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background px-4 py-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 text-sm font-medium text-fg">
+              <ShieldAlert
+                className={'h-4 w-4 ' + (kill ? 'text-destructive' : 'text-fg-muted')}
+              />
+              מצב תחזוקה (Kill-switch)
+            </div>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+              {kill
+                ? 'פעיל — האתר והתוכנה חסומים למשתמשים. לחיצה תכבה ותחזיר את השירות.'
+                : 'כבוי — הכל עובד כרגיל. הפעלה חוסמת מיידית את כל המשתמשים (פאנל הניהול ממשיך לעבוד).'}
+            </p>
+          </div>
+          <Toggle on={kill} onClick={toggleKill} disabled={saving} danger />
+        </div>
+
+        {/* Daily ceilings + auto-trip */}
+        <div className="rounded-xl border border-border bg-background px-4 py-3">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-fg">
+                חסימה אוטומטית בחציית תקרה
+              </div>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+                כשמופעל — אם השימוש היומי חוצה תקרה, מצב התחזוקה נדלק אוטומטית.
+                בודק מול נתוני הניטור (חינם), לא מבצע קריאות למסד.
+              </p>
+            </div>
+            <Toggle on={autoKill} onClick={() => setAutoKill((v) => !v)} disabled={saving} />
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <CeilingInput
+              label="תקרת קריאות ליום"
+              value={readCeiling}
+              onChange={setReadCeiling}
+              used={reads}
+              ceiling={rc}
+            />
+            <CeilingInput
+              label="תקרת כתיבות ליום"
+              value={writeCeiling}
+              onChange={setWriteCeiling}
+              used={writes}
+              ceiling={wc}
+            />
+          </div>
+          <p className="mt-2 text-[10px] text-fg-faint">
+            0 = ללא תקרה. התקרה רק מתריעה/חוסמת לפי הבחירה למעלה — היא לא משנה את
+            החיוב בפועל.
+          </p>
+
+          <div className="mt-3 flex items-center justify-end gap-2">
+            {err && <span className="text-[11px] text-destructive">{err}</span>}
+            <button
+              type="button"
+              onClick={saveSettings}
+              disabled={saving}
+              className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              שמור הגדרות
+            </button>
+          </div>
+        </div>
+
+        <p className="text-[10px] leading-relaxed text-fg-faint">
+          זו עצירה ברמת האפליקציה (תחזוקה) — מיידית והפיכה, מצוינת לפיתוח או
+          לחסימת ניצול לרעה. כגיבוי-אסון מוחלט מול עלות בלתי-צפויה קיים גם
+          ה-kill-switch ברמת החיוב של Google Cloud (Budget → Cloud Function שמכבה
+          חיוב), שמתואר ב-<span dir="ltr">docs/killswitch</span>.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function CeilingInput({
+  label,
+  value,
+  onChange,
+  used,
+  ceiling,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  used: number
+  ceiling: number
+}) {
+  const pct = ceiling > 0 ? Math.min(100, (used / ceiling) * 100) : 0
+  const tone =
+    pct >= 90 ? 'bg-destructive' : pct >= 70 ? 'bg-accent' : 'bg-primary'
+  return (
+    <div>
+      <label className="mb-1 block text-[11px] text-fg-muted">{label}</label>
+      <input
+        type="number"
+        min={0}
+        inputMode="numeric"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        dir="ltr"
+        className="w-full rounded-md border border-border bg-card px-3 py-1.5 text-sm text-fg tabular-nums outline-none focus:border-primary"
+      />
+      {ceiling > 0 ? (
+        <>
+          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+            <div
+              className={'h-full rounded-full ' + tone}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <p className="mt-1 text-[10px] text-fg-faint" dir="ltr">
+            {used.toLocaleString()} / {ceiling.toLocaleString()} היום
+          </p>
+        </>
+      ) : (
+        <p className="mt-1 text-[10px] text-fg-faint">ללא תקרה</p>
       )}
     </div>
   )

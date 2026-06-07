@@ -4539,11 +4539,36 @@ async function handleAdminUsage(req: VercelRequest, res: VercelResponse) {
   if (verified.email !== 'dyshalts@gmail.com') {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  const [firestore, cloudflare, r2] = await Promise.all([
+  const [firestore, cloudflare, r2, cfg] = await Promise.all([
     fetchFirestoreUsage(),
     fetchCloudflareUsage(),
     fetchR2Usage(),
+    readProtectionConfig(),
   ])
+
+  // Auto-trip: if the ceiling guard is armed and today's usage crossed
+  // either ceiling, engage maintenance mode automatically (one write).
+  // This piggybacks on the Cloud Monitoring numbers we already fetched
+  // (free, not Firestore) so the guard itself adds no read load.
+  let autoTripped = false
+  const reads = firestore.configured ? firestore.reads || 0 : 0
+  const writes = firestore.configured ? firestore.writes || 0 : 0
+  const overRead = cfg.dailyReadCeiling > 0 && reads >= cfg.dailyReadCeiling
+  const overWrite = cfg.dailyWriteCeiling > 0 && writes >= cfg.dailyWriteCeiling
+  if (cfg.autoKill && !cfg.killSwitch && (overRead || overWrite)) {
+    try {
+      await getDb()
+        .collection('appConfig')
+        .doc('global')
+        .set({ killSwitch: true }, { merge: true })
+      killCacheRev = { value: true, ts: Date.now() }
+      cfg.killSwitch = true
+      autoTripped = true
+    } catch {
+      /* if the write fails, leave the switch as-is */
+    }
+  }
+
   res.setHeader('Cache-Control', 'no-store')
   return res.status(200).json({
     ok: true,
@@ -4551,8 +4576,53 @@ async function handleAdminUsage(req: VercelRequest, res: VercelResponse) {
     cloudflare,
     r2,
     vercel: { configured: false, dashboardUrl: 'https://vercel.com/dashboard/usage' },
+    protection: {
+      killSwitch: cfg.killSwitch,
+      autoKill: cfg.autoKill,
+      dailyReadCeiling: cfg.dailyReadCeiling,
+      dailyWriteCeiling: cfg.dailyWriteCeiling,
+      autoTripped,
+    },
     fetchedAt: Date.now(),
   })
+}
+
+/** Read the cost-protection / kill-switch config from appConfig/global.
+ *  One admin-only read per dashboard load; defaults to "off". */
+async function readProtectionConfig(): Promise<{
+  killSwitch: boolean
+  autoKill: boolean
+  dailyReadCeiling: number
+  dailyWriteCeiling: number
+}> {
+  try {
+    const snap = await getDb().collection('appConfig').doc('global').get()
+    const d = (snap.exists ? snap.data() : {}) as {
+      killSwitch?: boolean
+      autoKill?: boolean
+      dailyReadCeiling?: number
+      dailyWriteCeiling?: number
+    }
+    return {
+      killSwitch: d.killSwitch === true,
+      autoKill: d.autoKill === true,
+      dailyReadCeiling:
+        typeof d.dailyReadCeiling === 'number' && d.dailyReadCeiling > 0
+          ? d.dailyReadCeiling
+          : 0,
+      dailyWriteCeiling:
+        typeof d.dailyWriteCeiling === 'number' && d.dailyWriteCeiling > 0
+          ? d.dailyWriteCeiling
+          : 0,
+    }
+  } catch {
+    return {
+      killSwitch: false,
+      autoKill: false,
+      dailyReadCeiling: 0,
+      dailyWriteCeiling: 0,
+    }
+  }
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -5863,11 +5933,49 @@ function verifyPasswordToken(token: string, expectedProjectId: string): boolean 
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Kill switch (maintenance mode) — mirror of api/paypal.ts.
+ *
+ *  This endpoint serves the revisions workspace (uploads, reviewer
+ *  video, notes) — the heaviest data path. When the kill switch in
+ *  appConfig/global is ON, EVERY action here is blocked with 503
+ *  EXCEPT `admin-usage`, which the admin dashboard needs to see the
+ *  status and turn the switch back off. Cached in-memory per instance
+ *  (≤1 read / 30s) and fails OPEN so a transient read error never
+ *  bricks the site.
+ * ────────────────────────────────────────────────────────────── */
+let killCacheRev: { value: boolean; ts: number } | null = null
+const KILL_TTL_MS_REV = 30_000
+const KILL_ALLOW_REVISIONS = new Set<string>(['admin-usage'])
+async function isSiteKilledRev(): Promise<boolean> {
+  const now = Date.now()
+  if (killCacheRev && now - killCacheRev.ts < KILL_TTL_MS_REV)
+    return killCacheRev.value
+  try {
+    const snap = await getDb().collection('appConfig').doc('global').get()
+    const v =
+      snap.exists && (snap.data() as { killSwitch?: boolean }).killSwitch === true
+    killCacheRev = { value: v, ts: now }
+    return v
+  } catch {
+    return false // fail open
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Dispatcher
  * ────────────────────────────────────────────────────────────── */
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const action = String(req.query.action || '').trim()
+  // Maintenance mode: block all revision traffic except the admin
+  // dashboard's own status read.
+  if (!KILL_ALLOW_REVISIONS.has(action) && (await isSiteKilledRev())) {
+    return res.status(503).json({
+      ok: false,
+      maintenance: true,
+      error: 'המערכת בתחזוקה זמנית. נסה שוב בעוד כמה דקות.',
+    })
+  }
   try {
     switch (action) {
       case 'oauth-start':

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { RefreshCw, Loader2, AlertTriangle, Coins } from 'lucide-react'
-import { adminApi } from '../../lib/adminApi'
+import { adminApi, getAdminIdToken } from '../../lib/adminApi'
 
 type Money = Record<string, number>
 interface PartnerRow {
@@ -30,6 +30,27 @@ interface RevenueReport {
     costIls: number
     fxRate: number
   }
+}
+
+/** Live Firestore reads/writes over the last 24h (from admin-usage),
+ *  used to estimate the monthly database cost line. */
+interface DbUsage {
+  configured: boolean
+  reads: number
+  writes: number
+}
+
+/* Firestore free tier is PER DAY; overage is pay-per-use. Rates match
+ * the dashboard caption. Monthly estimate = daily overage × 30. */
+const FS_FREE_READS_DAY = 50_000
+const FS_FREE_WRITES_DAY = 20_000
+const FS_READ_USD_PER = 0.03 / 100_000
+const FS_WRITE_USD_PER = 0.18 / 100_000
+function estimateDbMonthlyUsd(u: DbUsage | null): number {
+  if (!u || !u.configured) return 0
+  const billReads = Math.max(0, u.reads - FS_FREE_READS_DAY) * 30
+  const billWrites = Math.max(0, u.writes - FS_FREE_WRITES_DAY) * 30
+  return billReads * FS_READ_USD_PER + billWrites * FS_WRITE_USD_PER
 }
 
 const SYM: Record<string, string> = { ILS: '₪', USD: '$', EUR: '€' }
@@ -64,6 +85,7 @@ export default function RevenueTab({
   onAuthExpired: () => void
 }) {
   const [data, setData] = useState<RevenueReport | null>(null)
+  const [db, setDb] = useState<DbUsage | null>(null)
   const [error, setError] = useState('')
 
   async function load() {
@@ -75,6 +97,28 @@ export default function RevenueTab({
       const err = e as Error & { code?: string }
       if (err.code === 'auth') return onAuthExpired()
       setError(err.message || 'טעינה נכשלה')
+    }
+    // Live Firestore usage → estimated monthly DB cost. Best-effort: a
+    // failure here just hides the DB line, it never blocks the report.
+    try {
+      const idToken = await getAdminIdToken()
+      if (idToken) {
+        const resp = await fetch('/api/revisions?action=admin-usage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken }),
+        })
+        const j = (await resp.json()) as {
+          firestore?: { configured?: boolean; reads?: number; writes?: number }
+        }
+        setDb({
+          configured: j.firestore?.configured === true,
+          reads: j.firestore?.reads || 0,
+          writes: j.firestore?.writes || 0,
+        })
+      }
+    } catch {
+      setDb(null)
     }
   }
 
@@ -114,8 +158,8 @@ export default function RevenueTab({
       ) : (
         <>
           {/* Profit waterfall — gross → −fees → −partners → −Cloudflare
-              → what's left. One clean top-to-bottom flow, no repetition. */}
-          <PnLCard totals={data.totals} cloudflare={data.cloudflare} />
+              → −database → what's left. One clean top-to-bottom flow. */}
+          <PnLCard totals={data.totals} cloudflare={data.cloudflare} db={db} />
 
           {/* Per-partner totals */}
           {data.totals.partners.length > 0 && (
@@ -202,25 +246,38 @@ export default function RevenueTab({
 function PnLCard({
   totals,
   cloudflare,
+  db,
 }: {
   totals: RevenueReport['totals']
   cloudflare?: RevenueReport['cloudflare']
+  db: DbUsage | null
 }) {
+  const fxRate = cloudflare?.fxRate || 3.7
   const partnerTotal = sumMoney(totals.partners.map((p) => p.amount))
-  const finalNet = subtractIls(totals.ownerFinal, cloudflare?.costIls || 0)
+  const dbUsd = estimateDbMonthlyUsd(db)
+  const dbIls = dbUsd * fxRate
+  // Bottom line = owner take − Cloudflare (R2) − database (Firestore).
+  const afterCf = subtractIls(totals.ownerFinal, cloudflare?.costIls || 0)
+  const finalNet = subtractIls(afterCf, dbIls)
   const cfValue = cloudflare
     ? `${cloudflare.costUsd.toFixed(2)} $ ≈ ${cloudflare.costIls.toFixed(2)} ₪`
     : '—'
+  const dbValue =
+    db && db.configured
+      ? `${dbUsd.toFixed(2)} $ ≈ ${dbIls.toFixed(2)} ₪`
+      : '—'
   const cfState =
     cloudflare && cloudflare.costUsd > 0
       ? 'מעל החינם'
       : '$0 — מתחת ל-10GB החינמיים'
+  const dbState =
+    dbUsd > 0 ? 'מעל מכסת החינם' : '$0 — בתוך מכסת החינם היומית'
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-card">
       <div className="border-b border-border px-5 py-3.5">
         <h3 className="text-sm font-semibold text-fg">שורת רווח</h3>
         <p className="mt-0.5 text-[11px] text-fg-faint">
-          מהברוטו ועד מה שנשאר לך ביד
+          מהברוטו ועד מה שנשאר לך ביד — אחרי כל העלויות
         </p>
       </div>
       <div className="px-5 py-1.5">
@@ -233,13 +290,19 @@ function PnLCard({
           value={cfValue}
           deduct
         />
+        <PnLRow
+          label="עלות מסד נתונים (חודשי)"
+          value={dbValue}
+          deduct
+        />
         <PnLRow label="נשאר לך נטו" value={fmt(finalNet)} hero />
       </div>
       <div className="border-t border-border bg-background/40 px-5 py-2.5">
         <p className="text-[10px] leading-relaxed text-fg-faint">
-          ההכנסות מצטברות מתחילת הפעילות; עלות Cloudflare היא חודשית שוטפת
-          (R2 — תשלום לפי שימוש; כרגע {cfState})
-          {cloudflare ? `, שער המרה ≈ ${cloudflare.fxRate.toFixed(2)} ₪/$` : ''}.
+          ההכנסות מצטברות מתחילת הפעילות; עלויות התשתית חודשיות שוטפות.
+          Cloudflare (R2 — לפי שימוש; כרגע {cfState}); מסד נתונים (Firestore —
+          הערכה לפי השימוש ב-24 השעות האחרונות × 30; כרגע {dbState})
+          {cloudflare ? `; שער המרה ≈ ${cloudflare.fxRate.toFixed(2)} ₪/$` : ''}.
         </p>
       </div>
     </div>
