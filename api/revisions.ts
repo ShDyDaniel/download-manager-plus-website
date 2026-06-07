@@ -156,6 +156,21 @@ const R2_BUCKET = process.env.R2_BUCKET || ''
 // slow line, short enough that a leaked URL expires quickly.
 const R2_PRESIGN_TTL = 60 * 60 // 1 hour
 
+// Public Cloudflare Worker that proxies ALL media bytes — video,
+// note images/audio, and Drive→R2 import — so that ZERO media ever
+// streams through Vercel (Vercel egress is what blew past the 10GB
+// free tier). The env var lets us repoint at another worker without
+// a redeploy, but the hardcoded default is the live production worker
+// so a missing/blank env var can NEVER silently route gigabytes of
+// video back through Vercel again. The worker hostname is public (the
+// browser fetches it directly), so hardcoding it leaks nothing.
+const WORKER_STREAM_BASE = (
+  process.env.CLOUDFLARE_STREAM_BASE ||
+  'https://dmplus-stream.danielshaltss.workers.dev'
+)
+  .trim()
+  .replace(/\/$/, '')
+
 let _r2: S3Client | null = null
 function getR2(): S3Client {
   if (_r2) return _r2
@@ -619,14 +634,7 @@ async function handleDriveImportInit(req: VercelRequest, res: VercelResponse) {
       message: 'ייבוא מקישור אינו מוגדר בשרת (חסר DRIVE_API_KEY).',
     })
   }
-  const cfBase = (process.env.CLOUDFLARE_STREAM_BASE || '').trim()
-  if (!cfBase) {
-    return res.status(500).json({
-      ok: false,
-      error: 'stream-base-not-configured',
-      message: 'ייבוא מקישור אינו מוגדר בשרת (חסר CLOUDFLARE_STREAM_BASE).',
-    })
-  }
+  const cfBase = WORKER_STREAM_BASE
 
   const body = (req.body || {}) as { driveUrl?: string }
   const fileId = extractDriveFileId(String(body.driveUrl || ''))
@@ -4053,110 +4061,33 @@ async function handleListNotes(req: VercelRequest, res: VercelResponse) {
  *  views before paying anything.
  * ────────────────────────────────────────────────────────────── */
 async function handleStreamVideo(req: VercelRequest, res: VercelResponse) {
+  // LEGACY PATH — NEUTRALIZED. This used to pipe video bytes straight
+  // through Vercel, which is exactly what blew past the egress free
+  // tier. get-stream-token no longer mints this URL (it always points
+  // at the Cloudflare Worker now), but an old/cached share link or a
+  // manual hit could still land here. Rather than stream a single byte
+  // through Vercel, 302-redirect to the Worker so EVERY byte rides
+  // Cloudflare. The browser re-issues its Range request to the Worker,
+  // so seek/scrub keep working.
   const shareToken = String(req.query.token || '').trim()
-  const passwordToken = String(req.query.t || '').trim()
-  const roundIdHint = String(req.query.r || '').trim() || null
   if (!shareToken) {
     res.status(400).send('shareToken required')
     return
   }
-  const resolved = await resolvePublicRound(
-    shareToken,
-    roundIdHint,
-    passwordToken,
-  )
-  if (!resolved.ok) {
-    res.status(resolved.status).send(resolved.error)
-    return
-  }
-  const { roundData, group } = resolved
-  const ownerUid = String(group?.ownerUid || roundData.ownerUid || '')
-  const driveFileId = String(roundData.driveFileId || '')
-
-  // Owner's Drive token.
-  const integrationSnap = await integrationDocRef(ownerUid).get()
-  if (!integrationSnap.exists) {
-    res.status(500).send('drive not connected')
-    return
-  }
-  const integration = integrationSnap.data() as IntegrationDoc
-  const refreshToken = decryptToken(integration.refreshTokenEnc)
-  let accessToken: string
-  try {
-    const r = await refreshAccessToken(refreshToken)
-    accessToken = r.accessToken
-  } catch {
-    res.status(401).send('drive auth expired')
-    return
-  }
-
-  // Forward Range header so seek/scrub works.
-  const range = req.headers.range
-  const driveUrl = `https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`
-  const driveResp = await fetch(driveUrl, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      ...(range ? { Range: range } : {}),
-    },
-  })
-
-  if (!driveResp.ok && driveResp.status !== 206) {
-    res.status(driveResp.status).send('drive error')
-    return
-  }
-
-  res.status(driveResp.status)
-  const forwardHeaders = [
-    'content-type',
-    'content-length',
-    'content-range',
-    'accept-ranges',
-    'last-modified',
-    'etag',
-  ]
-  for (const header of forwardHeaders) {
-    const value = driveResp.headers.get(header)
-    if (value) res.setHeader(header, value)
-  }
-  if (!driveResp.headers.get('accept-ranges')) {
-    res.setHeader('Accept-Ranges', 'bytes')
-  }
-  // 60s tight cache — file content is immutable but we want to be
-  // able to revoke access fast when a project is archived.
-  res.setHeader('Cache-Control', 'private, max-age=60')
-  // Allow the <video crossOrigin="anonymous"> attribute to work so
-  // canvas frame capture stays CORS-clean.
-  res.setHeader('Access-Control-Allow-Origin', '*')
-
-  if (!driveResp.body) {
-    res.end()
-    return
-  }
-  const reader = driveResp.body.getReader()
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      const ok = res.write(value)
-      if (!ok) {
-        await new Promise<void>((resolve) => res.once('drain', resolve))
-      }
-    }
-  } catch (err) {
-    // ERR_STREAM_PREMATURE_CLOSE is the browser aborting (e.g.
-    // seek interrupted the previous Range fetch). Not a real bug.
-    if ((err as { code?: string }).code !== 'ERR_STREAM_PREMATURE_CLOSE') {
-      console.error('[stream-video] pipe error:', err)
-    }
-  } finally {
-    res.end()
-  }
+  const passwordToken = String(req.query.t || '').trim()
+  const roundId = String(req.query.r || '').trim()
+  const download = String(req.query.d || '').trim() === '1'
+  let target = `${WORKER_STREAM_BASE}/?token=${encodeURIComponent(shareToken)}`
+  if (passwordToken) target += `&t=${encodeURIComponent(passwordToken)}`
+  if (roundId) target += `&r=${encodeURIComponent(roundId)}`
+  if (download) target += '&d=1'
+  res.setHeader('Cache-Control', 'no-store')
+  res.redirect(302, target)
 }
 
 /* Returns a stream URL the <video> tag can use directly. The URL
- * points at the Cloudflare Worker if CLOUDFLARE_STREAM_BASE is
- * configured (zero-bandwidth path), otherwise falls back to the
- * Vercel proxy. */
+ * ALWAYS points at the Cloudflare Worker (WORKER_STREAM_BASE) so video
+ * bytes never touch Vercel — there is no Vercel-proxy fallback anymore. */
 async function handleGetStreamToken(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as {
     shareToken?: string
@@ -4183,16 +4114,17 @@ async function handleGetStreamToken(req: VercelRequest, res: VercelResponse) {
   // groups so the Worker → auth-stream → Drive flow can identify
   // which round's file to fetch. Legacy single-round projects don't
   // need it (shareToken already identifies the round).
-  const cfBase = (process.env.CLOUDFLARE_STREAM_BASE || '').trim()
+  const cfBase = WORKER_STREAM_BASE
   const passwordSuffix = body.passwordToken
     ? `&t=${encodeURIComponent(String(body.passwordToken))}`
     : ''
   const roundSuffix = group
     ? `&r=${encodeURIComponent(String(roundData.id || ''))}`
     : ''
-  const baseUrl = cfBase
-    ? `${cfBase.replace(/\/$/, '')}/?token=${encodeURIComponent(shareToken)}${passwordSuffix}${roundSuffix}`
-    : `/api/revisions?action=stream-video&token=${encodeURIComponent(shareToken)}${passwordSuffix}${roundSuffix}`
+  // ALWAYS the Cloudflare Worker — never /api/revisions?action=stream-video.
+  // Routing video bytes through Vercel is exactly what blew past the egress
+  // free tier; the worker base is hardcoded so this can't silently regress.
+  const baseUrl = `${cfBase}/?token=${encodeURIComponent(shareToken)}${passwordSuffix}${roundSuffix}`
 
   // Separate download URL — appends `&d=1`, which the Worker
   // honors by sending `Content-Disposition: attachment` instead
@@ -4752,13 +4684,12 @@ function unpackMediaToken(token: string): MediaTokenClaims | null {
 }
 
 /** Build the Worker media URL for a resolved (owner, fileId) pair.
- *  Returns null if no Cloudflare base is configured (caller then
- *  falls back to the byte-streaming endpoint). */
+ *  Always points at the Cloudflare Worker (base hardcoded) so note
+ *  images/audio never stream through Vercel either. */
 function mintMediaWorkerUrl(ownerUid: string, driveFileId: string): string | null {
-  const cfBase = (process.env.CLOUDFLARE_STREAM_BASE || '').trim()
-  if (!cfBase) return null
+  const cfBase = WORKER_STREAM_BASE
   const tok = packMediaToken(ownerUid, driveFileId)
-  return `${cfBase.replace(/\/$/, '')}/?m=${encodeURIComponent(tok)}`
+  return `${cfBase}/?m=${encodeURIComponent(tok)}`
 }
 
 /* Action: note-media-url  (PUBLIC — gated by share token + password)
