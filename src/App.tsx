@@ -16,6 +16,7 @@ import { QuickStart } from './components/QuickStart'
 import { FAQ } from './components/FAQ'
 import { Footer } from './components/Footer'
 import { SiteHeader } from './components/SiteHeader'
+import { SitePopup } from './components/SitePopup'
 import {
   AccessibilityWidget,
   A11Y_MOTION_EVENT,
@@ -76,6 +77,7 @@ function App() {
             Standalone surfaces (partner dashboard, client review,
             picker) render their own chrome. */}
         {!isChromelessRoute(location.pathname) && <SiteHeader />}
+        {!isChromelessRoute(location.pathname) && <SitePopup />}
         <AnimatedRoutes />
         {/* Accessibility menu — required for Israeli sites (IS 5568).
             Rendered globally so it's reachable from every page. */}

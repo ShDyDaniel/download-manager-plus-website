@@ -1705,6 +1705,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return handleTrackPageview(req, res)
       case 'admin-pageviews':
         return await handleAdminPageViews(req, res)
+      case 'get-popup':
+        return await handleGetPopup(req, res)
+      case 'admin-upload-popup-image':
+        return await handleAdminUploadPopupImage(req, res)
+      case 'admin-set-popup':
+        return await handleAdminSetPopup(req, res)
       case 'get-pricing':
         return await handleGetPricing(req, res)
       case 'get-terms':
@@ -7612,6 +7618,154 @@ async function handleAdminClearClientErrors(
     await batch.commit()
   }
   return res.status(200).json({ ok: true, deleted })
+}
+
+/* ── Announcement popup (site + app) ───────────────────────────────
+ *  Config lives in appConfig/popup. The image is EITHER uploaded to R2
+ *  (stored; served via a short-lived presigned URL straight from
+ *  Cloudflare, so zero Vercel egress) OR a Drive link (not stored at
+ *  all — we just convert it to a direct image URL and the client loads
+ *  it from Google). get-popup is public; clients apply the frequency
+ *  rule locally. */
+const POPUP_DOC = 'popup'
+function driveDirectImageUrl(url: string): string {
+  const u = String(url || '').trim()
+  if (!u) return ''
+  const m =
+    u.match(/\/d\/([a-zA-Z0-9_-]{10,})/) ||
+    u.match(/[?&]id=([a-zA-Z0-9_-]{10,})/)
+  if (m) return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w1600`
+  return u // assume already a direct image URL
+}
+async function popupImageUrl(cfg: {
+  imageSource?: string
+  imageKey?: string
+  driveUrl?: string
+}): Promise<string> {
+  try {
+    if (cfg.imageSource === 'drive' && cfg.driveUrl) {
+      return driveDirectImageUrl(cfg.driveUrl)
+    }
+    if (cfg.imageSource === 'r2' && cfg.imageKey) {
+      return await getSignedUrl(
+        getBackupR2(),
+        new GetObjectCommand({ Bucket: BACKUP_BUCKET, Key: cfg.imageKey }),
+        { expiresIn: 3600 },
+      )
+    }
+  } catch {
+    /* ignore */
+  }
+  return ''
+}
+
+/** Public: the active popup config for the website + desktop. */
+async function handleGetPopup(req: VercelRequest, res: VercelResponse) {
+  try {
+    const snap = await getDb().collection('appConfig').doc(POPUP_DOC).get()
+    const d = (snap.exists ? snap.data() : {}) as Record<string, unknown>
+    const imageUrl = await popupImageUrl(d as never)
+    const freq = String(d.frequency || 'daily')
+    const target = String(d.target || 'both')
+    return res.status(200).json({
+      ok: true,
+      popup: {
+        enabled: d.enabled === true,
+        id: String(d.id || ''),
+        title: String(d.title || ''),
+        body: String(d.body || ''),
+        imageUrl,
+        imageSource: String(d.imageSource || 'none'),
+        driveUrl: String(d.driveUrl || ''),
+        hasImage: Boolean(imageUrl),
+        frequency: ['always', 'daily', 'once'].includes(freq) ? freq : 'daily',
+        target: ['web', 'desktop', 'both'].includes(target) ? target : 'both',
+      },
+    })
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ ok: false, error: (e as Error)?.message || 'failed' })
+  }
+}
+
+/** Admin (2FA): upload a popup image to R2, return its key. */
+async function handleAdminUploadPopupImage(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const content = (req.body as { content?: string })?.content
+  if (typeof content !== 'string' || !content) {
+    return res.status(400).json({ ok: false, error: 'קובץ ריק' })
+  }
+  const m = content.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/)
+  const b64 = m ? m[2] : content
+  let buf: Buffer
+  try {
+    buf = Buffer.from(b64, 'base64')
+  } catch {
+    return res.status(400).json({ ok: false, error: 'קובץ לא תקין' })
+  }
+  if (buf.length === 0) {
+    return res.status(400).json({ ok: false, error: 'קובץ ריק' })
+  }
+  if (buf.length > 4 * 1024 * 1024) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'התמונה גדולה מדי — מקסימום 4MB' })
+  }
+  const contentType = m ? m[1] : 'image/png'
+  const ext = (contentType.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '')
+  const key = `popup/${Date.now()}.${ext}`
+  await getBackupR2().send(
+    new PutObjectCommand({
+      Bucket: BACKUP_BUCKET,
+      Key: key,
+      Body: buf,
+      ContentType: contentType,
+    }),
+  )
+  return res.status(200).json({ ok: true, imageKey: key })
+}
+
+/** Admin (step-up): save the popup config. Bumps id so clients re-show. */
+async function handleAdminSetPopup(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const b = (req.body || {}) as {
+    enabled?: boolean
+    title?: string
+    body?: string
+    imageSource?: string
+    imageKey?: string
+    driveUrl?: string
+    frequency?: string
+    target?: string
+  }
+  const patch = {
+    enabled: b.enabled === true,
+    title: String(b.title || '').slice(0, 300),
+    body: String(b.body || '').slice(0, 3000),
+    imageSource: ['none', 'r2', 'drive'].includes(String(b.imageSource))
+      ? b.imageSource
+      : 'none',
+    imageKey: String(b.imageKey || '').slice(0, 200),
+    driveUrl: String(b.driveUrl || '').slice(0, 1000),
+    frequency: ['always', 'daily', 'once'].includes(String(b.frequency))
+      ? b.frequency
+      : 'daily',
+    target: ['web', 'desktop', 'both'].includes(String(b.target))
+      ? b.target
+      : 'both',
+    id: `${Date.now()}`,
+    updatedAt: new Date().toISOString(),
+  }
+  await getDb().collection('appConfig').doc(POPUP_DOC).set(patch, { merge: true })
+  return res.status(200).json({ ok: true, id: patch.id })
 }
 
 interface LegalSection {

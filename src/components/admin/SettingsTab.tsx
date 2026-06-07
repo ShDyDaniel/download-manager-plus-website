@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Loader2,
   AlertTriangle,
@@ -132,6 +132,7 @@ export default function SettingsTab({
       )}
       <AppConfigCard onErr={handleErr} />
       <ProtectionCard onErr={handleErr} />
+      <PopupCard onErr={handleErr} />
       <PasskeysCard onErr={handleErr} />
       <PricingCard onErr={handleErr} />
       <LegalCard kind="terms" title="תנאי שימוש" onErr={handleErr} />
@@ -783,6 +784,336 @@ function CeilingField({
         <p className="mt-1 text-[10px] text-muted-foreground">ללא תקרה</p>
       )}
     </div>
+  )
+}
+
+/* ── Announcement popup ─────────────────────────────────────────────
+ *  Configure a popup shown on the website and/or desktop app. The image
+ *  is either uploaded to R2 (stored) or a Drive link (not stored — shown
+ *  straight from Google). Title/body are optional. Frequency + target
+ *  are configurable. Saving is a step-up (passkey) action. */
+function popupDriveDirect(url: string): string {
+  const u = String(url || '').trim()
+  if (!u) return ''
+  const m =
+    u.match(/\/d\/([a-zA-Z0-9_-]{10,})/) || u.match(/[?&]id=([a-zA-Z0-9_-]{10,})/)
+  if (m) return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w1600`
+  return u
+}
+
+function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
+  const [loading, setLoading] = useState(true)
+  const [enabled, setEnabled] = useState(false)
+  const [title, setTitle] = useState('')
+  const [body, setBody] = useState('')
+  const [imageSource, setImageSource] = useState<'none' | 'r2' | 'drive'>('none')
+  const [imageKey, setImageKey] = useState('')
+  const [driveUrl, setDriveUrl] = useState('')
+  const [r2Preview, setR2Preview] = useState('') // presigned/local preview for an uploaded image
+  const [frequency, setFrequency] = useState<'always' | 'daily' | 'once'>('daily')
+  const [target, setTarget] = useState<'web' | 'desktop' | 'both'>('both')
+  const [uploading, setUploading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState('')
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await fetch('/api/paypal?action=get-popup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        })
+        const j = (await r.json()) as {
+          popup?: {
+            enabled?: boolean
+            title?: string
+            body?: string
+            imageSource?: 'none' | 'r2' | 'drive'
+            driveUrl?: string
+            imageUrl?: string
+            frequency?: 'always' | 'daily' | 'once'
+            target?: 'web' | 'desktop' | 'both'
+          }
+        }
+        const p = j.popup || {}
+        setEnabled(p.enabled === true)
+        setTitle(p.title || '')
+        setBody(p.body || '')
+        setImageSource(p.imageSource || 'none')
+        setDriveUrl(p.driveUrl || '')
+        if (p.imageSource === 'r2') setR2Preview(p.imageUrl || '')
+        if (p.frequency) setFrequency(p.frequency)
+        if (p.target) setTarget(p.target)
+      } catch {
+        /* ignore */
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [])
+
+  async function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    if (file.size > 4 * 1024 * 1024) {
+      setMsg('התמונה גדולה מדי — מקסימום 4MB')
+      return
+    }
+    setUploading(true)
+    setMsg('')
+    try {
+      const dataUrl = await new Promise<string>((res, rej) => {
+        const fr = new FileReader()
+        fr.onload = () => res(String(fr.result))
+        fr.onerror = rej
+        fr.readAsDataURL(file)
+      })
+      const r = await adminApi<{ imageKey: string }>(
+        'admin-upload-popup-image',
+        { content: dataUrl },
+      )
+      setImageKey(r.imageKey)
+      setImageSource('r2')
+      setR2Preview(dataUrl)
+      setMsg('התמונה הועלתה ✓')
+      setTimeout(() => setMsg(''), 2500)
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setMsg(err.message || 'העלאה נכשלה')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function save() {
+    setSaving(true)
+    setMsg('')
+    try {
+      await adminApi('admin-set-popup', {
+        enabled,
+        title: title.trim(),
+        body: body.trim(),
+        imageSource,
+        imageKey,
+        driveUrl: driveUrl.trim(),
+        frequency,
+        target,
+      })
+      setMsg('נשמר ✓')
+      setTimeout(() => setMsg(''), 2500)
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setMsg(err.message || 'שמירה נכשלה')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const previewImg =
+    imageSource === 'r2'
+      ? r2Preview
+      : imageSource === 'drive'
+        ? popupDriveDirect(driveUrl)
+        : ''
+
+  const SOURCES = [
+    { v: 'none', label: 'בלי תמונה' },
+    { v: 'r2', label: 'העלאת תמונה' },
+    { v: 'drive', label: 'קישור מ-Drive' },
+  ] as const
+  const FREQS = [
+    { v: 'always', label: 'בכל כניסה' },
+    { v: 'daily', label: 'פעם ביום' },
+    { v: 'once', label: 'פעם אחת לאדם' },
+  ] as const
+  const TARGETS = [
+    { v: 'both', label: 'אתר + תוכנה' },
+    { v: 'web', label: 'רק האתר' },
+    { v: 'desktop', label: 'רק התוכנה' },
+  ] as const
+
+  return (
+    <Card title="פופאפ הודעה">
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> טוען…
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {/* Enable */}
+          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-border bg-background px-4 py-3">
+            <span className="text-sm font-medium text-foreground">
+              הצג פופאפ למשתמשים
+            </span>
+            <Switch checked={enabled} onCheckedChange={(v) => setEnabled(v)} />
+          </label>
+
+          {/* Image source */}
+          <div>
+            <div className="mb-1.5 text-xs text-muted-foreground">תמונה</div>
+            <div className="grid grid-cols-3 gap-2">
+              {SOURCES.map((s) => (
+                <button
+                  key={s.v}
+                  type="button"
+                  onClick={() => setImageSource(s.v)}
+                  className={cn(
+                    'rounded-md border px-3 py-2 text-xs transition-colors',
+                    imageSource === s.v
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-fg-muted hover:bg-popover',
+                  )}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            {imageSource === 'r2' && (
+              <div className="mt-2 flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={uploading}
+                >
+                  {uploading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : null}
+                  בחר תמונה
+                </Button>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={onPickImage}
+                  className="hidden"
+                />
+                <span className="text-[11px] text-fg-faint">מקסימום 4MB</span>
+              </div>
+            )}
+            {imageSource === 'drive' && (
+              <Input
+                className="mt-2"
+                dir="ltr"
+                placeholder="קישור לתמונה ב-Google Drive"
+                value={driveUrl}
+                onChange={(e) => setDriveUrl(e.target.value)}
+              />
+            )}
+          </div>
+
+          {/* Title + body */}
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              כותרת (אפשר להשאיר ריק)
+            </label>
+            <Input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="כותרת הפופאפ"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              טקסט (אפשר להשאיר ריק)
+            </label>
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              rows={3}
+              placeholder="טקסט שמופיע מתחת לכותרת"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-fg outline-none focus:border-primary"
+            />
+          </div>
+
+          {/* Frequency + target */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                תדירות הצגה
+              </label>
+              <select
+                value={frequency}
+                onChange={(e) =>
+                  setFrequency(e.target.value as typeof frequency)
+                }
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-fg outline-none focus:border-primary"
+              >
+                {FREQS.map((f) => (
+                  <option key={f.v} value={f.v}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                איפה להציג
+              </label>
+              <select
+                value={target}
+                onChange={(e) => setTarget(e.target.value as typeof target)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-fg outline-none focus:border-primary"
+              >
+                {TARGETS.map((t) => (
+                  <option key={t.v} value={t.v}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Live preview */}
+          <div>
+            <div className="mb-1.5 text-xs text-muted-foreground">תצוגה מקדימה</div>
+            <div className="overflow-hidden rounded-xl border border-border bg-background">
+              {previewImg ? (
+                <img
+                  src={previewImg}
+                  alt=""
+                  className="max-h-48 w-full object-contain"
+                />
+              ) : null}
+              {(title || body) && (
+                <div className="p-4 text-center">
+                  {title && (
+                    <div className="text-base font-bold text-fg">{title}</div>
+                  )}
+                  {body && (
+                    <div className="mt-1 text-sm text-fg-muted whitespace-pre-line">
+                      {body}
+                    </div>
+                  )}
+                </div>
+              )}
+              {!previewImg && !title && !body && (
+                <div className="p-6 text-center text-xs text-fg-faint">
+                  אין תוכן עדיין
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-3">
+            {msg && <span className="text-xs text-muted-foreground">{msg}</span>}
+            <Button onClick={save} disabled={saving} size="sm">
+              {saving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              שמור פופאפ
+            </Button>
+          </div>
+        </div>
+      )}
+    </Card>
   )
 }
 
