@@ -13,7 +13,7 @@ import {
   AlertTriangle,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
-import { cachedAdminApi } from '../../lib/adminCache'
+import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
 import { KeyDetailsModal } from './KeyDetailsModal'
 
 /**
@@ -115,8 +115,17 @@ export default function UsersTab({
 }: {
   onAuthExpired: () => void
 }) {
-  const [users, setUsers] = useState<UserDoc[] | null>(null)
-  const [keysByUid, setKeysByUid] = useState<Record<string, KeySummary>>({})
+  // Seed from the session cache so re-entering the tab paints the last
+  // data instantly — no loading flash, no read. load() then refreshes
+  // in the background (free within the TTL).
+  const seed = peekAdminCache<{
+    users: UserDoc[]
+    keysByUid: Record<string, KeySummary>
+  }>('admin-list-users')
+  const [users, setUsers] = useState<UserDoc[] | null>(seed?.users ?? null)
+  const [keysByUid, setKeysByUid] = useState<Record<string, KeySummary>>(
+    seed?.keysByUid ?? {},
+  )
   const [search, setSearch] = useState('')
   const [error, setError] = useState('')
   const [keyModal, setKeyModal] = useState<KeySummary | null>(null)

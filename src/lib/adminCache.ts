@@ -52,6 +52,21 @@ export async function cachedAdminApi<T>(
 }
 
 /**
+ * Synchronous peek — returns the cached snapshot immediately (any age),
+ * or undefined if we've never loaded it this session. Use it to seed a
+ * tab's initial state so re-entering shows the data instantly with NO
+ * loading flash; then call cachedAdminApi() to refresh in the
+ * background (which is free if still within the TTL).
+ */
+export function peekAdminCache<T>(
+  action: string,
+  body: Record<string, unknown> = {},
+): T | undefined {
+  const hit = cache.get(keyFor(action, body))
+  return hit ? (hit.data as T) : undefined
+}
+
+/**
  * Drop cached snapshots so the next load re-reads. Call after a mutation
  * that changes what a read returns. With no argument, clears everything
  * (e.g. on sign-out).
