@@ -7664,7 +7664,25 @@ async function handleGetPopup(req: VercelRequest, res: VercelResponse) {
   try {
     const snap = await getDb().collection('appConfig').doc(POPUP_DOC).get()
     const d = (snap.exists ? snap.data() : {}) as Record<string, unknown>
-    const imageUrl = await popupImageUrl(d as never)
+    const imageSource = String(d.imageSource || 'none')
+    let title = String(d.title || '')
+    let driveUrl = String(d.driveUrl || '')
+    // Forgive a Drive image link pasted into the TITLE field: if the
+    // Drive source is selected, the URL field is empty, and the title is
+    // clearly a Drive link, treat the title AS the image and drop it from
+    // the title so the popup shows the picture, not the raw URL text.
+    const looksLikeDrive = /drive\.google\.com|\/d\/[a-zA-Z0-9_-]{10,}|[?&]id=[a-zA-Z0-9_-]{10,}/.test(
+      title,
+    )
+    if (imageSource === 'drive' && !driveUrl && looksLikeDrive) {
+      driveUrl = title
+      title = ''
+    }
+    const imageUrl = await popupImageUrl({
+      imageSource,
+      imageKey: String(d.imageKey || ''),
+      driveUrl,
+    })
     const freq = String(d.frequency || 'daily')
     const target = String(d.target || 'both')
     return res.status(200).json({
@@ -7672,11 +7690,11 @@ async function handleGetPopup(req: VercelRequest, res: VercelResponse) {
       popup: {
         enabled: d.enabled === true,
         id: String(d.id || ''),
-        title: String(d.title || ''),
+        title,
         body: String(d.body || ''),
         imageUrl,
-        imageSource: String(d.imageSource || 'none'),
-        driveUrl: String(d.driveUrl || ''),
+        imageSource,
+        driveUrl,
         hasImage: Boolean(imageUrl),
         frequency: ['always', 'daily', 'once'].includes(freq) ? freq : 'daily',
         target: ['web', 'desktop', 'both'].includes(target) ? target : 'both',
