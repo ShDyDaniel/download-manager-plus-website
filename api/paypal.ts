@@ -7268,10 +7268,19 @@ async function handleAdminBackupSummary(
   })
 }
 
-/** Restore a backup into Firestore (step-up gated — DANGEROUS). Always
- *  snapshots the CURRENT state first ("prerestore") so a bad restore is
- *  itself reversible. Documents are upserted by path; docs created AFTER
- *  the backup are left untouched (not deleted). */
+/** Collections that are restored as a UNION (never purged), to avoid
+ *  locking the admin out: restoring an old backup must not delete a
+ *  passkey / gate created after that backup. */
+const RESTORE_NEVER_PURGE = new Set(['adminCredentials', 'adminSecurity'])
+
+/** Restore a backup so the database EXACTLY matches the snapshot
+ *  (step-up gated — DANGEROUS). For every collection the backup
+ *  captured it: (a) upserts all backed-up docs, and (b) DELETES any
+ *  current doc in those collections that wasn't in the backup — so
+ *  items created after the backup are removed. Always snapshots the
+ *  current state first ("prerestore") so the operation is reversible.
+ *  admin-auth collections are union-only (never purged) to prevent a
+ *  lockout. Collections the backup did NOT capture are left untouched. */
 async function handleAdminRestoreBackup(
   req: VercelRequest,
   res: VercelResponse,
@@ -7283,7 +7292,7 @@ async function handleAdminRestoreBackup(
   if (typeof key !== 'string' || !key.startsWith(BACKUP_PREFIX)) {
     return res.status(400).json({ ok: false, error: 'invalid key' })
   }
-  // 1) Safety snapshot of the current state before we overwrite anything.
+  // 1) Safety snapshot of the current state before we touch anything.
   let safetyBackupKey = ''
   try {
     safetyBackupKey = (await createBackup('prerestore')).key
@@ -7300,10 +7309,48 @@ async function handleAdminRestoreBackup(
   if (!Array.isArray(payload.docs)) {
     return res.status(400).json({ ok: false, error: 'גיבוי פגום' })
   }
-  // 3) Write back in batches (Firestore caps a batch at 500 writes).
   const db = getDb()
-  let restored = 0
+  const backupPaths = new Set(
+    payload.docs.map((d) => d?.path).filter((p): p is string => typeof p === 'string'),
+  )
+
+  // Which collections does this backup own? Prefer the recorded list;
+  // fall back to deriving it from the doc paths (older backups).
+  const ownedCollections =
+    Array.isArray(payload.collections) && payload.collections.length
+      ? payload.collections
+      : [...new Set(
+          [...backupPaths].map((p) => {
+            const segs = p.split('/')
+            return segs.length >= 2 ? segs[segs.length - 2] : segs[0]
+          }),
+        )]
+
+  // 3) PURGE: delete current docs (in the owned collections) that are
+  //    NOT in the backup — except the admin-auth carve-out.
+  let deleted = 0
   const CHUNK = 400
+  for (const name of ownedCollections) {
+    if (RESTORE_NEVER_PURGE.has(name)) continue
+    let snap
+    try {
+      snap = await db.collectionGroup(name).get()
+    } catch {
+      continue // unknown / unqueryable collection — skip
+    }
+    const stale = snap.docs.filter((d) => !backupPaths.has(d.ref.path))
+    for (let i = 0; i < stale.length; i += CHUNK) {
+      const batch = db.batch()
+      for (const d of stale.slice(i, i + CHUNK)) {
+        batch.delete(d.ref)
+        deleted += 1
+      }
+      await batch.commit()
+    }
+  }
+
+  // 4) UPSERT: write every backed-up doc back (Firestore batch ≤ 500).
+  let restored = 0
   for (let i = 0; i < payload.docs.length; i += CHUNK) {
     const batch = db.batch()
     for (const item of payload.docs.slice(i, i + CHUNK)) {
@@ -7316,12 +7363,14 @@ async function handleAdminRestoreBackup(
     }
     await batch.commit()
   }
+
   await sendTelegramAlert(
-    `♻️ בוצע שחזור גיבוי\n${restored} מסמכים שוחזרו מ-${key}\n(גיבוי בטיחות נשמר: ${safetyBackupKey || 'לא נוצר'})`,
+    `♻️ בוצע שחזור גיבוי\n${restored} מסמכים שוחזרו, ${deleted} נמחקו (חדשים יותר)\nמ-${key}\n(גיבוי בטיחות נשמר: ${safetyBackupKey || 'לא נוצר'})`,
   )
   return res.status(200).json({
     ok: true,
     restored,
+    deleted,
     total: payload.docs.length,
     safetyBackupKey,
   })
