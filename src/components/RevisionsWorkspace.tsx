@@ -37,7 +37,6 @@ import {
   Copy,
   ExternalLink,
   Eye,
-  RotateCcw,
   RefreshCw,
   Link2 as LinkIcon,
   HardDrive,
@@ -76,7 +75,6 @@ import {
   updateGroup,
   updateNoteStatus,
   updateProjectLock,
-  clearRoundFinalized,
   type DriveIntegration,
   type DriveStorage,
   type GroupRoundSummary,
@@ -1020,43 +1018,14 @@ function GroupCard({
   )
   const [loadingRounds, setLoadingRounds] = useState(false)
   const [roundsError, setRoundsError] = useState<string | null>(null)
-  const [reopening, setReopening] = useState<string | null>(null)
   const loadedForRef = useRef<number | null>(null)
 
-  // Editor undoes a client's "ready to fix" marker (pressed by mistake):
-  // clears the marker + reopens the round. Updates local state so there's
-  // no re-fetch.
-  async function reopenRound(round: GroupRoundSummary) {
-    if (reopening) return
-    if (
-      !window.confirm(
-        'לפתוח מחדש את הסבב? הסימון "מוכן לתיקון" יוסר והלקוח יוכל להוסיף תיקונים שוב.',
-      )
-    )
-      return
-    setReopening(round.id)
-    const res = await clearRoundFinalized(round.id)
-    setReopening(null)
-    if (res.ok) {
-      setRounds((prev) =>
-        prev
-          ? prev.map((r) =>
-              r.id === round.id
-                ? {
-                    ...r,
-                    clientFinalized: false,
-                    clientFinalizedAt: 0,
-                    clientFinalizedBy: '',
-                    locked: false,
-                  }
-                : r,
-            )
-          : prev,
-      )
-    } else {
-      window.alert(res.error || 'הפעולה נכשלה')
-    }
-  }
+  // Note: re-opening a finalized round (undoing the client's "ready
+  // to fix" marker) is NOT a list-level action anymore. The editor
+  // does it from inside the round itself, via the red/green lock
+  // button in the detail view — unlocking there also clears the
+  // "ready" marker server-side. Keeping a separate list button would
+  // be a redundant second way to do the same thing.
 
   useEffect(() => {
     if (!expanded) return
@@ -1274,21 +1243,6 @@ function GroupCard({
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {round.clientFinalized && (
-                      <button
-                        type="button"
-                        onClick={() => void reopenRound(round)}
-                        disabled={reopening === round.id}
-                        title="הלקוח סימן בטעות? פתח מחדש לתיקונים"
-                        className={
-                          BTN_BASE +
-                          ' border border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/15'
-                        }
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" />
-                        {reopening === round.id ? 'פותח…' : 'פתח מחדש'}
-                      </button>
-                    )}
                     <button
                       type="button"
                       onClick={() => onOpenRound(round)}
