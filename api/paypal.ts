@@ -1613,6 +1613,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handlePartnerLogin(req, res)
       case 'partner-stats':
         return await handlePartnerStats(req, res)
+      case 'partner-change-password':
+        return await handlePartnerChangePassword(req, res)
+      case 'partner-accept-terms':
+        return await handlePartnerAcceptTerms(req, res)
       case 'admin-grant-pro':
         return await handleAdminGrantPro(req, res)
       case 'admin-2fa-request':
@@ -4027,6 +4031,67 @@ async function sendReceiptEmail(args: {
   })
 }
 
+/** Welcome email for a newly-set-up partner: the dashboard link, their
+ *  login email, the TEMPORARY password, their referral link + agreement,
+ *  and a note that on first login they must change the password and
+ *  accept the partnership terms. */
+async function sendPartnerWelcomeEmail(args: {
+  to: string
+  name: string
+  code: string
+  password: string
+  commissionLabel: string
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = makeCountedTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const dashUrl = `${REFERRAL_LINK_BASE}/partner`
+  const refLink = `${REFERRAL_LINK_BASE}/?ref=${encodeURIComponent(args.code)}`
+  const esc = (s: string) =>
+    String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:6px 0;color:#8B8170;font-size:12px;">${label}</td><td style="padding:6px 0;color:#F5EFE6;font-size:13px;font-weight:600;" dir="ltr" align="left">${value}</td></tr>`
+  const html = renderEmail({
+    heading: 'ברוכים הבאים לתוכנית השותפים 🤝',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+        שלום ${esc(args.name)}, צירפנו אתכם כשותפים של <strong>ניהול הורדות פלוס</strong>.
+        כל מי שיירשם וירכוש דרך הקישור האישי שלכם — מזוכה לזכותכם.
+      </p>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 16px;border-top:1px solid #2a2520;border-bottom:1px solid #2a2520;">
+        ${row('קוד שותף', esc(args.code))}
+        ${row('קישור ההפניה שלכם', esc(refLink))}
+        ${row('ההסכם', esc(args.commissionLabel))}
+      </table>
+      <p style="font-size:13px;line-height:1.7;margin:0 0 8px;color:#C9BFA8;"><strong>פרטי הכניסה לדשבורד:</strong></p>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 16px;border-top:1px solid #2a2520;border-bottom:1px solid #2a2520;">
+        ${row('כתובת הדשבורד', esc(dashUrl))}
+        ${row('אימייל', esc(args.to))}
+        ${row('סיסמה זמנית', esc(args.password))}
+      </table>
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:18px 0 22px;">
+        <tr><td align="center">
+          <a href="${dashUrl}" target="_blank" style="display:inline-block;padding:14px 36px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:15px;">כניסה לדשבורד השותפים</a>
+        </td></tr>
+      </table>
+      <p style="font-size:12px;line-height:1.7;margin:0;color:#8B8170;">
+        בכניסה הראשונה תתבקשו להחליף את הסיסמה הזמנית בסיסמה קבועה משלכם,
+        ולאשר את תקנון השותפות. שמרו על פרטי הכניסה בסוד.
+      </p>
+    `,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    subject: 'הצטרפתם כשותפים — ניהול הורדות פלוס',
+    html,
+  })
+}
+
 /** Issue a SUMIT receipt, email it to the customer, and log it to the
  *  `receipts` collection (for the admin receipts log). One call covers
  *  every paid path. Fully best-effort — returns the URL when it
@@ -6340,7 +6405,20 @@ interface ReferralPartnerDoc {
   // What the partner sees on their dashboard (modular). Positive
   // flags — if both money flags are off, the partner sees no money.
   visibility?: { revenue?: boolean; earnings?: boolean; counts?: boolean }
+  // Dashboard login + onboarding.
+  loginEmail?: string
+  passwordHash?: string
+  /** True after the admin sets a TEMP password — partner must change it
+   *  on first login before reaching the dashboard. */
+  mustChangePassword?: boolean
+  /** ISO timestamp the partner accepted the partnership terms (null /
+   *  absent = not yet accepted). */
+  termsAcceptedAt?: string | null
+  termsVersion?: string
 }
+
+/** Bump this when the partnership terms change to force re-acceptance. */
+const PARTNER_TERMS_VERSION = '1'
 
 interface PartnerVisibility {
   revenue: boolean
@@ -9574,6 +9652,10 @@ async function computePartnerStats(code: string) {
     name: data?.name || code,
     link: `${REFERRAL_LINK_BASE}/?ref=${encodeURIComponent(code)}`,
     visibility: vis,
+    // Onboarding gates — always returned (not visibility-gated): the
+    // partner must clear these before reaching the dashboard.
+    mustChangePassword: data?.mustChangePassword === true,
+    termsAccepted: Boolean(data?.termsAcceptedAt),
     signups: vis.counts ? usersSnap.size : null,
     paidAccounts: vis.counts ? paidEmails.size : null,
     commission: vis.earnings ? commission : null,
@@ -9630,6 +9712,55 @@ async function handlePartnerStats(req: VercelRequest, res: VercelResponse) {
   return res.status(200).json({ ok: true, partner: stats })
 }
 
+/** POST { token, newPassword } — partner sets their own (permanent)
+ *  password on first login, replacing the admin-issued temp one and
+ *  clearing the must-change flag. Returns a fresh token + stats. */
+async function handlePartnerChangePassword(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as { token?: string; newPassword?: string }
+  const claims = verifyPartnerToken(body.token || '')
+  if (!claims) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const newPassword = body.newPassword || ''
+  if (newPassword.length < 6) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'סיסמה חייבת להיות לפחות 6 תווים' })
+  }
+  const ref = getDb().collection('referralPartners').doc(claims.code)
+  if (!(await ref.get()).exists) {
+    return res.status(404).json({ ok: false, error: 'שותף לא קיים' })
+  }
+  await ref.update({
+    passwordHash: hashPartnerPassword(newPassword),
+    mustChangePassword: false,
+  })
+  const token = signPartnerToken(claims.code)
+  const stats = await computePartnerStats(claims.code)
+  return res.status(200).json({ ok: true, token, partner: stats })
+}
+
+/** POST { token } — partner accepts the partnership terms. */
+async function handlePartnerAcceptTerms(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as { token?: string }
+  const claims = verifyPartnerToken(body.token || '')
+  if (!claims) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const ref = getDb().collection('referralPartners').doc(claims.code)
+  if (!(await ref.get()).exists) {
+    return res.status(404).json({ ok: false, error: 'שותף לא קיים' })
+  }
+  await ref.update({
+    termsAcceptedAt: new Date().toISOString(),
+    termsVersion: PARTNER_TERMS_VERSION,
+  })
+  const stats = await computePartnerStats(claims.code)
+  return res.status(200).json({ ok: true, partner: stats })
+}
+
 /** POST { idToken, code, loginEmail, password? } — admin sets/updates a
  *  partner's dashboard credentials. Empty password keeps the existing
  *  one (lets the admin change just the email). */
@@ -9654,8 +9785,12 @@ async function handleAdminSetReferralCredentials(
   }
   const db = getDb()
   const ref = db.collection('referralPartners').doc(code)
-  if (!(await ref.get()).exists) {
+  const existingSnap = await ref.get()
+  if (!existingSnap.exists) {
     return res.status(404).json({ ok: false, error: 'שותף לא קיים' })
+  }
+  const existingData = existingSnap.data() as ReferralPartnerDoc & {
+    loginEmail?: string
   }
   // Email must be unique across partners (login looks up by it).
   if (loginEmail) {
@@ -9678,11 +9813,43 @@ async function handleAdminSetReferralCredentials(
         .json({ ok: false, error: 'סיסמה חייבת להיות לפחות 6 תווים' })
     }
     update.passwordHash = hashPartnerPassword(password)
+    // A freshly-set password is a TEMP password: force the partner to
+    // change it + re-accept the terms on next login (onboarding flow).
+    update.mustChangePassword = true
+    update.termsAcceptedAt = null
   }
   if (Object.keys(update).length === 0) {
     return res.status(400).json({ ok: false, error: 'אין מה לעדכן' })
   }
   await ref.update(update)
+
+  // Welcome email — only when a (temp) password was set, since that's
+  // the credential the partner needs. Best-effort: a mail failure must
+  // not fail the save (the admin can resend by re-setting credentials).
+  if (password) {
+    const to = loginEmail || existingData.loginEmail || ''
+    if (to) {
+      const cv = existingData.commissionValue
+      const ct = existingData.commissionType
+      const commissionLabel =
+        ct === 'percent' && cv
+          ? `${cv}% מכל קנייה / חידוש`
+          : ct === 'fixed' && cv
+            ? `${cv} ${(existingData.commissionCurrency || 'ILS').toUpperCase()} לכל קנייה / חידוש`
+            : 'ההסכם ייקבע בהמשך'
+      try {
+        await sendPartnerWelcomeEmail({
+          to,
+          name: existingData.name || code,
+          code,
+          password,
+          commissionLabel,
+        })
+      } catch (e) {
+        console.warn('[partner] welcome email failed (ignored):', e)
+      }
+    }
+  }
   return res.status(200).json({ ok: true })
 }
 

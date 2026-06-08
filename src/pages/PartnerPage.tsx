@@ -22,6 +22,9 @@ interface PartnerStats {
   name: string
   link: string
   visibility: { revenue: boolean; earnings: boolean; counts: boolean }
+  /** First-login onboarding gates. */
+  mustChangePassword?: boolean
+  termsAccepted?: boolean
   signups: number | null
   paidAccounts: number | null
   commission: {
@@ -171,6 +174,29 @@ export default function PartnerPage() {
           </p>
         </div>
       </div>
+    )
+  }
+
+  // ── First login, step 1: replace the temp password ──
+  if (stats.mustChangePassword) {
+    return (
+      <SetPasswordScreen
+        onDone={(token, partner) => {
+          sessionStorage.setItem(TOKEN_KEY, token)
+          setStats(partner)
+        }}
+        onAuthLost={logout}
+      />
+    )
+  }
+
+  // ── First login, step 2: accept the partnership terms ──
+  if (!stats.termsAccepted) {
+    return (
+      <AcceptTermsScreen
+        onDone={(partner) => setStats(partner)}
+        onAuthLost={logout}
+      />
     )
   }
 
@@ -469,6 +495,160 @@ function FeeExplainModal({
     </div>
   )
 }
+
+/* ── First-login: set a permanent password ──────────────────────── */
+function SetPasswordScreen({
+  onDone,
+  onAuthLost,
+}: {
+  onDone: (token: string, partner: PartnerStats) => void
+  onAuthLost: () => void
+}) {
+  const [pw1, setPw1] = useState('')
+  const [pw2, setPw2] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (busy) return
+    if (pw1.length < 6) {
+      setError('הסיסמה חייבת להיות לפחות 6 תווים')
+      return
+    }
+    if (pw1 !== pw2) {
+      setError('הסיסמאות אינן תואמות')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    const token = sessionStorage.getItem(TOKEN_KEY) || ''
+    const r = await api<
+      | { ok: true; token: string; partner: PartnerStats }
+      | { ok: false; error: string }
+    >('partner-change-password', { token, newPassword: pw1 })
+    setBusy(false)
+    if (!r.ok) {
+      if (r.error === 'unauthorized') return onAuthLost()
+      setError(r.error || 'העדכון נכשל')
+      return
+    }
+    onDone(r.token, r.partner)
+  }
+
+  return (
+    <div className="flex min-h-dvh items-center justify-center bg-bg px-5" dir="rtl">
+      <div className="w-full max-w-sm">
+        <AuthHeader label="— שותפים" title="הגדרת סיסמה קבועה" />
+        <p className="mb-5 text-center text-sm text-fg-muted">
+          זו הכניסה הראשונה שלך. בחר/י סיסמה קבועה שתחליף את הסיסמה הזמנית
+          שקיבלת במייל.
+        </p>
+        <form onSubmit={submit} className="space-y-5">
+          <AuthInput
+            label="סיסמה חדשה"
+            type="password"
+            value={pw1}
+            onChange={setPw1}
+            autoComplete="new-password"
+            autoFocus
+          />
+          <AuthInput
+            label="אימות סיסמה"
+            type="password"
+            value={pw2}
+            onChange={setPw2}
+            autoComplete="new-password"
+          />
+          {error && <AuthError message={error} />}
+          <AuthButton busy={busy}>שמירה והמשך</AuthButton>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+/* ── First-login: accept the partnership terms ──────────────────── */
+function AcceptTermsScreen({
+  onDone,
+  onAuthLost,
+}: {
+  onDone: (partner: PartnerStats) => void
+  onAuthLost: () => void
+}) {
+  const [agreed, setAgreed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function accept() {
+    if (busy || !agreed) return
+    setBusy(true)
+    setError(null)
+    const token = sessionStorage.getItem(TOKEN_KEY) || ''
+    const r = await api<
+      { ok: true; partner: PartnerStats } | { ok: false; error: string }
+    >('partner-accept-terms', { token })
+    setBusy(false)
+    if (!r.ok) {
+      if (r.error === 'unauthorized') return onAuthLost()
+      setError(r.error || 'הפעולה נכשלה')
+      return
+    }
+    onDone(r.partner)
+  }
+
+  return (
+    <div className="flex min-h-dvh items-center justify-center bg-bg px-5 py-10" dir="rtl">
+      <div className="w-full max-w-lg">
+        <AuthHeader label="— שותפים" title="תקנון תוכנית השותפים" />
+        <div className="mb-4 max-h-[50vh] overflow-y-auto rounded-2xl border border-border/60 bg-white/[0.015] p-5 text-sm leading-relaxed text-fg-secondary">
+          {PARTNER_TERMS.map((para, i) => (
+            <p key={i} className={i === 0 ? '' : 'mt-3'}>
+              {para}
+            </p>
+          ))}
+        </div>
+        <label className="mb-4 flex cursor-pointer items-start gap-2.5 text-sm text-fg">
+          <input
+            type="checkbox"
+            checked={agreed}
+            onChange={(e) => setAgreed(e.target.checked)}
+            className="mt-0.5 h-4 w-4 accent-primary"
+          />
+          <span>קראתי את התקנון ואני מאשר/ת את תנאי תוכנית השותפים.</span>
+        </label>
+        {error && (
+          <div className="mb-3">
+            <AuthError message={error} />
+          </div>
+        )}
+        <AuthButton
+          type="button"
+          busy={busy}
+          disabled={!agreed || busy}
+          onClick={accept}
+        >
+          אני מאשר/ת וממשיך/ה
+        </AuthButton>
+      </div>
+    </div>
+  )
+}
+
+/* Default partnership terms. Placeholder copy — edit freely; bump
+ * PARTNER_TERMS_VERSION in api/paypal.ts to force partners to re-accept
+ * after a material change. */
+const PARTNER_TERMS: string[] = [
+  'ברוכים הבאים לתוכנית השותפים של "ניהול הורדות פלוס". התקנון להלן מסדיר את היחסים בינך לבין החברה כשותף/ה.',
+  '1. שיוך מכירות: מכירה תזוכה לך רק כאשר הלקוח נכנס דרך קישור ההפניה האישי שלך וביצע רכישה בפועל. החברה רשאית לבדוק ולאמת כל שיוך.',
+  '2. עמלות: גובה העמלה ואופן חישובה נקבעים בהסכם האישי שלך כפי שמוצג בדשבורד. העמלה מחושבת על הסכום שנותר בפועל לאחר עמלת הסליקה ולאחר מע"מ, ומשולמת על עסקאות שלא בוטלו או הוחזרו.',
+  '3. תשלומים: תשלום העמלות יבוצע במועדים ובאמצעים שתיאמת עם החברה. עסקה שבוטלה, הוחזרה (chargeback) או לא נגבתה — לא תזכה בעמלה, ותקוזז אם כבר שולמה.',
+  '4. שיווק הוגן: אין לפרסם את המוצר בדרכים מטעות, ספאם, או הבטחות שווא, ואין להשתמש במותג החברה באופן שאינו מאושר. החברה רשאית להפסיק את השותפות בגין הפרה.',
+  '5. סודיות ופרטיות: נתוני הדשבורד מיועדים לך בלבד. אינך רשאי/ת לחשוף נתונים, רשימות לקוחות או מידע עסקי של החברה.',
+  '6. סיום: כל צד רשאי לסיים את השותפות בכל עת. עמלות שנצברו כדין עד מועד הסיום ישולמו בהתאם לתקנון.',
+  '7. שינויים: החברה רשאית לעדכן את התקנון מעת לעת. המשך שימוש בדשבורד לאחר עדכון מהווה הסכמה לתנאים המעודכנים.',
+  'אישור התקנון מהווה הסכמה מלאה לכל האמור לעיל.',
+]
 
 function Stat({
   value,
