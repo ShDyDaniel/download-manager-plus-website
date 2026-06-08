@@ -70,6 +70,20 @@ function fmtDateOnly(iso: string): string {
   }
 }
 
+/** עסקת אקראי must be reported within 30 days of the transaction.
+ *  Returns the deadline date (charge date + 30d) and whether it has
+ *  already passed, so the table can flag overdue lines. */
+function reportDeadline(iso: string): { label: string; overdue: boolean } {
+  if (!iso) return { label: '', overdue: false }
+  try {
+    const d = new Date(iso)
+    d.setDate(d.getDate() + 30)
+    return { label: fmtDateOnly(d.toISOString()), overdue: d.getTime() < Date.now() }
+  } catch {
+    return { label: '', overdue: false }
+  }
+}
+
 /** Current month as a YYYY-MM string for the native month input. */
 function currentMonthValue(): string {
   const d = new Date()
@@ -206,7 +220,8 @@ export default function ReceiptsTab({
     if (!casualRows) return
     const header = [
       'מס׳',
-      'תאריך',
+      'תאריך עסקה',
+      'מועד דיווח אחרון',
       'שם הלקוח',
       'אימייל',
       'תיאור',
@@ -220,6 +235,7 @@ export default function ReceiptsTab({
       lines.push([
         r.seq,
         fmtDateOnly(r.at),
+        reportDeadline(r.at).label,
         r.name,
         r.email,
         r.description,
@@ -233,6 +249,7 @@ export default function ReceiptsTab({
       lines.push([
         '',
         `סה"כ ${cur}`,
+        '',
         `${t.count} עסקאות`,
         '',
         '',
@@ -494,10 +511,19 @@ function CasualReport({
   const hasRows = rows && rows.length > 0
   return (
     <div className="space-y-4">
-      <p className="text-sm text-fg-muted">
-        דוח חודשי של כל החיובים בפועל לדיווח עסקת אקראי למע"מ. המספרים
-        מחושבים לפי מחיר הכולל מע"מ. אפשר להוריד כקובץ ולשלוח.
-      </p>
+      <div className="rounded-2xl border border-amber-500/30 bg-amber-500/[0.06] p-4 text-xs leading-relaxed text-fg-muted">
+        <p className="text-fg">
+          עסקת אקראי מדווחת <strong>לכל עסקה בנפרד</strong> בטופס 8356, ויש
+          לדווח ולשלם את המע"מ <strong>תוך 30 יום</strong> מהעסקה — לא פעם
+          בחודש. הדוח כאן הוא יומן מרוכז לנוחותך; עמודת "מועד דיווח אחרון"
+          מראה עד מתי לדווח כל שורה.
+        </p>
+        <p className="mt-2">
+          המספרים מחושבים לפי מחיר הכולל מע"מ בשיעור הנוכחי. נותן השירות
+          הוא החייב בתשלום המע"מ. שים לב: מכירה חוזרת ושיטתית של מנויים
+          עלולה להיחשב "עסק" ולא עסקת אקראי — נקודה לבדוק מול רואה החשבון.
+        </p>
+      </div>
 
       {/* Controls */}
       <div className="flex flex-wrap items-end gap-3 rounded-2xl border border-border bg-card p-4">
@@ -591,7 +617,8 @@ function CasualReport({
             <thead>
               <tr className="border-b border-border text-xs text-fg-muted">
                 <th className="px-4 py-3 font-medium">מס׳</th>
-                <th className="px-4 py-3 font-medium">תאריך</th>
+                <th className="px-4 py-3 font-medium">תאריך עסקה</th>
+                <th className="px-4 py-3 font-medium">דיווח עד</th>
                 <th className="px-4 py-3 font-medium">לקוח</th>
                 <th className="px-4 py-3 font-medium">מטבע</th>
                 <th className="px-4 py-3 font-medium">כולל מע"מ</th>
@@ -610,6 +637,17 @@ function CasualReport({
                   </td>
                   <td className="whitespace-nowrap px-4 py-3" dir="ltr">
                     {fmtDateOnly(row.at)}
+                  </td>
+                  <td
+                    className={
+                      'whitespace-nowrap px-4 py-3 ' +
+                      (reportDeadline(row.at).overdue
+                        ? 'font-medium text-destructive'
+                        : '')
+                    }
+                    dir="ltr"
+                  >
+                    {reportDeadline(row.at).label}
                   </td>
                   <td className="break-all px-4 py-3">
                     <div className="text-fg">{row.name || '—'}</div>
