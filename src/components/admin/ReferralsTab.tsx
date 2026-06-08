@@ -360,12 +360,16 @@ function PartnerCard({
       const toMs = exportTo ? Date.parse(`${exportTo}T23:59:59`) : undefined
       const j = await adminApi<{
         partner: { code: string; name: string }
+        receiptsEnabled?: boolean
         payments: {
           at: string
           email: string
           name: string
           planType: 'monthly' | 'yearly'
           amount: number
+          fee?: number
+          vat?: number
+          net?: number
           currency: string
         }[]
         accounts: {
@@ -375,24 +379,49 @@ function PartnerCard({
           planType: 'monthly' | 'yearly' | null
         }[]
       }>('admin-referral-export', { code: p.code, fromMs, toMs })
+      const receiptsOn = j.receiptsEnabled !== false
 
       const planLabel = (t: 'monthly' | 'yearly' | null) =>
         t === 'yearly' ? 'שנתי' : t === 'monthly' ? 'חודשי' : '—'
 
+      // Gross = revenue attributed to the partner. NET = after PayPal
+      // fee + VAT — the base the commission is actually paid on, kept in
+      // sync with the dashboard. We also total the fee + VAT so the
+      // report can document why net < gross.
       const paidByEmail: Record<string, Record<string, number>> = {}
+      const netByEmail: Record<string, Record<string, number>> = {}
       const countByEmail: Record<string, number> = {}
       const grossTotals: Record<string, number> = {}
+      const netTotals: Record<string, number> = {}
+      const feeTotals: Record<string, number> = {}
+      const vatTotals: Record<string, number> = {}
       const grossByMonth: Record<string, Record<string, number>> = {}
+      const netByMonth: Record<string, Record<string, number>> = {}
       const countByMonth: Record<string, number> = {}
+      const add = (
+        bag: Record<string, Record<string, number>>,
+        key: string,
+        cur: string,
+        v: number,
+      ) => {
+        bag[key] = bag[key] || {}
+        bag[key][cur] = (bag[key][cur] || 0) + v
+      }
       for (const pay of j.payments) {
         const e = pay.email.toLowerCase()
-        paidByEmail[e] = paidByEmail[e] || {}
-        paidByEmail[e][pay.currency] = (paidByEmail[e][pay.currency] || 0) + pay.amount
+        const net = typeof pay.net === 'number' ? pay.net : pay.amount
+        const fee = typeof pay.fee === 'number' ? pay.fee : 0
+        const vat = typeof pay.vat === 'number' ? pay.vat : 0
+        const m = pay.at.slice(0, 7)
+        add(paidByEmail, e, pay.currency, pay.amount)
+        add(netByEmail, e, pay.currency, net)
         countByEmail[e] = (countByEmail[e] || 0) + 1
         grossTotals[pay.currency] = (grossTotals[pay.currency] || 0) + pay.amount
-        const m = pay.at.slice(0, 7)
-        grossByMonth[m] = grossByMonth[m] || {}
-        grossByMonth[m][pay.currency] = (grossByMonth[m][pay.currency] || 0) + pay.amount
+        netTotals[pay.currency] = (netTotals[pay.currency] || 0) + net
+        feeTotals[pay.currency] = (feeTotals[pay.currency] || 0) + fee
+        vatTotals[pay.currency] = (vatTotals[pay.currency] || 0) + vat
+        add(grossByMonth, m, pay.currency, pay.amount)
+        add(netByMonth, m, pay.currency, net)
         countByMonth[m] = (countByMonth[m] || 0) + 1
       }
       const comm =
@@ -409,9 +438,9 @@ function PartnerCard({
         }
         return { [comm.cur]: count * comm.value }
       }
-      const earnTotals = earn(grossTotals, j.payments.length)
+      const earnTotals = earn(netTotals, j.payments.length)
       const earnByEmail: Record<string, Record<string, number>> = {}
-      for (const e of Object.keys(paidByEmail)) earnByEmail[e] = earn(paidByEmail[e], countByEmail[e])
+      for (const e of Object.keys(netByEmail)) earnByEmail[e] = earn(netByEmail[e], countByEmail[e])
 
       const sym: Record<string, string> = { ILS: '₪', USD: '$', EUR: '€' }
       const money = (m: Record<string, number>) => {
@@ -447,8 +476,16 @@ function PartnerCard({
       const statCards = [
         `<div class="stat"><b>${j.accounts.length}</b><span>חשבונות</span></div>`,
         `<div class="stat"><b>${paidCount}</b><span>קנו מנוי</span></div>`,
-        ...(expGross ? [`<div class="stat"><b>${esc(money(grossTotals))}</b><span>סה״כ הכנסות</span></div>`] : []),
-        ...(expEarnings ? [`<div class="stat"><b>${esc(money(earnTotals))}</b><span>רווח לשותף</span></div>`] : []),
+        ...(expGross ? [`<div class="stat"><b>${esc(money(grossTotals))}</b><span>סה״כ הכנסות (ברוטו)</span></div>`] : []),
+        // When receipts are OFF, surface the deductions so it's clear
+        // why the partner's base is lower than the gross revenue.
+        ...(expGross && !receiptsOn
+          ? [
+              `<div class="stat"><b>${esc(money(feeTotals))}</b><span>עמלת PayPal</span></div>`,
+              `<div class="stat"><b>${esc(money(vatTotals))}</b><span>מע״מ</span></div>`,
+            ]
+          : []),
+        ...(expEarnings ? [`<div class="stat"><b>${esc(money(earnTotals))}</b><span>רווח לשותף${!receiptsOn ? ' (אחרי עמלות)' : ''}</span></div>`] : []),
       ].join('')
       const moneyCols = (expGross ? '<th>סה״כ שולם</th>' : '') + (expEarnings ? '<th>רווח לשותף</th>' : '')
       const baseColspan = 5 + (expGross ? 1 : 0) + (expEarnings ? 1 : 0)
@@ -471,7 +508,7 @@ function PartnerCard({
           .sort((a, b) => b.localeCompare(a))
           .map(
             (m) =>
-              `<tr><td>${m.slice(5, 7)}/${m.slice(0, 4)}</td>${expGross ? `<td>${esc(money(grossByMonth[m]))}</td>` : ''}${expEarnings ? `<td>${esc(money(earn(grossByMonth[m], countByMonth[m])))}</td>` : ''}</tr>`,
+              `<tr><td>${m.slice(5, 7)}/${m.slice(0, 4)}</td>${expGross ? `<td>${esc(money(grossByMonth[m]))}</td>` : ''}${expEarnings ? `<td>${esc(money(earn(netByMonth[m], countByMonth[m])))}</td>` : ''}</tr>`,
           )
           .join('') || `<tr><td colspan="${monthColspan}" class="empty">אין נתונים בטווח</td></tr>`
       const monthSection = showMoney
@@ -562,10 +599,14 @@ function PartnerCard({
     setMsg('')
     try {
       const r = await adminApi<{
+        receiptsEnabled?: boolean
         payments?: {
           at: string
           email?: string
           amount: number
+          fee?: number
+          vat?: number
+          net?: number
           currency: string
         }[]
         accounts?: {
@@ -575,6 +616,7 @@ function PartnerCard({
           planType?: string | null
         }[]
       }>('admin-referral-export', { code: p.code })
+      const receiptsOn = r.receiptsEnabled !== false
       const rows: string[] = []
       if (expUsers) {
         rows.push('משתמשים')
@@ -587,10 +629,18 @@ function PartnerCard({
       }
       if (expGross || expEarnings) {
         rows.push('תשלומים')
-        rows.push('date,email,amount,currency')
+        // When receipts are OFF, break each payment down into gross /
+        // PayPal fee / VAT / net so the export matches the dashboard.
+        rows.push(
+          receiptsOn
+            ? 'date,email,amount,currency'
+            : 'date,email,gross,paypal_fee,vat,net,currency',
+        )
         for (const pay of r.payments || [])
           rows.push(
-            `${pay.at},${pay.email || ''},${pay.amount},${pay.currency}`,
+            receiptsOn
+              ? `${pay.at},${pay.email || ''},${pay.amount},${pay.currency}`
+              : `${pay.at},${pay.email || ''},${pay.amount},${pay.fee ?? 0},${pay.vat ?? 0},${pay.net ?? pay.amount},${pay.currency}`,
           )
       }
       const blob = new Blob(['﻿' + rows.join('\n')], {

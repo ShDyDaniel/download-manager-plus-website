@@ -9263,6 +9263,12 @@ async function handleAdminReferralExport(
   const fromMs = typeof body.fromMs === 'number' ? body.fromMs : null
   const toMs = typeof body.toMs === 'number' ? body.toMs : null
   const db = getDb()
+  // Same net basis (after PayPal fee + VAT) as every other surface, so
+  // the export stays in sync with the dashboard + revenue tab.
+  const [receiptsOn, vatPercent] = await Promise.all([
+    receiptsEnabled(),
+    casualVatRatePercent(),
+  ])
 
   const [partnerSnap, usersSnap, keysSnap] = await Promise.all([
     db.collection('referralPartners').doc(code).get(),
@@ -9282,6 +9288,9 @@ async function handleAdminReferralExport(
     name: string
     planType: 'monthly' | 'yearly'
     amount: number
+    fee: number
+    vat: number
+    net: number
     currency: string
   }> = []
   // Map each buyer email → their plan type (from their key) so the
@@ -9296,7 +9305,12 @@ async function handleAdminReferralExport(
       redeemedByEmail?: string
       subscriptionPlanDays?: number
       planDays?: number
-      billingHistory?: Array<{ at?: string; amount?: number; currency?: string }>
+      billingHistory?: Array<{
+        at?: string
+        amount?: number
+        currency?: string
+        fee?: number
+      }>
     }
     if (kd.nonPaidGrant) continue
     const email = (kd.buyerEmail || kd.redeemedByEmail || '').toLowerCase()
@@ -9309,13 +9323,24 @@ async function handleAdminReferralExport(
       if (isNaN(ms)) continue
       if (fromMs !== null && ms < fromMs) continue
       if (toMs !== null && ms > toMs) continue
+      const cur = (h.currency || 'ILS').toUpperCase()
+      const b = chargeNetBreakdown({
+        amount: typeof h.amount === 'number' ? h.amount : 0,
+        currency: cur,
+        fee: typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0,
+        vatPercent,
+        receiptsEnabled: receiptsOn,
+      })
       payments.push({
         at: h.at,
         email,
         name: emailToName[email] || '',
         planType,
-        amount: typeof h.amount === 'number' ? h.amount : 0,
-        currency: (h.currency || 'ILS').toUpperCase(),
+        amount: b.gross,
+        fee: b.fee,
+        vat: b.vat,
+        net: b.net,
+        currency: cur,
       })
     }
   }
@@ -9344,9 +9369,14 @@ async function handleAdminReferralExport(
 
   const partnerName =
     (partnerSnap.data() as { name?: string } | undefined)?.name || code
-  return res
-    .status(200)
-    .json({ ok: true, partner: { code, name: partnerName }, payments, accounts })
+  return res.status(200).json({
+    ok: true,
+    partner: { code, name: partnerName },
+    payments,
+    accounts,
+    receiptsEnabled: receiptsOn,
+    vatPercent,
+  })
 }
 
 /* ──────────────────────────────────────────────────────────────
