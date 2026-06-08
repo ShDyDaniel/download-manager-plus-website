@@ -6415,6 +6415,8 @@ interface ReferralPartnerDoc {
    *  absent = not yet accepted). */
   termsAcceptedAt?: string | null
   termsVersion?: string
+  /** Bumped on every (temp) password issue → invalidates old tokens. */
+  credEpoch?: number
 }
 
 /** Bump this when the partnership terms change to force re-acceptance. */
@@ -8778,6 +8780,7 @@ async function handleAdminCreateReferral(
     doc.passwordHash = hashPartnerPassword(tempPassword)
     doc.mustChangePassword = true
     doc.termsAcceptedAt = null
+    doc.credEpoch = Date.now()
   }
   const commission = parseCommission(
     req.body as { commissionType?: unknown; commissionValue?: unknown; commissionCurrency?: unknown },
@@ -9526,15 +9529,19 @@ interface PartnerClaims {
   use: 'partner'
   iat: number
   exp: number
+  /** Credential epoch — must match the partner doc's credEpoch. Bumped
+   *  whenever a (temp) password is (re)issued, which invalidates every
+   *  existing session and forces a fresh login. */
+  ep?: number
 }
-function signPartnerToken(code: string): string {
+function signPartnerToken(code: string, ep = 0): string {
   const iat = Math.floor(Date.now() / 1000)
   const exp = iat + 30 * 24 * 60 * 60 // 30 days
   const header = b64urlEncode(
     Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT', use: 'partner' })),
   )
   const payload = b64urlEncode(
-    Buffer.from(JSON.stringify({ code, use: 'partner', iat, exp })),
+    Buffer.from(JSON.stringify({ code, use: 'partner', iat, exp, ep })),
   )
   const sig = b64urlEncode(
     crypto.createHmac('sha256', tokenSecret()).update(`${header}.${payload}`).digest(),
@@ -9560,6 +9567,19 @@ function verifyPartnerToken(token: string): PartnerClaims | null {
   } catch {
     return null
   }
+}
+
+/** Verify a partner token AND that its credential epoch still matches
+ *  the partner doc — i.e. the session wasn't invalidated by a password
+ *  reset. Returns the code, or null (caller responds 401). */
+async function requirePartner(token: string): Promise<{ code: string } | null> {
+  const claims = verifyPartnerToken(token)
+  if (!claims) return null
+  const snap = await getDb().collection('referralPartners').doc(claims.code).get()
+  if (!snap.exists) return null
+  const ep = (snap.data() as { credEpoch?: number }).credEpoch || 0
+  if ((claims.ep || 0) !== ep) return null
+  return { code: claims.code }
 }
 
 /** Aggregate stats for one partner code (no customer PII). */
@@ -9732,11 +9752,11 @@ async function handlePartnerLogin(req: VercelRequest, res: VercelResponse) {
     return res.status(401).json({ ok: false, error: 'מייל או סיסמה שגויים' })
   }
   const doc = snap.docs[0]
-  const data = doc.data() as { passwordHash?: string }
+  const data = doc.data() as { passwordHash?: string; credEpoch?: number }
   if (!data.passwordHash || !verifyPartnerPassword(password, data.passwordHash)) {
     return res.status(401).json({ ok: false, error: 'מייל או סיסמה שגויים' })
   }
-  const token = signPartnerToken(doc.id)
+  const token = signPartnerToken(doc.id, data.credEpoch || 0)
   const stats = await computePartnerStats(doc.id)
   return res.status(200).json({ ok: true, token, partner: stats })
 }
@@ -9744,7 +9764,7 @@ async function handlePartnerLogin(req: VercelRequest, res: VercelResponse) {
 /** POST { token } → { ok, partner } (fresh aggregates) */
 async function handlePartnerStats(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { token?: string }
-  const claims = verifyPartnerToken(body.token || '')
+  const claims = await requirePartner(body.token || '')
   if (!claims) return res.status(401).json({ ok: false, error: 'unauthorized' })
   const stats = await computePartnerStats(claims.code)
   return res.status(200).json({ ok: true, partner: stats })
@@ -9758,7 +9778,7 @@ async function handlePartnerChangePassword(
   res: VercelResponse,
 ) {
   const body = (req.body || {}) as { token?: string; newPassword?: string }
-  const claims = verifyPartnerToken(body.token || '')
+  const claims = await requirePartner(body.token || '')
   if (!claims) return res.status(401).json({ ok: false, error: 'unauthorized' })
   const newPassword = body.newPassword || ''
   if (newPassword.length < 6) {
@@ -9767,14 +9787,18 @@ async function handlePartnerChangePassword(
       .json({ ok: false, error: 'סיסמה חייבת להיות לפחות 6 תווים' })
   }
   const ref = getDb().collection('referralPartners').doc(claims.code)
-  if (!(await ref.get()).exists) {
+  const snap = await ref.get()
+  if (!snap.exists) {
     return res.status(404).json({ ok: false, error: 'שותף לא קיים' })
   }
   await ref.update({
     passwordHash: hashPartnerPassword(newPassword),
     mustChangePassword: false,
   })
-  const token = signPartnerToken(claims.code)
+  // Keep the same epoch — the partner is changing their OWN password, so
+  // their current session should stay valid.
+  const ep = (snap.data() as { credEpoch?: number }).credEpoch || 0
+  const token = signPartnerToken(claims.code, ep)
   const stats = await computePartnerStats(claims.code)
   return res.status(200).json({ ok: true, token, partner: stats })
 }
@@ -9785,7 +9809,7 @@ async function handlePartnerAcceptTerms(
   res: VercelResponse,
 ) {
   const body = (req.body || {}) as { token?: string }
-  const claims = verifyPartnerToken(body.token || '')
+  const claims = await requirePartner(body.token || '')
   if (!claims) return res.status(401).json({ ok: false, error: 'unauthorized' })
   const ref = getDb().collection('referralPartners').doc(claims.code)
   if (!(await ref.get()).exists) {
@@ -9856,9 +9880,12 @@ async function handleAdminSetReferralCredentials(
   if (regenerate) {
     tempPassword = generatePartnerTempPassword()
     update.passwordHash = hashPartnerPassword(tempPassword)
-    // Re-issued credentials → force change + re-accept terms again.
+    // Re-issued credentials → force change + re-accept terms again, and
+    // bump the epoch so any existing partner session is logged out and
+    // must re-login with the new temp password (and hit the gate).
     update.mustChangePassword = true
     update.termsAcceptedAt = null
+    update.credEpoch = Date.now()
   }
   if (Object.keys(update).length === 0) {
     return res.status(400).json({ ok: false, error: 'אין מה לעדכן' })
