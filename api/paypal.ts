@@ -3750,18 +3750,29 @@ async function receiptsEnabled(): Promise<boolean> {
   }
 }
 
-/** VAT rate (percent, e.g. 18) used by the casual-transaction report.
- *  Stored in appConfig/global.vatRate; defaults to the current Israeli
- *  rate. Kept configurable because the rate has changed before. */
+/** The current statutory Israeli VAT rate. Single source of truth for
+ *  "auto" mode — update this one constant if the law changes. */
+const CURRENT_IL_VAT_PERCENT = 18
+
+/** VAT rate (percent) used by the casual-transaction report + revenue.
+ *  Two modes (appConfig/global):
+ *    - AUTO (default, vatAuto !== false): always the current statutory
+ *      Israeli rate, so it stays correct without the operator touching
+ *      anything.
+ *    - MANUAL (vatAuto === false): the admin-set vatRate. */
 async function casualVatRatePercent(): Promise<number> {
   try {
     const snap = await getDb().collection('appConfig').doc('global').get()
-    const v = snap.exists
-      ? (snap.data() as { vatRate?: number }).vatRate
-      : undefined
-    return typeof v === 'number' && v > 0 && v < 100 ? v : 18
+    const d = (snap.exists ? snap.data() : {}) as {
+      vatRate?: number
+      vatAuto?: boolean
+    }
+    if (d.vatAuto !== false) return CURRENT_IL_VAT_PERCENT
+    return typeof d.vatRate === 'number' && d.vatRate > 0 && d.vatRate < 100
+      ? d.vatRate
+      : CURRENT_IL_VAT_PERCENT
   } catch {
-    return 18
+    return CURRENT_IL_VAT_PERCENT
   }
 }
 
@@ -8800,14 +8811,20 @@ async function handleAdminGetReceiptsSettings(
   const d = (snap.exists ? snap.data() : {}) as {
     receiptsEnabled?: boolean
     vatRate?: number
+    vatAuto?: boolean
   }
+  const vatAuto = d.vatAuto !== false
   return res.status(200).json({
     ok: true,
     receiptsEnabled: d.receiptsEnabled === true,
-    vatRate:
-      typeof d.vatRate === 'number' && d.vatRate > 0 && d.vatRate < 100
+    vatAuto,
+    // The effective rate the system will actually use right now.
+    vatRate: vatAuto
+      ? CURRENT_IL_VAT_PERCENT
+      : typeof d.vatRate === 'number' && d.vatRate > 0 && d.vatRate < 100
         ? d.vatRate
-        : 18,
+        : CURRENT_IL_VAT_PERCENT,
+    currentIlVat: CURRENT_IL_VAT_PERCENT,
     sumitConfigured: sumitConfigured(),
   })
 }
@@ -8824,10 +8841,12 @@ async function handleAdminSetReceiptsSettings(
   const body = (req.body || {}) as {
     receiptsEnabled?: boolean
     vatRate?: number
+    vatAuto?: boolean
   }
   const patch: Record<string, unknown> = {}
   if (typeof body.receiptsEnabled === 'boolean')
     patch.receiptsEnabled = body.receiptsEnabled
+  if (typeof body.vatAuto === 'boolean') patch.vatAuto = body.vatAuto
   if (
     typeof body.vatRate === 'number' &&
     body.vatRate > 0 &&
@@ -9420,6 +9439,8 @@ async function computePartnerStats(code: string) {
   const netByCurrency: Record<string, number> = {}
   const netByMonth: Record<string, Record<string, number>> = {}
   const feeByCurrency: Record<string, number> = {}
+  // VAT shaved off per currency (only when receipts are OFF).
+  const vatByCurrency: Record<string, number> = {}
   for (const k of keysSnap.docs) {
     const kd = k.data() as {
       nonPaidGrant?: boolean
@@ -9440,13 +9461,14 @@ async function computePartnerStats(code: string) {
       const cur = (h.currency || 'ILS').toUpperCase()
       const amt = typeof h.amount === 'number' ? h.amount : 0
       const fee = typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0
-      const net = chargeNetBreakdown({
+      const b = chargeNetBreakdown({
         amount: amt,
         currency: cur,
         fee,
         vatPercent,
         receiptsEnabled: receiptsOn,
-      }).net
+      })
+      const net = b.net
       const m = h.at ? h.at.slice(0, 7) : 'unknown'
       grossByCurrency[cur] = (grossByCurrency[cur] || 0) + amt
       grossByMonth[m] = grossByMonth[m] || {}
@@ -9454,7 +9476,8 @@ async function computePartnerStats(code: string) {
       netByCurrency[cur] = (netByCurrency[cur] || 0) + net
       netByMonth[m] = netByMonth[m] || {}
       netByMonth[m][cur] = (netByMonth[m][cur] || 0) + net
-      feeByCurrency[cur] = (feeByCurrency[cur] || 0) + fee
+      feeByCurrency[cur] = (feeByCurrency[cur] || 0) + b.fee
+      vatByCurrency[cur] = (vatByCurrency[cur] || 0) + b.vat
       countByMonth[m] = (countByMonth[m] || 0) + 1
     }
   }
@@ -9483,8 +9506,28 @@ async function computePartnerStats(code: string) {
     netByMonth,
     countByMonth,
   )
-  // The portion of the partner's earnings that PayPal's fee shaved off
-  // = gross earnings − net earnings (per currency).
+  // Split the deduction from the partner's earnings into its two parts:
+  // the PayPal-fee portion and the VAT portion (VAT only when receipts
+  // are OFF). For a percent commission each portion is commission% of
+  // the underlying fee/VAT; a fixed commission isn't reduced at all.
+  const f =
+    commission?.commissionType === 'percent'
+      ? commission.commissionValue / 100
+      : 0
+  const earningsPaypalFeeByCurrency: Record<string, number> = {}
+  const earningsVatByCurrency: Record<string, number> = {}
+  if (f > 0) {
+    for (const [c, v] of Object.entries(feeByCurrency)) {
+      const x = v * f
+      if (x > 0.0001) earningsPaypalFeeByCurrency[c] = x
+    }
+    for (const [c, v] of Object.entries(vatByCurrency)) {
+      const x = v * f
+      if (x > 0.0001) earningsVatByCurrency[c] = x
+    }
+  }
+  // Combined (fee + VAT) — kept for any consumer that wants the total
+  // shaved off; equals gross earnings − net earnings.
   const earningsFeeByCurrency: Record<string, number> = {}
   for (const c of Object.keys(grossEarnings.byCurrency)) {
     const diff =
@@ -9511,6 +9554,12 @@ async function computePartnerStats(code: string) {
     // fee, and how much the fee shaved off the partner's earnings.
     earningsGrossByCurrency: vis.earnings ? grossEarnings.byCurrency : null,
     earningsFeeByCurrency: vis.earnings ? earningsFeeByCurrency : null,
+    // Split deduction: PayPal fee vs VAT (VAT only when receipts OFF).
+    earningsPaypalFeeByCurrency: vis.earnings
+      ? earningsPaypalFeeByCurrency
+      : null,
+    earningsVatByCurrency: vis.earnings ? earningsVatByCurrency : null,
+    receiptsEnabled: receiptsOn,
     revenueByCurrency: vis.revenue ? grossByCurrency : null,
     revenueByMonth: vis.revenue ? grossByMonth : null,
   }

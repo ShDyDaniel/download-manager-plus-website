@@ -31,10 +31,16 @@ interface PartnerStats {
   } | null
   earningsByCurrency: Record<string, number> | null
   earningsByMonth: Record<string, Record<string, number>> | null
-  /** What the earnings would have been WITHOUT PayPal's fee. */
+  /** What the earnings would have been WITHOUT any fee/VAT. */
   earningsGrossByCurrency?: Record<string, number> | null
-  /** How much PayPal's fee shaved off the partner's earnings. */
+  /** Total shaved off the partner's earnings (PayPal fee + VAT). */
   earningsFeeByCurrency?: Record<string, number> | null
+  /** PayPal-fee portion of the deduction. */
+  earningsPaypalFeeByCurrency?: Record<string, number> | null
+  /** VAT portion of the deduction (only when receipts are OFF). */
+  earningsVatByCurrency?: Record<string, number> | null
+  /** Whether SUMIT receipts are on — when off, VAT is deducted too. */
+  receiptsEnabled?: boolean
   revenueByCurrency: Record<string, number> | null
   revenueByMonth: Record<string, Record<string, number>> | null
 }
@@ -262,6 +268,9 @@ export default function PartnerPage() {
               net={stats.earningsByCurrency}
               gross={stats.earningsGrossByCurrency}
               fee={stats.earningsFeeByCurrency}
+              paypalFee={stats.earningsPaypalFeeByCurrency}
+              vat={stats.earningsVatByCurrency}
+              receiptsEnabled={stats.receiptsEnabled !== false}
             />
           )}
         </div>
@@ -307,10 +316,16 @@ function EarningsStat({
   net,
   gross,
   fee,
+  paypalFee,
+  vat,
+  receiptsEnabled,
 }: {
   net: Record<string, number>
   gross?: Record<string, number> | null
   fee?: Record<string, number> | null
+  paypalFee?: Record<string, number> | null
+  vat?: Record<string, number> | null
+  receiptsEnabled: boolean
 }) {
   const [open, setOpen] = useState(false)
   return (
@@ -325,7 +340,7 @@ function EarningsStat({
           onClick={() => setOpen(true)}
           className="mt-0.5 text-[10px] text-primary underline underline-offset-2 hover:text-accent"
         >
-          (אחרי עמלה של פייפאל)
+          {receiptsEnabled ? '(אחרי עמלה של פייפאל)' : '(אחרי עמלות)'}
         </button>
       </div>
       {open && (
@@ -333,6 +348,9 @@ function EarningsStat({
           net={net}
           gross={gross}
           fee={fee}
+          paypalFee={paypalFee}
+          vat={vat}
+          receiptsEnabled={receiptsEnabled}
           onClose={() => setOpen(false)}
         />
       )}
@@ -346,13 +364,25 @@ function FeeExplainModal({
   net,
   gross,
   fee,
+  paypalFee,
+  vat,
+  receiptsEnabled,
   onClose,
 }: {
   net: Record<string, number>
   gross?: Record<string, number> | null
   fee?: Record<string, number> | null
+  paypalFee?: Record<string, number> | null
+  vat?: Record<string, number> | null
+  receiptsEnabled: boolean
   onClose: () => void
 }) {
+  // When receipts are OFF we deduct VAT too, and have the split. When
+  // on (or split missing), fall back to the combined fee figure under
+  // the PayPal line.
+  const hasVat =
+    !receiptsEnabled && vat && Object.values(vat).some((v) => v > 0)
+  const paypalLine = paypalFee && Object.keys(paypalFee).length ? paypalFee : fee
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -378,18 +408,30 @@ function FeeExplainModal({
         </button>
 
         <h2 className="mb-3 font-display text-lg font-medium text-fg">
-          למה הסכום שונה? — עמלת PayPal
+          {hasVat ? 'למה הסכום שונה? — עמלות' : 'למה הסכום שונה? — עמלת PayPal'}
         </h2>
         <p className="mb-4 text-sm leading-relaxed text-fg-secondary">
-          על כל תשלום, חברת PayPal גובה עמלת סליקה. לכן הסכום שמגיע בפועל
-          לחשבון נמוך מהמחיר שהלקוח שילם. הרווח שלך מחושב על הסכום שנשאר{' '}
-          <span className="text-fg">אחרי</span> עמלת PayPal — כלומר הכסף
-          ה"אמיתי" שנכנס.
+          {hasVat ? (
+            <>
+              על כל תשלום נגבית עמלת סליקה של PayPal, ובנוסף משולם מע"מ
+              למדינה. לכן הסכום שנשאר בפועל נמוך מהמחיר שהלקוח שילם. הרווח
+              שלך מחושב על הסכום שנשאר{' '}
+              <span className="text-fg">אחרי כל העמלות</span> — כלומר הכסף
+              ה"אמיתי" שנכנס.
+            </>
+          ) : (
+            <>
+              על כל תשלום, חברת PayPal גובה עמלת סליקה. לכן הסכום שמגיע
+              בפועל לחשבון נמוך מהמחיר שהלקוח שילם. הרווח שלך מחושב על הסכום
+              שנשאר <span className="text-fg">אחרי</span> עמלת PayPal —
+              כלומר הכסף ה"אמיתי" שנכנס.
+            </>
+          )}
         </p>
 
         <div className="space-y-2 rounded-xl border border-border/60 bg-white/[0.015] p-4 text-sm">
           <div className="flex items-center justify-between">
-            <span className="text-fg-muted">מחיר מלא (לפני עמלה)</span>
+            <span className="text-fg-muted">מחיר מלא (לפני עמלות)</span>
             <span className="text-fg" dir="ltr">
               {fmtMoney(gross || {})}
             </span>
@@ -397,11 +439,21 @@ function FeeExplainModal({
           <div className="flex items-center justify-between">
             <span className="text-fg-muted">עמלת PayPal</span>
             <span className="text-destructive" dir="ltr">
-              −{fmtMoney(fee || {})}
+              −{fmtMoney(paypalLine || {})}
             </span>
           </div>
+          {hasVat && (
+            <div className="flex items-center justify-between">
+              <span className="text-fg-muted">מע"מ</span>
+              <span className="text-destructive" dir="ltr">
+                −{fmtMoney(vat || {})}
+              </span>
+            </div>
+          )}
           <div className="flex items-center justify-between border-t border-border/60 pt-2 font-medium">
-            <span className="text-fg">הרווח שלך (אחרי עמלה)</span>
+            <span className="text-fg">
+              {hasVat ? 'הרווח שלך (אחרי עמלות)' : 'הרווח שלך (אחרי עמלה)'}
+            </span>
             <span className="text-success" dir="ltr">
               {fmtMoney(net)}
             </span>
@@ -409,8 +461,9 @@ function FeeExplainModal({
         </div>
 
         <p className="mt-4 text-[11px] leading-relaxed text-fg-faint">
-          העמלה נקבעת על ידי PayPal ומשתנה מעט בין עסקה לעסקה (מטבע,
-          המרת מטבע ועוד). המספרים כאן הם העמלות האמיתיות שנגבו בפועל.
+          {hasVat
+            ? 'עמלת PayPal נקבעת על ידי PayPal ומשתנה מעט בין עסקה לעסקה. המע"מ מחושב לפי השיעור הנהוג. המספרים כאן הם הסכומים האמיתיים שנגבו בפועל.'
+            : 'העמלה נקבעת על ידי PayPal ומשתנה מעט בין עסקה לעסקה (מטבע, המרת מטבע ועוד). המספרים כאן הם העמלות האמיתיות שנגבו בפועל.'}
         </p>
       </div>
     </div>

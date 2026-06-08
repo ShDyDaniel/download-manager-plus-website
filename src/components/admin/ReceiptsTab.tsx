@@ -109,6 +109,8 @@ export default function ReceiptsTab({
   const [sumitEnabled, setSumitEnabled] = useState<boolean | null>(null)
   const [sumitConfigured, setSumitConfigured] = useState(false)
   const [vatRate, setVatRate] = useState(18)
+  const [vatAuto, setVatAuto] = useState(true)
+  const [currentIlVat, setCurrentIlVat] = useState(18)
   const [savingToggle, setSavingToggle] = useState(false)
 
   // ── Receipts log ─────────────────────────────────────────────
@@ -136,10 +138,14 @@ export default function ReceiptsTab({
       const r = await adminApi<{
         receiptsEnabled: boolean
         vatRate: number
+        vatAuto: boolean
+        currentIlVat: number
         sumitConfigured: boolean
       }>('admin-get-receipts-settings')
       setSumitEnabled(Boolean(r.receiptsEnabled))
       setSumitConfigured(Boolean(r.sumitConfigured))
+      setVatAuto(r.vatAuto !== false)
+      setCurrentIlVat(r.currentIlVat || 18)
       setVatRate(r.vatRate || 18)
       setCasualVat(r.vatRate || 18)
     } catch (e) {
@@ -179,6 +185,20 @@ export default function ReceiptsTab({
     try {
       await adminApi('admin-set-receipts-settings', { vatRate: next })
       setVatRate(next)
+      void loadCasual()
+    } catch (e) {
+      handleErr(e)
+    }
+  }
+
+  /** Switch between auto (track the current statutory rate) and manual. */
+  async function setVatMode(auto: boolean) {
+    setError('')
+    try {
+      await adminApi('admin-set-receipts-settings', { vatAuto: auto })
+      setVatAuto(auto)
+      if (auto) setCasualVat(currentIlVat)
+      void loadCasual()
     } catch (e) {
       handleErr(e)
     }
@@ -406,6 +426,9 @@ export default function ReceiptsTab({
           setVat={setCasualVat}
           savedVat={vatRate}
           onSaveVat={saveVat}
+          vatAuto={vatAuto}
+          currentIlVat={currentIlVat}
+          onSetVatMode={setVatMode}
           onMark={markReported}
           marking={marking}
         />
@@ -528,6 +551,9 @@ function CasualReport({
   setVat,
   savedVat,
   onSaveVat,
+  vatAuto,
+  currentIlVat,
+  onSetVatMode,
   onMark,
   marking,
 }: {
@@ -542,6 +568,9 @@ function CasualReport({
   setVat: (n: number) => void
   savedVat: number
   onSaveVat: (n: number) => void
+  vatAuto: boolean
+  currentIlVat: number
+  onSetVatMode: (auto: boolean) => void
   onMark: (row: CasualRow, reported: boolean) => void
   marking: string | null
 }) {
@@ -574,21 +603,57 @@ function CasualReport({
             className="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg"
           />
         </label>
-        <label className="flex flex-col gap-1 text-xs text-fg-muted">
+        <div className="flex flex-col gap-1 text-xs text-fg-muted">
           מע"מ %
-          <input
-            type="number"
-            value={vat}
-            min={1}
-            max={99}
-            step={0.5}
-            onChange={(e) => setVat(Number(e.target.value))}
-            onBlur={() => {
-              if (vat !== savedVat) onSaveVat(vat)
-            }}
-            className="w-20 rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg"
-          />
-        </label>
+          <div className="flex items-center gap-2">
+            {/* Auto = always the current Israeli statutory rate; Manual
+                = a fixed rate you set. */}
+            <div className="flex overflow-hidden rounded-md border border-border">
+              <button
+                type="button"
+                onClick={() => onSetVatMode(true)}
+                className={
+                  'px-2.5 py-1.5 text-xs transition-colors ' +
+                  (vatAuto
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-fg-muted hover:text-fg')
+                }
+              >
+                אוטומטי
+              </button>
+              <button
+                type="button"
+                onClick={() => onSetVatMode(false)}
+                className={
+                  'px-2.5 py-1.5 text-xs transition-colors ' +
+                  (!vatAuto
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-fg-muted hover:text-fg')
+                }
+              >
+                ידני
+              </button>
+            </div>
+            {vatAuto ? (
+              <span className="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg">
+                {currentIlVat}%
+              </span>
+            ) : (
+              <input
+                type="number"
+                value={vat}
+                min={1}
+                max={99}
+                step={0.5}
+                onChange={(e) => setVat(Number(e.target.value))}
+                onBlur={() => {
+                  if (vat !== savedVat) onSaveVat(vat)
+                }}
+                className="w-20 rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg"
+              />
+            )}
+          </div>
+        </div>
         <button
           type="button"
           onClick={onReload}
