@@ -29,6 +29,14 @@ const STEPS: Step[] = [
   },
 ]
 
+type Stat = { stat: string; label: string }
+
+const STATS: Stat[] = [
+  { stat: '100GB', label: 'נפח אחסון לסבבי התיקונים' },
+  { stat: '4K', label: 'תמיכה בסרטונים באיכות גבוהה' },
+  { stat: 'ללא הגבלה', label: 'מספר הפרויקטים שתוכלו לפתוח' },
+]
+
 export function RevisionsHighlight() {
   return (
     <section className="relative px-5 pt-16 md:px-6 md:pt-32">
@@ -101,6 +109,37 @@ export function RevisionsHighlight() {
                 >
                   {step.body}
                 </p>
+              </div>
+            </motion.div>
+          ))}
+        </div>
+
+        {/* Capability stats — what the plan actually includes for the
+            revisions system. Mirrors the steps' hair-line style so it
+            reads as one section: big accent figure + a short label. */}
+        <div className="mt-14 grid grid-cols-1 gap-x-16 gap-y-8 sm:grid-cols-3 sm:gap-y-0 md:mt-24">
+          {STATS.map((s, idx) => (
+            <motion.div
+              key={s.label}
+              initial={{ opacity: 0, y: 12 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: '-40px' }}
+              transition={{ duration: 0.4, delay: Math.min(idx * 0.08, 0.24) }}
+            >
+              <div className="border-t border-border pt-5">
+                <div className="font-display text-3xl text-fg md:text-4xl">
+                  <span className="accent-word">
+                    {/* <bdi> defaults to dir="auto": "100GB"/"4K" render
+                        LTR, "ללא הגבלה" stays RTL — each correct. */}
+                    <bdi>{s.stat}</bdi>
+                  </span>
+                </div>
+                <div
+                  className="mt-2 text-[15px] text-fg-secondary"
+                  style={{ lineHeight: 1.6 }}
+                >
+                  {s.label}
+                </div>
               </div>
             </motion.div>
           ))}
