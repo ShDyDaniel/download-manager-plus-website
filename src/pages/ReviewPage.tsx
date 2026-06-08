@@ -2121,8 +2121,10 @@ function ReviewWorkspace({
               </div>
               <h3 className="text-lg font-bold text-fg">לסגור את הסבב?</h3>
               <p className="mt-2 text-sm leading-relaxed text-fg-muted">
-                בטוח שסיימת לרשום את כל התיקונים? אחרי האישור לא תוכל להוסיף עוד
-                תיקונים, והעורך יקבל הודעה שהסבב מוכן לתיקון.
+                בטוח שסיימת לרשום את כל התיקונים? אחרי האישור הסבב ייסגר ו
+                <strong className="text-fg">אף אחד</strong> לא יוכל להוסיף עוד
+                תיקונים — לא אתה ולא אף צופה אחר. העורך יקבל הודעה שהסבב מוכן
+                לתיקון.
               </p>
               {finalizeError && (
                 <p className="mt-3 text-xs text-destructive">{finalizeError}</p>

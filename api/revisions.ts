@@ -2692,6 +2692,7 @@ async function handleListRoundsForGroup(
       locked: r.locked === true,
       clientFinalized: !!r.clientFinalizedAt,
       clientFinalizedAt: Number(r.clientFinalizedAt) || 0,
+      clientFinalizedBy: String(r.clientFinalizedBy || ''),
       notesCount: Number(r.notesCount) || 0,
       videoFileName: String(r.videoFileName || ''),
       createdAt: Number(r.createdAt) || 0,
@@ -2757,6 +2758,7 @@ async function handleListRoundsOwner(
       locked: r.locked === true,
       clientFinalized: !!r.clientFinalizedAt,
       clientFinalizedAt: Number(r.clientFinalizedAt) || 0,
+      clientFinalizedBy: String(r.clientFinalizedBy || ''),
       notesCount: Number(r.notesCount) || 0,
       createdAt: Number(r.createdAt) || 0,
       storage: (r.r2Key ? 'r2' : 'drive') as 'r2' | 'drive',
@@ -3412,23 +3414,26 @@ async function sendRoundReadyEmail(args: {
     service: 'gmail',
     auth: { user, pass },
   })
-  const who = args.viewerEmail ? ` (${args.viewerEmail})` : ''
   const safeTitle = args.projectTitle || 'פרויקט'
+  const markedBy = args.viewerEmail
+    ? `<p style="font-size:13px;line-height:1.7;margin:0 0 18px;color:#9A8F78;">סומן כמוכן על ידי: <strong dir="ltr">${args.viewerEmail}</strong></p>`
+    : ''
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: `סבב התיקונים מוכן לתיקון — ${safeTitle} (סבב ${args.roundNumber})`,
+    subject: `הסבב מוכן לתיקונים — ${safeTitle} (סבב ${args.roundNumber})`,
     html: `
       <div dir="rtl" style="font-family:Arial,sans-serif;background:#1A140C;color:#E8DFC8;padding:24px;border-radius:12px;max-width:480px;margin:auto;">
-        <h2 style="margin:0 0 12px;color:#E8DFC8;">הלקוח סיים לסמן תיקונים ✅</h2>
+        <h2 style="margin:0 0 12px;color:#E8DFC8;">הסבב הזה מוכן לתיקונים ✅</h2>
         <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-          הלקוח${who} סיים לרשום את כל התיקונים בסבב <strong>${args.roundNumber}</strong>
-          של הפרויקט <strong>${safeTitle}</strong>, ואישר שאפשר להתחיל לתקן.
+          סבב <strong>${args.roundNumber}</strong> של הפרויקט <strong>${safeTitle}</strong>
+          מוכן לתיקונים — סומן שסיימו לרשום את כל מה שצריך לתקן בו.
         </p>
-        <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
+        <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
           הסבב ננעל ולא ייכנסו אליו עוד תיקונים חדשים. אפשר להתחיל לעבוד עליו.
         </p>
-        <a href="https://dmplus.net/revisions" style="display:inline-block;background:#B8794F;color:#1A140C;text-decoration:none;font-weight:bold;padding:10px 20px;border-radius:8px;font-size:14px;">פתיחת מערכת ההגהות</a>
+        ${markedBy}
+        <a href="https://dmplus.net/revisions" style="display:inline-block;background:#B8794F;color:#1A140C;text-decoration:none;font-weight:bold;padding:10px 20px;border-radius:8px;font-size:14px;">מעבר לדף התיקונים</a>
         <p style="font-size:11px;margin:18px 0 0;color:#5C5444;">ניהול הורדות פלוס — מערכת סבבי תיקונים.</p>
       </div>
     `,
@@ -3459,13 +3464,15 @@ async function handleFinalizeRound(req: VercelRequest, res: VercelResponse) {
     return res.status(resolved.status).json({ ok: false, error: resolved.error })
   }
   const { roundRef, roundData, group } = resolved
-  // Already finalized → idempotent success, don't re-email.
-  if (roundData.locked === true) {
+  // Already finalized by a client → idempotent success, don't re-email.
+  if (roundData.clientFinalizedAt) {
     return res.status(200).json({ ok: true, alreadyFinalized: true })
   }
+  const viewerEmail = String(body.viewerEmail || '').trim()
   await roundRef.update({
     locked: true,
     clientFinalizedAt: Date.now(),
+    clientFinalizedBy: viewerEmail || null,
     updatedAt: Date.now(),
   })
   const ownerEmail = String(group?.ownerEmail || roundData.ownerEmail || '')
@@ -3476,7 +3483,7 @@ async function handleFinalizeRound(req: VercelRequest, res: VercelResponse) {
       to: ownerEmail,
       projectTitle,
       roundNumber,
-      viewerEmail: String(body.viewerEmail || '').trim() || undefined,
+      viewerEmail: viewerEmail || undefined,
     })
   } catch (e) {
     console.warn('[finalize-round] editor email failed:', e)
@@ -5713,6 +5720,10 @@ async function handleUpdateProject(req: VercelRequest, res: VercelResponse) {
     projectId?: string
     password?: string
     locked?: boolean
+    /** Editor clears a client's "ready to fix" marker (e.g. the client
+     *  pressed it by mistake). Also reopens the round so notes can be
+     *  added again. */
+    clearFinalized?: boolean
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -5759,6 +5770,15 @@ async function handleUpdateProject(req: VercelRequest, res: VercelResponse) {
 
   if (typeof body.locked === 'boolean') {
     update.locked = body.locked
+  }
+
+  // Clearing the client's "ready to fix" marker also reopens the round
+  // (unlocks it) so the client can add notes again — the whole point is
+  // "the client marked it by mistake, let them keep going".
+  if (body.clearFinalized === true) {
+    update.locked = false
+    update.clientFinalizedAt = FieldValue.delete()
+    update.clientFinalizedBy = FieldValue.delete()
   }
 
   await docRef.update(update)

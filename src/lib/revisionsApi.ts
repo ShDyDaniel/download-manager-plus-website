@@ -317,6 +317,8 @@ export interface GroupRoundSummary {
    *  i.e. the round is done being marked up and is ready to be fixed. */
   clientFinalized?: boolean
   clientFinalizedAt?: number
+  /** Email of the reviewer who pressed "אין עוד תיקונים". */
+  clientFinalizedBy?: string
   notesCount: number
   createdAt: number
   /** Which storage backend this round's video lives on. Lets the UI
@@ -712,6 +714,25 @@ export async function updateProjectLock(
     await postAction<{ ok: true }>(
       'update-project',
       authBody({ projectId, locked }),
+    )
+    return { ok: true }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'שגיאה',
+    }
+  }
+}
+
+/** Clear a client's "ready to fix" marker (and reopen the round) — used
+ *  when a client pressed "אין עוד תיקונים" by mistake. */
+export async function clearRoundFinalized(
+  projectId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await postAction<{ ok: true }>(
+      'update-project',
+      authBody({ projectId, clearFinalized: true }),
     )
     return { ok: true }
   } catch (err) {
