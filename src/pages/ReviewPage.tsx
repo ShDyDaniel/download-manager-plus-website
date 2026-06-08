@@ -1635,6 +1635,40 @@ function ReviewWorkspace({
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<string | null>(null)
 
+  // "סיום סבב" — the reviewer declares they're done. Locks the round
+  // (no more notes) and emails the editor it's ready to fix.
+  const [finalized, setFinalized] = useState(false)
+  const [finalizing, setFinalizing] = useState(false)
+  const [confirmFinalize, setConfirmFinalize] = useState(false)
+  const [finalizeError, setFinalizeError] = useState<string | null>(null)
+
+  async function finalizeRound() {
+    if (finalizing) return
+    setFinalizing(true)
+    setFinalizeError(null)
+    try {
+      const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
+      const r = await fetch(`${API}?action=finalize-round`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shareToken: token,
+          passwordToken: passwordToken || undefined,
+          roundId: roundId || undefined,
+          viewerEmail: viewerEmail || undefined,
+        }),
+      })
+      const j = (await r.json()) as { ok: boolean; error?: string }
+      if (!j.ok) throw new Error(j.error || 'failed')
+      setFinalized(true)
+      setConfirmFinalize(false)
+    } catch {
+      setFinalizeError('שליחת הסיום נכשלה. נסו שוב.')
+    } finally {
+      setFinalizing(false)
+    }
+  }
+
   function openNoteWithCurrentTime() {
     const v = videoRef.current
     if (!v) return
@@ -1996,48 +2030,129 @@ function ReviewWorkspace({
               the add buttons and show a friendly banner instead, so
               the client knows the silence is intentional (editor is
               working on the changes) rather than a bug. */}
-          {project.locked ? (
-            <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-relaxed text-amber-200">
-              <Lock className="h-4 w-4 shrink-0" />
-              <span>
-                <strong className="font-semibold">הסבב נסגר לתיקונים.</strong>{' '}
-                אתם עדיין יכולים לצפות בסרטון ובתיקונים הקודמים, אבל לא להוסיף חדשים.
-              </span>
-            </div>
+          {project.locked || finalized ? (
+            finalized ? (
+              <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-xs leading-relaxed text-emerald-200">
+                <Check className="h-4 w-4 shrink-0" />
+                <span>
+                  <strong className="font-semibold">סיימת את הסבב 🎉</strong>{' '}
+                  שלחנו לעורך הודעה שהתיקונים מוכנים. הסבב נסגר ולא ניתן להוסיף
+                  עוד תיקונים.
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-relaxed text-amber-200">
+                <Lock className="h-4 w-4 shrink-0" />
+                <span>
+                  <strong className="font-semibold">הסבב נסגר לתיקונים.</strong>{' '}
+                  אתם עדיין יכולים לצפות בסרטון ובתיקונים הקודמים, אבל לא להוסיף
+                  חדשים.
+                </span>
+              </div>
+            )
           ) : (
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={openNoteWithCurrentTime}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-bg shadow-md shadow-primary/20 transition-all hover:bg-primary/90"
-              >
-                <Plus className="h-4 w-4" strokeWidth={2.5} />
-                תיקון חדש
-              </button>
-              <button
-                type="button"
-                onClick={openNoteWithScreenshot}
-                title="צלם פריים והוסף תיקון"
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-medium text-fg transition-colors hover:bg-white/[0.06]"
-              >
-                <Camera className="h-4 w-4" />
-                צלם + תיקון
-              </button>
-              <button
-                type="button"
-                onClick={openGeneralNote}
-                title="הערה לא קשורה לזמן ספציפי בסרטון"
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-medium text-fg transition-colors hover:bg-white/[0.06]"
-              >
-                <MessageSquare className="h-4 w-4" />
-                הערה כללית
-              </button>
-              <p className="ml-auto text-[11px] text-fg-muted/80">
-                לחיצה על שעון בהערה קופצת לאותה נקודה בסרטון
-              </p>
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={openNoteWithCurrentTime}
+                  className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-bg shadow-md shadow-primary/20 transition-all hover:bg-primary/90"
+                >
+                  <Plus className="h-4 w-4" strokeWidth={2.5} />
+                  תיקון חדש
+                </button>
+                <button
+                  type="button"
+                  onClick={openNoteWithScreenshot}
+                  title="צלם פריים והוסף תיקון"
+                  className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-medium text-fg transition-colors hover:bg-white/[0.06]"
+                >
+                  <Camera className="h-4 w-4" />
+                  צלם + תיקון
+                </button>
+                <button
+                  type="button"
+                  onClick={openGeneralNote}
+                  title="הערה לא קשורה לזמן ספציפי בסרטון"
+                  className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-medium text-fg transition-colors hover:bg-white/[0.06]"
+                >
+                  <MessageSquare className="h-4 w-4" />
+                  הערה כללית
+                </button>
+                <p className="ml-auto text-[11px] text-fg-muted/80">
+                  לחיצה על שעון בהערה קופצת לאותה נקודה בסרטון
+                </p>
+              </div>
+              {/* Done — finalize the round + notify the editor. */}
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3">
+                <span className="text-[11px] leading-relaxed text-fg-muted/80">
+                  סיימתם לסמן את כל התיקונים? סגרו את הסבב והעורך יקבל הודעה
+                  שאפשר להתחיל לתקן.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFinalizeError(null)
+                    setConfirmFinalize(true)
+                  }}
+                  className="inline-flex shrink-0 min-h-[40px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition-colors hover:bg-emerald-500/20"
+                >
+                  <Check className="h-4 w-4" strokeWidth={2.5} />
+                  אין עוד תיקונים
+                </button>
+              </div>
             </div>
           )}
         </div>
+
+        {/* Confirm finalize-round modal. */}
+        {confirmFinalize && (
+          <div
+            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4"
+            onClick={() => !finalizing && setConfirmFinalize(false)}
+          >
+            <div
+              dir="rtl"
+              className="w-full max-w-sm rounded-2xl border border-border bg-card p-5 text-center shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-300">
+                <Check className="h-5 w-5" strokeWidth={2.5} />
+              </div>
+              <h3 className="text-lg font-bold text-fg">לסגור את הסבב?</h3>
+              <p className="mt-2 text-sm leading-relaxed text-fg-muted">
+                בטוח שסיימת לרשום את כל התיקונים? אחרי האישור לא תוכל להוסיף עוד
+                תיקונים, והעורך יקבל הודעה שהסבב מוכן לתיקון.
+              </p>
+              {finalizeError && (
+                <p className="mt-3 text-xs text-destructive">{finalizeError}</p>
+              )}
+              <div className="mt-5 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmFinalize(false)}
+                  disabled={finalizing}
+                  className="flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-white/[0.06] disabled:opacity-50"
+                >
+                  ביטול
+                </button>
+                <button
+                  type="button"
+                  onClick={finalizeRound}
+                  disabled={finalizing}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-emerald-500/90 disabled:opacity-60"
+                >
+                  {finalizing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Check className="h-4 w-4" strokeWidth={2.5} />
+                  )}
+                  {finalizing ? 'שולח…' : 'כן, סיימתי'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Notes sidebar */}
         <aside className="rounded-2xl border border-white/5 bg-white/[0.02] p-4">

@@ -18,6 +18,7 @@ import {
   HeadObjectCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import nodemailer from 'nodemailer'
 
 /**
  * Revisions feature — server endpoints.
@@ -3349,6 +3350,136 @@ async function handleVerifyPassword(req: VercelRequest, res: VercelResponse) {
  *  has the same shareToken — same authorization model as the
  *  get-project endpoint).
  * ────────────────────────────────────────────────────────────── */
+/* ── Email (Gmail SMTP) — counted so the dashboard's 24h gauge stays
+ *  accurate. Mirrors the helper in api/paypal.ts. Only used by the
+ *  "round finished" notification below. ─────────────────────────── */
+function recordEmailSent(): void {
+  try {
+    const bucket = new Date().toISOString().slice(0, 13) // YYYY-MM-DDTHH
+    void getDb()
+      .collection('metrics')
+      .doc('emailSends')
+      .set(
+        {
+          hours: { [bucket]: FieldValue.increment(1) },
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true },
+      )
+      .catch(() => {})
+  } catch {
+    /* never let counting break email sending */
+  }
+}
+function makeCountedTransport(
+  config: Record<string, unknown>,
+): ReturnType<typeof nodemailer.createTransport> {
+  const t = nodemailer.createTransport(
+    config as unknown as Parameters<typeof nodemailer.createTransport>[0],
+  )
+  return new Proxy(t, {
+    get(target, prop, recv) {
+      const val = Reflect.get(target, prop, recv)
+      if (prop === 'sendMail' && typeof val === 'function') {
+        return (...args: unknown[]) => {
+          recordEmailSent()
+          return (val as (...a: unknown[]) => unknown).apply(target, args)
+        }
+      }
+      return typeof val === 'function'
+        ? (val as (...a: unknown[]) => unknown).bind(target)
+        : val
+    },
+  }) as ReturnType<typeof nodemailer.createTransport>
+}
+
+/** Email the editor that a client finished a review round. Best-effort:
+ *  a mail failure must never block the round from being finalized. */
+async function sendRoundReadyEmail(args: {
+  to: string
+  projectTitle: string
+  roundNumber: number
+  viewerEmail?: string
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass || !args.to) return
+  const transporter = makeCountedTransport({
+    service: 'gmail',
+    auth: { user, pass },
+  })
+  const who = args.viewerEmail ? ` (${args.viewerEmail})` : ''
+  const safeTitle = args.projectTitle || 'פרויקט'
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    subject: `סבב התיקונים מוכן לתיקון — ${safeTitle} (סבב ${args.roundNumber})`,
+    html: `
+      <div dir="rtl" style="font-family:Arial,sans-serif;background:#1A140C;color:#E8DFC8;padding:24px;border-radius:12px;max-width:480px;margin:auto;">
+        <h2 style="margin:0 0 12px;color:#E8DFC8;">הלקוח סיים לסמן תיקונים ✅</h2>
+        <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+          הלקוח${who} סיים לרשום את כל התיקונים בסבב <strong>${args.roundNumber}</strong>
+          של הפרויקט <strong>${safeTitle}</strong>, ואישר שאפשר להתחיל לתקן.
+        </p>
+        <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
+          הסבב ננעל ולא ייכנסו אליו עוד תיקונים חדשים. אפשר להתחיל לעבוד עליו.
+        </p>
+        <a href="https://dmplus.net/revisions" style="display:inline-block;background:#B8794F;color:#1A140C;text-decoration:none;font-weight:bold;padding:10px 20px;border-radius:8px;font-size:14px;">פתיחת מערכת ההגהות</a>
+        <p style="font-size:11px;margin:18px 0 0;color:#5C5444;">ניהול הורדות פלוס — מערכת סבבי תיקונים.</p>
+      </div>
+    `,
+  })
+}
+
+/* ── Action: finalize-round (PUBLIC — gated by share token + password)
+ *  The reviewer presses "סיימתי, אין עוד תיקונים" → we lock the round
+ *  (so add-note rejects from now on) and email the editor that it's
+ *  ready to fix. Idempotent: a second press just returns ok. ─────── */
+async function handleFinalizeRound(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+    roundId?: string
+    viewerEmail?: string
+  }
+  const shareToken = String(body.shareToken || '').trim()
+  if (!shareToken) {
+    return res.status(400).json({ ok: false, error: 'shareToken required' })
+  }
+  const resolved = await resolvePublicRound(
+    shareToken,
+    body.roundId,
+    body.passwordToken,
+  )
+  if (!resolved.ok) {
+    return res.status(resolved.status).json({ ok: false, error: resolved.error })
+  }
+  const { roundRef, roundData, group } = resolved
+  // Already finalized → idempotent success, don't re-email.
+  if (roundData.locked === true) {
+    return res.status(200).json({ ok: true, alreadyFinalized: true })
+  }
+  await roundRef.update({
+    locked: true,
+    clientFinalizedAt: Date.now(),
+    updatedAt: Date.now(),
+  })
+  const ownerEmail = String(group?.ownerEmail || roundData.ownerEmail || '')
+  const projectTitle = String(group?.title || roundData.title || '')
+  const roundNumber = Number(roundData.roundNumber) || 1
+  try {
+    await sendRoundReadyEmail({
+      to: ownerEmail,
+      projectTitle,
+      roundNumber,
+      viewerEmail: String(body.viewerEmail || '').trim() || undefined,
+    })
+  } catch (e) {
+    console.warn('[finalize-round] editor email failed:', e)
+  }
+  return res.status(200).json({ ok: true })
+}
+
 async function handleAddNote(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as {
     shareToken?: string
@@ -6352,6 +6483,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleVerifyPassword(req, res)
       case 'add-note':
         return await handleAddNote(req, res)
+      case 'finalize-round':
+        return await handleFinalizeRound(req, res)
       case 'list-notes':
         return await handleListNotes(req, res)
       case 'check-video-status':
