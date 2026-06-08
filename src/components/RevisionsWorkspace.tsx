@@ -1215,10 +1215,10 @@ function GroupCard({
                           title={
                             round.clientFinalizedBy
                               ? `סומן כמוכן על ידי ${round.clientFinalizedBy}`
-                              : 'מוכן לתיקון'
+                              : 'מוכן לתיקונים'
                           }
                         >
-                          מוכן לתיקון
+                          מוכן לתיקונים
                         </span>
                       )}
                       {round.locked && !round.clientFinalized && (
