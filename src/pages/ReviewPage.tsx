@@ -2044,8 +2044,10 @@ function ReviewWorkspace({
                 <Check className="h-4 w-4 shrink-0" />
                 <span>
                   <strong className="font-semibold">סיימת את הסבב 🎉</strong>{' '}
-                  שלחנו לעורך הודעה שהתיקונים מוכנים. הסבב נסגר ולא ניתן להוסיף
-                  עוד תיקונים.
+                  הסבב נסגר לתיקונים על ידי{' '}
+                  <bdi dir="ltr">{viewerEmail}</bdi>, ושלחנו לצוות הודעה שהוא
+                  מוכן לתיקון. עדיין אפשר לצפות בסרטון ובתיקונים הקודמים, אבל לא
+                  להוסיף חדשים.
                 </span>
               </div>
             ) : (
