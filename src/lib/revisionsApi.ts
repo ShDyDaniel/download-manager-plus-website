@@ -313,6 +313,10 @@ export interface GroupRoundSummary {
   videoFileName: string
   videoSizeBytes: number
   locked: boolean
+  /** True once the CLIENT pressed "אין עוד תיקונים" on the review page —
+   *  i.e. the round is done being marked up and is ready to be fixed. */
+  clientFinalized?: boolean
+  clientFinalizedAt?: number
   notesCount: number
   createdAt: number
   /** Which storage backend this round's video lives on. Lets the UI
@@ -348,6 +352,8 @@ export interface LegacyProjectSummary {
   videoSizeBytes: number
   roundNumber: number
   locked: boolean
+  clientFinalized?: boolean
+  clientFinalizedAt?: number
   notesCount: number
   createdAt: number
   updatedAt: number

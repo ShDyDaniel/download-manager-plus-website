@@ -1161,7 +1161,12 @@ function GroupCard({
                       <span className="font-medium">
                         סבב מס׳ <bdi dir="ltr">{round.roundNumber}</bdi>
                       </span>
-                      {round.locked && (
+                      {round.clientFinalized && (
+                        <span className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
+                          מוכן לתיקון
+                        </span>
+                      )}
+                      {round.locked && !round.clientFinalized && (
                         <span className="rounded bg-bg-elevated px-1.5 py-0.5 text-[10px] uppercase text-fg-muted">
                           סגור
                         </span>
