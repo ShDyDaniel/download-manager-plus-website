@@ -80,6 +80,9 @@ interface ProjectInfo {
    *  video + existing notes stay visible; the add-note buttons
    *  disappear and a friendly banner explains why. */
   locked: boolean
+  /** Email of whoever closed the round (pressed "אין עוד תיקונים").
+   *  Shown in the locked banner. Empty if closed by the editor. */
+  clientFinalizedBy?: string
   /** Public-review-page toggles, inherited from the project group
    *  (or default values for legacy single-round projects).
    *
@@ -372,6 +375,7 @@ export function ReviewPage() {
                 watermark?: boolean
                 allowDownload?: boolean
                 driveViewUrl?: string | null
+                clientFinalizedBy?: string
               }
             }
           | {
@@ -387,6 +391,7 @@ export function ReviewPage() {
                 watermark?: boolean
                 allowDownload?: boolean
                 driveViewUrl?: string | null
+                clientFinalizedBy?: string
               } | null
             }
           | { ok: false; error: string }
@@ -441,6 +446,7 @@ export function ReviewPage() {
           watermark: proj.watermark !== false,
           allowDownload: proj.allowDownload === true,
           driveViewUrl: proj.driveViewUrl ?? null,
+          clientFinalizedBy: proj.clientFinalizedBy ?? '',
         }
         const groupContext =
           json.kind === 'group'
@@ -484,6 +490,7 @@ export function ReviewPage() {
         watermark: boolean
         allowDownload: boolean
         driveViewUrl: string | null
+        clientFinalizedBy?: string
       },
     ) {
       const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
@@ -525,6 +532,7 @@ export function ReviewPage() {
           videoMime: json.videoMime,
           roundNumber,
           locked,
+          clientFinalizedBy: flags.clientFinalizedBy ?? '',
           watermark: flags.watermark,
           allowDownload: flags.allowDownload,
           driveViewUrl: flags.driveViewUrl,
@@ -2044,9 +2052,18 @@ function ReviewWorkspace({
               <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-relaxed text-amber-200">
                 <Lock className="h-4 w-4 shrink-0" />
                 <span>
-                  <strong className="font-semibold">הסבב נסגר לתיקונים.</strong>{' '}
-                  אתם עדיין יכולים לצפות בסרטון ובתיקונים הקודמים, אבל לא להוסיף
-                  חדשים.
+                  <strong className="font-semibold">
+                    הסבב נסגר לתיקונים
+                    {project.clientFinalizedBy ? (
+                      <>
+                        {' '}
+                        על ידי{' '}
+                        <bdi dir="ltr">{project.clientFinalizedBy}</bdi>
+                      </>
+                    ) : null}
+                    .
+                  </strong>{' '}
+                  עדיין אפשר לצפות בסרטון ובתיקונים הקודמים, אבל לא להוסיף חדשים.
                 </span>
               </div>
             )
@@ -2119,12 +2136,11 @@ function ReviewWorkspace({
               <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-300">
                 <Check className="h-5 w-5" strokeWidth={2.5} />
               </div>
-              <h3 className="text-lg font-bold text-fg">לסגור את הסבב?</h3>
+              <h3 className="text-lg font-bold text-fg">אין עוד תיקונים?</h3>
               <p className="mt-2 text-sm leading-relaxed text-fg-muted">
-                בטוח שסיימת לרשום את כל התיקונים? אחרי האישור הסבב ייסגר ו
-                <strong className="text-fg">אף אחד</strong> לא יוכל להוסיף עוד
-                תיקונים — לא אתה ולא אף צופה אחר. העורך יקבל הודעה שהסבב מוכן
-                לתיקון.
+                אחרי האישור הסבב ייסגר ולא תהיה אפשרות יותר{' '}
+                <strong className="text-fg">לשום משתמש</strong> להוסיף עוד
+                תיקונים. הצוות יקבל הודעה שהסבב מוכן להתחיל בתיקונים.
               </p>
               {finalizeError && (
                 <p className="mt-3 text-xs text-destructive">{finalizeError}</p>

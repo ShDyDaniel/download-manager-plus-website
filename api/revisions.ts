@@ -3218,6 +3218,9 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
             videoMime: String(selectedRoundData.videoMime || ''),
             createdAt: selectedRound.createdAt,
             locked: selectedRound.locked,
+            clientFinalizedBy: String(
+              selectedRoundData.clientFinalizedBy || '',
+            ),
             // Public-review-page toggles, inherited from the group
             // (legacy fallback = original ship behavior).
             watermark: group.watermark !== false,
@@ -3286,6 +3289,9 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
       allowDownload: false,
       driveViewUrl: null,
       locked,
+      clientFinalizedBy: String(
+        (project as { clientFinalizedBy?: string }).clientFinalizedBy || '',
+      ),
     },
   })
 }
@@ -5770,11 +5776,16 @@ async function handleUpdateProject(req: VercelRequest, res: VercelResponse) {
 
   if (typeof body.locked === 'boolean') {
     update.locked = body.locked
+    // Reopening a round (unlock) is also the "undo finalize" action — the
+    // single lock control doubles as reopen-for-corrections, so clear the
+    // client's "ready to fix" marker whenever we unlock.
+    if (body.locked === false) {
+      update.clientFinalizedAt = FieldValue.delete()
+      update.clientFinalizedBy = FieldValue.delete()
+    }
   }
 
-  // Clearing the client's "ready to fix" marker also reopens the round
-  // (unlocks it) so the client can add notes again — the whole point is
-  // "the client marked it by mistake, let them keep going".
+  // Explicit clear (also reopens) — kept for callers that pass it.
   if (body.clearFinalized === true) {
     update.locked = false
     update.clientFinalizedAt = FieldValue.delete()
