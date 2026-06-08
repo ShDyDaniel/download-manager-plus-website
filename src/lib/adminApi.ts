@@ -324,6 +324,7 @@ const STEPUP_ACTIONS = new Set<string>([
   'admin-set-key-expiry',
   'admin-issue-usage-pull',
   'admin-set-app-config',
+  'admin-set-receipts-settings',
   'admin-set-popup',
   'admin-delete-backup',
   'admin-restore-backup',

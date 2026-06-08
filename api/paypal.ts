@@ -1573,6 +1573,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminTestSumit(req, res)
       case 'admin-list-receipts':
         return await handleAdminListReceipts(req, res)
+      case 'admin-get-receipts-settings':
+        return await handleAdminGetReceiptsSettings(req, res)
+      case 'admin-set-receipts-settings':
+        return await handleAdminSetReceiptsSettings(req, res)
+      case 'admin-casual-report':
+        return await handleAdminCasualReport(req, res)
       case 'admin-send-marketing-email':
         return await handleAdminSendMarketingEmail(req, res)
       case 'unsubscribe':
@@ -1921,7 +1927,7 @@ async function handleSaleCompleted(
     // never get one. The webhook is deduped per event.id, so this fires
     // exactly once for this charge. We don't touch the key/period here
     // (ACTIVATED creates it).
-    if (sumitConfigured()) {
+    if (sumitConfigured() && (await receiptsEnabled())) {
       try {
         const sub = await paypalCall<{
           subscriber?: { email_address?: string }
@@ -1995,7 +2001,7 @@ async function handleSaleCompleted(
   // Issue + email + log a SUMIT tax receipt for this charge. Fully
   // best-effort: any failure is logged and ignored so it can never
   // affect the subscription/payment flow.
-  if (sumitConfigured()) {
+  if (sumitConfigured() && (await receiptsEnabled())) {
     try {
       const recipient = key.buyerEmail || key.redeemedByEmail || ''
       if (recipient) {
@@ -3648,6 +3654,40 @@ const SUMIT_API_BASE = 'https://api.sumit.co.il'
 
 function sumitConfigured(): boolean {
   return Boolean(process.env.SUMIT_COMPANY_ID && process.env.SUMIT_API_KEY)
+}
+
+/** Master ON/OFF switch for automatic SUMIT receipts, toggled from the
+ *  admin Receipts tab and stored in appConfig/global.receiptsEnabled.
+ *  DEFAULT OFF: when off we never call SUMIT and send them no customer
+ *  data at all — the whole receipts pipeline is bypassed. Turning it on
+ *  restores the exact behaviour that was here before. This lets the
+ *  operator run on the "עסקת אקראי" model (report VAT manually) without
+ *  any data leaving to a third party. */
+async function receiptsEnabled(): Promise<boolean> {
+  try {
+    const snap = await getDb().collection('appConfig').doc('global').get()
+    return (
+      snap.exists &&
+      (snap.data() as { receiptsEnabled?: boolean }).receiptsEnabled === true
+    )
+  } catch {
+    return false
+  }
+}
+
+/** VAT rate (percent, e.g. 18) used by the casual-transaction report.
+ *  Stored in appConfig/global.vatRate; defaults to the current Israeli
+ *  rate. Kept configurable because the rate has changed before. */
+async function casualVatRatePercent(): Promise<number> {
+  try {
+    const snap = await getDb().collection('appConfig').doc('global').get()
+    const v = snap.exists
+      ? (snap.data() as { vatRate?: number }).vatRate
+      : undefined
+    return typeof v === 'number' && v > 0 && v < 100 ? v : 18
+  } catch {
+    return 18
+  }
 }
 
 async function issueSumitReceipt(args: {
@@ -8567,6 +8607,148 @@ async function handleAdminListReceipts(
     console.warn('[sumit] list receipts failed:', err)
     return res.status(200).json({ ok: true, receipts: [] })
   }
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Receipts settings + casual-transaction (עסקת אקראי) report.
+ *
+ *  receiptsEnabled is the master switch for the SUMIT pipeline. When
+ *  OFF (default) the operator runs on the "עסקת אקראי" model: nothing
+ *  is sent to SUMIT, and the monthly report below gives the numbers to
+ *  report to מע"מ by hand. The report is built from each key's
+ *  billingHistory — the canonical charge log, written on every charge
+ *  regardless of SUMIT — so it's complete even when SUMIT is off.
+ * ────────────────────────────────────────────────────────────── */
+
+async function handleAdminGetReceiptsSettings(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const snap = await getDb().collection('appConfig').doc('global').get()
+  const d = (snap.exists ? snap.data() : {}) as {
+    receiptsEnabled?: boolean
+    vatRate?: number
+  }
+  return res.status(200).json({
+    ok: true,
+    receiptsEnabled: d.receiptsEnabled === true,
+    vatRate:
+      typeof d.vatRate === 'number' && d.vatRate > 0 && d.vatRate < 100
+        ? d.vatRate
+        : 18,
+    sumitConfigured: sumitConfigured(),
+  })
+}
+
+async function handleAdminSetReceiptsSettings(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  // Sensitive: this controls whether customer data flows to a third
+  // party (SUMIT), so require step-up just like the other money/config
+  // toggles.
+  const admin = await verifyAdminStepUp(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const body = (req.body || {}) as {
+    receiptsEnabled?: boolean
+    vatRate?: number
+  }
+  const patch: Record<string, unknown> = {}
+  if (typeof body.receiptsEnabled === 'boolean')
+    patch.receiptsEnabled = body.receiptsEnabled
+  if (
+    typeof body.vatRate === 'number' &&
+    body.vatRate > 0 &&
+    body.vatRate < 100
+  )
+    patch.vatRate = Math.round(body.vatRate * 100) / 100
+  if (Object.keys(patch).length === 0)
+    return res.status(400).json({ ok: false, error: 'nothing to update' })
+  await getDb()
+    .collection('appConfig')
+    .doc('global')
+    .set(patch, { merge: true })
+  return res.status(200).json({ ok: true, ...patch })
+}
+
+async function handleAdminCasualReport(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const body = (req.body || {}) as { year?: number; month?: number }
+  const now = new Date()
+  const year = Number.isInteger(body.year) ? (body.year as number) : now.getUTCFullYear()
+  // month is 1-12 from the client; default to the current month.
+  const month = Number.isInteger(body.month)
+    ? Math.min(12, Math.max(1, body.month as number))
+    : now.getUTCMonth() + 1
+  // Calendar-month window. We use UTC boundaries for a stable cut; for
+  // a draft the operator reviews before filing this is plenty precise.
+  const start = Date.UTC(year, month - 1, 1)
+  const end = Date.UTC(year, month, 1)
+  const vatPercent = await casualVatRatePercent()
+  const frac = vatPercent / 100
+  const round2 = (n: number) => Math.round(n * 100) / 100
+
+  // Scan every key and flatten its billingHistory. Admin-only and run
+  // ~once a month, so a full-collection read is acceptable at this size.
+  const snap = await getDb().collection('productKeys').get()
+  type Row = {
+    at: string
+    email: string
+    currency: string
+    gross: number
+    vat: number
+    net: number
+  }
+  const rows: Row[] = []
+  for (const doc of snap.docs) {
+    const d = doc.data() as {
+      buyerEmail?: string
+      redeemedByEmail?: string
+      billingHistory?: Array<{ at?: string; amount?: number; currency?: string }>
+    }
+    const email = (d.buyerEmail || d.redeemedByEmail || '').trim()
+    const hist = Array.isArray(d.billingHistory) ? d.billingHistory : []
+    for (const h of hist) {
+      const t = h.at ? new Date(h.at).getTime() : NaN
+      if (!Number.isFinite(t) || t < start || t >= end) continue
+      const gross = typeof h.amount === 'number' ? h.amount : 0
+      if (gross <= 0) continue
+      const net = gross / (1 + frac)
+      rows.push({
+        at: h.at as string,
+        email,
+        currency: (h.currency || 'ILS').toUpperCase(),
+        gross: round2(gross),
+        vat: round2(gross - net),
+        net: round2(net),
+      })
+    }
+  }
+  rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
+
+  // Totals per currency (VAT only really applies to ILS; we still total
+  // each currency so a stray foreign charge is visible, not hidden).
+  const totals: Record<
+    string,
+    { count: number; gross: number; vat: number; net: number }
+  > = {}
+  for (const r of rows) {
+    const t = (totals[r.currency] ||= { count: 0, gross: 0, vat: 0, net: 0 })
+    t.count += 1
+    t.gross = round2(t.gross + r.gross)
+    t.vat = round2(t.vat + r.vat)
+    t.net = round2(t.net + r.net)
+  }
+
+  return res
+    .status(200)
+    .json({ ok: true, year, month, vatPercent, rows, totals })
 }
 
 async function handleAdminDeleteReferral(
