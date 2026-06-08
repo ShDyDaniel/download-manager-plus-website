@@ -69,10 +69,16 @@ export default function ReferralsTab({
   const [name, setName] = useState('')
   const [code, setCode] = useState('')
   const [loginEmail, setLoginEmail] = useState('')
-  const [password, setPassword] = useState('')
   const [commType, setCommType] = useState<'none' | 'percent' | 'fixed'>('none')
   const [commValue, setCommValue] = useState('')
   const [creating, setCreating] = useState(false)
+  // Result of the last create — shows the emailed temp password as a
+  // copy-fallback (the email is the primary delivery).
+  const [created, setCreated] = useState<{
+    email: string
+    emailSent: boolean
+    tempPassword?: string
+  } | null>(null)
 
   function handleErr(e: unknown) {
     const err = e as Error & { code?: string }
@@ -107,20 +113,32 @@ export default function ReferralsTab({
     if (creating || !name.trim()) return
     setCreating(true)
     setError('')
+    setCreated(null)
     try {
-      await adminApi('admin-create-referral', {
-        name: name.trim(),
-        code: code.trim() || undefined,
-        loginEmail: loginEmail.trim() || undefined,
-        password: password.trim() || undefined,
-        commissionType: commType !== 'none' ? commType : undefined,
-        commissionValue:
-          commType !== 'none' && commValue.trim() ? Number(commValue) : undefined,
-      })
+      const email = loginEmail.trim()
+      const r = await adminApi<{ tempPassword?: string; emailSent?: boolean }>(
+        'admin-create-referral',
+        {
+          name: name.trim(),
+          code: code.trim() || undefined,
+          loginEmail: email || undefined,
+          commissionType: commType !== 'none' ? commType : undefined,
+          commissionValue:
+            commType !== 'none' && commValue.trim()
+              ? Number(commValue)
+              : undefined,
+        },
+      )
+      if (email) {
+        setCreated({
+          email,
+          emailSent: r.emailSent === true,
+          tempPassword: r.tempPassword,
+        })
+      }
       setName('')
       setCode('')
       setLoginEmail('')
-      setPassword('')
       setCommType('none')
       setCommValue('')
       await load(true)
@@ -183,8 +201,24 @@ export default function ReferralsTab({
           <Field value={name} onChange={setName} placeholder="שם השותף *" />
           <Field value={code} onChange={setCode} placeholder="קוד (אופציונלי)" ltr />
           <Field value={loginEmail} onChange={setLoginEmail} placeholder="מייל כניסה לדשבורד" ltr />
-          <Field value={password} onChange={setPassword} placeholder="סיסמה לדשבורד" />
         </div>
+        <p className="text-[11px] text-fg-faint">
+          אם מזינים מייל — המערכת יוצרת סיסמה זמנית ושולחת אותה אוטומטית
+          לשותף במייל. אין צורך להזין סיסמה.
+        </p>
+        {created && (
+          <div className="rounded-lg border border-success/30 bg-success/[0.06] px-3 py-2 text-xs text-fg">
+            {created.emailSent ? (
+              <>נשלח מייל עם פרטי הכניסה והסיסמה הזמנית אל <span dir="ltr">{created.email}</span>.</>
+            ) : (
+              <>
+                השותף נוצר, אך שליחת המייל נכשלה. הסיסמה הזמנית:{' '}
+                <strong dir="ltr">{created.tempPassword || '—'}</strong> — העבירו
+                אותה לשותף ידנית.
+              </>
+            )}
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-fg-faint">עמלה:</span>
           {(['none', 'percent', 'fixed'] as const).map((t) => (
@@ -308,7 +342,6 @@ function PartnerCard({
     p.visibility || { revenue: false, earnings: true, counts: true },
   )
   const [credEmail, setCredEmail] = useState(p.loginEmail || '')
-  const [credPassword, setCredPassword] = useState('')
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState('')
   const [exporting, setExporting] = useState(false)
@@ -325,6 +358,36 @@ function PartnerCard({
     const err = e as Error & { code?: string }
     if (err.code === 'auth') return onAuthExpired()
     setMsg(err.message || 'שגיאה')
+  }
+
+  /** Auto-generate a fresh temp password and email it to the partner.
+   *  The admin never types a password. */
+  async function regenCreds() {
+    if (busy) return
+    if (
+      !window.confirm(
+        'ליצור סיסמה זמנית חדשה ולשלוח אותה לשותף במייל? הסיסמה הנוכחית תתבטל.',
+      )
+    )
+      return
+    setBusy('credgen')
+    setMsg('')
+    try {
+      const r = await adminApi<{ emailSent?: boolean; tempPassword?: string }>(
+        'admin-set-referral-credentials',
+        { code: p.code, loginEmail: credEmail.trim(), regenerate: true },
+      )
+      setMsg(
+        r.emailSent
+          ? 'נשלח מייל עם סיסמה זמנית חדשה ✓'
+          : `שליחת המייל נכשלה. סיסמה זמנית: ${r.tempPassword || '—'}`,
+      )
+      onChange()
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setBusy('')
+    }
   }
 
   // Load the per-partner detail (accounts + revenue-by-month) the
@@ -841,14 +904,8 @@ function PartnerCard({
               <input
                 value={credEmail}
                 onChange={(e) => setCredEmail(e.target.value)}
-                placeholder="מייל"
+                placeholder="מייל כניסה"
                 dir="ltr"
-                className="flex-1 rounded-lg border border-border bg-transparent px-3 py-1.5 text-sm text-fg outline-none focus:border-primary"
-              />
-              <input
-                value={credPassword}
-                onChange={(e) => setCredPassword(e.target.value)}
-                placeholder="סיסמה חדשה"
                 className="flex-1 rounded-lg border border-border bg-transparent px-3 py-1.5 text-sm text-fg outline-none focus:border-primary"
               />
               <SaveBtn
@@ -856,12 +913,24 @@ function PartnerCard({
                 onClick={() =>
                   call(
                     'admin-set-referral-credentials',
-                    { loginEmail: credEmail.trim(), password: credPassword.trim() },
+                    { loginEmail: credEmail.trim() },
                     'cred',
                   )
                 }
               />
             </div>
+            <button
+              type="button"
+              onClick={regenCreds}
+              disabled={busy === 'credgen' || !credEmail.trim()}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 disabled:opacity-50"
+            >
+              {busy === 'credgen' ? 'שולח…' : 'צור סיסמה זמנית ושלח במייל'}
+            </button>
+            <p className="mt-2 text-[11px] text-fg-faint">
+              הסיסמה נוצרת אוטומטית ונשלחת לשותף במייל. בכניסה הראשונה הוא
+              יחליף אותה ויאשר את התקנון.
+            </p>
           </Editor>
 
           {/* Export */}

@@ -8718,21 +8718,14 @@ async function handleAdminCreateReferral(
     name?: string
     code?: string
     loginEmail?: string
-    password?: string
   }
   const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const name = (body.name || '').trim().slice(0, 80)
   if (!name) return res.status(400).json({ ok: false, error: 'יש להזין שם' })
   const loginEmail = (body.loginEmail || '').trim().toLowerCase()
-  const password = body.password || ''
   if (loginEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginEmail)) {
     return res.status(400).json({ ok: false, error: 'מייל כניסה לא תקין' })
-  }
-  if (password && password.length < 6) {
-    return res
-      .status(400)
-      .json({ ok: false, error: 'סיסמה חייבת להיות לפחות 6 תווים' })
   }
 
   const db = getDb()
@@ -8775,8 +8768,17 @@ async function handleAdminCreateReferral(
     createdBy: admin,
     signups: 0,
   }
-  if (loginEmail) doc.loginEmail = loginEmail
-  if (loginEmail && password) doc.passwordHash = hashPartnerPassword(password)
+  // When a login email is given, AUTO-GENERATE a temporary password and
+  // email it — the admin never types one. The partner is forced to
+  // replace it + accept the terms on first login.
+  let tempPassword = ''
+  if (loginEmail) {
+    tempPassword = generatePartnerTempPassword()
+    doc.loginEmail = loginEmail
+    doc.passwordHash = hashPartnerPassword(tempPassword)
+    doc.mustChangePassword = true
+    doc.termsAcceptedAt = null
+  }
   const commission = parseCommission(
     req.body as { commissionType?: unknown; commissionValue?: unknown; commissionCurrency?: unknown },
   )
@@ -8786,11 +8788,37 @@ async function handleAdminCreateReferral(
     doc.commissionCurrency = commission.commissionCurrency
   }
   await db.collection('referralPartners').doc(code).set(doc)
+
+  // Welcome email with the generated temp password + dashboard link.
+  let emailSent = false
+  if (loginEmail) {
+    const commissionLabel = commission
+      ? commission.commissionType === 'percent'
+        ? `${commission.commissionValue}% מכל קנייה / חידוש`
+        : `${commission.commissionValue} ${commission.commissionCurrency.toUpperCase()} לכל קנייה / חידוש`
+      : 'ההסכם ייקבע בהמשך'
+    try {
+      await sendPartnerWelcomeEmail({
+        to: loginEmail,
+        name,
+        code,
+        password: tempPassword,
+        commissionLabel,
+      })
+      emailSent = true
+    } catch (e) {
+      console.warn('[partner] welcome email failed (ignored):', e)
+    }
+  }
   return res.status(200).json({
     ok: true,
     code,
     name,
     link: `${REFERRAL_LINK_BASE}/?ref=${encodeURIComponent(code)}`,
+    // Returned once so the admin can copy it if the email fails. The
+    // hash is what's stored; this plaintext is not persisted.
+    tempPassword: tempPassword || undefined,
+    emailSent,
   })
 }
 
@@ -9465,6 +9493,16 @@ async function handleAdminReferralExport(
  *  for their own code — never individual customer emails (privacy).
  * ────────────────────────────────────────────────────────────── */
 
+/** Auto-generate a readable temporary partner password (no ambiguous
+ *  characters). The partner is forced to replace it on first login. */
+function generatePartnerTempPassword(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'
+  const bytes = crypto.randomBytes(10)
+  let out = ''
+  for (let i = 0; i < 10; i++) out += alphabet[bytes[i] % alphabet.length]
+  return out
+}
+
 /** scrypt password hash → "scrypt:<salt>:<hash>". */
 function hashPartnerPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex')
@@ -9761,9 +9799,11 @@ async function handlePartnerAcceptTerms(
   return res.status(200).json({ ok: true, partner: stats })
 }
 
-/** POST { idToken, code, loginEmail, password? } — admin sets/updates a
- *  partner's dashboard credentials. Empty password keeps the existing
- *  one (lets the admin change just the email). */
+/** POST { idToken, code, loginEmail?, regenerate? } — admin updates a
+ *  partner's dashboard login email and/or RE-ISSUES credentials. The
+ *  password is never typed by the admin: `regenerate:true` auto-creates
+ *  a fresh temp password, forces the first-login flow again, and emails
+ *  it. Passing only loginEmail just changes the address. */
 async function handleAdminSetReferralCredentials(
   req: VercelRequest,
   res: VercelResponse,
@@ -9772,13 +9812,13 @@ async function handleAdminSetReferralCredentials(
     idToken?: string
     code?: string
     loginEmail?: string
-    password?: string
+    regenerate?: boolean
   }
   const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const code = (body.code || '').trim()
   const loginEmail = (body.loginEmail || '').trim().toLowerCase()
-  const password = body.password || ''
+  const regenerate = body.regenerate === true
   if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
   if (loginEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginEmail)) {
     return res.status(400).json({ ok: false, error: 'מייל לא תקין' })
@@ -9804,17 +9844,19 @@ async function handleAdminSetReferralCredentials(
         .json({ ok: false, error: 'המייל הזה כבר משויך לשותף אחר' })
     }
   }
+  const recipient = loginEmail || existingData.loginEmail || ''
+  if (regenerate && !recipient) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'צריך מייל כניסה כדי לשלוח סיסמה' })
+  }
   const update: Record<string, unknown> = {}
   if (loginEmail) update.loginEmail = loginEmail
-  if (password) {
-    if (password.length < 6) {
-      return res
-        .status(400)
-        .json({ ok: false, error: 'סיסמה חייבת להיות לפחות 6 תווים' })
-    }
-    update.passwordHash = hashPartnerPassword(password)
-    // A freshly-set password is a TEMP password: force the partner to
-    // change it + re-accept the terms on next login (onboarding flow).
+  let tempPassword = ''
+  if (regenerate) {
+    tempPassword = generatePartnerTempPassword()
+    update.passwordHash = hashPartnerPassword(tempPassword)
+    // Re-issued credentials → force change + re-accept terms again.
     update.mustChangePassword = true
     update.termsAcceptedAt = null
   }
@@ -9823,34 +9865,32 @@ async function handleAdminSetReferralCredentials(
   }
   await ref.update(update)
 
-  // Welcome email — only when a (temp) password was set, since that's
-  // the credential the partner needs. Best-effort: a mail failure must
-  // not fail the save (the admin can resend by re-setting credentials).
-  if (password) {
-    const to = loginEmail || existingData.loginEmail || ''
-    if (to) {
-      const cv = existingData.commissionValue
-      const ct = existingData.commissionType
-      const commissionLabel =
-        ct === 'percent' && cv
-          ? `${cv}% מכל קנייה / חידוש`
-          : ct === 'fixed' && cv
-            ? `${cv} ${(existingData.commissionCurrency || 'ILS').toUpperCase()} לכל קנייה / חידוש`
-            : 'ההסכם ייקבע בהמשך'
-      try {
-        await sendPartnerWelcomeEmail({
-          to,
-          name: existingData.name || code,
-          code,
-          password,
-          commissionLabel,
-        })
-      } catch (e) {
-        console.warn('[partner] welcome email failed (ignored):', e)
-      }
+  let emailSent = false
+  if (regenerate && recipient) {
+    const cv = existingData.commissionValue
+    const ct = existingData.commissionType
+    const commissionLabel =
+      ct === 'percent' && cv
+        ? `${cv}% מכל קנייה / חידוש`
+        : ct === 'fixed' && cv
+          ? `${cv} ${(existingData.commissionCurrency || 'ILS').toUpperCase()} לכל קנייה / חידוש`
+          : 'ההסכם ייקבע בהמשך'
+    try {
+      await sendPartnerWelcomeEmail({
+        to: recipient,
+        name: existingData.name || code,
+        code,
+        password: tempPassword,
+        commissionLabel,
+      })
+      emailSent = true
+    } catch (e) {
+      console.warn('[partner] welcome email failed (ignored):', e)
     }
   }
-  return res.status(200).json({ ok: true })
+  return res
+    .status(200)
+    .json({ ok: true, tempPassword: tempPassword || undefined, emailSent })
 }
 
 /** POST { idToken, code, commissionType, commissionValue, commissionCurrency? }
