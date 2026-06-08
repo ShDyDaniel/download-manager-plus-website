@@ -7,6 +7,7 @@ import {
   Download,
   FileText,
   Receipt,
+  Check,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 
@@ -25,6 +26,7 @@ interface ReceiptRow {
 
 interface CasualRow {
   seq: number
+  eventId: string
   at: string
   email: string
   name: string
@@ -33,6 +35,7 @@ interface CasualRow {
   gross: number
   vat: number
   net: number
+  reported: boolean
 }
 
 interface CasualTotals {
@@ -178,6 +181,34 @@ export default function ReceiptsTab({
       setVatRate(next)
     } catch (e) {
       handleErr(e)
+    }
+  }
+
+  const [marking, setMarking] = useState<string | null>(null)
+  async function markReported(row: CasualRow, reported: boolean) {
+    setMarking(row.eventId)
+    setError('')
+    try {
+      await adminApi('admin-mark-casual-reported', {
+        eventId: row.eventId,
+        reported,
+        at: row.at,
+        amount: row.gross,
+        currency: row.currency,
+        email: row.email,
+        name: row.name,
+      })
+      setCasualRows((prev) =>
+        prev
+          ? prev.map((r) =>
+              r.eventId === row.eventId ? { ...r, reported } : r,
+            )
+          : prev,
+      )
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setMarking(null)
     }
   }
 
@@ -375,6 +406,8 @@ export default function ReceiptsTab({
           setVat={setCasualVat}
           savedVat={vatRate}
           onSaveVat={saveVat}
+          onMark={markReported}
+          marking={marking}
         />
       )}
     </div>
@@ -495,6 +528,8 @@ function CasualReport({
   setVat,
   savedVat,
   onSaveVat,
+  onMark,
+  marking,
 }: {
   month: string
   setMonth: (m: string) => void
@@ -507,8 +542,11 @@ function CasualReport({
   setVat: (n: number) => void
   savedVat: number
   onSaveVat: (n: number) => void
+  onMark: (row: CasualRow, reported: boolean) => void
+  marking: string | null
 }) {
   const hasRows = rows && rows.length > 0
+  const reportedCount = rows ? rows.filter((r) => r.reported).length : 0
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border border-amber-500/30 bg-amber-500/[0.06] p-4 text-xs leading-relaxed text-fg-muted">
@@ -602,6 +640,23 @@ function CasualReport({
         </div>
       )}
 
+      {/* Reporting progress */}
+      {hasRows && (
+        <div className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-2.5 text-xs">
+          <span className="text-fg-muted">מעקב דיווח למע"מ</span>
+          <span
+            className={
+              'font-medium ' +
+              (reportedCount === (rows ? rows.length : 0)
+                ? 'text-emerald-400'
+                : 'text-fg')
+            }
+          >
+            דווחו {reportedCount} מתוך {rows ? rows.length : 0}
+          </span>
+        </div>
+      )}
+
       {/* Rows */}
       {rows === null ? (
         <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-10 text-sm text-fg-muted">
@@ -624,6 +679,7 @@ function CasualReport({
                 <th className="px-4 py-3 font-medium">כולל מע"מ</th>
                 <th className="px-4 py-3 font-medium">מע"מ</th>
                 <th className="px-4 py-3 font-medium">לפני מע"מ</th>
+                <th className="px-4 py-3 font-medium">דיווח</th>
               </tr>
             </thead>
             <tbody>
@@ -666,6 +722,36 @@ function CasualReport({
                   </td>
                   <td className="whitespace-nowrap px-4 py-3" dir="ltr">
                     {row.net.toLocaleString('he-IL')}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3">
+                    {row.reported ? (
+                      <button
+                        type="button"
+                        onClick={() => onMark(row, false)}
+                        disabled={marking === row.eventId}
+                        title="בטל סימון דיווח"
+                        className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-400 transition-colors hover:bg-emerald-500/15 disabled:opacity-50"
+                      >
+                        {marking === row.eventId ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Check className="h-3 w-3" />
+                        )}
+                        דווח
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onMark(row, true)}
+                        disabled={marking === row.eventId}
+                        className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-[11px] text-fg-muted transition-colors hover:border-primary/40 hover:text-fg disabled:opacity-50"
+                      >
+                        {marking === row.eventId ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : null}
+                        דיווחתי
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

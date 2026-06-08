@@ -325,6 +325,7 @@ const STEPUP_ACTIONS = new Set<string>([
   'admin-issue-usage-pull',
   'admin-set-app-config',
   'admin-set-receipts-settings',
+  'admin-mark-casual-reported',
   'admin-set-popup',
   'admin-delete-backup',
   'admin-restore-backup',

@@ -36,15 +36,19 @@ interface MonthRow {
   month: string
   gross: Money
   fee: Money
+  vat: Money
   net: Money
   partners: PartnerRow[]
   ownerFinal: Money
 }
 interface RevenueReport {
+  receiptsEnabled?: boolean
+  vatPercent?: number
   months: MonthRow[]
   totals: {
     gross: Money
     fee: Money
+    vat: Money
     net: Money
     partners: PartnerRow[]
     ownerFinal: Money
@@ -206,7 +210,12 @@ export default function RevenueTab({
         <>
           {/* Profit waterfall — gross → −fees → −partners → −Cloudflare
               → −database → what's left. One clean top-to-bottom flow. */}
-          <PnLCard totals={data.totals} cloudflare={data.cloudflare} db={db} />
+          <PnLCard
+            totals={data.totals}
+            cloudflare={data.cloudflare}
+            db={db}
+            receiptsEnabled={data.receiptsEnabled !== false}
+          />
 
           {/* Per-partner totals */}
           {data.totals.partners.length > 0 && (
@@ -294,10 +303,14 @@ function PnLCard({
   totals,
   cloudflare,
   db,
+  receiptsEnabled,
 }: {
   totals: RevenueReport['totals']
   cloudflare?: RevenueReport['cloudflare']
   db: DbUsage | null
+  /** When false (עסקת אקראי mode) the owner remits VAT himself, so it's
+   *  shown as an explicit deduction in the waterfall. */
+  receiptsEnabled: boolean
 }) {
   const fxRate = cloudflare?.fxRate || 3.7
   const partnerTotal = sumMoney(totals.partners.map((p) => p.amount))
@@ -330,7 +343,16 @@ function PnLCard({
       <div className="px-5 py-1.5">
         <PnLRow label="הכנסות ברוטו" value={fmt(totals.gross)} />
         <PnLRow label="עמלות PayPal" value={fmt(totals.fee)} deduct />
-        <PnLRow label="נטו (אחרי PayPal)" value={fmt(totals.net)} subtotal />
+        {!receiptsEnabled && (
+          <PnLRow label={'מע"מ (עסקת אקראי)'} value={fmt(totals.vat)} deduct />
+        )}
+        <PnLRow
+          label={
+            receiptsEnabled ? 'נטו (אחרי PayPal)' : 'נטו (אחרי PayPal ומע"מ)'
+          }
+          value={fmt(totals.net)}
+          subtotal
+        />
         <PnLRow label="חלוקה לשותפים" value={fmt(partnerTotal)} deduct />
         <PnLRow
           label="עלות Cloudflare R2 (חודשי)"

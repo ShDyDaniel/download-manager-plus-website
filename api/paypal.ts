@@ -1579,6 +1579,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSetReceiptsSettings(req, res)
       case 'admin-casual-report':
         return await handleAdminCasualReport(req, res)
+      case 'admin-mark-casual-reported':
+        return await handleAdminMarkCasualReported(req, res)
       case 'admin-send-marketing-email':
         return await handleAdminSendMarketingEmail(req, res)
       case 'unsubscribe':
@@ -3761,6 +3763,34 @@ async function casualVatRatePercent(): Promise<number> {
   } catch {
     return 18
   }
+}
+
+/** Break a single charge into gross / VAT / PayPal-fee / net.
+ *  - VAT applies only to domestic (ILS) sales; foreign-currency charges
+ *    are treated as zero-rated export. When SUMIT receipts are ON, VAT
+ *    is handled through that pipeline, so it is NOT deducted from the
+ *    owner's take here (only in the עסקת אקראי mode, receipts OFF).
+ *  - net = gross − PayPal fee − VAT: the money actually kept. This is
+ *    the base used for partner commissions so a partner is never paid a
+ *    % of money that went to PayPal or to the state. */
+function chargeNetBreakdown(args: {
+  amount: number
+  currency: string
+  fee: number
+  vatPercent: number
+  receiptsEnabled: boolean
+}): { gross: number; vat: number; fee: number; net: number } {
+  const gross = args.amount > 0 ? args.amount : 0
+  const fee = args.fee > 0 ? args.fee : 0
+  const r = args.vatPercent / 100
+  const vat =
+    !args.receiptsEnabled &&
+    (args.currency || '').toUpperCase() === 'ILS' &&
+    r > 0
+      ? gross - gross / (1 + r)
+      : 0
+  const net = Math.max(0, gross - fee - vat)
+  return { gross, vat, fee, net }
 }
 
 /** Append a charge to the durable `casualLedger` collection — the
@@ -6439,6 +6469,15 @@ async function handleAdminRevenueReport(
   const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
 
+  // When SUMIT receipts are OFF (עסקת אקראי mode) the owner remits the
+  // VAT himself, so it's a real deduction from his take and from the
+  // partner-commission base. When ON, VAT flows through SUMIT and isn't
+  // deducted here.
+  const [receiptsOn, vatPercent] = await Promise.all([
+    receiptsEnabled(),
+    casualVatRatePercent(),
+  ])
+
   const db = getDb()
   const [keysSnap, partnersSnap] = await Promise.all([
     db.collection('productKeys').get(),
@@ -6467,6 +6506,7 @@ async function handleAdminRevenueReport(
   interface MonthAgg {
     gross: RevMoney
     fee: RevMoney
+    vat: RevMoney
     net: RevMoney
     payouts: Record<string, RevMoney> // partner code → money
   }
@@ -6474,7 +6514,7 @@ async function handleAdminRevenueReport(
   const ensureMonth = (m: string): MonthAgg => {
     let cur = months.get(m)
     if (!cur) {
-      cur = { gross: {}, fee: {}, net: {}, payouts: {} }
+      cur = { gross: {}, fee: {}, vat: {}, net: {}, payouts: {} }
       months.set(m, cur)
     }
     return cur
@@ -6499,11 +6539,19 @@ async function handleAdminRevenueReport(
       const cur = (h.currency || 'ILS').toUpperCase()
       const amt = typeof h.amount === 'number' ? h.amount : 0
       const fee = typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0
-      const net = Math.max(0, amt - fee)
+      const b = chargeNetBreakdown({
+        amount: amt,
+        currency: cur,
+        fee,
+        vatPercent,
+        receiptsEnabled: receiptsOn,
+      })
+      const net = b.net
       const m = h.at ? String(h.at).slice(0, 7) : 'unknown'
       const M = ensureMonth(m)
-      revAdd(M.gross, cur, amt)
-      revAdd(M.fee, cur, fee)
+      revAdd(M.gross, cur, b.gross)
+      revAdd(M.fee, cur, b.fee)
+      revAdd(M.vat, cur, b.vat)
       revAdd(M.net, cur, net)
       if (partner && partner.type && (partner.value || 0) > 0) {
         M.payouts[refCode] = M.payouts[refCode] || {}
@@ -6521,6 +6569,7 @@ async function handleAdminRevenueReport(
   // owner's final take (net − all payouts).
   const totalGross: RevMoney = {}
   const totalFee: RevMoney = {}
+  const totalVat: RevMoney = {}
   const totalNet: RevMoney = {}
   const totalPayoutByPartner: Record<string, RevMoney> = {}
 
@@ -6541,11 +6590,13 @@ async function handleAdminRevenueReport(
       })
       for (const [c, v] of Object.entries(M.gross)) revAdd(totalGross, c, v)
       for (const [c, v] of Object.entries(M.fee)) revAdd(totalFee, c, v)
+      for (const [c, v] of Object.entries(M.vat)) revAdd(totalVat, c, v)
       for (const [c, v] of Object.entries(M.net)) revAdd(totalNet, c, v)
       return {
         month,
         gross: M.gross,
         fee: M.fee,
+        vat: M.vat,
         net: M.net,
         partners: partnerRows.sort((a, b) => a.name.localeCompare(b.name)),
         ownerFinal: revSub(M.net, payoutTotal),
@@ -6570,10 +6621,13 @@ async function handleAdminRevenueReport(
 
   return res.status(200).json({
     ok: true,
+    receiptsEnabled: receiptsOn,
+    vatPercent,
     months: monthsOut,
     totals: {
       gross: totalGross,
       fee: totalFee,
+      vat: totalVat,
       net: totalNet,
       partners: partnerTotals.sort((a, b) => a.name.localeCompare(b.name)),
       ownerFinal: revSub(totalNet, totalPayoutAll),
@@ -8818,6 +8872,7 @@ async function handleAdminCasualReport(
     name: string
     currency: string
     gross: number
+    reported: boolean
   }
   // De-dupe by eventId: a charge can appear both in the durable ledger
   // AND in a live key's billingHistory (same id). The ledger wins
@@ -8840,6 +8895,7 @@ async function handleAdminCasualReport(
       name?: string
       amount?: number
       currency?: string
+      reported?: boolean
     }
     const gross = typeof d.amount === 'number' ? d.amount : 0
     if (gross <= 0 || !d.at) continue
@@ -8851,6 +8907,7 @@ async function handleAdminCasualReport(
       name: (d.name || '').trim(),
       currency: (d.currency || 'ILS').toUpperCase(),
       gross,
+      reported: d.reported === true,
     })
   }
 
@@ -8888,12 +8945,14 @@ async function handleAdminCasualReport(
         name,
         currency: (h.currency || 'ILS').toUpperCase(),
         gross,
+        reported: false,
       })
     }
   }
 
   type Row = {
     seq: number
+    eventId: string
     at: string
     email: string
     name: string
@@ -8902,6 +8961,7 @@ async function handleAdminCasualReport(
     gross: number
     vat: number
     net: number
+    reported: boolean
   }
   const sorted = Array.from(byId.values()).sort((a, b) =>
     a.at < b.at ? -1 : a.at > b.at ? 1 : 0,
@@ -8910,6 +8970,7 @@ async function handleAdminCasualReport(
     const net = r.gross / (1 + frac)
     return {
       seq: i + 1,
+      eventId: r.eventId,
       at: r.at,
       email: r.email,
       name: r.name,
@@ -8918,6 +8979,7 @@ async function handleAdminCasualReport(
       gross: round2(r.gross),
       vat: round2(r.gross - net),
       net: round2(net),
+      reported: r.reported,
     }
   })
 
@@ -8937,6 +8999,49 @@ async function handleAdminCasualReport(
   return res
     .status(200)
     .json({ ok: true, year, month, vatPercent, rows, totals })
+}
+
+/** Mark a single casual charge as reported to מע"מ (or undo it). Writes
+ *  a durable flag onto the casualLedger entry so the עסקת אקראי tab can
+ *  track what's been filed (Form 8356) and what still needs filing.
+ *  The client sends the row's identifying fields so a legacy charge
+ *  that only existed in billingHistory becomes a proper ledger entry
+ *  the first time it's marked. */
+async function handleAdminMarkCasualReported(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const admin = await verifyAdminStepUp(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const body = (req.body || {}) as {
+    eventId?: string
+    reported?: boolean
+    at?: string
+    amount?: number
+    currency?: string
+    email?: string
+    name?: string
+  }
+  const id = (body.eventId || '').trim()
+  if (!id) return res.status(400).json({ ok: false, error: 'missing eventId' })
+  const reported = body.reported === true
+  const patch: Record<string, unknown> = {
+    reported,
+    reportedAt: reported ? new Date().toISOString() : null,
+    reportedBy: reported ? admin : null,
+  }
+  // Backfill identity for legacy/billingHistory-only rows so the entry
+  // is complete and keeps showing in the report after it's marked.
+  if (typeof body.at === 'string' && body.at) patch.at = body.at
+  if (typeof body.amount === 'number' && body.amount > 0)
+    patch.amount = body.amount
+  if (typeof body.currency === 'string' && body.currency)
+    patch.currency = body.currency.toUpperCase()
+  if (typeof body.email === 'string') patch.email = body.email
+  if (typeof body.name === 'string') patch.name = body.name
+  patch.eventId = id
+  await getDb().collection('casualLedger').doc(id).set(patch, { merge: true })
+  return res.status(200).json({ ok: true, reported })
 }
 
 async function handleAdminDeleteReferral(
@@ -8965,6 +9070,13 @@ async function handleAdminReferralReport(
   const admin = await verifyAdmin2FA(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const db = getDb()
+  // Commissions are paid on the money actually kept — gross minus
+  // PayPal fee minus VAT (VAT only when receipts are OFF). Fetch the
+  // settings once for the whole report.
+  const [receiptsOn, vatPercent] = await Promise.all([
+    receiptsEnabled(),
+    casualVatRatePercent(),
+  ])
   const partnersSnap = await db
     .collection('referralPartners')
     .orderBy('createdAt', 'desc')
@@ -8981,10 +9093,12 @@ async function handleAdminReferralReport(
     let paidAccounts = 0
     let paymentCount = 0
     const revenueByCurrency: Record<string, number> = {}
+    // Net after PayPal fee + VAT — the real base for the commission.
+    const netByCurrency: Record<string, number> = {}
     for (const k of keysSnap.docs) {
       const kd = k.data() as {
         nonPaidGrant?: boolean
-        billingHistory?: Array<{ amount?: number; currency?: string }>
+        billingHistory?: Array<{ amount?: number; currency?: string; fee?: number }>
       }
       if (kd.nonPaidGrant) continue
       const hist = Array.isArray(kd.billingHistory) ? kd.billingHistory : []
@@ -8992,7 +9106,16 @@ async function handleAdminReferralReport(
       for (const h of hist) {
         const amt = typeof h.amount === 'number' ? h.amount : 0
         const cur = (h.currency || 'ILS').toUpperCase()
+        const fee = typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0
+        const b = chargeNetBreakdown({
+          amount: amt,
+          currency: cur,
+          fee,
+          vatPercent,
+          receiptsEnabled: receiptsOn,
+        })
         revenueByCurrency[cur] = (revenueByCurrency[cur] || 0) + amt
+        netByCurrency[cur] = (netByCurrency[cur] || 0) + b.net
         paymentCount++
       }
     }
@@ -9004,11 +9127,12 @@ async function handleAdminReferralReport(
             commissionCurrency: data.commissionCurrency || 'ILS',
           }
         : null
-    // Commission owed (what the admin pays the partner).
+    // Commission owed (what the admin pays the partner) — percentage is
+    // taken on the NET (after PayPal fee + VAT), not the gross.
     const earningsByCurrency: Record<string, number> = {}
     if (commission?.commissionType === 'percent') {
       const f = commission.commissionValue / 100
-      for (const [c, v] of Object.entries(revenueByCurrency)) {
+      for (const [c, v] of Object.entries(netByCurrency)) {
         earningsByCurrency[c] = v * f
       }
     } else if (commission?.commissionType === 'fixed') {
@@ -9021,6 +9145,7 @@ async function handleAdminReferralReport(
       signups: typeof data.signups === 'number' ? data.signups : 0,
       paidAccounts,
       revenueByCurrency,
+      netByCurrency,
       loginEmail: data.loginEmail || '',
       hasLogin: Boolean(data.loginEmail),
       commissionType: commission?.commissionType || null,
@@ -9030,7 +9155,9 @@ async function handleAdminReferralReport(
       visibility: resolveVisibility(data.visibility),
     })
   }
-  return res.status(200).json({ ok: true, partners: rows })
+  return res
+    .status(200)
+    .json({ ok: true, partners: rows, receiptsEnabled: receiptsOn, vatPercent })
 }
 
 /** Full drill-down for one partner: every attributed account + the
@@ -9273,6 +9400,12 @@ function verifyPartnerToken(token: string): PartnerClaims | null {
 /** Aggregate stats for one partner code (no customer PII). */
 async function computePartnerStats(code: string) {
   const db = getDb()
+  // NET is computed after PayPal fee AND after VAT (VAT only when SUMIT
+  // receipts are OFF) — see chargeNetBreakdown.
+  const [receiptsOn, vatPercent] = await Promise.all([
+    receiptsEnabled(),
+    casualVatRatePercent(),
+  ])
   const [partnerSnap, usersSnap, keysSnap] = await Promise.all([
     db.collection('referralPartners').doc(code).get(),
     db.collection('users').where('referredBy', '==', code).get(),
@@ -9307,7 +9440,13 @@ async function computePartnerStats(code: string) {
       const cur = (h.currency || 'ILS').toUpperCase()
       const amt = typeof h.amount === 'number' ? h.amount : 0
       const fee = typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0
-      const net = Math.max(0, amt - fee)
+      const net = chargeNetBreakdown({
+        amount: amt,
+        currency: cur,
+        fee,
+        vatPercent,
+        receiptsEnabled: receiptsOn,
+      }).net
       const m = h.at ? h.at.slice(0, 7) : 'unknown'
       grossByCurrency[cur] = (grossByCurrency[cur] || 0) + amt
       grossByMonth[m] = grossByMonth[m] || {}

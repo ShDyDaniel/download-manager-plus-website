@@ -25,6 +25,7 @@ interface Partner {
   signups: number
   paidAccounts: number
   revenueByCurrency: Record<string, number>
+  netByCurrency?: Record<string, number>
   loginEmail?: string
   hasLogin?: boolean
   commissionType?: 'percent' | 'fixed' | null
@@ -659,8 +660,12 @@ function PartnerCard({
       {expanded && (
         <div className="space-y-4 border-t border-border bg-bg/40 p-4">
           {/* Stats */}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Mini label="הכנסות (ברוטו)" value={fmtMoney(p.revenueByCurrency)} />
+            <Mini
+              label={'נטו (אחרי PayPal ומע"מ)'}
+              value={fmtMoney(p.netByCurrency)}
+            />
             <Mini label="רווח לשותף" value={fmtMoney(p.earningsByCurrency)} />
             <Mini label="עמלה" value={commissionLabel(p)} />
           </div>
