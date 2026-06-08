@@ -1998,6 +1998,23 @@ async function handleSaleCompleted(
     }),
   })
 
+  // Durable tax ledger — this recurring charge (mirrors the
+  // billingHistory entry above, same event.id).
+  await recordCasualCharge({
+    id: event.id,
+    at: new Date().toISOString(),
+    email:
+      key.buyerEmail ||
+      (key as { redeemedByEmail?: string }).redeemedByEmail ||
+      '',
+    name: (key as { buyerName?: string }).buyerName || '',
+    amount: paidAmount,
+    currency: resource.amount.currency,
+    fee: parseFloat(resource.transaction_fee?.value || '0') || 0,
+    subscriptionId,
+    kind: 'renewal',
+  })
+
   // Issue + email + log a SUMIT tax receipt for this charge. Fully
   // best-effort: any failure is logged and ignored so it can never
   // affect the subscription/payment flow.
@@ -2047,7 +2064,10 @@ async function ensureKeyForSubscription(
     id: string
     plan_id: string
     status: string
-    subscriber: { email_address: string }
+    subscriber: {
+      email_address: string
+      name?: { given_name?: string; surname?: string }
+    }
   }>('GET', `/v1/billing/subscriptions/${subscriptionId}`)
   // SECURITY belt-and-suspenders: only mint a key for genuinely
   // ACTIVE subscriptions. If a webhook for a different event ever
@@ -2075,6 +2095,15 @@ async function ensureKeyForSubscription(
   const planPrice = parseFloat(cycle.pricing_scheme.fixed_price.value)
   const planCurrency = cycle.pricing_scheme.fixed_price.currency_code
   const buyerEmail = sub.subscriber.email_address
+  // Full name for the casual-transaction ledger / receipts (PayPal
+  // returns the payer's name on the subscription). Best-effort.
+  const buyerName = [
+    sub.subscriber.name?.given_name,
+    sub.subscriber.name?.surname,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .trim()
   const key = generateKeyString()
   // Calendar-aware initial expiry — first cycle ends on the same
   // calendar day next month/year, matching PayPal's next-charge
@@ -2140,7 +2169,15 @@ async function ensureKeyForSubscription(
         subscriptionId?: string
         subscriptionPlanDays?: number
         planDays?: number
-        billingHistory?: Array<{ at: string; amount: number; currency: string }>
+        buyerEmail?: string
+        buyerName?: string
+        redeemedByEmail?: string
+        billingHistory?: Array<{
+          at: string
+          amount: number
+          currency: string
+          eventId?: string
+        }>
       }
       // Plan-switch detection: if the existing key was bound to a
       // DIFFERENT subscription, this is either a regular renewal
@@ -2169,10 +2206,17 @@ async function ensureKeyForSubscription(
       const billingHistory = Array.isArray(existing.billingHistory)
         ? existing.billingHistory.slice()
         : []
+      // A renewal via the renew/switch flow always mints a NEW
+      // subscriptionId, so `renew-<subId>` is unique per renewal charge
+      // — a stable id for both billingHistory dedup and the durable
+      // ledger below.
+      const renewChargeAt = new Date().toISOString()
+      const renewChargeId = `renew-${subscriptionId}`
       billingHistory.push({
-        at: new Date().toISOString(),
+        at: renewChargeAt,
         amount: planPrice,
         currency: planCurrency,
+        eventId: renewChargeId,
       })
 
       // ── ORDER MATTERS: update key BEFORE cancelling old sub ──
@@ -2209,11 +2253,25 @@ async function ensureKeyForSubscription(
         paymentFailedAt: null,
         paymentFailureCount: 0,
         billingHistory,
+        buyerName: buyerName || existing.buyerName || '',
         // Clear reminder stamps so the next cycle's cron emails
         // fire fresh.
         reminder10dSentAt: null,
         reminder2dSentAt: null,
         reminderSentAt: null,
+      })
+
+      // Durable tax ledger — this renewal charge (mirrors the
+      // billingHistory push above, same `renew-<subId>` id).
+      await recordCasualCharge({
+        id: renewChargeId,
+        at: renewChargeAt,
+        email: buyerEmail || existing.buyerEmail || existing.redeemedByEmail || '',
+        name: buyerName || existing.buyerName || '',
+        amount: planPrice,
+        currency: planCurrency,
+        subscriptionId,
+        kind: 'renewal',
       })
 
       // ── Cancel the OLD PayPal subscription, if any ──
@@ -2341,6 +2399,7 @@ async function ensureKeyForSubscription(
     createdAt: new Date().toISOString(),
     createdBy: `paypal-subscription-${planDays === 30 ? 'monthly' : 'yearly'}`,
     buyerEmail,
+    buyerName,
     ...(keyReferredBy ? { referredBy: keyReferredBy } : {}),
     subscriptionId,
     planId: sub.plan_id,
@@ -2411,6 +2470,20 @@ async function ensureKeyForSubscription(
       redeemedAt: null,
     })
   }
+  // Durable tax ledger — the initial activation charge. Mirrors the
+  // billingHistory seed above (same `initial-<subId>` id), but in a
+  // standalone collection that survives key deletion so past-month
+  // עסקת אקראי reports are always reproducible.
+  await recordCasualCharge({
+    id: `initial-${subscriptionId}`,
+    at: baseKeyDoc.billingHistory[0].at,
+    email: buyerEmail,
+    name: buyerName,
+    amount: planPrice,
+    currency: planCurrency,
+    subscriptionId,
+    kind: 'initial',
+  })
   // Welcome email — always sent, even when the key was auto-
   // redeemed in the linkToUid branch above. Backup safety net so
   // the buyer has the key value in their inbox if anything goes
@@ -3687,6 +3760,49 @@ async function casualVatRatePercent(): Promise<number> {
     return typeof v === 'number' && v > 0 && v < 100 ? v : 18
   } catch {
     return 18
+  }
+}
+
+/** Append a charge to the durable `casualLedger` collection — the
+ *  permanent, key-independent tax ledger behind the עסקת אקראי report.
+ *  Because it lives in its own collection (not inside the key), a
+ *  deleted/expired key never erases its charges, so past-month reports
+ *  stay reproducible "no matter what". Idempotent: keyed by the charge
+ *  id (same id as the matching billingHistory eventId), so a webhook
+ *  retry can't double-count. Best-effort — never throws into the
+ *  payment flow. */
+async function recordCasualCharge(args: {
+  id: string
+  at: string
+  email: string
+  name?: string
+  amount: number
+  currency: string
+  fee?: number
+  subscriptionId?: string | null
+  kind: 'initial' | 'renewal'
+}): Promise<void> {
+  try {
+    if (!args.id || !(args.amount > 0)) return
+    await getDb()
+      .collection('casualLedger')
+      .doc(args.id)
+      .set(
+        {
+          eventId: args.id,
+          at: args.at || new Date().toISOString(),
+          email: args.email || '',
+          name: args.name || '',
+          amount: args.amount,
+          currency: (args.currency || 'ILS').toUpperCase(),
+          fee: typeof args.fee === 'number' ? args.fee : 0,
+          subscriptionId: args.subscriptionId || null,
+          kind: args.kind,
+        },
+        { merge: true },
+      )
+  } catch (err) {
+    console.warn('[casualLedger] write failed (ignored):', err)
   }
 }
 
@@ -8693,47 +8809,119 @@ async function handleAdminCasualReport(
   const vatPercent = await casualVatRatePercent()
   const frac = vatPercent / 100
   const round2 = (n: number) => Math.round(n * 100) / 100
+  const db = getDb()
 
-  // Scan every key and flatten its billingHistory. Admin-only and run
-  // ~once a month, so a full-collection read is acceptable at this size.
-  const snap = await getDb().collection('productKeys').get()
-  type Row = {
+  type Raw = {
+    eventId: string
     at: string
     email: string
+    name: string
     currency: string
     gross: number
-    vat: number
-    net: number
   }
-  const rows: Row[] = []
-  for (const doc of snap.docs) {
+  // De-dupe by eventId: a charge can appear both in the durable ledger
+  // AND in a live key's billingHistory (same id). The ledger wins
+  // because it also carries the customer name and survives key
+  // deletion.
+  const byId = new Map<string, Raw>()
+
+  // 1) Durable ledger — the source of truth. A single-field range
+  //    query needs no composite index.
+  const ledgerSnap = await db
+    .collection('casualLedger')
+    .where('at', '>=', new Date(start).toISOString())
+    .where('at', '<', new Date(end).toISOString())
+    .get()
+  for (const doc of ledgerSnap.docs) {
+    const d = doc.data() as {
+      eventId?: string
+      at?: string
+      email?: string
+      name?: string
+      amount?: number
+      currency?: string
+    }
+    const gross = typeof d.amount === 'number' ? d.amount : 0
+    if (gross <= 0 || !d.at) continue
+    const id = d.eventId || doc.id
+    byId.set(id, {
+      eventId: id,
+      at: d.at,
+      email: (d.email || '').trim(),
+      name: (d.name || '').trim(),
+      currency: (d.currency || 'ILS').toUpperCase(),
+      gross,
+    })
+  }
+
+  // 2) Merge any charges still only in a live key's billingHistory
+  //    (e.g. pre-ledger history). Scan is admin-only + monthly, so a
+  //    full read is fine at this scale.
+  const keysSnap = await db.collection('productKeys').get()
+  for (const doc of keysSnap.docs) {
     const d = doc.data() as {
       buyerEmail?: string
       redeemedByEmail?: string
-      billingHistory?: Array<{ at?: string; amount?: number; currency?: string }>
+      buyerName?: string
+      billingHistory?: Array<{
+        at?: string
+        amount?: number
+        currency?: string
+        eventId?: string
+      }>
     }
     const email = (d.buyerEmail || d.redeemedByEmail || '').trim()
+    const name = (d.buyerName || '').trim()
     const hist = Array.isArray(d.billingHistory) ? d.billingHistory : []
     for (const h of hist) {
       const t = h.at ? new Date(h.at).getTime() : NaN
       if (!Number.isFinite(t) || t < start || t >= end) continue
       const gross = typeof h.amount === 'number' ? h.amount : 0
       if (gross <= 0) continue
-      const net = gross / (1 + frac)
-      rows.push({
+      // Fall back to a natural key when an old entry has no eventId.
+      const id = h.eventId || `${doc.id}:${h.at}:${gross}`
+      if (byId.has(id)) continue
+      byId.set(id, {
+        eventId: id,
         at: h.at as string,
         email,
+        name,
         currency: (h.currency || 'ILS').toUpperCase(),
-        gross: round2(gross),
-        vat: round2(gross - net),
-        net: round2(net),
+        gross,
       })
     }
   }
-  rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
 
-  // Totals per currency (VAT only really applies to ILS; we still total
-  // each currency so a stray foreign charge is visible, not hidden).
+  type Row = {
+    seq: number
+    at: string
+    email: string
+    name: string
+    description: string
+    currency: string
+    gross: number
+    vat: number
+    net: number
+  }
+  const sorted = Array.from(byId.values()).sort((a, b) =>
+    a.at < b.at ? -1 : a.at > b.at ? 1 : 0,
+  )
+  const rows: Row[] = sorted.map((r, i) => {
+    const net = r.gross / (1 + frac)
+    return {
+      seq: i + 1,
+      at: r.at,
+      email: r.email,
+      name: r.name,
+      description: 'ניהול הורדות פלוס — מנוי',
+      currency: r.currency,
+      gross: round2(r.gross),
+      vat: round2(r.gross - net),
+      net: round2(net),
+    }
+  })
+
+  // Totals per currency.
   const totals: Record<
     string,
     { count: number; gross: number; vat: number; net: number }

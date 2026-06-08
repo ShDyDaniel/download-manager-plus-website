@@ -24,8 +24,11 @@ interface ReceiptRow {
 }
 
 interface CasualRow {
+  seq: number
   at: string
   email: string
+  name: string
+  description: string
   currency: string
   gross: number
   vat: number
@@ -202,8 +205,11 @@ export default function ReceiptsTab({
   function downloadCasualCsv() {
     if (!casualRows) return
     const header = [
+      'מס׳',
       'תאריך',
-      'לקוח',
+      'שם הלקוח',
+      'אימייל',
+      'תיאור',
       'מטבע',
       'סכום כולל מע"מ',
       'מע"מ',
@@ -211,12 +217,25 @@ export default function ReceiptsTab({
     ]
     const lines: (string | number)[][] = [header]
     for (const r of casualRows)
-      lines.push([fmtDateOnly(r.at), r.email, r.currency, r.gross, r.vat, r.net])
+      lines.push([
+        r.seq,
+        fmtDateOnly(r.at),
+        r.name,
+        r.email,
+        r.description,
+        r.currency,
+        r.gross,
+        r.vat,
+        r.net,
+      ])
     lines.push([])
     for (const [cur, t] of Object.entries(casualTotals))
       lines.push([
+        '',
         `סה"כ ${cur}`,
         `${t.count} עסקאות`,
+        '',
+        '',
         cur,
         t.gross,
         t.vat,
@@ -571,6 +590,7 @@ function CasualReport({
           <table className="w-full text-right text-sm">
             <thead>
               <tr className="border-b border-border text-xs text-fg-muted">
+                <th className="px-4 py-3 font-medium">מס׳</th>
                 <th className="px-4 py-3 font-medium">תאריך</th>
                 <th className="px-4 py-3 font-medium">לקוח</th>
                 <th className="px-4 py-3 font-medium">מטבע</th>
@@ -585,11 +605,17 @@ function CasualReport({
                   key={i}
                   className="border-b border-border/30 last:border-0 text-fg-muted"
                 >
+                  <td className="whitespace-nowrap px-4 py-3 tabular-nums" dir="ltr">
+                    {row.seq}
+                  </td>
                   <td className="whitespace-nowrap px-4 py-3" dir="ltr">
                     {fmtDateOnly(row.at)}
                   </td>
-                  <td className="break-all px-4 py-3" dir="ltr">
-                    {row.email || '—'}
+                  <td className="break-all px-4 py-3">
+                    <div className="text-fg">{row.name || '—'}</div>
+                    <div className="text-[11px] text-fg-muted" dir="ltr">
+                      {row.email || ''}
+                    </div>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3" dir="ltr">
                     {row.currency}
