@@ -377,11 +377,11 @@ function FeeExplainModal({
   receiptsEnabled: boolean
   onClose: () => void
 }) {
-  // When receipts are OFF we deduct VAT too, and have the split. When
-  // on (or split missing), fall back to the combined fee figure under
-  // the PayPal line.
-  const hasVat =
-    !receiptsEnabled && vat && Object.values(vat).some((v) => v > 0)
+  // When receipts are OFF, VAT is ALWAYS part of the deduction — show
+  // its own line even before any sale, so the partner knows up front
+  // that both PayPal AND VAT come off the top. (Not gated on having
+  // data: a brand-new partner must still see the structure.)
+  const hasVat = !receiptsEnabled
   const paypalLine = paypalFee && Object.keys(paypalFee).length ? paypalFee : fee
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
