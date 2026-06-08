@@ -363,7 +363,7 @@ export default function UpdatesTab({
             </div>
           )}
 
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {isEditingDraft ? (
               <Button variant="default" onClick={saveDraftWorkspace} disabled={busy}>
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
@@ -417,9 +417,9 @@ export default function UpdatesTab({
 
       {/* Published release card */}
       <Card className="space-y-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-2xl font-bold tabular-nums text-foreground" dir="ltr">
                 {release.version}
               </h3>
@@ -494,9 +494,9 @@ export default function UpdatesTab({
       {/* Draft workspace OR start-new-draft CTA */}
       {draftRelease ? (
         <Card className="space-y-4 border-primary/20 bg-primary/[0.02]">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-2xl font-bold tabular-nums text-foreground" dir="ltr">
                   {draftRelease.version || '(ללא גרסה)'}
                 </h3>
