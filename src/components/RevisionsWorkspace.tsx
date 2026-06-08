@@ -36,9 +36,13 @@ import { AnimatePresence, motion } from 'framer-motion'
 import {
   Copy,
   ExternalLink,
+  Eye,
   RotateCcw,
+  RefreshCw,
   Link2 as LinkIcon,
   HardDrive,
+  Lock,
+  LockOpen,
   MessageSquare,
   Pencil,
   Plus,
@@ -187,6 +191,46 @@ async function uploadRoundVideo(
     videoMime: source.file.type || 'video/mp4',
   }
 }
+
+/* ──────────────────────────────────────────────────────────────
+ *  Shared action-button styles for the workspace surfaces.
+ *
+ *  Centralising these keeps every button row consistent in height,
+ *  radius, icon spacing and hover treatment across the project
+ *  list AND the round-detail view — and makes the whole feature
+ *  read as one designed system rather than a pile of ad-hoc
+ *  outline buttons. All five share BTN_BASE, which pins:
+ *    - a fixed 36px (h-9) height so a wrapped row stays on a tidy
+ *      grid instead of a jagged staircase,
+ *    - shrink-0 + whitespace-nowrap so a narrow phone wraps the
+ *      button to the next line WHOLE instead of squeezing it until
+ *      the label truncates ("מחיקה" → "מח"),
+ *    - a visible focus ring for keyboard users.
+ *  Variants then layer semantic colour on top:
+ *    secondary = neutral outline (most actions)
+ *    primary   = copper-tinted (the one "go here" action per row)
+ *    danger    = destructive red
+ *    success   = green (lock OPEN — round is editable)
+ *    lockClose = red   (lock CLOSE — round is sealed)
+ *  The success/lockClose pair mirrors the desktop app's red/green
+ *  lock button so the two surfaces feel identical. */
+const BTN_BASE =
+  'inline-flex h-9 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50'
+const BTN_SECONDARY =
+  BTN_BASE +
+  ' border border-border bg-bg-card/40 text-fg hover:border-border-strong hover:bg-bg-elevated'
+const BTN_PRIMARY =
+  BTN_BASE +
+  ' border border-primary/40 bg-primary/10 text-primary hover:border-primary/60 hover:bg-primary/15'
+const BTN_DANGER =
+  BTN_BASE +
+  ' border border-destructive/30 text-destructive hover:border-destructive/50 hover:bg-destructive/10'
+const BTN_SUCCESS =
+  BTN_BASE +
+  ' border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/15'
+const BTN_LOCK_CLOSE =
+  BTN_BASE +
+  ' border border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/15'
 
 export function RevisionsWorkspace() {
   // `undefined` = still loading. `null` = not connected. Object = connected.
@@ -817,7 +861,7 @@ function ActionBar({
       <button
         type="button"
         onClick={onNewProject}
-        className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover"
+        className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-bg shadow-sm transition-colors hover:bg-primary-hover sm:w-auto"
       >
         <Plus className="h-4 w-4" />
         פרויקט חדש
@@ -1130,10 +1174,7 @@ function GroupCard({
                 onAddRound()
               }
             }}
-            // gap-1.5 between icon and label matches the
-            // ProjectGroupCard on the desktop side — keeps the
-            // two surfaces visually identical at this density.
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
+            className={BTN_PRIMARY + ' cursor-pointer'}
           >
             <Plus className="h-3.5 w-3.5" />
             סבב חדש
@@ -1152,7 +1193,7 @@ function GroupCard({
                 onEdit()
               }
             }}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
+            className={BTN_SECONDARY + ' cursor-pointer'}
           >
             <Pencil className="h-3.5 w-3.5" />
             עריכה
@@ -1192,7 +1233,7 @@ function GroupCard({
               {(rounds ?? []).map((round) => (
                 <li
                   key={round.id}
-                  className="flex items-center justify-between gap-3 px-5 py-3"
+                  className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 text-sm text-fg">
@@ -1232,14 +1273,17 @@ function GroupCard({
                       <bdi dir="ltr">{formatDateShort(round.createdAt)}</bdi>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     {round.clientFinalized && (
                       <button
                         type="button"
                         onClick={() => void reopenRound(round)}
                         disabled={reopening === round.id}
                         title="הלקוח סימן בטעות? פתח מחדש לתיקונים"
-                        className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 px-3 py-1.5 text-xs text-amber-400 transition-colors hover:bg-amber-500/10 disabled:opacity-50"
+                        className={
+                          BTN_BASE +
+                          ' border border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/15'
+                        }
                       >
                         <RotateCcw className="h-3.5 w-3.5" />
                         {reopening === round.id ? 'פותח…' : 'פתח מחדש'}
@@ -1248,7 +1292,7 @@ function GroupCard({
                     <button
                       type="button"
                       onClick={() => onOpenRound(round)}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
+                      className={BTN_PRIMARY}
                     >
                       <MessageSquare className="h-3.5 w-3.5" />
                       הערות (<bdi dir="ltr">{round.notesCount}</bdi>)
@@ -1257,7 +1301,7 @@ function GroupCard({
                       href={`${shareUrl}?r=${round.id}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
+                      className={BTN_SECONDARY}
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
                       פתיחה
@@ -1265,7 +1309,7 @@ function GroupCard({
                     <button
                       type="button"
                       onClick={() => onDeleteRound(round.id, round.storage)}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
+                      className={BTN_DANGER}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                       מחיקה
@@ -1338,11 +1382,7 @@ function LegacyCard({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <CopyShareLinkButton url={shareUrl} />
-          <button
-            type="button"
-            onClick={onOpen}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
-          >
+          <button type="button" onClick={onOpen} className={BTN_PRIMARY}>
             <MessageSquare className="h-3.5 w-3.5" />
             הערות (<bdi dir="ltr">{project.notesCount}</bdi>)
           </button>
@@ -1350,16 +1390,12 @@ function LegacyCard({
             href={shareUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-elevated"
+            className={BTN_SECONDARY}
           >
             <ExternalLink className="h-3.5 w-3.5" />
             פתיחה
           </a>
-          <button
-            type="button"
-            onClick={onDelete}
-            className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-          >
+          <button type="button" onClick={onDelete} className={BTN_DANGER}>
             <Trash2 className="h-3.5 w-3.5" />
             מחיקה
           </button>
@@ -1399,10 +1435,10 @@ function CopyShareLinkButton({ url }: { url: string }) {
         void copy()
       }}
       className={
-        'inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors ' +
-        (copied
-          ? 'border-success/40 bg-success/10 text-success'
-          : 'border-border text-fg hover:bg-bg-elevated')
+        copied
+          ? BTN_BASE +
+            ' border border-success/40 bg-success/10 text-success'
+          : BTN_SECONDARY
       }
     >
       <Copy className="h-3.5 w-3.5" />
@@ -2612,8 +2648,9 @@ function RoundDetailView({
             href={shareUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-card"
+            className={BTN_SECONDARY}
           >
+            <Eye className="h-3.5 w-3.5" />
             צפייה בדף הציבורי
           </a>
           <button
@@ -2624,16 +2661,26 @@ function RoundDetailView({
                 isLegacy ? target.legacy.title : `סבב מס׳ ${target.round.roundNumber}`,
               )
             }
-            className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-card"
+            className={BTN_SECONDARY}
           >
+            <RefreshCw className="h-3.5 w-3.5" />
             החלפת וידאו
           </button>
+          {/* Lock toggle — red when the round is open (the button
+              CLOSES it) / green when closed (the button RE-OPENS it).
+              Mirrors the desktop app's red/green lock button so the
+              two surfaces feel identical. */}
           <button
             type="button"
             onClick={() => void toggleLock()}
             disabled={busyLock}
-            className="rounded-md border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-bg-card disabled:opacity-40"
+            className={locked ? BTN_SUCCESS : BTN_LOCK_CLOSE}
           >
+            {locked ? (
+              <LockOpen className="h-3.5 w-3.5" />
+            ) : (
+              <Lock className="h-3.5 w-3.5" />
+            )}
             {busyLock ? '…' : locked ? 'פתיחת הסבב' : 'סגירת הסבב'}
           </button>
         </div>
@@ -2995,10 +3042,10 @@ function StatusActionButton({
       type="button"
       onClick={onClick}
       className={
-        'rounded-md border px-3 py-1.5 text-xs transition-colors ' +
+        'inline-flex h-9 shrink-0 items-center justify-center whitespace-nowrap rounded-lg border px-3.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ' +
         (active
           ? colorOn[color]
-          : 'border-border text-fg-muted hover:bg-bg-elevated hover:text-fg')
+          : 'border-border text-fg-muted hover:border-border-strong hover:bg-bg-elevated hover:text-fg')
       }
     >
       {label}
