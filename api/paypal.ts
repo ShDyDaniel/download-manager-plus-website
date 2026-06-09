@@ -1721,6 +1721,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSetUserSubscription(req, res)
       case 'admin-clear-user-device':
         return await handleAdminClearUserDevice(req, res)
+      case 'admin-delete-user':
+        return await handleAdminDeleteUser(req, res)
       case 'admin-approve-trial':
         return await handleAdminApproveTrial(req, res)
       case 'admin-revoke-trial':
@@ -7241,6 +7243,273 @@ async function handleAdminListUsers(req: VercelRequest, res: VercelResponse) {
   }
 
   return res.status(200).json({ ok: true, users, keysByUid })
+}
+
+/**
+ *  HARD-DELETE a user and everything tied to them, across every system:
+ *  their R2 files, revision projects/rounds (+ notes), product keys (with
+ *  best-effort PayPal cancellation), trial fingerprints, pending
+ *  subscriptions, feedback, Drive integration, the user doc, and the
+ *  Firebase Auth account.
+ *
+ *  DELIBERATELY KEPT: receipts + casualLedger. Those are tax records the
+ *  business is legally required to retain — wiping them would break the
+ *  עסקת אקראי / VAT reports. They're reported back as keptForTax.
+ *
+ *  Step-up gated (biometric) — irreversible + destructive. Each section is
+ *  isolated so one failure can't abort the rest; a per-section error log
+ *  comes back in the response.
+ */
+async function handleAdminDeleteUser(req: VercelRequest, res: VercelResponse) {
+  const admin = await verifyAdminStepUp(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const body = (req.body || {}) as { uid?: string }
+  const uid = String(body.uid || '').trim()
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
+
+  const db = getDb()
+  const summary: Record<string, number> = {}
+  const errors: string[] = []
+
+  // Look up email + deviceId (needed to find trial fingerprints) and role.
+  let email = ''
+  let deviceId = ''
+  let role = ''
+  try {
+    const snap = await db.collection('users').doc(uid).get()
+    const d = (snap.exists ? snap.data() : {}) as {
+      email?: string
+      deviceId?: string
+      role?: string
+    }
+    email = String(d.email || '')
+    deviceId = String(d.deviceId || '')
+    role = String(d.role || '')
+  } catch (e) {
+    errors.push('user-read: ' + (e as Error).message)
+  }
+
+  // Never delete an admin/operator account, or yourself.
+  if (role === 'admin' || (email && email.toLowerCase() === admin.toLowerCase())) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'אי אפשר למחוק חשבון אדמין' })
+  }
+
+  // ── R2: everything under the user's prefix (videos + note media) ──
+  try {
+    const r2 = getBackupR2()
+    let token: string | undefined
+    let deleted = 0
+    do {
+      const listed = await r2.send(
+        new ListObjectsV2Command({
+          Bucket: BACKUP_BUCKET,
+          Prefix: `${uid}/`,
+          ContinuationToken: token,
+        }),
+      )
+      for (const o of listed.Contents || []) {
+        if (!o.Key) continue
+        try {
+          await r2.send(
+            new DeleteObjectCommand({ Bucket: BACKUP_BUCKET, Key: o.Key }),
+          )
+          deleted += 1
+        } catch {
+          /* best effort */
+        }
+      }
+      token = listed.IsTruncated ? listed.NextContinuationToken : undefined
+    } while (token)
+    summary.r2ObjectsDeleted = deleted
+  } catch (e) {
+    errors.push('r2: ' + (e as Error).message)
+  }
+
+  // ── Revision rounds (+ their notes subcollection) ──
+  try {
+    const rounds = await db
+      .collection('revisionProjects')
+      .where('ownerUid', '==', uid)
+      .get()
+    let n = 0
+    for (const doc of rounds.docs) {
+      try {
+        const notes = await doc.ref.collection('notes').get()
+        for (const note of notes.docs) await note.ref.delete()
+      } catch {
+        /* ignore */
+      }
+      await doc.ref.delete()
+      n += 1
+    }
+    summary.revisionRoundsDeleted = n
+  } catch (e) {
+    errors.push('revisionProjects: ' + (e as Error).message)
+  }
+
+  // ── Revision groups ──
+  try {
+    const groups = await db
+      .collection('revisionGroups')
+      .where('ownerUid', '==', uid)
+      .get()
+    let n = 0
+    for (const doc of groups.docs) {
+      await doc.ref.delete()
+      n += 1
+    }
+    summary.revisionGroupsDeleted = n
+  } catch (e) {
+    errors.push('revisionGroups: ' + (e as Error).message)
+  }
+
+  // ── Product keys — cancel active PayPal subs, then delete the keys ──
+  try {
+    const keys = await db
+      .collection('productKeys')
+      .where('redeemedBy', '==', uid)
+      .get()
+    let n = 0
+    let cancelled = 0
+    for (const doc of keys.docs) {
+      const k = doc.data() as {
+        subscriptionId?: string
+        subscriptionStatus?: string
+      }
+      if (k.subscriptionId && k.subscriptionStatus === 'active') {
+        try {
+          await paypalCall(
+            'POST',
+            `/v1/billing/subscriptions/${k.subscriptionId}/cancel`,
+            { reason: 'account deleted by admin' },
+          )
+          cancelled += 1
+        } catch {
+          /* already cancelled / not found — fine */
+        }
+      }
+      await doc.ref.delete()
+      n += 1
+    }
+    summary.productKeysDeleted = n
+    summary.paypalSubsCancelled = cancelled
+  } catch (e) {
+    errors.push('productKeys: ' + (e as Error).message)
+  }
+
+  // ── Trial fingerprints — by uid field, plus the reconstructed ids ──
+  try {
+    let n = 0
+    try {
+      const byUid = await db
+        .collection('trialFingerprints')
+        .where('uid', '==', uid)
+        .get()
+      for (const doc of byUid.docs) {
+        await doc.ref.delete()
+        n += 1
+      }
+    } catch {
+      /* ignore */
+    }
+    const san = (s: string) => s.toLowerCase().replace(/[^a-z0-9_-]/g, '_')
+    const ids: string[] = []
+    if (email) ids.push(`email_${san(email)}`)
+    if (deviceId) ids.push(`device_${san(deviceId)}`)
+    for (const id of ids) {
+      try {
+        const d = await db.collection('trialFingerprints').doc(id).get()
+        if (d.exists) {
+          await d.ref.delete()
+          n += 1
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    summary.trialFingerprintsDeleted = n
+  } catch (e) {
+    errors.push('trialFingerprints: ' + (e as Error).message)
+  }
+
+  // ── Pending subscriptions linked to this user ──
+  try {
+    const pend = await db
+      .collection('pendingSubscriptions')
+      .where('linkToUid', '==', uid)
+      .get()
+    let n = 0
+    for (const doc of pend.docs) {
+      await doc.ref.delete()
+      n += 1
+    }
+    summary.pendingSubscriptionsDeleted = n
+  } catch (e) {
+    errors.push('pendingSubscriptions: ' + (e as Error).message)
+  }
+
+  // ── Feedback / reports submitted by this user ──
+  try {
+    const fb = await db.collection('feedback').where('userId', '==', uid).get()
+    let n = 0
+    for (const doc of fb.docs) {
+      await doc.ref.delete()
+      n += 1
+    }
+    summary.feedbackDeleted = n
+  } catch (e) {
+    errors.push('feedback: ' + (e as Error).message)
+  }
+
+  // ── Google Drive integration (users/{uid}/integrations/*) ──
+  try {
+    const integ = await db
+      .collection('users')
+      .doc(uid)
+      .collection('integrations')
+      .get()
+    let n = 0
+    for (const doc of integ.docs) {
+      await doc.ref.delete()
+      n += 1
+    }
+    summary.integrationsDeleted = n
+  } catch (e) {
+    errors.push('integrations: ' + (e as Error).message)
+  }
+
+  // ── The user document itself ──
+  try {
+    await db.collection('users').doc(uid).delete()
+    summary.userDocDeleted = 1
+  } catch (e) {
+    errors.push('userDoc: ' + (e as Error).message)
+  }
+
+  // ── Firebase Auth account ──
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    await getAuth(getFirebase()).deleteUser(uid)
+    summary.authUserDeleted = 1
+  } catch (e) {
+    const msg = (e as Error).message || ''
+    if (/no user record|not-found|user-not-found/i.test(msg)) {
+      summary.authUserDeleted = 0
+    } else {
+      errors.push('auth: ' + msg)
+    }
+  }
+
+  return res.status(200).json({
+    ok: true,
+    uid,
+    email,
+    summary,
+    keptForTax: ['receipts', 'casualLedger'],
+    errors,
+  })
 }
 
 async function handleAdminSetUserBlocked(

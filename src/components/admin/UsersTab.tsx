@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Key as KeyIcon,
   AlertTriangle,
+  Trash2,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
@@ -303,11 +304,14 @@ function UserRow({
   onShowKey: (k: KeySummary) => void
 }) {
   const [busy, setBusy] = useState<
-    null | 'block' | 'device' | 'role' | 'plan' | 'storage'
+    null | 'block' | 'device' | 'role' | 'plan' | 'storage' | 'delete'
   >(
     null,
   )
   const [error, setError] = useState('')
+  // Hard-delete confirmation: requires typing the user's email.
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [confirmText, setConfirmText] = useState('')
 
   async function run(
     kind: typeof busy,
@@ -324,6 +328,24 @@ function UserRow({
       const err = e as Error & { code?: string }
       if (err.code === 'auth') return onAuthExpired()
       setError(err.message || 'הפעולה נכשלה')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function del() {
+    if (busy) return
+    setBusy('delete')
+    setError('')
+    try {
+      await adminApi('admin-delete-user', { uid: user.uid })
+      setConfirmDelete(false)
+      setConfirmText('')
+      await onChange()
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setError(err.message || 'המחיקה נכשלה')
     } finally {
       setBusy(null)
     }
@@ -523,9 +545,84 @@ function UserRow({
             >
               <HardDrive className="h-3.5 w-3.5" />
             </IconBtn>
+            {!isAdmin && (
+              <IconBtn
+                title="מחק משתמש לצמיתות"
+                busy={busy === 'delete'}
+                active={false}
+                activeClass=""
+                onClick={() => {
+                  setConfirmText('')
+                  setError('')
+                  setConfirmDelete(true)
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5 text-destructive" />
+              </IconBtn>
+            )}
           </div>
         </div>
       </div>
+
+      {confirmDelete && (
+        <div className="mt-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3">
+          <div className="flex items-start gap-2 text-[12px] text-destructive">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="space-y-1">
+              <div className="font-semibold">מחיקת משתמש לצמיתות</div>
+              <p className="text-[11px] leading-relaxed text-fg-muted">
+                פעולה זו תמחק את המשתמש ואת כל המידע שלו מכל המערכות — חשבון,
+                מפתחות ומנויים, סבבי תיקונים והקבצים שלהם, טביעות ניסיון
+                והחשבון עצמו. מנוי פעיל בפייפאל יבוטל. רשומות מס נשמרות כחוק.
+                אי אפשר לבטל.
+              </p>
+              <p className="text-[11px] text-fg-muted">
+                להמשך, הקלד את המייל של המשתמש:{' '}
+                <span dir="ltr" className="font-mono text-fg">
+                  {user.email || '—'}
+                </span>
+              </p>
+            </div>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              dir="ltr"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder={user.email || ''}
+              className="flex-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-fg outline-none focus:border-destructive"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmDelete(false)
+                setConfirmText('')
+              }}
+              className="rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted hover:bg-popover"
+            >
+              ביטול
+            </button>
+            <button
+              type="button"
+              disabled={
+                busy === 'delete' ||
+                !user.email ||
+                confirmText.trim().toLowerCase() !==
+                  (user.email || '').trim().toLowerCase()
+              }
+              onClick={del}
+              className="flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              {busy === 'delete' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" />
+              )}
+              מחק לצמיתות
+            </button>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="mt-2 rounded-lg bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive">
