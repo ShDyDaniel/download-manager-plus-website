@@ -6397,6 +6397,113 @@ async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
   return res.status(200).json({ ok: true, ingested, groups: sorted.length })
 }
 
+/* ──────────────────────────────────────────────────────────────
+ *  AI proxy (price-quote advisor) — Google Gemini, server-side.
+ *
+ *  The desktop used to call Pollinations directly from the renderer,
+ *  which is anonymous, heavily rate-limited and unreliable. Now the
+ *  desktop sends its chat to us with a Firebase ID token; we forward to
+ *  Gemini with a server-held GEMINI_API_KEY (never shipped in the app)
+ *  and return an OpenAI-shaped reply so the client parsing is unchanged.
+ *
+ *  Free tier: Gemini 2.5 Flash — ~1,500 req/day, no credit card. Model
+ *  is overridable via GEMINI_MODEL without a code change.
+ * ────────────────────────────────────────────────────────────── */
+const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim()
+
+async function handleAiChat(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim()
+  if (!apiKey) {
+    return res
+      .status(200)
+      .json({ ok: false, error: 'שירות ה-AI לא מוגדר בשרת' })
+  }
+
+  const body = (req.body || {}) as {
+    messages?: Array<{ role?: string; content?: string }>
+    max_tokens?: number
+  }
+  const messages = Array.isArray(body.messages) ? body.messages : []
+  const maxTokens = Math.min(8192, Math.max(256, Number(body.max_tokens) || 4000))
+
+  // Map OpenAI-style roles → Gemini: 'system' → systemInstruction,
+  // 'assistant' → 'model', everything else → 'user'.
+  const systemParts: string[] = []
+  const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = []
+  for (const m of messages) {
+    const text = String(m?.content || '')
+    if (!text) continue
+    if (String(m?.role) === 'system') {
+      systemParts.push(text)
+      continue
+    }
+    contents.push({
+      role: String(m?.role) === 'assistant' ? 'model' : 'user',
+      parts: [{ text }],
+    })
+  }
+  if (contents.length === 0) {
+    return res.status(400).json({ ok: false, error: 'no user message' })
+  }
+
+  const payload: Record<string, unknown> = {
+    contents,
+    generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
+  }
+  if (systemParts.length) {
+    payload.systemInstruction = { parts: [{ text: systemParts.join('\n\n') }] }
+  }
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(
+      apiKey,
+    )}`
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const data = (await r.json().catch(() => null)) as {
+      candidates?: Array<{
+        content?: { parts?: Array<{ text?: string }> }
+        finishReason?: string
+      }>
+      error?: { message?: string }
+      promptFeedback?: { blockReason?: string }
+    } | null
+
+    if (!r.ok) {
+      const msg = data?.error?.message || `HTTP ${r.status}`
+      return res
+        .status(200)
+        .json({ ok: false, status: r.status, error: msg.slice(0, 300) })
+    }
+    const text =
+      data?.candidates?.[0]?.content?.parts
+        ?.map((p) => p.text || '')
+        .join('')
+        .trim() || ''
+    if (!text) {
+      const blocked = data?.promptFeedback?.blockReason
+      return res.status(200).json({
+        ok: false,
+        error: blocked ? `התוכן נחסם (${blocked})` : 'תשובת AI ריקה',
+      })
+    }
+    // OpenAI-shaped reply so the desktop client parsing stays the same.
+    return res
+      .status(200)
+      .json({ ok: true, json: { choices: [{ message: { content: text } }] } })
+  } catch (e) {
+    return res
+      .status(200)
+      .json({ ok: false, error: (e as Error)?.message || 'AI error' })
+  }
+}
+
 /* ── Vercel invocation counter (self-metered) — twin of api/paypal.ts.
  *  Every call to this endpoint is one Vercel function invocation. We
  *  count in memory and flush to metrics/vercelUsage only in batches
@@ -6568,6 +6675,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminUsage(req, res)
       case 'client-log-ingest':
         return await handleClientLogIngest(req, res)
+      case 'ai-chat':
+        return await handleAiChat(req, res)
       case 'get-stream-token':
         return await handleGetStreamToken(req, res)
       case 'stream-video':
