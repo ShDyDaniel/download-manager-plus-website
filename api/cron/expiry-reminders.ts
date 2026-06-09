@@ -673,6 +673,27 @@ async function r2Delete(r2: S3Client, key: string): Promise<void> {
   await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }))
 }
 
+/** Best-effort owner alert in Telegram (same channel as the rest of the
+ *  ops alerts). Never throws — a failed alert must not affect the purge. */
+async function sendPurgeTelegramAlert(text: string): Promise<void> {
+  try {
+    const token = process.env.TELEGRAM_ALERT_BOT_TOKEN
+    const chatId = process.env.TELEGRAM_ALERT_CHAT_ID
+    if (!token || !chatId) return
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        disable_web_page_preview: true,
+      }),
+    })
+  } catch {
+    /* ignore */
+  }
+}
+
 // Operators always keep access — mirror the hardcoded admin set used
 // by api/revisions.ts (SERVER_ADMIN_EMAILS) and api/paypal.ts
 // (ADMIN_EMAILS), keyed by email since an admin's user-doc role isn't
@@ -926,6 +947,17 @@ async function runStoragePurgeSweep(
             purgeWarn2SentAt: null,
             filesPurgedAt: new Date(now).toISOString(),
           })
+          // Owner alert — how many rounds + how much was freed.
+          const freedGb = (
+            rounds.reduce((s, r) => s + (r.videoSizeBytes || 0), 0) /
+            1_073_741_824
+          ).toFixed(2)
+          await sendPurgeTelegramAlert(
+            `🗑️ מחיקת קבצים אוטומטית\n` +
+              `משתמש: ${email}\n` +
+              `סיבה: ${purgeKind === 'trial' ? 'ניסיון שהסתיים' : 'מנוי שפג'}\n` +
+              `נמחקו ${rounds.length} סבבים · ${freedGb}GB`,
+          )
           purged++
         } else {
           // Some object didn't delete. Do NOT reset the countdown — that
