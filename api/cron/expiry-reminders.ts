@@ -883,19 +883,42 @@ async function runStoragePurgeSweep(
               if (ownsKey(nd.audioR2Key)) {
                 await r2Delete(r2, nd.audioR2Key)
               }
+              // Delete the note/comment/correction document itself too —
+              // not just its media — so nothing of the round is left.
+              await n.ref.delete()
             }
-            // Only now — every object for this round is gone.
-            await db.collection('revisionProjects').doc(rd.id).update({
-              status: 'archived',
-              r2Purged: true,
-              updatedAt: now,
-            })
+            // Every object + note for this round is gone — now delete the
+            // round document itself (full delete, not just archive).
+            await db.collection('revisionProjects').doc(rd.id).delete()
           } catch (err) {
             allDeleted = false
             console.warn(`[purge] round ${rd.id} for ${uid} failed:`, err)
           }
         }
         if (allDeleted) {
+          // Clean up the user's project containers (revisionGroups). A
+          // group is deleted only if it has NO active rounds left — so a
+          // group that still holds a Drive-backed round (which we never
+          // touch) is preserved, while a group whose rounds were all
+          // purged is removed so no empty project lingers.
+          try {
+            const groupsSnap = await db
+              .collection('revisionGroups')
+              .where('ownerUid', '==', uid)
+              .get()
+            for (const g of groupsSnap.docs) {
+              const remaining = await db
+                .collection('revisionProjects')
+                .where('groupId', '==', g.id)
+                .get()
+              const hasActive = remaining.docs.some(
+                (d) => (d.data() as { status?: string }).status === 'active',
+              )
+              if (!hasActive) await g.ref.delete()
+            }
+          } catch (err) {
+            console.warn(`[purge] group cleanup for ${uid} failed:`, err)
+          }
           await userRef.update({
             storageUsedBytes: 0,
             filesPurgeAt: null,
