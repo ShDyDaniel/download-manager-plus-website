@@ -7868,6 +7868,22 @@ async function handleAdminRunAutoBackup(
       }
     }
 
+    // Telegram alert on a real auto-backup, if the admin enabled it.
+    try {
+      const cfgSnap = await getDb().collection('appConfig').doc('global').get()
+      const notify =
+        (cfgSnap.exists ? cfgSnap.data() : undefined)?.backupNotify === true
+      if (notify) {
+        await sendTelegramAlert(
+          `💾 גיבוי אוטומטי בוצע\n${info.docCount.toLocaleString()} מסמכים · ${(
+            info.sizeBytes / 1024
+          ).toFixed(0)} KB`,
+        )
+      }
+    } catch {
+      /* alert is best-effort; never fail the backup over it */
+    }
+
     return res.status(200).json({
       ok: true,
       created: true,
