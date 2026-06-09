@@ -225,12 +225,20 @@ export default function BackupTab({
     setSettingsSaving(true)
     setSettingsMsg('')
     try {
-      await adminApi('admin-set-app-config', {
+      const r = await adminApi<{
+        backupCron?: { synced: boolean; cron: string; error?: string }
+      }>('admin-set-app-config', {
         backupIntervalMinutes: intervalMinutes,
         backupNotify: notify,
       })
-      setSettingsMsg('נשמר ✓')
-      setTimeout(() => setSettingsMsg(''), 2500)
+      if (r.backupCron?.synced) {
+        setSettingsMsg('נשמר ✓ · לוח הזמנים עודכן')
+      } else if (r.backupCron && !r.backupCron.synced) {
+        setSettingsMsg('נשמר ✓ · עדכון לוח הזמנים בוורקר ידני')
+      } else {
+        setSettingsMsg('נשמר ✓')
+      }
+      setTimeout(() => setSettingsMsg(''), 3500)
     } catch (e) {
       const err = e as Error & { code?: string }
       if (err.code === 'auth') return onAuthExpired()
@@ -489,7 +497,7 @@ export default function BackupTab({
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border bg-background/40 px-3 py-2 text-[11px] text-fg-muted">
           <span className="flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full bg-success" />
-            גיבוי יומי רץ בצד השרת תמיד · {intervalLabel(intervalMinutes)}
+            רץ בצד השרת · {intervalLabel(intervalMinutes)}
           </span>
           {lastAutoCheck > 0 && (
             <span className="text-fg-faint">
@@ -503,10 +511,10 @@ export default function BackupTab({
           )}
         </div>
         <p className="mt-2 text-[10px] leading-relaxed text-fg-faint">
-          גיבוי פעם ביום רץ אוטומטית מהשרת — גם אם אף אחד לא מחובר ושום דף לא
-          פתוח. תדירות מהירה יותר מיום אחד מצריכה מתזמן חיצוני שמפעיל את השרת כל
-          כמה דקות. בנוסף, כל עוד דף הניהול פתוח המערכת מאיצה ובודקת בעצמה כל
-          דקה. בכל מקרה נשמר עותק חדש רק אם עבר הזמן שבחרת, ונשמרים 30 העותקים
+          הגיבוי רץ אוטומטית בצד השרת לפי התדירות שבחרת — גם אם אף אחד לא מחובר
+          ושום דף לא פתוח. בעת שמירה, לוח הזמנים נשלח אוטומטית למתזמן בקלאודפלייר
+          כך שנשלחת בקשה אחת בדיוק בזמנים הנדרשים, בלי בדיקות מיותרות. בנוסף, כל
+          עוד דף הניהול פתוח המערכת בודקת גם בעצמה לתצוגה חיה. נשמרים 30 העותקים
           האחרונים.
         </p>
       </div>

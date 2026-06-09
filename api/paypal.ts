@@ -1336,6 +1336,68 @@ async function createBackup(
   return { key, sizeBytes, docCount: payload.docCount, createdAt: payload.createdAt }
 }
 
+/** Turn a cadence-in-minutes into a cron expression for the Cloudflare
+ *  backup worker, so it fires ONLY at the needed times (one request
+ *  each) instead of knocking every minute. Sub-hour / hour / day cases
+ *  map cleanly; awkward cases (e.g. every 90 min, or multi-day, whose
+ *  day-of-month stepping resets monthly) fall back to a more frequent
+ *  base — the server-side due-check then guarantees a snapshot is only
+ *  actually written when the real interval has elapsed. */
+function minutesToCron(m: number): string {
+  if (!Number.isFinite(m) || m < 1) return '0 3 * * *' // daily 03:00
+  m = Math.round(m)
+  if (m < 60) return `*/${Math.max(1, m)} * * * *`
+  if (m === 60) return '0 * * * *'
+  if (m % 60 === 0) {
+    const h = m / 60
+    if (h < 24 && 24 % h === 0) return `0 */${h} * * *`
+  }
+  if (m % 1440 === 0) {
+    const d = m / 1440
+    if (d === 1) return '0 3 * * *'
+    if (d <= 28) return `0 3 */${d} * *` // approximate; due-check is the guard
+    return '0 3 1 * *' // ~monthly
+  }
+  // Awkward interval → knock hourly; due-check enforces the real cadence.
+  return '0 * * * *'
+}
+
+/** Push the computed schedule to the Cloudflare backup worker via the
+ *  CF API, so the panel is the single source of truth for cadence.
+ *  Optional + best-effort: if the CF env vars aren't set we just skip
+ *  (the worker keeps whatever cron it was deployed with). Requires
+ *  CF_ACCOUNT_ID + CF_API_TOKEN (token scope: "Workers Scripts:Edit");
+ *  worker name defaults to dmplus-backup-cron. */
+async function syncBackupCron(
+  intervalMinutes: number,
+): Promise<{ synced: boolean; cron: string; error?: string }> {
+  const cron = minutesToCron(intervalMinutes)
+  const accountId = process.env.CF_ACCOUNT_ID
+  const token = process.env.CF_API_TOKEN
+  const script = process.env.CF_BACKUP_WORKER_NAME || 'dmplus-backup-cron'
+  if (!accountId || !token) return { synced: false, cron, error: 'cf-not-configured' }
+  try {
+    const r = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${script}/schedules`,
+      {
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify([{ cron }]),
+      },
+    )
+    if (!r.ok) {
+      const t = await r.text().catch(() => '')
+      return { synced: false, cron, error: `cf-${r.status}: ${t.slice(0, 180)}` }
+    }
+    return { synced: true, cron }
+  } catch (e) {
+    return { synced: false, cron, error: (e as Error)?.message || 'cf-failed' }
+  }
+}
+
 /* ── Outgoing-email counter ────────────────────────────────────────
  *  Gmail SMTP caps a free account at ~500 emails/day. We count every
  *  send into metrics/emailSends (UTC hourly buckets) so the dashboard
@@ -7674,7 +7736,15 @@ async function handleAdminSetAppConfig(
         : '✅ מצב תחזוקה (Kill-switch) כובה — השירות חזר לפעול.',
     )
   }
-  return res.status(200).json({ ok: true })
+  // If the backup cadence changed, push the matching schedule to the
+  // Cloudflare backup worker so it fires only when needed (one request
+  // per due time) instead of polling. Best-effort: surfaced to the UI
+  // but never fails the save.
+  let backupCron: { synced: boolean; cron: string; error?: string } | undefined
+  if (patch.backupIntervalMinutes !== undefined) {
+    backupCron = await syncBackupCron(patch.backupIntervalMinutes as number)
+  }
+  return res.status(200).json({ ok: true, ...(backupCron ? { backupCron } : {}) })
 }
 
 /* ── Backup admin actions ─────────────────────────────────────── */
