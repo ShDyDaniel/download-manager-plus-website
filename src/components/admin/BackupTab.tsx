@@ -485,11 +485,11 @@ export default function BackupTab({
             </button>
           </div>
         </div>
-        {/* Live in-panel scheduler status */}
+        {/* Status: server-side daily guarantee + live in-panel accelerator */}
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border bg-background/40 px-3 py-2 text-[11px] text-fg-muted">
           <span className="flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full bg-success" />
-            תזמון פעיל בזמן שהדף פתוח · {intervalLabel(intervalMinutes)}
+            גיבוי יומי רץ בצד השרת תמיד · {intervalLabel(intervalMinutes)}
           </span>
           {lastAutoCheck > 0 && (
             <span className="text-fg-faint">
@@ -498,15 +498,16 @@ export default function BackupTab({
           )}
           {nextDueMs !== null && (
             <span className="text-fg-faint">
-              גיבוי הבא בעוד ~{fmtRel(nextDueMs)}
+              הבא בעוד ~{fmtRel(nextDueMs)}
             </span>
           )}
         </div>
         <p className="mt-2 text-[10px] leading-relaxed text-fg-faint">
-          בזמן שדף הניהול פתוח הגיבוי רץ בדיוק בתדירות שבחרת, כך שאפשר גם כמה
-          פעמים ביום וגם כל כמה דקות לבדיקות. כשהדף סגור, גיבוי רץ אוטומטית פעם
-          ביום מהשרת. בכל מקרה נשמר עותק חדש רק אם עבר הזמן שבחרת מאז הגיבוי
-          האוטומטי האחרון, ונשמרים 30 העותקים האחרונים.
+          גיבוי פעם ביום רץ אוטומטית מהשרת — גם אם אף אחד לא מחובר ושום דף לא
+          פתוח. תדירות מהירה יותר מיום אחד מצריכה מתזמן חיצוני שמפעיל את השרת כל
+          כמה דקות. בנוסף, כל עוד דף הניהול פתוח המערכת מאיצה ובודקת בעצמה כל
+          דקה. בכל מקרה נשמר עותק חדש רק אם עבר הזמן שבחרת, ונשמרים 30 העותקים
+          האחרונים.
         </p>
       </div>
 

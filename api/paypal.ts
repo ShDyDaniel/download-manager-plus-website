@@ -7735,7 +7735,18 @@ async function handleAdminRunAutoBackup(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdmin2FA(req))) {
+  // Two ways in:
+  //   1) An admin in the panel (verifyAdmin2FA) — the in-panel heartbeat.
+  //   2) A server-side scheduler with the shared secret — this is what
+  //      makes sub-daily backups run with NO device open at all (Vercel's
+  //      own cron only fires once a day on the current plan, so an
+  //      external pinger hits this every N minutes with the secret).
+  const cronSecret = process.env.CRON_SECRET || process.env.BACKUP_TRIGGER_SECRET
+  const auth = req.headers['authorization']
+  const bodySecret = (req.body as { secret?: string })?.secret
+  const viaSecret =
+    !!cronSecret && (auth === `Bearer ${cronSecret}` || bodySecret === cronSecret)
+  if (!viaSecret && !(await verifyAdmin2FA(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   try {
