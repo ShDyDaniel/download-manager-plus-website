@@ -7811,11 +7811,19 @@ async function handleAdminRunAutoBackup(
   //      makes sub-daily backups run with NO device open at all (Vercel's
   //      own cron only fires once a day on the current plan, so an
   //      external pinger hits this every N minutes with the secret).
-  const cronSecret = process.env.CRON_SECRET || process.env.BACKUP_TRIGGER_SECRET
   const auth = req.headers['authorization']
   const bodySecret = (req.body as { secret?: string })?.secret
-  const viaSecret =
-    !!cronSecret && (auth === `Bearer ${cronSecret}` || bodySecret === cronSecret)
+  // Accept EITHER configured secret — CRON_SECRET (used by Vercel's own
+  // cron) OR BACKUP_TRIGGER_SECRET (the dedicated backup-worker secret).
+  // A plain `A || B` would only ever check CRON_SECRET when it's set, so
+  // the worker's BACKUP_TRIGGER_SECRET was being ignored → 403.
+  const secrets = [
+    process.env.CRON_SECRET,
+    process.env.BACKUP_TRIGGER_SECRET,
+  ].filter((s): s is string => !!s)
+  const viaSecret = secrets.some(
+    (s) => auth === `Bearer ${s}` || bodySecret === s,
+  )
   if (!viaSecret && !(await verifyAdmin2FA(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
