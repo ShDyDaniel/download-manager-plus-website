@@ -74,13 +74,39 @@ const COLLECTION_LABELS: Record<string, string> = {
   notes: 'הערות',
 }
 
+// Cadence options — value in MINUTES so the schedule can go below a day
+// (multiple-per-day and quick testing), not just whole days.
 const INTERVALS = [
-  { v: 1, label: 'כל יום' },
-  { v: 3, label: 'כל 3 ימים' },
-  { v: 7, label: 'כל שבוע' },
-  { v: 14, label: 'כל שבועיים' },
-  { v: 30, label: 'כל חודש' },
+  { v: 5, label: 'כל 5 דקות · לבדיקה' },
+  { v: 15, label: 'כל 15 דקות' },
+  { v: 30, label: 'כל 30 דקות' },
+  { v: 60, label: 'כל שעה' },
+  { v: 360, label: 'כל 6 שעות' },
+  { v: 720, label: 'כל 12 שעות' },
+  { v: 1440, label: 'כל יום' },
+  { v: 4320, label: 'כל 3 ימים' },
+  { v: 10080, label: 'כל שבוע' },
+  { v: 20160, label: 'כל שבועיים' },
+  { v: 43200, label: 'כל חודש' },
 ]
+
+function intervalLabel(min: number): string {
+  const found = INTERVALS.find((o) => o.v === min)
+  if (found) return found.label.replace(' · לבדיקה', '')
+  if (min < 60) return `כל ${min} דקות`
+  if (min < 1440) return `כל ${Math.round(min / 60)} שעות`
+  return `כל ${Math.round(min / 1440)} ימים`
+}
+
+function fmtRel(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s} שניות`
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m} דקות`
+  const h = Math.round(m / 60)
+  if (h < 24) return `${h} שעות`
+  return `${Math.round(h / 24)} ימים`
+}
 
 export default function BackupTab({
   onAuthExpired,
@@ -102,11 +128,15 @@ export default function BackupTab({
   const [summaries, setSummaries] = useState<Record<string, BackupSummary>>({})
   const [summaryLoading, setSummaryLoading] = useState('')
 
-  // Settings (frequency + telegram notify)
-  const [intervalDays, setIntervalDays] = useState(1)
+  // Settings (frequency in MINUTES + telegram notify)
+  const [intervalMinutes, setIntervalMinutes] = useState(1440)
   const [notify, setNotify] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsMsg, setSettingsMsg] = useState('')
+
+  // In-panel auto-backup scheduler status (see the polling effect below).
+  const [lastAutoCheck, setLastAutoCheck] = useState(0)
+  const [nextDueMs, setNextDueMs] = useState<number | null>(null)
 
   function flash(msg: string) {
     setNotice(msg)
@@ -135,10 +165,14 @@ export default function BackupTab({
   async function loadSettings() {
     try {
       const r = await adminApi<{
+        backupIntervalMinutes?: number
         backupIntervalDays?: number
         backupNotify?: boolean
       }>('admin-get-app-config')
-      setIntervalDays(r.backupIntervalDays || 1)
+      setIntervalMinutes(
+        r.backupIntervalMinutes ||
+          (r.backupIntervalDays ? r.backupIntervalDays * 1440 : 1440),
+      )
       setNotify(r.backupNotify === true)
     } catch (e) {
       handleErr(e)
@@ -151,12 +185,48 @@ export default function BackupTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // In-panel auto-backup scheduler. The Vercel cron only runs once a day,
+  // so sub-daily / minute cadences (and quick testing) are driven from
+  // here: while this tab is open we ask the server every minute whether a
+  // backup is due, and it creates one if so. The due-logic lives entirely
+  // server-side (admin-run-auto-backup) — this is just the heartbeat.
+  useEffect(() => {
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const r = await adminApi<{
+          created?: boolean
+          nextDueInMs?: number
+          backup?: { docCount: number; sizeBytes: number }
+        }>('admin-run-auto-backup')
+        if (cancelled) return
+        setLastAutoCheck(Date.now())
+        if (r.created) {
+          setNextDueMs(null)
+          flash('בוצע גיבוי אוטומטי ✓')
+          void load()
+        } else if (typeof r.nextDueInMs === 'number') {
+          setNextDueMs(r.nextDueInMs)
+        }
+      } catch {
+        /* silent — background heartbeat; visible actions surface errors */
+      }
+    }
+    void tick()
+    const id = setInterval(tick, 60_000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   async function saveSettings() {
     setSettingsSaving(true)
     setSettingsMsg('')
     try {
       await adminApi('admin-set-app-config', {
-        backupIntervalDays: intervalDays,
+        backupIntervalMinutes: intervalMinutes,
         backupNotify: notify,
       })
       setSettingsMsg('נשמר ✓')
@@ -370,10 +440,16 @@ export default function BackupTab({
               כל כמה זמן לגבות אוטומטית
             </label>
             <select
-              value={intervalDays}
-              onChange={(e) => setIntervalDays(Number(e.target.value))}
+              value={intervalMinutes}
+              onChange={(e) => setIntervalMinutes(Number(e.target.value))}
               className="rounded-md border border-border bg-background px-3 py-2 text-sm text-fg outline-none focus:border-primary"
             >
+              {/* If the saved value isn't a preset, show it so it isn't lost. */}
+              {!INTERVALS.some((o) => o.v === intervalMinutes) && (
+                <option value={intervalMinutes}>
+                  {intervalLabel(intervalMinutes)}
+                </option>
+              )}
               {INTERVALS.map((o) => (
                 <option key={o.v} value={o.v}>
                   {o.label}
@@ -409,9 +485,28 @@ export default function BackupTab({
             </button>
           </div>
         </div>
-        <p className="mt-2 text-[10px] text-fg-faint">
-          הגיבוי רץ פעם ביום, אבל שומר עותק חדש רק אם עבר הזמן שבחרת מאז הגיבוי
-          האוטומטי האחרון. נשמרים 30 העותקים האוטומטיים האחרונים.
+        {/* Live in-panel scheduler status */}
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border bg-background/40 px-3 py-2 text-[11px] text-fg-muted">
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-success" />
+            תזמון פעיל בזמן שהדף פתוח · {intervalLabel(intervalMinutes)}
+          </span>
+          {lastAutoCheck > 0 && (
+            <span className="text-fg-faint">
+              נבדק לפני {fmtRel(Date.now() - lastAutoCheck)}
+            </span>
+          )}
+          {nextDueMs !== null && (
+            <span className="text-fg-faint">
+              גיבוי הבא בעוד ~{fmtRel(nextDueMs)}
+            </span>
+          )}
+        </div>
+        <p className="mt-2 text-[10px] leading-relaxed text-fg-faint">
+          בזמן שדף הניהול פתוח הגיבוי רץ בדיוק בתדירות שבחרת, כך שאפשר גם כמה
+          פעמים ביום וגם כל כמה דקות לבדיקות. כשהדף סגור, גיבוי רץ אוטומטית פעם
+          ביום מהשרת. בכל מקרה נשמר עותק חדש רק אם עבר הזמן שבחרת מאז הגיבוי
+          האוטומטי האחרון, ונשמרים 30 העותקים האחרונים.
         </p>
       </div>
 

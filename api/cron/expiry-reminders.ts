@@ -746,22 +746,33 @@ async function runFirestoreBackupSweep(
 }> {
   if (!r2) return { ok: false, error: 'R2 not configured' }
   try {
-    // Read the configured cadence + notify flag.
-    let intervalDays = 1
+    // Read the configured cadence (canonical unit: MINUTES, migrating
+    // older day-only configs) + notify flag.
+    let intervalMinutes = 1440
     let notify = false
     try {
       const cfgSnap = await db.collection('appConfig').doc('global').get()
       const cfg = (cfgSnap.exists ? cfgSnap.data() : {}) as {
+        backupIntervalMinutes?: number
         backupIntervalDays?: number
         backupNotify?: boolean
       }
-      if (typeof cfg.backupIntervalDays === 'number' && cfg.backupIntervalDays >= 1) {
-        intervalDays = Math.round(cfg.backupIntervalDays)
+      if (
+        typeof cfg.backupIntervalMinutes === 'number' &&
+        cfg.backupIntervalMinutes >= 1
+      ) {
+        intervalMinutes = Math.round(cfg.backupIntervalMinutes)
+      } else if (
+        typeof cfg.backupIntervalDays === 'number' &&
+        cfg.backupIntervalDays >= 1
+      ) {
+        intervalMinutes = Math.round(cfg.backupIntervalDays) * 1440
       }
       notify = cfg.backupNotify === true
     } catch {
       /* defaults: daily, no notify */
     }
+    const intervalMs = intervalMinutes * 60 * 1000
 
     // List existing auto snapshots (for the due-check + pruning).
     const listed = await r2.send(
@@ -779,9 +790,14 @@ async function runFirestoreBackupSweep(
 
     // Due-check: skip if the newest auto backup is younger than the
     // configured interval (the cron itself still runs daily on Hobby).
+    // A skew margin makes "due" trigger a hair early so a cron that
+    // fires microseconds before the exact 24h boundary (relative to a
+    // snapshot written seconds after the previous run started) still
+    // counts — without it the daily backup skipped every other day.
     const newest = autos[0]?.LastModified?.getTime() || 0
-    const ageMs = Date.now() - newest
-    if (newest && ageMs < intervalDays * 24 * 60 * 60 * 1000) {
+    const ageMs = newest ? Date.now() - newest : Infinity
+    const skew = Math.max(5_000, Math.min(intervalMs * 0.1, 6 * 60 * 60 * 1000))
+    if (newest && ageMs < intervalMs - skew) {
       return { ok: true, skipped: true, reason: 'not due yet' }
     }
 

@@ -1681,6 +1681,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSetAppConfig(req, res)
       case 'admin-create-backup':
         return await handleAdminCreateBackup(req, res)
+      case 'admin-run-auto-backup':
+        return await handleAdminRunAutoBackup(req, res)
       case 'admin-list-backups':
         return await handleAdminListBackups(req, res)
       case 'admin-delete-backup':
@@ -7506,8 +7508,18 @@ async function handleAdminGetAppConfig(
     dailyReadCeiling?: number
     dailyWriteCeiling?: number
     backupIntervalDays?: number
+    backupIntervalMinutes?: number
     backupNotify?: boolean
   }
+  // Canonical backup cadence is now in MINUTES (lets the schedule go
+  // below a day for testing / multiple-per-day). Older configs only
+  // stored days — migrate on read so nothing breaks.
+  const backupIntervalMinutes =
+    typeof d.backupIntervalMinutes === 'number' && d.backupIntervalMinutes >= 1
+      ? Math.round(d.backupIntervalMinutes)
+      : typeof d.backupIntervalDays === 'number' && d.backupIntervalDays >= 1
+        ? Math.round(d.backupIntervalDays) * 1440
+        : 1440
   return res.status(200).json({
     ok: true,
     betaMode: d.betaMode === true,
@@ -7540,6 +7552,7 @@ async function handleAdminGetAppConfig(
       typeof d.backupIntervalDays === 'number' && d.backupIntervalDays >= 1
         ? d.backupIntervalDays
         : 1,
+    backupIntervalMinutes,
     backupNotify: d.backupNotify === true,
   })
 }
@@ -7562,6 +7575,7 @@ async function handleAdminSetAppConfig(
     dailyReadCeiling?: number
     dailyWriteCeiling?: number
     backupIntervalDays?: number
+    backupIntervalMinutes?: number
     backupNotify?: boolean
   }
   const patch: Record<string, unknown> = {}
@@ -7617,7 +7631,19 @@ async function handleAdminSetAppConfig(
     patch.dailyWriteCeiling = Math.round(body.dailyWriteCeiling)
   }
   // ── Backups ────────────────────────────────────────────────────
-  if (body.backupIntervalDays !== undefined) {
+  // Canonical unit is MINUTES (1 minute … 365 days). We keep
+  // backupIntervalDays in sync for any legacy reader, but the cron +
+  // the in-panel scheduler both read minutes.
+  if (body.backupIntervalMinutes !== undefined) {
+    const m = Number(body.backupIntervalMinutes)
+    if (!Number.isFinite(m) || m < 1 || m > 365 * 1440) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'תדירות גיבוי לא תקינה' })
+    }
+    patch.backupIntervalMinutes = Math.round(m)
+    patch.backupIntervalDays = Math.max(1, Math.round(m / 1440))
+  } else if (body.backupIntervalDays !== undefined) {
     const n = Number(body.backupIntervalDays)
     if (!Number.isFinite(n) || n < 1 || n > 365) {
       return res
@@ -7625,6 +7651,7 @@ async function handleAdminSetAppConfig(
         .json({ ok: false, error: 'תדירות גיבוי לא תקינה (1–365 ימים)' })
     }
     patch.backupIntervalDays = Math.round(n)
+    patch.backupIntervalMinutes = Math.round(n) * 1440
   }
   if (typeof body.backupNotify === 'boolean') {
     patch.backupNotify = body.backupNotify
@@ -7664,6 +7691,113 @@ async function handleAdminCreateBackup(req: VercelRequest, res: VercelResponse) 
     return res
       .status(500)
       .json({ ok: false, error: (e as Error)?.message || 'גיבוי נכשל' })
+  }
+}
+
+const BACKUP_KEEP_AUTO = 30
+
+/** Read the configured backup cadence in MINUTES (migrating older
+ *  day-only configs). Defaults to a day. */
+async function readBackupIntervalMinutes(): Promise<number> {
+  try {
+    const snap = await getDb().collection('appConfig').doc('global').get()
+    const d = (snap.exists ? snap.data() : {}) as {
+      backupIntervalMinutes?: number
+      backupIntervalDays?: number
+    }
+    if (typeof d.backupIntervalMinutes === 'number' && d.backupIntervalMinutes >= 1) {
+      return Math.round(d.backupIntervalMinutes)
+    }
+    if (typeof d.backupIntervalDays === 'number' && d.backupIntervalDays >= 1) {
+      return Math.round(d.backupIntervalDays) * 1440
+    }
+  } catch {
+    /* fall through to default */
+  }
+  return 1440
+}
+
+/**
+ *  Run ONE auto-backup tick: if enough time has passed since the last
+ *  auto snapshot, create a new one and prune to BACKUP_KEEP_AUTO. This
+ *  is the single source of truth for "is a backup due", called both by
+ *  the in-panel scheduler (every minute, while the admin is logged in
+ *  — enables sub-daily / minute cadences and quick testing) and as a
+ *  twin of the daily Vercel cron (which covers when nobody's looking).
+ *
+ *  Due-check uses a skew margin so a tick that fires a hair BEFORE the
+ *  exact interval boundary still counts as due — that off-by-seconds gap
+ *  (snapshot is written seconds after the tick starts; the next tick can
+ *  fire microseconds early) is exactly what made the daily cron skip
+ *  every other day and look "stuck after the first backup".
+ */
+async function handleAdminRunAutoBackup(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  try {
+    const intervalMinutes = await readBackupIntervalMinutes()
+    const intervalMs = intervalMinutes * 60_000
+    const r2 = getBackupR2()
+    const listed = await r2.send(
+      new ListObjectsV2Command({
+        Bucket: BACKUP_BUCKET,
+        Prefix: `${BACKUP_PREFIX}auto-`,
+      }),
+    )
+    const autos = (listed.Contents || [])
+      .filter((o) => o.Key)
+      .sort(
+        (a, b) =>
+          (b.LastModified?.getTime() || 0) - (a.LastModified?.getTime() || 0),
+      )
+    const newest = autos[0]?.LastModified?.getTime() || 0
+    const ageMs = newest ? Date.now() - newest : Infinity
+    // Tolerate clock/scheduler jitter: due slightly before the exact mark.
+    const skew = Math.max(5_000, Math.min(intervalMs * 0.1, 6 * 60 * 60 * 1000))
+
+    if (newest && ageMs < intervalMs - skew) {
+      return res.status(200).json({
+        ok: true,
+        created: false,
+        skipped: true,
+        intervalMinutes,
+        lastAutoAt: new Date(newest).toISOString(),
+        nextDueInMs: Math.max(0, intervalMs - ageMs),
+      })
+    }
+
+    const info = await createBackup('auto')
+
+    // Prune: keep the newest BACKUP_KEEP_AUTO (we just added one, so
+    // delete everything in the OLD list beyond KEEP-1).
+    let pruned = 0
+    for (const o of autos.slice(BACKUP_KEEP_AUTO - 1)) {
+      if (!o.Key) continue
+      try {
+        await r2.send(
+          new DeleteObjectCommand({ Bucket: BACKUP_BUCKET, Key: o.Key }),
+        )
+        pruned += 1
+      } catch {
+        /* best effort */
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      created: true,
+      intervalMinutes,
+      pruned,
+      backup: info,
+    })
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ ok: false, error: (e as Error)?.message || 'גיבוי אוטומטי נכשל' })
   }
 }
 
