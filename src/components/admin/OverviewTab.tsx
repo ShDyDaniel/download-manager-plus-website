@@ -17,8 +17,6 @@ interface OverviewStats {
   trialsActive: number | null
   trialsExpired: number | null
   newThisWeek: number | null
-  trialApprox?: boolean
-  trialIndexUrl?: string
 }
 
 /** "נתונים כלליים" — the cheap admin landing tab. Reads ONLY aggregate
@@ -113,7 +111,6 @@ export default function OverviewTab({
               icon={<Clock className="h-5 w-5" />}
               label="בניסיון פעיל"
               value={fmt(data.trialsActive)}
-              note={data.trialApprox ? 'מוערך' : undefined}
             />
             <StatCard
               icon={<TimerOff className="h-5 w-5" />}
@@ -126,21 +123,6 @@ export default function OverviewTab({
               value={fmt(data.newThisWeek)}
             />
           </div>
-
-          {data.trialIndexUrl && (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2 text-xs text-fg-muted">
-              ספירת "בניסיון פעיל" מוצגת כהערכה. ליצירת ספירה מדויקת, צרו פעם
-              אחת אינדקס ב-Firestore:{' '}
-              <a
-                href={data.trialIndexUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary underline"
-              >
-                יצירת אינדקס
-              </a>
-            </div>
-          )}
 
           <p className="text-[11px] text-fg-faint">
             המספרים מחושבים בספירה מצרפית — מספר קריאות זעום, ללא טעינת

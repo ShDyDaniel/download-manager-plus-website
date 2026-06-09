@@ -6566,11 +6566,11 @@ async function handleAdminOverviewStats(
   if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
   const db = getDb()
   const users = db.collection('users')
-  const nowIso = new Date().toISOString()
-  const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  const now = Date.now()
+  const weekAgoIso = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString()
 
-  // Helper: run a count() aggregation; null on any failure so one bad
-  // metric never blanks the whole tab.
+  // Cheap count() aggregation — no document scan, no fields pulled.
+  // null on any failure so one bad metric never blanks the whole tab.
   const cnt = async (q: FirebaseFirestore.Query): Promise<number | null> => {
     try {
       const s = await q.count().get()
@@ -6580,39 +6580,86 @@ async function handleAdminOverviewStats(
     }
   }
 
-  const [usersTotal, proUsers, trialsApprovedTotal, newThisWeek] =
-    await Promise.all([
-      cnt(users),
-      cnt(users.where('subscription', '==', 'pro')),
-      cnt(users.where('trialStatus', '==', 'approved')),
-      cnt(users.where('createdAt', '>=', weekAgoIso)),
-    ])
+  // Does a redeemed product key currently grant Pro? Mirrors the
+  // client isKeyActive logic exactly: perpetual (no expiresAt) →
+  // active; future expiry → active; past expiry → active only inside
+  // the 24h grace while the subscription is still 'active'.
+  const keyGrantsPro = (k: {
+    redeemedBy?: string | null
+    expiresAt?: string | null
+    subscriptionStatus?: string | null
+  }): boolean => {
+    if (!k.redeemedBy) return false
+    if (!k.expiresAt) return true
+    const ms = Date.parse(k.expiresAt)
+    if (!Number.isFinite(ms)) return true
+    if (ms > now) return true
+    if (k.subscriptionStatus === 'active') return now - ms <= 24 * 60 * 60 * 1000
+    return false
+  }
 
-  // Active trials = approved AND not yet expired. The two-field query
-  // needs a composite index; if it's missing we fall back to a single-
-  // field approximation (future expiry) so a number always shows, and
-  // surface the index-creation link so it can be made exact in one click.
-  let trialsActive: number | null = null
-  let trialsExpired: number | null = null
-  let trialApprox = false
-  let trialIndexUrl: string | undefined
+  // ── Pro entitlement ──────────────────────────────────────────
+  // Pro lives in productKeys (one tiny doc per key — far smaller than
+  // the users collection, and we pull only the 3 fields we need via
+  // select), PLUS the rare admin-set users.subscription === 'pro'. We
+  // collect the owning uids into a Set so nobody is counted twice.
+  const proUids = new Set<string>()
   try {
-    const s = await users
-      .where('trialStatus', '==', 'approved')
-      .where('trialExpiresAt', '>', nowIso)
-      .count()
+    const keysSnap = await db
+      .collection('productKeys')
+      .select('redeemedBy', 'expiresAt', 'subscriptionStatus')
       .get()
-    trialsActive = s.data().count
-    if (trialsApprovedTotal != null) {
-      trialsExpired = Math.max(0, trialsApprovedTotal - trialsActive)
+    for (const d of keysSnap.docs) {
+      const k = d.data() as {
+        redeemedBy?: string | null
+        expiresAt?: string | null
+        subscriptionStatus?: string | null
+      }
+      if (keyGrantsPro(k) && k.redeemedBy) proUids.add(k.redeemedBy)
     }
   } catch (e) {
-    const msg = String((e as Error)?.message || '')
-    const m = msg.match(/https?:\/\/[^\s)]+/)
-    if (m) trialIndexUrl = m[0]
-    trialsActive = await cnt(users.where('trialExpiresAt', '>', nowIso))
-    trialApprox = true
+    console.warn('[overview] productKeys read failed:', e)
   }
+  try {
+    const proFlag = await users.where('subscription', '==', 'pro').select().get()
+    for (const d of proFlag.docs) proUids.add(d.id)
+  } catch (e) {
+    console.warn('[overview] subscription==pro read failed:', e)
+  }
+  const proUsers = proUids.size
+
+  // ── Trials ───────────────────────────────────────────────────
+  // Read ONLY the approved-trial docs (a small set), single-field
+  // filter so NO composite index is needed, pulling only the expiry
+  // field. A user who later converted to Pro keeps trialStatus
+  // 'approved', so we exclude any uid already in proUids — that person
+  // is a Pro subscriber now, not a trialist.
+  let trialsActive: number | null = null
+  let trialsExpired: number | null = null
+  try {
+    const tSnap = await users
+      .where('trialStatus', '==', 'approved')
+      .select('trialExpiresAt')
+      .get()
+    let active = 0
+    let expired = 0
+    for (const d of tSnap.docs) {
+      if (proUids.has(d.id)) continue // converted to Pro — not a trial
+      const exp = (d.data() as { trialExpiresAt?: string }).trialExpiresAt
+      const ms = exp ? Date.parse(exp) : NaN
+      if (Number.isFinite(ms) && ms > now) active++
+      else expired++
+    }
+    trialsActive = active
+    trialsExpired = expired
+  } catch (e) {
+    console.warn('[overview] trials read failed:', e)
+  }
+
+  const [usersTotal, newThisWeek] = await Promise.all([
+    cnt(users),
+    cnt(users.where('createdAt', '>=', weekAgoIso)),
+  ])
 
   return res.status(200).json({
     ok: true,
@@ -6621,8 +6668,6 @@ async function handleAdminOverviewStats(
     trialsActive,
     trialsExpired,
     newThisWeek,
-    trialApprox,
-    ...(trialIndexUrl ? { trialIndexUrl } : {}),
   })
 }
 
