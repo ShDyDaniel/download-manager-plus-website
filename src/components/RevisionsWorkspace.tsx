@@ -173,6 +173,30 @@ async function uploadRoundVideo(
       'ייבוא מ-Drive זמין רק במצב Google Drive — העלו קובץ מהמחשב',
     )
   }
+  // Pre-flight quota check BEFORE any bytes leave the browser, so a
+  // too-big file is rejected up front instead of "starting" then
+  // failing. Best-effort: if we can't read the quota we fall through and
+  // let the server's r2-upload-init gate decide.
+  try {
+    const st = await fetchStorageState()
+    if (st && typeof st.limitBytes === 'number') {
+      const free = Math.max(0, st.limitBytes - st.usedBytes)
+      if (source.file.size > free) {
+        const GB = 1024 * 1024 * 1024
+        throw new Error(
+          `אין מספיק מקום אחסון. הקובץ שוקל ${(source.file.size / GB).toFixed(
+            2,
+          )}GB, ובשימוש כבר ${(st.usedBytes / GB).toFixed(2)}GB מתוך ${(
+            st.limitBytes / GB
+          ).toFixed(2)}GB. מחקו סבבים ישנים ונסו שוב.`,
+        )
+      }
+    }
+  } catch (e) {
+    // A real quota rejection (our Error above) must propagate; only a
+    // failure to FETCH the quota should be swallowed.
+    if (e instanceof Error && e.message.includes('אין מספיק מקום')) throw e
+  }
   const up = await uploadFileToR2(source.file, {
     signal,
     onProgress: (f) =>
