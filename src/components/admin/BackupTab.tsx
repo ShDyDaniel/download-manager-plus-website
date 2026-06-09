@@ -128,8 +128,17 @@ export default function BackupTab({
   const [summaries, setSummaries] = useState<Record<string, BackupSummary>>({})
   const [summaryLoading, setSummaryLoading] = useState('')
 
-  // Settings (frequency in MINUTES + telegram notify)
-  const [intervalMinutes, setIntervalMinutes] = useState(1440)
+  // Settings — cadence as a free amount + unit (e.g. "every 7 minutes",
+  // "every 2 hours", "every 3 days"). Stored canonically in minutes.
+  const [amountStr, setAmountStr] = useState('1')
+  const [unit, setUnit] = useState<'minutes' | 'hours' | 'days'>('days')
+  const UNIT_MIN = { minutes: 1, hours: 60, days: 1440 } as const
+  const amountNum = Number(amountStr)
+  const validAmount = Number.isFinite(amountNum) && amountNum >= 1
+  const intervalMinutes = Math.max(
+    1,
+    Math.round((validAmount ? amountNum : 1) * UNIT_MIN[unit]),
+  )
   const [notify, setNotify] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsMsg, setSettingsMsg] = useState('')
@@ -169,10 +178,20 @@ export default function BackupTab({
         backupIntervalDays?: number
         backupNotify?: boolean
       }>('admin-get-app-config')
-      setIntervalMinutes(
+      const total =
         r.backupIntervalMinutes ||
-          (r.backupIntervalDays ? r.backupIntervalDays * 1440 : 1440),
-      )
+        (r.backupIntervalDays ? r.backupIntervalDays * 1440 : 1440)
+      // Show it in the largest clean unit.
+      if (total % 1440 === 0) {
+        setUnit('days')
+        setAmountStr(String(total / 1440))
+      } else if (total % 60 === 0) {
+        setUnit('hours')
+        setAmountStr(String(total / 60))
+      } else {
+        setUnit('minutes')
+        setAmountStr(String(total))
+      }
       setNotify(r.backupNotify === true)
     } catch (e) {
       handleErr(e)
@@ -222,6 +241,10 @@ export default function BackupTab({
   }, [])
 
   async function saveSettings() {
+    if (!validAmount) {
+      setSettingsMsg('יש להזין מספר תקין')
+      return
+    }
     setSettingsSaving(true)
     setSettingsMsg('')
     try {
@@ -447,23 +470,28 @@ export default function BackupTab({
             <label className="mb-1 block text-[11px] text-fg-muted">
               כל כמה זמן לגבות אוטומטית
             </label>
-            <select
-              value={intervalMinutes}
-              onChange={(e) => setIntervalMinutes(Number(e.target.value))}
-              className="rounded-md border border-border bg-background px-3 py-2 text-sm text-fg outline-none focus:border-primary"
-            >
-              {/* If the saved value isn't a preset, show it so it isn't lost. */}
-              {!INTERVALS.some((o) => o.v === intervalMinutes) && (
-                <option value={intervalMinutes}>
-                  {intervalLabel(intervalMinutes)}
-                </option>
-              )}
-              {INTERVALS.map((o) => (
-                <option key={o.v} value={o.v}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-fg-muted">כל</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={amountStr}
+                onChange={(e) => setAmountStr(e.target.value)}
+                className="w-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-fg outline-none focus:border-primary"
+              />
+              <select
+                value={unit}
+                onChange={(e) =>
+                  setUnit(e.target.value as 'minutes' | 'hours' | 'days')
+                }
+                className="rounded-md border border-border bg-background px-3 py-2 text-sm text-fg outline-none focus:border-primary"
+              >
+                <option value="minutes">דקות</option>
+                <option value="hours">שעות</option>
+                <option value="days">ימים</option>
+              </select>
+            </div>
           </div>
           <label className="flex cursor-pointer items-center gap-2 pb-2 text-sm text-fg">
             <input

@@ -2,12 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getFirestore, FieldValue } from 'firebase-admin/firestore'
-import {
-  S3Client,
-  DeleteObjectCommand,
-  PutObjectCommand,
-  ListObjectsV2Command,
-} from '@aws-sdk/client-s3'
+import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import nodemailer from 'nodemailer'
 
 /* ── Outgoing-email counter (twin of api/paypal.ts) ─────────────────
@@ -449,10 +444,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // grace window. Runs in this same daily cron (Hobby = 1 cron).
     const purgeResults = await runStoragePurgeSweep(db)
 
-    // ─── Daily Firestore backup → R2 ──────────────────────────
-    // Free safety net: one full logical snapshot per day, kept for 30
-    // days. Manageable from the admin "גיבוי" tab.
-    const backupResults = await runFirestoreBackupSweep(db, getR2OrNull())
+    // NOTE: Firestore backups used to run here too. They've moved
+    // entirely to the dedicated Cloudflare backup worker
+    // (dmplus-backup-cron → admin-run-auto-backup), so the two systems
+    // stay separate and never double-run. Don't re-add a backup sweep
+    // to this cron.
 
     return res.status(200).json({
       ok: true,
@@ -463,7 +459,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       results,
       annual: annualResults,
       purge: purgeResults,
-      backup: backupResults,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
@@ -676,174 +671,6 @@ function getR2OrNull(): S3Client | null {
 async function r2Delete(r2: S3Client, key: string): Promise<void> {
   if (!key) return
   await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }))
-}
-
-/* ── Daily Firestore backup → R2 ───────────────────────────────────
- *  Twin of api/paypal.ts createBackup('auto'). KEEP BACKUP_COLLECTIONS
- *  + serializeForBackup in sync with paypal.ts. Writes one JSON
- *  snapshot per day under backups/auto-*.json and prunes to the most
- *  recent BACKUP_KEEP_AUTO. Skips silently if R2 isn't configured. */
-const BACKUP_PREFIX = 'backups/'
-const BACKUP_KEEP_AUTO = 30
-const BACKUP_COLLECTIONS = [
-  'productKeys',
-  'users',
-  'appConfig',
-  'referralPartners',
-  'receipts',
-  'trialFingerprints',
-  'usageStats',
-  'feedback',
-  'integrations',
-  'pendingSubscriptions',
-  'adminCredentials',
-  'adminSecurity',
-  'revisionProjects',
-  'revisionGroups',
-  'notes',
-]
-function serializeForBackup(v: unknown): unknown {
-  if (v === null || typeof v !== 'object') return v
-  const t = v as { toDate?: () => Date; seconds?: number }
-  if (typeof t.toDate === 'function' && typeof t.seconds === 'number') {
-    return { __t: 'ts', v: t.toDate().toISOString() }
-  }
-  if (Array.isArray(v)) return v.map(serializeForBackup)
-  const out: Record<string, unknown> = {}
-  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-    out[k] = serializeForBackup(val)
-  }
-  return out
-}
-
-/** Best-effort Telegram alert (twin of api/paypal.ts). */
-async function backupTelegramAlert(text: string): Promise<void> {
-  try {
-    const token = process.env.TELEGRAM_ALERT_BOT_TOKEN
-    const chatId = process.env.TELEGRAM_ALERT_CHAT_ID
-    if (!token || !chatId) return
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
-    })
-  } catch {
-    /* ignore */
-  }
-}
-
-async function runFirestoreBackupSweep(
-  db: FirebaseFirestore.Firestore,
-  r2: S3Client | null,
-): Promise<{
-  ok: boolean
-  skipped?: boolean
-  reason?: string
-  key?: string
-  docCount?: number
-  pruned?: number
-  error?: string
-}> {
-  if (!r2) return { ok: false, error: 'R2 not configured' }
-  try {
-    // Read the configured cadence (canonical unit: MINUTES, migrating
-    // older day-only configs) + notify flag.
-    let intervalMinutes = 1440
-    let notify = false
-    try {
-      const cfgSnap = await db.collection('appConfig').doc('global').get()
-      const cfg = (cfgSnap.exists ? cfgSnap.data() : {}) as {
-        backupIntervalMinutes?: number
-        backupIntervalDays?: number
-        backupNotify?: boolean
-      }
-      if (
-        typeof cfg.backupIntervalMinutes === 'number' &&
-        cfg.backupIntervalMinutes >= 1
-      ) {
-        intervalMinutes = Math.round(cfg.backupIntervalMinutes)
-      } else if (
-        typeof cfg.backupIntervalDays === 'number' &&
-        cfg.backupIntervalDays >= 1
-      ) {
-        intervalMinutes = Math.round(cfg.backupIntervalDays) * 1440
-      }
-      notify = cfg.backupNotify === true
-    } catch {
-      /* defaults: daily, no notify */
-    }
-    const intervalMs = intervalMinutes * 60 * 1000
-
-    // List existing auto snapshots (for the due-check + pruning).
-    const listed = await r2.send(
-      new ListObjectsV2Command({
-        Bucket: R2_BUCKET,
-        Prefix: `${BACKUP_PREFIX}auto-`,
-      }),
-    )
-    const autos = (listed.Contents || [])
-      .filter((o) => o.Key)
-      .sort(
-        (a, b) =>
-          (b.LastModified?.getTime() || 0) - (a.LastModified?.getTime() || 0),
-      )
-
-    // Due-check: skip if the newest auto backup is younger than the
-    // configured interval (the cron itself still runs daily on Hobby).
-    // A skew margin makes "due" trigger a hair early so a cron that
-    // fires microseconds before the exact 24h boundary (relative to a
-    // snapshot written seconds after the previous run started) still
-    // counts — without it the daily backup skipped every other day.
-    const newest = autos[0]?.LastModified?.getTime() || 0
-    const ageMs = newest ? Date.now() - newest : Infinity
-    const skew = Math.max(5_000, Math.min(intervalMs * 0.1, 6 * 60 * 60 * 1000))
-    if (newest && ageMs < intervalMs - skew) {
-      return { ok: true, skipped: true, reason: 'not due yet' }
-    }
-
-    const docs: Array<{ path: string; data: unknown }> = []
-    for (const name of BACKUP_COLLECTIONS) {
-      const snap = await db.collectionGroup(name).get()
-      for (const d of snap.docs) {
-        docs.push({ path: d.ref.path, data: serializeForBackup(d.data()) })
-      }
-    }
-    const createdAt = new Date().toISOString()
-    const body = JSON.stringify({
-      version: 1,
-      createdAt,
-      type: 'auto',
-      collections: BACKUP_COLLECTIONS,
-      docCount: docs.length,
-      docs,
-    })
-    const sizeBytes = Buffer.byteLength(body, 'utf8')
-    const key = `${BACKUP_PREFIX}auto-${createdAt.replace(/[:.]/g, '-')}.json`
-    await r2.send(
-      new PutObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: key,
-        Body: body,
-        ContentType: 'application/json',
-      }),
-    )
-    // Prune old auto snapshots (keep the most recent N). Manual + pre-
-    // restore + uploaded backups use other prefixes and are left alone.
-    let pruned = 0
-    for (const o of autos.slice(BACKUP_KEEP_AUTO - 1)) {
-      // -1 because we just added one above (not in `autos` yet).
-      await r2Delete(r2, o.Key as string)
-      pruned += 1
-    }
-    if (notify) {
-      await backupTelegramAlert(
-        `💾 גיבוי אוטומטי בוצע\n${docs.length} מסמכים · ${(sizeBytes / 1024).toFixed(0)} KB`,
-      )
-    }
-    return { ok: true, key, docCount: docs.length, pruned }
-  } catch (e) {
-    return { ok: false, error: (e as Error)?.message || 'backup failed' }
-  }
 }
 
 // Operators always keep access — mirror the hardcoded admin set used
