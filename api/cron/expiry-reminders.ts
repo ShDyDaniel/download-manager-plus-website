@@ -842,8 +842,30 @@ async function runStoragePurgeSweep(
 
       if (now >= purgeAt) {
         // Grace elapsed → delete every R2 video + its note media.
+        //
+        // SAFETY INVARIANT: only ever delete objects whose key sits under
+        // THIS user's own `${uid}/` prefix. Every real key is
+        // `${uid}/videos/…` or `${uid}/notes/…`, so this passes all
+        // legit files and makes it impossible for a corrupted pointer to
+        // ever touch another customer's file.
+        //
+        // ROBUSTNESS: a round is archived only after ALL of its objects
+        // are confirmed deleted, so a transient failure leaves it active
+        // to be retried; and we clear the 14-day countdown only on a
+        // fully-clean purge — a failure therefore never grants a fresh
+        // 14 days nor silently leaves a file behind.
+        const ownsKey = (key: unknown): key is string =>
+          typeof key === 'string' && key.startsWith(`${uid}/`)
+        let allDeleted = true
         for (const rd of rounds) {
           try {
+            if (!ownsKey(rd.r2Key)) {
+              console.warn(
+                `[purge] r2Key "${rd.r2Key}" is not under ${uid}/ — refusing to delete`,
+              )
+              allDeleted = false
+              continue
+            }
             await r2Delete(r2, rd.r2Key)
             const notesSnap = await db
               .collection('revisionProjects')
@@ -855,30 +877,41 @@ async function runStoragePurgeSweep(
                 screenshotR2Key?: string
                 audioR2Key?: string
               }
-              if (nd.screenshotR2Key) {
-                await r2Delete(r2, nd.screenshotR2Key).catch(() => undefined)
+              if (ownsKey(nd.screenshotR2Key)) {
+                await r2Delete(r2, nd.screenshotR2Key)
               }
-              if (nd.audioR2Key) {
-                await r2Delete(r2, nd.audioR2Key).catch(() => undefined)
+              if (ownsKey(nd.audioR2Key)) {
+                await r2Delete(r2, nd.audioR2Key)
               }
             }
+            // Only now — every object for this round is gone.
             await db.collection('revisionProjects').doc(rd.id).update({
               status: 'archived',
               r2Purged: true,
               updatedAt: now,
             })
           } catch (err) {
+            allDeleted = false
             console.warn(`[purge] round ${rd.id} for ${uid} failed:`, err)
           }
         }
-        await userRef.update({
-          storageUsedBytes: 0,
-          filesPurgeAt: null,
-          purgeWarn1SentAt: null,
-          purgeWarn2SentAt: null,
-          filesPurgedAt: new Date(now).toISOString(),
-        })
-        purged++
+        if (allDeleted) {
+          await userRef.update({
+            storageUsedBytes: 0,
+            filesPurgeAt: null,
+            purgeWarn1SentAt: null,
+            purgeWarn2SentAt: null,
+            filesPurgedAt: new Date(now).toISOString(),
+          })
+          purged++
+        } else {
+          // Some object didn't delete. Do NOT reset the countdown — that
+          // would restart the 14-day grace. Leaving filesPurgeAt in the
+          // past makes the next daily run retry the remaining rounds
+          // straight away (re-deleting an already-gone object is a
+          // harmless no-op), so nothing that should be deleted lingers.
+          skipped++
+        }
         continue
       }
 
