@@ -23,6 +23,10 @@ const API = '/api/revisions'
 // enough requests for multi-GB videos, small enough for smooth
 // progress + cheap retries on flaky lines.
 const PART_SIZE = 16 * 1024 * 1024
+// Per-part retry ceiling. A single transient network reset
+// (ERR_CONNECTION_RESET) on one part must NOT fail the whole upload —
+// we re-mint a fresh URL and re-PUT the slice with backoff.
+const MAX_PART_ATTEMPTS = 5
 
 export interface R2UploadResult {
   key: string
@@ -98,6 +102,52 @@ function putPart(
   })
 }
 
+/** True for the error putPart throws when the user cancels — never retry it. */
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.message === 'ההעלאה בוטלה'
+}
+
+/**
+ * Upload ONE part, with retries. Previously a single part PUT failure
+ * (e.g. a transient `ERR_CONNECTION_RESET` on a flaky line) rejected the
+ * whole upload — exactly the "שגיאת רשת בזמן ההעלאה" failure users hit on
+ * large videos. Now each part gets up to MAX_PART_ATTEMPTS tries with
+ * exponential backoff, and we re-mint a FRESH presigned URL every attempt
+ * (a reset can consume the old one, and re-signing also avoids presign
+ * expiry on long multi-GB uploads). A user cancel is never retried.
+ */
+async function uploadPartWithRetry(
+  key: string,
+  uploadId: string,
+  partNumber: number,
+  blob: Blob,
+  signal: AbortSignal | undefined,
+  onLoaded: (loaded: number) => void,
+): Promise<string> {
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= MAX_PART_ATTEMPTS; attempt++) {
+    if (signal?.aborted) throw new Error('ההעלאה בוטלה')
+    try {
+      const { url } = await postAction<{ url: string }>(
+        'r2-upload-part-url',
+        { key, uploadId, partNumber },
+        signal,
+      )
+      return await putPart(url, blob, signal, onLoaded)
+    } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
+      lastErr = err
+      if (attempt === MAX_PART_ATTEMPTS) break
+      // 0.5s, 1s, 2s, 4s.
+      const delayMs = 500 * 2 ** (attempt - 1)
+      await new Promise((r) => setTimeout(r, delayMs))
+    }
+  }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error('חלק נכשל בהעלאה אחרי כמה נסיונות')
+}
+
 export async function uploadFileToR2(
   file: File,
   opts: R2UploadOptions,
@@ -126,17 +176,18 @@ export async function uploadFileToR2(
       const end = Math.min(file.size, start + PART_SIZE)
       const blob = file.slice(start, end)
 
-      const { url } = await postAction<{ url: string }>(
-        'r2-upload-part-url',
-        { key, uploadId, partNumber },
+      const etag = await uploadPartWithRetry(
+        key,
+        uploadId,
+        partNumber,
+        blob,
         signal,
+        (loaded) => {
+          if (onProgress && file.size > 0) {
+            onProgress(Math.min(1, (uploadedBase + loaded) / file.size))
+          }
+        },
       )
-
-      const etag = await putPart(url, blob, signal, (loaded) => {
-        if (onProgress && file.size > 0) {
-          onProgress(Math.min(1, (uploadedBase + loaded) / file.size))
-        }
-      })
       uploadedBase += blob.size
       parts.push({ partNumber, etag })
       if (onProgress && file.size > 0) {
