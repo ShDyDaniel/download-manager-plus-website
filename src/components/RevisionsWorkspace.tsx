@@ -814,6 +814,7 @@ function ConnectedWorkspace({
           <EditGroupModal
             key="edit"
             group={editingGroup}
+            backend={backend}
             onClose={() => setEditingGroup(null)}
             onSaved={() => {
               setEditingGroup(null)
@@ -1730,12 +1731,14 @@ function NewProjectModal({
           value={allowDownload}
           onChange={setAllowDownload}
         />
-        <ToggleRow
-          label="לאפשר פתיחה ב-Drive"
-          description="מוסיף קישור לפתיחת הסרטון ב-Google Drive"
-          value={openInDrive}
-          onChange={setOpenInDrive}
-        />
+        {backend === 'drive' && (
+          <ToggleRow
+            label="לאפשר פתיחה ב-Drive"
+            description="מוסיף קישור לפתיחת הסרטון ב-Google Drive"
+            value={openInDrive}
+            onChange={setOpenInDrive}
+          />
+        )}
         {(progress || (busy && source.kind === 'link')) && (
           <UploadProgressBar
             progress={progress ?? { bytesUploaded: 0, totalBytes: 0, fraction: 0 }}
@@ -2152,10 +2155,12 @@ function ConfirmDisconnectDriveModal({
 
 function EditGroupModal({
   group,
+  backend,
   onClose,
   onSaved,
 }: {
   group: RevisionGroup
+  backend: 'r2' | 'drive'
   onClose: () => void
   onSaved: () => void
 }) {
@@ -2280,11 +2285,13 @@ function EditGroupModal({
           value={allowDownload}
           onChange={setAllowDownload}
         />
-        <ToggleRow
-          label="לאפשר פתיחה ב-Drive"
-          value={openInDrive}
-          onChange={setOpenInDrive}
-        />
+        {backend === 'drive' && (
+          <ToggleRow
+            label="לאפשר פתיחה ב-Drive"
+            value={openInDrive}
+            onChange={setOpenInDrive}
+          />
+        )}
         {error && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {error}
