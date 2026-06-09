@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { onAuthStateChanged } from 'firebase/auth'
 import {
+  LayoutDashboard,
   Users as UsersIcon,
   Key as KeyIcon,
   Clock,
@@ -42,6 +43,7 @@ import {
   verifyAdminCode,
   tryPasskeyLogin,
 } from '../lib/adminApi'
+import OverviewTab from '../components/admin/OverviewTab'
 import UsersTab from '../components/admin/UsersTab'
 import KeysTab from '../components/admin/KeysTab'
 import TrialsTab from '../components/admin/TrialsTab'
@@ -65,6 +67,7 @@ import SettingsTab from '../components/admin/SettingsTab'
  */
 
 type AdminTabKey =
+  | 'overview'
   | 'users'
   | 'keys'
   | 'trials'
@@ -80,6 +83,7 @@ type AdminTabKey =
   | 'settings'
 
 const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
+  { key: 'overview', label: 'נתונים כלליים', icon: LayoutDashboard },
   { key: 'users', label: 'משתמשים', icon: UsersIcon },
   { key: 'keys', label: 'מפתח מוצר', icon: KeyIcon },
   { key: 'trials', label: 'ניסיון 14 יום', icon: Clock },
@@ -105,7 +109,7 @@ let adminFreshPageLoad = true
 
 export default function AdminPage() {
   const [phase, setPhase] = useState<Phase>('checking')
-  const [tab, setTab] = useState<AdminTabKey>('users')
+  const [tab, setTab] = useState<AdminTabKey>('overview')
   // When we land on the code step WITHOUT having just sent a code
   // (a page refresh while signed-in, or an expired 2FA token), the
   // code screen must request one itself. After the login step it must
@@ -545,7 +549,9 @@ function AdminShell({
             app), not stretched to the full width of the window. */}
         <main className="min-w-0 flex-1 p-5 md:p-8 md:pt-10">
           <div className="mx-auto w-full max-w-3xl">
-          {tab === 'users' ? (
+          {tab === 'overview' ? (
+            <OverviewTab onAuthExpired={onAuthExpired} />
+          ) : tab === 'users' ? (
             <UsersTab onAuthExpired={onAuthExpired} />
           ) : tab === 'keys' ? (
             <KeysTab onAuthExpired={onAuthExpired} />

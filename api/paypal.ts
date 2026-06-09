@@ -1599,6 +1599,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminReferralReport(req, res)
       case 'admin-revenue-report':
         return await handleAdminRevenueReport(req, res)
+      case 'admin-overview-stats':
+        return await handleAdminOverviewStats(req, res)
       case 'admin-referral-detail':
         return await handleAdminReferralDetail(req, res)
       case 'admin-referral-export':
@@ -6550,6 +6552,78 @@ async function usdToIls(): Promise<number> {
     /* ignore — use fallback */
   }
   return 3.7
+}
+
+/** Lightweight overview counters for the admin "נתונים כלליים" landing
+ *  tab. Uses Firestore count() AGGREGATIONS — each query costs ~1 read
+ *  per 1000 matched docs, not 1 per doc — so the whole tab is a handful
+ *  of reads regardless of how many users exist. Numbers only, zero PII. */
+async function handleAdminOverviewStats(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'admin only' })
+  const db = getDb()
+  const users = db.collection('users')
+  const nowIso = new Date().toISOString()
+  const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+
+  // Helper: run a count() aggregation; null on any failure so one bad
+  // metric never blanks the whole tab.
+  const cnt = async (q: FirebaseFirestore.Query): Promise<number | null> => {
+    try {
+      const s = await q.count().get()
+      return s.data().count
+    } catch {
+      return null
+    }
+  }
+
+  const [usersTotal, proUsers, trialsApprovedTotal, newThisWeek] =
+    await Promise.all([
+      cnt(users),
+      cnt(users.where('subscription', '==', 'pro')),
+      cnt(users.where('trialStatus', '==', 'approved')),
+      cnt(users.where('createdAt', '>=', weekAgoIso)),
+    ])
+
+  // Active trials = approved AND not yet expired. The two-field query
+  // needs a composite index; if it's missing we fall back to a single-
+  // field approximation (future expiry) so a number always shows, and
+  // surface the index-creation link so it can be made exact in one click.
+  let trialsActive: number | null = null
+  let trialsExpired: number | null = null
+  let trialApprox = false
+  let trialIndexUrl: string | undefined
+  try {
+    const s = await users
+      .where('trialStatus', '==', 'approved')
+      .where('trialExpiresAt', '>', nowIso)
+      .count()
+      .get()
+    trialsActive = s.data().count
+    if (trialsApprovedTotal != null) {
+      trialsExpired = Math.max(0, trialsApprovedTotal - trialsActive)
+    }
+  } catch (e) {
+    const msg = String((e as Error)?.message || '')
+    const m = msg.match(/https?:\/\/[^\s)]+/)
+    if (m) trialIndexUrl = m[0]
+    trialsActive = await cnt(users.where('trialExpiresAt', '>', nowIso))
+    trialApprox = true
+  }
+
+  return res.status(200).json({
+    ok: true,
+    usersTotal,
+    proUsers,
+    trialsActive,
+    trialsExpired,
+    newThisWeek,
+    trialApprox,
+    ...(trialIndexUrl ? { trialIndexUrl } : {}),
+  })
 }
 
 async function handleAdminRevenueReport(
