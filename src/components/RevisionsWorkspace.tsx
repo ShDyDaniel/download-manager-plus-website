@@ -173,6 +173,14 @@ async function uploadRoundVideo(
       'ייבוא מ-Drive זמין רק במצב Google Drive — העלו קובץ מהמחשב',
     )
   }
+  // Show the progress bar IMMEDIATELY so the click gives instant
+  // feedback. This first sliver is the storage-space check, not real
+  // bytes — only after it passes does the actual upload move the bar.
+  setProgress({
+    bytesUploaded: 0,
+    totalBytes: source.file.size,
+    fraction: 0.03,
+  })
   // Pre-flight quota check BEFORE any bytes leave the browser, so a
   // too-big file is rejected up front instead of "starting" then
   // failing. Best-effort: if we can't read the quota we fall through and
