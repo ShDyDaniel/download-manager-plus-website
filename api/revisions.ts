@@ -6457,51 +6457,68 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
     payload.systemInstruction = { parts: [{ text: systemParts.join('\n\n') }] }
   }
 
-  try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(
-      apiKey,
-    )}`
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    const data = (await r.json().catch(() => null)) as {
-      candidates?: Array<{
-        content?: { parts?: Array<{ text?: string }> }
-        finishReason?: string
-      }>
-      error?: { message?: string }
-      promptFeedback?: { blockReason?: string }
-    } | null
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(
+    apiKey,
+  )}`
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  // Up to 2 attempts: a transient 429 / 5xx or a network blip retries once
+  // after a short wait, so a one-off hiccup doesn't surface as an error.
+  let lastErr = 'AI error'
+  let lastStatus = 0
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = (await r.json().catch(() => null)) as {
+        candidates?: Array<{
+          content?: { parts?: Array<{ text?: string }> }
+          finishReason?: string
+        }>
+        error?: { message?: string }
+        promptFeedback?: { blockReason?: string }
+      } | null
 
-    if (!r.ok) {
-      const msg = data?.error?.message || `HTTP ${r.status}`
+      if (!r.ok) {
+        lastStatus = r.status
+        lastErr = data?.error?.message || `HTTP ${r.status}`
+        if ((r.status === 429 || r.status >= 500) && attempt === 0) {
+          await sleep(1200)
+          continue
+        }
+        return res
+          .status(200)
+          .json({ ok: false, status: r.status, error: lastErr.slice(0, 300) })
+      }
+      const text =
+        data?.candidates?.[0]?.content?.parts
+          ?.map((p) => p.text || '')
+          .join('')
+          .trim() || ''
+      if (!text) {
+        const blocked = data?.promptFeedback?.blockReason
+        return res.status(200).json({
+          ok: false,
+          error: blocked ? `התוכן נחסם (${blocked})` : 'תשובת AI ריקה',
+        })
+      }
+      // OpenAI-shaped reply so the desktop client parsing stays the same.
       return res
         .status(200)
-        .json({ ok: false, status: r.status, error: msg.slice(0, 300) })
+        .json({ ok: true, json: { choices: [{ message: { content: text } }] } })
+    } catch (e) {
+      lastErr = (e as Error)?.message || 'AI error'
+      if (attempt === 0) {
+        await sleep(1200)
+        continue
+      }
     }
-    const text =
-      data?.candidates?.[0]?.content?.parts
-        ?.map((p) => p.text || '')
-        .join('')
-        .trim() || ''
-    if (!text) {
-      const blocked = data?.promptFeedback?.blockReason
-      return res.status(200).json({
-        ok: false,
-        error: blocked ? `התוכן נחסם (${blocked})` : 'תשובת AI ריקה',
-      })
-    }
-    // OpenAI-shaped reply so the desktop client parsing stays the same.
-    return res
-      .status(200)
-      .json({ ok: true, json: { choices: [{ message: { content: text } }] } })
-  } catch (e) {
-    return res
-      .status(200)
-      .json({ ok: false, error: (e as Error)?.message || 'AI error' })
   }
+  return res
+    .status(200)
+    .json({ ok: false, status: lastStatus, error: lastErr.slice(0, 300) })
 }
 
 /* ── Vercel invocation counter (self-metered) — twin of api/paypal.ts.
