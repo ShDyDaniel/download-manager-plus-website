@@ -14,11 +14,13 @@ import {
   FileVideo,
   Link2,
   HardDrive,
+  Mail,
 } from 'lucide-react'
 import { Portal } from './ui/Portal'
 import {
   createDelivery,
   deleteDelivery,
+  fetchStorageBackend,
   fetchStorageState,
   formatBytes,
   importDriveLinkToR2,
@@ -65,12 +67,18 @@ export function DeliveriesWorkspace() {
   const [composerOpen, setComposerOpen] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  // Storage backend — deliveries are R2-only, so Drive accounts get a
+  // "contact support" panel instead of the workspace. null = not known
+  // yet (don't flash the workspace before we've confirmed).
+  const [backend, setBackend] = useState<'r2' | 'drive' | null>(null)
 
   const refresh = useCallback(async () => {
-    const [s, d] = await Promise.all([
+    const [b, s, d] = await Promise.all([
+      fetchStorageBackend().catch(() => 'r2' as const),
       fetchStorageState().catch(() => null),
       listDeliveries().catch(() => []),
     ])
+    setBackend(b)
     setStorage(s)
     setDeliveries(d)
     setLoading(false)
@@ -100,6 +108,10 @@ export function DeliveriesWorkspace() {
     }
   }
 
+  if (backend === 'drive') {
+    return <DriveNoAccessPanel />
+  }
+
   return (
     <div dir="rtl" className="space-y-6">
       {/* Header row — feature chip + the single "add" CTA. */}
@@ -123,7 +135,7 @@ export function DeliveriesWorkspace() {
           className="inline-flex shrink-0 items-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover"
         >
           <Plus className="h-4 w-4" />
-          שליחה חדשה
+          שליחת סרטון
         </button>
       </div>
 
@@ -138,7 +150,7 @@ export function DeliveriesWorkspace() {
             <Send className="h-6 w-6" />
           </div>
           <p className="text-sm leading-relaxed text-fg-muted">
-            עדיין אין מסירות. לחצו "שליחה חדשה" כדי להעלות סרטון
+            עדיין אין מסירות. לחצו "שליחת סרטון" כדי להעלות סרטון
             סופי ולקבל קישור לשליחה ללקוח.
           </p>
         </div>
@@ -236,6 +248,37 @@ export function DeliveriesWorkspace() {
         onClose={() => setComposerOpen(false)}
         onCreated={refresh}
       />
+    </div>
+  )
+}
+
+/** Shown when the account's storage backend is Google Drive. Deliveries
+ *  are built on our own R2 storage, so Drive accounts can't use the tab —
+ *  point them to support. */
+function DriveNoAccessPanel() {
+  return (
+    <div
+      dir="rtl"
+      className="mx-auto flex max-w-md flex-col items-center py-20 text-center"
+    >
+      <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+        <HardDrive className="h-7 w-7" />
+      </div>
+      <h1 className="font-display text-2xl font-medium text-fg">
+        הטאב אינו זמין בחשבון הזה
+      </h1>
+      <p className="mt-3 text-sm leading-relaxed text-fg-muted">
+        מערכת המסירה ללקוח עובדת מול האחסון שלנו. החשבון שלך מוגדר
+        לאחסון ב‑Google Drive, ולכן אין גישה לטאב הזה. כדי לפתוח אותו —
+        אפשר לפנות לתמיכה.
+      </p>
+      <a
+        href="mailto:dyshalts@gmail.com?subject=פתיחת%20טאב%20מסירה%20ללקוח"
+        className="mt-6 inline-flex items-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover"
+      >
+        <Mail className="h-4 w-4" />
+        פנייה לתמיכה
+      </a>
     </div>
   )
 }
@@ -467,7 +510,7 @@ function DeliveryComposerModal({
               className="flex max-h-[90vh] w-[min(560px,94vw)] flex-col overflow-hidden rounded-2xl border border-border bg-bg-elevated shadow-2xl"
             >
               <div className="flex items-center justify-between border-b border-border p-4">
-                <h2 className="text-base font-medium text-fg">שליחה חדשה</h2>
+                <h2 className="text-base font-medium text-fg">שליחת סרטון</h2>
                 <button
                   type="button"
                   onClick={close}
@@ -770,7 +813,7 @@ function DeliveryComposerModal({
                     ) : (
                       <Upload className="h-4 w-4" />
                     )}
-                    צור מסירה וקבל קישור
+                    צור קישור לשליחה
                   </button>
                 </div>
               )}
