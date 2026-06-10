@@ -212,6 +212,21 @@ function buildVideoKey(uid: string, fileName: string): string {
   return `${uid}/videos/${Date.now()}-${rand}-${safe}`
 }
 
+// Final-delivery videos live under their OWN subfolder so they're kept
+// separate from review-round videos on disk:
+//   {uid}/finals/<file>   — final videos sent to a client
+// Still under the {uid}/ prefix, so keyBelongsToUser() + the storage
+// quota sum + the lapsed-access purge all already cover them.
+function buildFinalKey(uid: string, fileName: string): string {
+  const safe =
+    (fileName || 'video')
+      .replace(/[^\w.\-]+/g, '_')
+      .replace(/_+/g, '_')
+      .slice(-80) || 'video'
+  const rand = crypto.randomBytes(8).toString('hex')
+  return `${uid}/finals/${Date.now()}-${rand}-${safe}`
+}
+
 // Map a filename's extension to a real video MIME type. Keeps R2
 // objects served as video/* so the browser <video> renders a picture
 // instead of mis-sniffing the file as an audio-only stream.
@@ -6252,6 +6267,66 @@ interface DeliveryVideo {
   mime: string
 }
 
+// Start a multipart upload for a DELIVERY video — its own init so the
+// object lands under {uid}/finals/ (not {uid}/videos/). Enforces the
+// shared storage quota up front, same as the revisions upload. The
+// client then reuses r2-upload-part-url / r2-upload-complete /
+// r2-upload-abort (those accept any key under the user's own prefix).
+async function handleDeliveryUploadInit(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
+
+  const body = (req.body || {}) as {
+    fileName?: string
+    contentType?: string
+    sizeBytes?: number
+  }
+  const fileName = String(body.fileName || 'video').slice(0, 300)
+  const clientType = String(body.contentType || '').toLowerCase()
+  const contentType = clientType.startsWith('video/')
+    ? clientType.slice(0, 100)
+    : videoTypeFromFileName(fileName)
+  const sizeBytes = Math.max(0, Math.floor(Number(body.sizeBytes) || 0))
+
+  const { usedBytes, limitBytes } = await getStorageState(verified.uid)
+  if (sizeBytes <= 0) {
+    return res.status(400).json({
+      ok: false,
+      error: 'size-required',
+      message: 'לא ניתן לקבוע את גודל הקובץ. נסו שוב.',
+    })
+  }
+  if (usedBytes + sizeBytes > limitBytes) {
+    return res.status(413).json({
+      ok: false,
+      error: 'quota',
+      message: `אין מספיק מקום אחסון. הקובץ שוקל ${(sizeBytes / GB).toFixed(2)}GB, ובשימוש כבר ${(usedBytes / GB).toFixed(2)}GB מתוך ${(limitBytes / GB).toFixed(2)}GB. מחקו מסירות/סבבים ישנים ונסו שוב.`,
+      usedBytes,
+      limitBytes,
+      sizeBytes,
+    })
+  }
+
+  const key = buildFinalKey(verified.uid, fileName)
+  try {
+    const out = await getR2().send(
+      new CreateMultipartUploadCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        ContentType: contentType,
+      }),
+    )
+    return res.status(200).json({ ok: true, key, uploadId: out.UploadId })
+  } catch (e) {
+    console.error('[delivery-upload-init]', e)
+    return res.status(500).json({ ok: false, error: 'upload init failed' })
+  }
+}
+
 async function handleDeliveryCreate(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -7142,6 +7217,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleStreamVideo(req, res)
       case 'auth-stream':
         return await handleAuthStream(req, res)
+      case 'delivery-upload-init':
+        return await handleDeliveryUploadInit(req, res)
       case 'delivery-create':
         return await handleDeliveryCreate(req, res)
       case 'delivery-list':
