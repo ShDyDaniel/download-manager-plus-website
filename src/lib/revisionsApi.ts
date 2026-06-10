@@ -801,12 +801,14 @@ export function formatBytes(bytes: number): string {
   // Guard non-finite input (e.g. an Infinity "no cap" sentinel) so it
   // never leaks an "Infinity GB" string into the UI.
   if (!Number.isFinite(bytes)) return '—'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  // Decimal (1000-based) units to match macOS Finder — a byte-identical
+  // file otherwise looks like it shrank vs what Finder reports.
+  if (bytes < 1000) return `${bytes} B`
+  if (bytes < 1_000_000) return `${(bytes / 1000).toFixed(1)} KB`
+  if (bytes < 1_000_000_000) {
+    return `${(bytes / 1_000_000).toFixed(1)} MB`
   }
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  return `${(bytes / 1_000_000_000).toFixed(2)} GB`
 }
 
 /* ──────────────────────────────────────────────────────────────

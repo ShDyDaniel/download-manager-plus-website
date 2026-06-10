@@ -42,10 +42,12 @@ interface DeliveryData {
 }
 
 function formatBytes(n: number): string {
+  // Decimal (1000-based) units to match macOS Finder (a byte-identical
+  // file otherwise looks smaller here than in Finder).
   if (!n || n <= 0) return ''
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  if (n < 1_000_000) return `${(n / 1000).toFixed(0)} KB`
+  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(1)} MB`
+  return `${(n / 1_000_000_000).toFixed(2)} GB`
 }
 
 function expiryText(expiresAt: number): string {
