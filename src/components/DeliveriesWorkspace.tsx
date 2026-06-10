@@ -16,6 +16,7 @@ import {
   Link2,
   HardDrive,
   Mail,
+  AlertTriangle,
 } from 'lucide-react'
 import { Portal } from './ui/Portal'
 import {
@@ -339,8 +340,47 @@ function StorageBar({
 
 /** One queued video — either a local File or a Drive link to import. */
 type StagedItem =
-  | { kind: 'file'; id: string; file: File }
+  | {
+      kind: 'file'
+      id: string
+      file: File
+      /** Browser-playability check (async after staging). */
+      probing?: boolean
+      unsupported?: boolean
+    }
   | { kind: 'link'; id: string; url: string }
+
+/** Resolve true if this browser can decode the file enough to show a
+ *  picture. Loads only metadata via an object URL; times out to "yes"
+ *  so a slow probe never blocks the user. */
+function canBrowserPlay(file: File): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    const url = URL.createObjectURL(file)
+    const v = document.createElement('video')
+    v.preload = 'metadata'
+    v.muted = true
+    const done = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try {
+        URL.revokeObjectURL(url)
+      } catch {
+        /* ignore */
+      }
+      v.removeAttribute('src')
+      resolve(ok)
+    }
+    const timer = setTimeout(() => done(true), 8000)
+    v.onloadedmetadata = () => {
+      if (v.videoWidth > 0) done(true)
+    }
+    v.onloadeddata = () => done(true)
+    v.onerror = () => done(false)
+    v.src = url
+  })
+}
 
 function DeliveryComposerModal({
   open,
@@ -404,6 +444,7 @@ function DeliveryComposerModal({
 
   function addFiles(files: File[]) {
     if (files.length === 0) return
+    const added: Array<{ id: string; file: File }> = []
     setStaged((prev) => {
       const next = [...prev]
       for (const f of files) {
@@ -413,12 +454,30 @@ function DeliveryComposerModal({
             (x) => x.kind === 'file' && x.file.name === f.name && x.file.size === f.size,
           )
         ) {
-          next.push({ kind: 'file', id: nextId(), file: f })
+          const id = nextId()
+          next.push({ kind: 'file', id, file: f, probing: true })
+          added.push({ id, file: f })
         }
       }
       return next
     })
     setError('')
+    // Check (in this browser) whether each file is actually playable.
+    for (const a of added) void probeStaged(a.id, a.file)
+  }
+
+  /** Best-effort: try to load the file's metadata in a hidden <video>.
+   *  If the browser can't decode it (ProRes/HEVC/…), it fires `error`
+   *  and we flag the file as unsupported for browser preview. */
+  async function probeStaged(id: string, file: File) {
+    const playable = await canBrowserPlay(file)
+    setStaged((prev) =>
+      prev.map((x) =>
+        x.id === id && x.kind === 'file'
+          ? { ...x, probing: false, unsupported: !playable }
+          : x,
+      ),
+    )
   }
 
   function addLink() {
@@ -631,44 +690,62 @@ function DeliveryComposerModal({
                         {staged.map((item) => (
                           <div
                             key={item.id}
-                            className="flex items-center justify-between gap-2.5 rounded-lg border border-border bg-bg/50 px-3 py-2"
+                            className="overflow-hidden rounded-lg border border-border bg-bg/50"
                           >
-                            {/* Right group: name (far right) then size.
-                                dir=ltr so neither flips. */}
-                            <div className="flex min-w-0 items-baseline gap-2">
-                              <span
-                                dir="ltr"
-                                className="min-w-0 truncate text-sm text-fg"
-                              >
-                                {item.kind === 'file' ? item.file.name : item.url}
-                              </span>
-                              <span
-                                dir="ltr"
-                                className="shrink-0 text-[11px] text-fg-muted"
-                              >
-                                {item.kind === 'file'
-                                  ? formatBytes(item.file.size)
-                                  : 'קישור Drive'}
-                              </span>
-                            </div>
-                            {/* Left group: type icon + remove. */}
-                            <div className="flex shrink-0 items-center gap-1.5">
-                              {item.kind === 'file' ? (
-                                <FileVideo className="h-4 w-4 text-primary" />
-                              ) : (
-                                <Link2 className="h-4 w-4 text-primary" />
-                              )}
-                              {!busy && (
-                                <button
-                                  type="button"
-                                  onClick={() => removeItem(item.id)}
-                                  className="rounded p-1 text-fg-muted hover:text-destructive"
-                                  aria-label="הסר"
+                            <div className="flex items-center justify-between gap-2.5 px-3 py-2">
+                              {/* Right group: name (far right) then size.
+                                  dir=ltr so neither flips. */}
+                              <div className="flex min-w-0 items-baseline gap-2">
+                                <span
+                                  dir="ltr"
+                                  className="min-w-0 truncate text-sm text-fg"
                                 >
-                                  <X className="h-4 w-4" />
-                                </button>
-                              )}
+                                  {item.kind === 'file' ? item.file.name : item.url}
+                                </span>
+                                <span
+                                  dir="ltr"
+                                  className="shrink-0 text-[11px] text-fg-muted"
+                                >
+                                  {item.kind === 'file'
+                                    ? formatBytes(item.file.size)
+                                    : 'קישור Drive'}
+                                </span>
+                              </div>
+                              {/* Left group: type icon + remove. */}
+                              <div className="flex shrink-0 items-center gap-1.5">
+                                {item.kind === 'file' ? (
+                                  <FileVideo className="h-4 w-4 text-primary" />
+                                ) : (
+                                  <Link2 className="h-4 w-4 text-primary" />
+                                )}
+                                {!busy && (
+                                  <button
+                                    type="button"
+                                    onClick={() => removeItem(item.id)}
+                                    className="rounded p-1 text-fg-muted hover:text-destructive"
+                                    aria-label="הסר"
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </button>
+                                )}
+                              </div>
                             </div>
+
+                            {/* Unsupported codec → the browser can't convert
+                                locally; point the user to the desktop app. */}
+                            {item.kind === 'file' && item.unsupported && (
+                              <div className="border-t border-amber-400/20 bg-amber-400/[0.06] px-3 py-2.5">
+                                <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-200/90">
+                                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                  <span>
+                                    הפורמט של הסרטון לא מתנגן בדפדפן. כדי
+                                    שהמערכת תמיר אותו אוטומטית ל-MP4, העלו אותו
+                                    דרך אפליקציית המחשב. אפשר גם לשלוח כמו שהוא —
+                                    הלקוח יוכל רק להוריד אותו.
+                                  </span>
+                                </p>
+                              </div>
+                            )}
                           </div>
                         ))}
                         <p className="text-[11px] text-fg-muted">
@@ -769,7 +846,10 @@ function DeliveryComposerModal({
                   <button
                     type="button"
                     onClick={handleCreate}
-                    disabled={staged.length === 0}
+                    disabled={
+                      staged.length === 0 ||
+                      staged.some((s) => s.kind === 'file' && s.probing)
+                    }
                     className="flex w-full items-center justify-center gap-2 rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover disabled:opacity-40"
                   >
                     <Upload className="h-4 w-4" />
