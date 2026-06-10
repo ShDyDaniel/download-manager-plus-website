@@ -283,16 +283,25 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
                     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
                       <FileVideo className="h-5 w-5" />
                     </div>
-                    <div
-                      className="flex min-w-0 items-baseline gap-2"
-                      dir="ltr"
-                    >
-                      <span className="truncate text-sm font-semibold text-foreground">
+                    {/* RTL group: name first (right, next to the icon),
+                        size after it (left). Each span is dir=ltr so the
+                        filename + "882 KB" don't get their chars flipped. */}
+                    <div className="flex min-w-0 items-baseline gap-2">
+                      <span
+                        dir="ltr"
+                        className="min-w-0 truncate text-sm font-semibold text-foreground"
+                      >
                         {v.name}
                       </span>
                       {size && (
-                        <span className="shrink-0 text-xs text-muted-foreground">
-                          · {size}
+                        <span className="shrink-0 text-muted-foreground/50">·</span>
+                      )}
+                      {size && (
+                        <span
+                          dir="ltr"
+                          className="shrink-0 text-xs text-muted-foreground"
+                        >
+                          {size}
                         </span>
                       )}
                     </div>
