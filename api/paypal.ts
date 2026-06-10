@@ -1174,7 +1174,10 @@ function primeKillCache(value: boolean): void {
  *  Configure TELEGRAM_ALERT_BOT_TOKEN + TELEGRAM_ALERT_CHAT_ID; if
  *  either is missing, alerts are simply skipped. Best-effort: any error
  *  is swallowed — an alert can NEVER break the main flow. */
-async function sendTelegramAlert(text: string): Promise<void> {
+async function sendTelegramAlert(
+  text: string,
+  opts?: { replyMarkup?: unknown },
+): Promise<void> {
   try {
     const token = process.env.TELEGRAM_ALERT_BOT_TOKEN
     const chatId = process.env.TELEGRAM_ALERT_CHAT_ID
@@ -1186,6 +1189,7 @@ async function sendTelegramAlert(text: string): Promise<void> {
         chat_id: chatId,
         text,
         disable_web_page_preview: true,
+        ...(opts?.replyMarkup ? { reply_markup: opts.replyMarkup } : {}),
       }),
     })
   } catch (e) {
@@ -1772,6 +1776,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminUploadBackup(req, res)
       case 'admin-backup-summary':
         return await handleAdminBackupSummary(req, res)
+      // One-time: register the alert bot's webhook (admin-gated).
+      case 'admin-telegram-setup-webhook':
+        return await handleAdminTelegramSetupWebhook(req, res)
+      // Telegram inline-button presses land here (self-verified via the
+      // secret-token header — NOT admin-gated, Telegram can't carry our
+      // session). Powers the backup "📊 פירוט" drill-in.
+      case 'telegram-webhook':
+        return await handleTelegramWebhook(req, res)
       case 'admin-restore-backup':
         return await handleAdminRestoreBackup(req, res)
       case 'admin-list-client-errors':
@@ -8170,6 +8182,17 @@ async function handleAdminRunAutoBackup(
           `💾 גיבוי אוטומטי בוצע\n${info.docCount.toLocaleString()} מסמכים · ${(
             info.sizeBytes / 1024
           ).toFixed(0)} KB`,
+          {
+            // Inline button → expands the message into a per-collection
+            // breakdown when pressed (handled by the telegram-webhook
+            // action). callback_data carries the backup key (well under
+            // Telegram's 64-byte cap).
+            replyMarkup: {
+              inline_keyboard: [
+                [{ text: '📊 פירוט הגיבוי', callback_data: `bksum:${info.key}` }],
+              ],
+            },
+          },
         )
       }
     } catch {
@@ -8311,19 +8334,16 @@ async function handleAdminUploadBackup(
   return res.status(200).json({ ok: true, key, docCount: parsed.docs.length })
 }
 
-/** Inspect a backup: per-collection document counts + metadata, so the
- *  admin can see exactly what a snapshot contains. */
-async function handleAdminBackupSummary(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
-  if (!(await verifyAdmin2FA(req))) {
-    return res.status(403).json({ ok: false, error: 'forbidden' })
-  }
-  const key = (req.body as { key?: string })?.key
-  if (typeof key !== 'string' || !key.startsWith(BACKUP_PREFIX)) {
-    return res.status(400).json({ ok: false, error: 'invalid key' })
-  }
+/** Read a backup from R2 and tally per-collection doc counts + meta.
+ *  Shared by the admin-panel summary action and the Telegram drill-in
+ *  button — both want the same "what's inside this snapshot" view. */
+async function computeBackupSummary(key: string): Promise<{
+  createdAt: string | null
+  type: string | null
+  docCount: number
+  sizeBytes: number
+  collections: Array<{ name: string; count: number }>
+}> {
   const obj = await getBackupR2().send(
     new GetObjectCommand({ Bucket: BACKUP_BUCKET, Key: key }),
   )
@@ -8342,13 +8362,180 @@ async function handleAdminBackupSummary(
   const collections = Object.entries(counts)
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count)
-  return res.status(200).json({
-    ok: true,
+  return {
     createdAt: payload.createdAt || null,
     type: payload.type || null,
     docCount: payload.docCount ?? (payload.docs || []).length,
+    sizeBytes: Buffer.byteLength(text, 'utf8'),
     collections,
+  }
+}
+
+/** Newest snapshot key across all backup types — fallback for the
+ *  Telegram button when the callback didn't carry a usable key. */
+async function findNewestBackupKey(): Promise<string | null> {
+  const listed = await getBackupR2().send(
+    new ListObjectsV2Command({ Bucket: BACKUP_BUCKET, Prefix: BACKUP_PREFIX }),
+  )
+  const items = (listed.Contents || [])
+    .filter((o) => o.Key)
+    .sort(
+      (a, b) =>
+        (b.LastModified?.getTime() || 0) - (a.LastModified?.getTime() || 0),
+    )
+  return items[0]?.Key || null
+}
+
+/** Inspect a backup: per-collection document counts + metadata, so the
+ *  admin can see exactly what a snapshot contains. */
+async function handleAdminBackupSummary(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const key = (req.body as { key?: string })?.key
+  if (typeof key !== 'string' || !key.startsWith(BACKUP_PREFIX)) {
+    return res.status(400).json({ ok: false, error: 'invalid key' })
+  }
+  const summary = await computeBackupSummary(key)
+  return res.status(200).json({ ok: true, ...summary })
+}
+
+/** Hebrew per-collection breakdown for the Telegram "פירוט" button. */
+function formatBackupSummaryTelegram(s: {
+  createdAt: string | null
+  type: string | null
+  docCount: number
+  sizeBytes: number
+  collections: Array<{ name: string; count: number }>
+}): string {
+  let when = '—'
+  if (s.createdAt) {
+    try {
+      when = new Date(s.createdAt).toLocaleString('he-IL', {
+        timeZone: 'Asia/Jerusalem',
+      })
+    } catch {
+      when = s.createdAt
+    }
+  }
+  const kb = (s.sizeBytes / 1024).toFixed(0)
+  const lines = s.collections.map(
+    (c) => `• ${c.name} — ${c.count.toLocaleString()}`,
+  )
+  return [
+    '📊 פירוט הגיבוי',
+    `🕒 ${when}`,
+    `📦 סה"כ ${s.docCount.toLocaleString()} מסמכים · ${kb} KB`,
+    '',
+    ...(lines.length ? lines : ['(אין מסמכים)']),
+  ].join('\n')
+}
+
+/** Telegram webhook — handles the inline-button presses on operational
+ *  alerts (currently the backup "📊 פירוט" drill-in). Public URL, but
+ *  protected by Telegram's secret-token header (set via setWebhook) AND
+ *  a chat-id allowlist, so only the owner's alert chat can drive it.
+ *  Always answers 200 so Telegram doesn't retry. */
+async function handleTelegramWebhook(req: VercelRequest, res: VercelResponse) {
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET
+  const got = req.headers['x-telegram-bot-api-secret-token']
+  // Bad/absent secret → silently no-op (200) so a probe learns nothing.
+  if (!secret || got !== secret) return res.status(200).json({ ok: true })
+  const token = process.env.TELEGRAM_ALERT_BOT_TOKEN
+  if (!token) return res.status(200).json({ ok: true })
+
+  const update = (req.body || {}) as {
+    callback_query?: {
+      id: string
+      data?: string
+      message?: { message_id?: number; chat?: { id?: number | string } }
+    }
+  }
+  const cq = update.callback_query
+  if (!cq) return res.status(200).json({ ok: true })
+
+  const tg = (method: string, body: unknown) =>
+    fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).catch(() => undefined)
+  const answer = (text?: string) =>
+    tg('answerCallbackQuery', {
+      callback_query_id: cq.id,
+      ...(text ? { text } : {}),
+    })
+
+  // Only the configured alert chat may use these buttons.
+  const chatId = cq.message?.chat?.id
+  const allowedChat = process.env.TELEGRAM_ALERT_CHAT_ID
+  if (allowedChat && String(chatId) !== String(allowedChat)) {
+    await answer('לא מורשה')
+    return res.status(200).json({ ok: true })
+  }
+
+  const data = String(cq.data || '')
+  if (data.startsWith('bksum:')) {
+    try {
+      let key = data.slice('bksum:'.length)
+      if (!key || !key.startsWith(BACKUP_PREFIX)) {
+        key = (await findNewestBackupKey()) || ''
+      }
+      if (!key) {
+        await answer('לא נמצא גיבוי')
+        return res.status(200).json({ ok: true })
+      }
+      const summary = await computeBackupSummary(key)
+      await tg('editMessageText', {
+        chat_id: chatId,
+        message_id: cq.message?.message_id,
+        text: formatBackupSummaryTelegram(summary),
+        disable_web_page_preview: true,
+      })
+      await answer()
+    } catch (e) {
+      console.error('[telegram-webhook] bksum failed:', e)
+      await answer('שגיאה בשליפת הפירוט')
+    }
+  } else {
+    await answer()
+  }
+  return res.status(200).json({ ok: true })
+}
+
+/** One-time setup: point the alert bot's webhook at this endpoint with
+ *  a secret token, and subscribe ONLY to callback_query updates. Admin-
+ *  gated; reads the token + secret from env so they never leave Vercel. */
+async function handleAdminTelegramSetupWebhook(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const token = process.env.TELEGRAM_ALERT_BOT_TOKEN
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET
+  if (!token) {
+    return res.status(400).json({ ok: false, error: 'TELEGRAM_ALERT_BOT_TOKEN missing' })
+  }
+  if (!secret) {
+    return res.status(400).json({ ok: false, error: 'TELEGRAM_WEBHOOK_SECRET missing' })
+  }
+  const url = `${WEBSITE_BASE}/api/paypal?action=telegram-webhook`
+  const r = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      url,
+      secret_token: secret,
+      allowed_updates: ['callback_query'],
+    }),
   })
+  const telegram = await r.json().catch(() => ({}))
+  return res.status(200).json({ ok: true, url, telegram })
 }
 
 /** Collections that are restored as a UNION (never purged), to avoid
