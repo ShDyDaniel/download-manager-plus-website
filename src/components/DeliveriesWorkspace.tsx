@@ -731,18 +731,22 @@ function DeliveryComposerModal({
                               </div>
                             </div>
 
-                            {/* Unsupported codec → the browser can't convert
-                                locally; point the user to the desktop app. */}
+                            {/* Probing / unsupported note. The browser can't
+                                transcode locally, so we point the user to the
+                                desktop app (which converts automatically). */}
+                            {item.kind === 'file' && item.probing && (
+                              <div className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-[11px] text-fg-muted">
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                                בודק תאימות לנגן…
+                              </div>
+                            )}
                             {item.kind === 'file' && item.unsupported && (
-                              <div className="border-t border-amber-400/20 bg-amber-400/[0.06] px-3 py-2.5">
-                                <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-200/90">
-                                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                                  <span>
-                                    הפורמט של הסרטון לא מתנגן בדפדפן. כדי
-                                    שהמערכת תמיר אותו אוטומטית ל-MP4, העלו אותו
-                                    דרך אפליקציית המחשב. אפשר גם לשלוח כמו שהוא —
-                                    הלקוח יוכל רק להוריד אותו.
-                                  </span>
+                              <div className="flex items-start gap-2 border-t border-border bg-primary/[0.06] px-3 py-2.5">
+                                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+                                <p className="text-[11px] leading-relaxed text-fg-muted">
+                                  הפורמט של הסרטון אינו נתמך לצפייה בדפדפן. כדי
+                                  שהמערכת תמיר אותו אוטומטית ל-MP4 באיכות מלאה,
+                                  העלו אותו דרך אפליקציית המחשב.
                                 </p>
                               </div>
                             )}
