@@ -1229,8 +1229,14 @@ const BACKUP_COLLECTIONS = [
   'appConfig',
   'referralPartners',
   'receipts',
+  // Permanent, key-independent tax ledger behind the עסקת אקראי
+  // report — must survive even if a key is deleted, so it has to be in
+  // the backup alongside receipts (both are tax records).
+  'casualLedger',
   'trialFingerprints',
   'usageStats',
+  // Aggregate counters (email sends, etc.) — durable, cheap to store.
+  'metrics',
   'feedback',
   'integrations',
   'pendingSubscriptions',
@@ -1239,6 +1245,15 @@ const BACKUP_COLLECTIONS = [
   'revisionProjects',
   'revisionGroups',
   'notes',
+  // Client deliveries ("מסירה ללקוח") — the metadata + share tokens +
+  // password hashes for every active delivery. The R2 video bytes live
+  // outside Firestore (and are TTL-deleted), but this list/metadata is
+  // user data and belongs in the backup.
+  'deliveries',
+  // App-update catalog (latest + draft release: version, download URLs,
+  // release notes, exempt versions). Admin-managed config; losing it
+  // would break auto-update until re-entered.
+  'appReleases',
 ]
 let _backupR2: S3Client | null = null
 function getBackupR2(): S3Client {
