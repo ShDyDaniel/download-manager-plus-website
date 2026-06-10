@@ -210,72 +210,106 @@ export function DeliveryPage() {
           </div>
         )}
 
-        {state.kind === 'ready' && (
-          <div className="space-y-8">
-            <header className="text-center">
-              <h1 className="font-display text-3xl font-bold tracking-tight md:text-4xl">
-                {state.data.title || 'הסרטונים שלך'}
-              </h1>
-              <p className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground">
-                <Clock className="h-3.5 w-3.5" />
-                {expiryText(state.data.expiresAt)}
-              </p>
-            </header>
-
-            <div className="space-y-8">
-              {state.data.videos.map((v, i) => (
-                <div
-                  key={i}
-                  className="overflow-hidden rounded-3xl border border-border bg-card shadow-2xl shadow-black/40"
-                >
-                  {/* Big hero player — fills the wide container, capped
-                      at most of the viewport height so it stays visible
-                      without scrolling. */}
-                  <video
-                    src={v.streamUrl}
-                    controls
-                    playsInline
-                    className="block max-h-[78vh] w-full bg-black"
-                  />
-                  {/* Clean info bar: file icon + name + size on one side,
-                      a prominent download button on the other. */}
-                  <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                        <FileVideo className="h-5 w-5" />
-                      </div>
-                      <div className="min-w-0">
-                        <p
-                          className="truncate text-sm font-semibold text-foreground"
-                          dir="ltr"
-                        >
-                          {v.name}
-                        </p>
-                        {formatBytes(v.sizeBytes) && (
-                          <p
-                            className="mt-0.5 text-xs text-muted-foreground"
-                            dir="ltr"
-                          >
-                            {formatBytes(v.sizeBytes)}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <a
-                      href={v.downloadUrl}
-                      className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 transition-opacity hover:opacity-90"
-                    >
-                      <DownloadIcon className="h-4 w-4" />
-                      הורדה
-                    </a>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {state.kind === 'ready' && <DeliveryReady data={state.data} />}
       </main>
       <BrandFooter />
+    </div>
+  )
+}
+
+/* ── Ready state — preloads the first video and only reveals the
+ *    player once it can play, so the client never lands on a
+ *    half-loaded/buffering player inside the page. ─────────────────── */
+function DeliveryReady({ data }: { data: DeliveryData }) {
+  // Reveal only when the first video can play (first frame + buffer
+  // ready). Until then we show a single "preparing" loader while the
+  // <video> below preloads (it's in the DOM but visually collapsed, so
+  // preload="auto" still fetches).
+  const [ready, setReady] = useState(data.videos.length === 0)
+
+  // Safety net: never strand the client on the loader. If `canplay`
+  // doesn't fire within 15s (slow line, codec quirk), reveal anyway —
+  // the native player + download button still work.
+  useEffect(() => {
+    if (ready) return
+    const t = setTimeout(() => setReady(true), 15000)
+    return () => clearTimeout(t)
+  }, [ready])
+
+  return (
+    <div className="space-y-8">
+      {!ready && (
+        <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 text-center">
+          <Loader2 className="h-7 w-7 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">מכין את הסרטון לצפייה…</p>
+        </div>
+      )}
+
+      {/* Kept in the DOM (so the video preloads) but collapsed +
+          invisible until ready, then revealed instantly. */}
+      <div className={ready ? 'space-y-8' : 'h-0 overflow-hidden opacity-0'}>
+        <header className="text-center">
+          <h1 className="font-display text-3xl font-bold tracking-tight md:text-4xl">
+            {data.title || 'הסרטונים שלך'}
+          </h1>
+          <p className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground">
+            <Clock className="h-3.5 w-3.5" />
+            {expiryText(data.expiresAt)}
+          </p>
+        </header>
+
+        <div className="space-y-8">
+          {data.videos.map((v, i) => {
+            const size = formatBytes(v.sizeBytes)
+            return (
+              <div
+                key={i}
+                className="overflow-hidden rounded-3xl border border-border bg-card shadow-2xl shadow-black/40"
+              >
+                {/* Big hero player. Wait for the FIRST video's canplay
+                    to reveal the page. */}
+                <video
+                  src={v.streamUrl}
+                  controls
+                  playsInline
+                  preload="auto"
+                  onCanPlay={i === 0 ? () => setReady(true) : undefined}
+                  onError={i === 0 ? () => setReady(true) : undefined}
+                  className="block max-h-[78vh] w-full bg-black"
+                />
+                {/* Info bar — name + size on ONE line, download CTA. */}
+                <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                      <FileVideo className="h-5 w-5" />
+                    </div>
+                    <div
+                      className="flex min-w-0 items-baseline gap-2"
+                      dir="ltr"
+                    >
+                      <span className="truncate text-sm font-semibold text-foreground">
+                        {v.name}
+                      </span>
+                      {size && (
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          · {size}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <a
+                    href={v.downloadUrl}
+                    className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 transition-opacity hover:opacity-90"
+                  >
+                    <DownloadIcon className="h-4 w-4" />
+                    הורדה
+                  </a>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 }
