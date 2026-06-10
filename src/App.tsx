@@ -50,7 +50,7 @@ const AdminPage = lazy(() => import('./pages/AdminPage'))
 function isChromelessRoute(pathname: string): boolean {
   return (
     pathname.startsWith('/review') ||
-    pathname.startsWith('/d/') ||
+    pathname.startsWith('/deliver/') ||
     pathname.startsWith('/auth-action') ||
     pathname.startsWith('/drive-picker') ||
     pathname.startsWith('/partner') ||
@@ -171,8 +171,8 @@ function AnimatedRoutes() {
         <Route path="/auth-action" element={<AuthActionPage />} />
         <Route path="/review/:token" element={<ReviewPage />} />
         {/* Public client-delivery page — final video(s) + download,
-            opened by the recipient from a /d/<token> link. */}
-        <Route path="/d/:token" element={<DeliveryPage />} />
+            opened by the recipient from a /deliver/<token> link. */}
+        <Route path="/deliver/:token" element={<DeliveryPage />} />
         {/* Chromeless surface the DESKTOP app opens in a frameless
             modal window to run the Google Picker. Not linked from
             anywhere in the site UI — it's an app integration point. */}
