@@ -6444,7 +6444,10 @@ const FALLBACK_AI_BASE_URL = (
 // if it's unavailable.
 const FALLBACK_AI_MODELS = (process.env.FALLBACK_AI_MODEL || '').trim()
   ? [(process.env.FALLBACK_AI_MODEL as string).trim()]
-  : ['gpt-oss-120b', 'qwen-3-32b', 'llama-3.3-70b', 'llama3.1-8b']
+  : // Confirmed live on Cerebras' catalog (the llama/qwen ids were retired
+    // and 404'd). gpt-oss-120b is the workhorse; zai-glm-4.7 is a backup if
+    // it's momentarily rate-limited.
+    ['gpt-oss-120b', 'zai-glm-4.7']
 
 type AiResult =
   | { ok: true; text: string }
