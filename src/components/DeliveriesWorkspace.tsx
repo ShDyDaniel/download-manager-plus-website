@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { motion } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import {
   Send,
   Upload,
@@ -379,7 +379,8 @@ function DeliveryComposerModal({
 
   function close() {
     if (busy) return
-    reset()
+    // Reset on AnimatePresence's onExitComplete (below), not here — so
+    // the content stays stable through the close animation.
     onClose()
   }
 
@@ -489,20 +490,25 @@ function DeliveryComposerModal({
     0,
   )
 
-  // Closed → render NOTHING. Wrapping the Portal in <AnimatePresence>
-  // could leave the fixed-inset overlay mounted at opacity 0 after
-  // close — an invisible click-blocker that freezes the whole page.
-  if (!open) return null
-
+  // CRITICAL: Portal is the OUTERMOST element; AnimatePresence lives
+  // INSIDE it with the keyed motion.div overlay as its direct child.
+  // Proper exit animation + clean unmount. Do NOT wrap the Portal in
+  // AnimatePresence — that leaves the fixed-inset overlay stuck at
+  // opacity 0 (invisible click-blocker that freezes the page). reset()
+  // runs on onExitComplete so content stays stable through the fade-out.
   return (
     <Portal>
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        dir="rtl"
-        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
-        onClick={close}
-      >
+      <AnimatePresence onExitComplete={reset}>
+        {open && (
+          <motion.div
+            key="dlv-composer-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            dir="rtl"
+            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+            onClick={close}
+          >
             <motion.div
               initial={{ scale: 0.96, y: 14, opacity: 0 }}
               animate={{ scale: 1, y: 0, opacity: 1 }}
@@ -815,6 +821,8 @@ function DeliveryComposerModal({
               )}
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
     </Portal>
   )
 }
