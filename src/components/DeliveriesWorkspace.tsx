@@ -51,10 +51,15 @@ const EXPIRY_OPTIONS: Array<{ days: 3 | 7 | 14; label: string }> = [
 function expiryLabel(expiresAt: number): string {
   const ms = expiresAt - Date.now()
   if (ms <= 0) return 'פג'
-  const days = Math.floor(ms / (24 * 60 * 60 * 1000))
-  if (days >= 1) return `עוד ${days} ${days === 1 ? 'יום' : 'ימים'}`
-  const hours = Math.max(1, Math.floor(ms / (60 * 60 * 1000)))
-  return `עוד ${hours} שעות`
+  const totalHours = Math.floor(ms / (60 * 60 * 1000))
+  const days = Math.floor(totalHours / 24)
+  const hours = totalHours % 24
+  const dPart = days > 0 ? `${days} ${days === 1 ? 'יום' : 'ימים'}` : ''
+  const hPart = hours > 0 ? `${hours} ${hours === 1 ? 'שעה' : 'שעות'}` : ''
+  if (dPart && hPart) return `עוד ${dPart} ו-${hPart}`
+  if (dPart) return `עוד ${dPart}`
+  if (hPart) return `עוד ${hPart}`
+  return 'עוד פחות משעה'
 }
 
 export function DeliveriesWorkspace() {

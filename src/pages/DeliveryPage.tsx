@@ -50,10 +50,15 @@ function formatBytes(n: number): string {
 function expiryText(expiresAt: number): string {
   const ms = expiresAt - Date.now()
   if (ms <= 0) return 'הקישור פג'
-  const days = Math.floor(ms / (24 * 60 * 60 * 1000))
-  if (days >= 1) return `הקישור פעיל עוד ${days} ${days === 1 ? 'יום' : 'ימים'}`
-  const hours = Math.max(1, Math.floor(ms / (60 * 60 * 1000)))
-  return `הקישור פעיל עוד ${hours} שעות`
+  const totalHours = Math.floor(ms / (60 * 60 * 1000))
+  const days = Math.floor(totalHours / 24)
+  const hours = totalHours % 24
+  const dPart = days > 0 ? `${days} ${days === 1 ? 'יום' : 'ימים'}` : ''
+  const hPart = hours > 0 ? `${hours} ${hours === 1 ? 'שעה' : 'שעות'}` : ''
+  if (dPart && hPart) return `הקישור פעיל עוד ${dPart} ו-${hPart}`
+  if (dPart) return `הקישור פעיל עוד ${dPart}`
+  if (hPart) return `הקישור פעיל עוד ${hPart}`
+  return 'הקישור פעיל עוד פחות משעה'
 }
 
 type ViewState =
