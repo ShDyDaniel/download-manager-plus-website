@@ -596,15 +596,11 @@ function DeliveryComposerModal({
                       disabled={busy}
                     />
 
-                    <AnimatePresence mode="wait" initial={false}>
-                      <motion.div
-                        key={mode}
-                        initial={{ opacity: 0, x: mode === 'upload' ? -10 : 10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: mode === 'upload' ? 10 : -10 }}
-                        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-                      >
-                        {mode === 'upload' ? (
+                    {/* Source content swaps INSTANTLY (no nested
+                        AnimatePresence). A mode change mid-close used to
+                        deadlock the outer exit and leave the backdrop
+                        stuck over the whole app. */}
+                    {mode === 'upload' ? (
                           <MultiDropZone onAdd={addFiles} disabled={busy} />
                         ) : (
                           <div className="rounded-xl border-2 border-border bg-bg-card px-5 py-5">
@@ -643,9 +639,7 @@ function DeliveryComposerModal({
                               להוריד ולהעלות מחדש.
                             </p>
                           </div>
-                        )}
-                      </motion.div>
-                    </AnimatePresence>
+                    )}
 
                     {/* Staged videos */}
                     {staged.length > 0 && (
