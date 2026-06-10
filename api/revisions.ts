@@ -6406,14 +6406,16 @@ async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
  *  Gemini with a server-held GEMINI_API_KEY (never shipped in the app)
  *  and return an OpenAI-shaped reply so the client parsing is unchanged.
  *
- *  Free tier model: gemini-2.5-flash-lite — chosen for its much higher
- *  free DAILY quota than gemini-2.5-flash (whose low daily cap is what
- *  ran out under real use), with quality that's plenty for a pricing
- *  advisor. Overridable via the GEMINI_MODEL env var without a code
- *  change — if that env var is set in Vercel it WINS over this default,
- *  so it must also point at gemini-2.5-flash-lite to take effect.
+ *  Free tier model: gemini-2.5-flash — the user prefers its noticeably
+ *  better answers over the higher-quota flash-lite. Trade-off: its free
+ *  DAILY request cap is lower, so heavy use can hit a 429 ("too many
+ *  requests"). The retry amplification that used to burn the quota is
+ *  fixed (no 429 retries client- or server-side), so normal use should
+ *  fit; if it ever runs out, the options are billing or a higher-quota
+ *  model. Overridable via the GEMINI_MODEL env var — if that var is set
+ *  in Vercel it WINS over this default, so it must match to take effect.
  * ────────────────────────────────────────────────────────────── */
-const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite').trim()
+const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim()
 
 async function handleAiChat(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
