@@ -6451,7 +6451,20 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
 
   const payload: Record<string, unknown> = {
     contents,
-    generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
+    generationConfig: {
+      maxOutputTokens: maxTokens,
+      temperature: 0.7,
+      // gemini-2.5-flash is a THINKING model. Left to its defaults it
+      // spends output tokens on hidden internal "thinking" — and on a
+      // longer conversation that reasoning can consume the ENTIRE
+      // maxOutputTokens budget, returning a candidate with
+      // finishReason=MAX_TOKENS and ZERO visible text. That surfaced to
+      // users as "תשובת AI ריקה" → a generic error that got worse the
+      // longer the chat grew (exactly the "stops responding" bug). A
+      // pricing advisor needs no chain-of-thought, so we turn thinking
+      // OFF and hand the whole budget to the actual answer.
+      thinkingConfig: { thinkingBudget: 0 },
+    },
   }
   if (systemParts.length) {
     payload.systemInstruction = { parts: [{ text: systemParts.join('\n\n') }] }
@@ -6499,9 +6512,18 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
           .trim() || ''
       if (!text) {
         const blocked = data?.promptFeedback?.blockReason
+        const finish = data?.candidates?.[0]?.finishReason
+        // With thinking disabled this should be rare, but keep a clear,
+        // distinguishable message so any future empty reply is diagnosable
+        // (truncation vs safety-block vs genuinely empty) instead of
+        // collapsing into the generic "transient error".
         return res.status(200).json({
           ok: false,
-          error: blocked ? `התוכן נחסם (${blocked})` : 'תשובת AI ריקה',
+          error: blocked
+            ? `התוכן נחסם (${blocked})`
+            : finish === 'MAX_TOKENS'
+              ? 'התשובה נקטעה באמצע (חריגת אורך). נסו שוב.'
+              : 'תשובת AI ריקה',
         })
       }
       // OpenAI-shaped reply so the desktop client parsing stays the same.
