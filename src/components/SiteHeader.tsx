@@ -56,6 +56,9 @@ export function SiteHeader() {
   // pill, Drive footer); the marketing header would duplicate the
   // "סבבי תיקונים" link the user just clicked to get there.
   if (location.pathname.startsWith('/revisions')) return null
+  // /deliveries — same story: it renders its own ProWorkspaceShell
+  // header, so the marketing rail would just duplicate chrome.
+  if (location.pathname.startsWith('/deliveries')) return null
 
   // Per-route alignment. If we add more pages later (e.g. /pricing,
   // /docs), extend this conditional with their max-width and top
@@ -95,6 +98,18 @@ export function SiteHeader() {
             className="pointer-events-auto text-sm text-fg-muted transition-colors hover:text-fg"
           >
             סבבי תיקונים
+          </Link>
+          <span
+            aria-hidden="true"
+            className="px-3 text-fg-muted/40 select-none"
+          >
+            ·
+          </span>
+          <Link
+            to="/deliveries"
+            className="pointer-events-auto text-sm text-fg-muted transition-colors hover:text-fg"
+          >
+            מסירה ללקוח
           </Link>
           <span
             aria-hidden="true"

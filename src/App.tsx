@@ -28,6 +28,7 @@ import AuthActionPage from './pages/AuthActionPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { DeliveryPage } from './pages/DeliveryPage'
 import { RevisionsPage } from './pages/RevisionsPage'
+import { DeliveriesPage } from './pages/DeliveriesPage'
 import DrivePickerPage from './pages/DrivePickerPage'
 import PartnerPage from './pages/PartnerPage'
 // Lazy — AdminPage pulls in Firebase Auth (signInWithEmailAndPassword).
@@ -222,6 +223,13 @@ function AnimatedRoutes() {
               server-side on every API call. See
               pages/RevisionsPage.tsx. */}
           <Route path="/revisions" element={<RevisionsPage />} />
+          {/* Web /deliveries workspace — "מסירה ללקוח". Upload the
+              final video(s), pick an expiry, get a /deliver/<token>
+              link to send the client. Shares the auth + Pro ladder
+              with /revisions via ProWorkspaceShell; uploads go to
+              our own R2 storage (no Drive step). See
+              pages/DeliveriesPage.tsx. */}
+          <Route path="/deliveries" element={<DeliveriesPage />} />
           {/* /manage was the original subscription-management page
               before /account absorbed all its functionality. Keep
               a permanent redirect so old emails, footers, the

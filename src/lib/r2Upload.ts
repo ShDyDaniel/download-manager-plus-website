@@ -36,6 +36,11 @@ export interface R2UploadResult {
 export interface R2UploadOptions {
   onProgress?: (fraction: number) => void
   signal?: AbortSignal
+  /** Which server action mints the multipart upload. Defaults to
+   *  'r2-upload-init' (revisions → {uid}/videos/). Deliveries pass
+   *  'delivery-upload-init' so the object lands under {uid}/finals/
+   *  while sharing the same part-url / complete / abort actions. */
+  initAction?: string
 }
 
 async function postAction<T>(
@@ -152,10 +157,10 @@ export async function uploadFileToR2(
   file: File,
   opts: R2UploadOptions,
 ): Promise<R2UploadResult> {
-  const { onProgress, signal } = opts
+  const { onProgress, signal, initAction } = opts
 
   const init = await postAction<{ key: string; uploadId: string }>(
-    'r2-upload-init',
+    initAction || 'r2-upload-init',
     {
       fileName: file.name,
       contentType: file.type || 'application/octet-stream',

@@ -803,3 +803,69 @@ export function formatBytes(bytes: number): string {
   }
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
+
+/* ──────────────────────────────────────────────────────────────
+ *  Client deliveries ("מסירה ללקוח")
+ *
+ *  A separate product from revisions: upload the FINAL video(s),
+ *  pick a 3/7/14-day expiry, get ONE share link to send the client
+ *  (who watches + downloads). Shares the same R2 bucket + storage
+ *  quota as revisions, but objects land under {uid}/finals/.
+ *
+ *  Server: api/revisions.ts delivery-* actions. Desktop twin:
+ *  src/lib/revisions.ts. Public recipient page: /deliver/:token.
+ * ────────────────────────────────────────────────────────────── */
+
+/** One uploaded final video, as the create call wants it. r2Key
+ *  comes back from uploadFileToR2 (with initAction
+ *  'delivery-upload-init'); the rest are echoed file metadata. */
+export interface DeliveryVideoInput {
+  r2Key: string
+  name: string
+  sizeBytes: number
+  mime: string
+}
+
+/** A delivery row as the list returns it (mirror of the server's
+ *  handleDeliveryList projection). */
+export interface DeliveryRow {
+  id: string
+  title: string
+  shareToken: string
+  videoCount: number
+  sizeBytes: number
+  expiresAt: number
+  hasPassword: boolean
+  createdAt: number
+}
+
+/** Create a delivery from already-uploaded videos. Returns the
+ *  public share token (the link is `${SITE}/deliver/${shareToken}`). */
+export async function createDelivery(input: {
+  title?: string
+  expiryDays: 3 | 7 | 14
+  password?: string
+  videos: DeliveryVideoInput[]
+}): Promise<{ id: string; shareToken: string; expiresAt: number }> {
+  const r = await postAction<{
+    ok: true
+    id: string
+    shareToken: string
+    expiresAt: number
+  }>('delivery-create', authBody(input as unknown as Record<string, unknown>))
+  return { id: r.id, shareToken: r.shareToken, expiresAt: r.expiresAt }
+}
+
+/** List the signed-in owner's deliveries (newest first). */
+export async function listDeliveries(): Promise<DeliveryRow[]> {
+  const r = await postAction<{ ok: true; deliveries: DeliveryRow[] }>(
+    'delivery-list',
+    authBody(),
+  )
+  return Array.isArray(r.deliveries) ? r.deliveries : []
+}
+
+/** Delete a delivery (revokes the link + frees the R2 storage). */
+export async function deleteDelivery(id: string): Promise<void> {
+  await postAction<{ ok: true }>('delivery-delete', authBody({ id }))
+}
