@@ -6436,9 +6436,15 @@ const FALLBACK_AI_BASE_URL = (
 )
   .trim()
   .replace(/\/$/, '')
-const FALLBACK_AI_MODEL = (
-  process.env.FALLBACK_AI_MODEL || 'llama-3.3-70b'
-).trim()
+// Candidate models, tried IN ORDER until one works — robust to a provider
+// silently deprecating a model id (which is exactly what broke the first
+// attempt: 'llama-3.3-70b' was retired). An explicit FALLBACK_AI_MODEL env
+// pins a single model. Defaults target Cerebras' current catalog —
+// 'gpt-oss-120b' is a confirmed production model, the rest are tried only
+// if it's unavailable.
+const FALLBACK_AI_MODELS = (process.env.FALLBACK_AI_MODEL || '').trim()
+  ? [(process.env.FALLBACK_AI_MODEL as string).trim()]
+  : ['gpt-oss-120b', 'qwen-3-32b', 'llama-3.3-70b', 'llama3.1-8b']
 
 type AiResult =
   | { ok: true; text: string }
@@ -6535,6 +6541,7 @@ async function callFallbackAi(
   maxTokens: number,
 ): Promise<AiResult> {
   if (!FALLBACK_AI_API_KEY) {
+    console.error('[ai-fallback] skipped: FALLBACK_AI_API_KEY is not set')
     return { ok: false, status: 0, error: 'no fallback configured' }
   }
   const msgs = messages
@@ -6544,43 +6551,54 @@ async function callFallbackAi(
     }))
     .filter((m) => m.content)
   if (msgs.length === 0) return { ok: false, status: 400, error: 'no messages' }
-  try {
-    const r = await fetch(`${FALLBACK_AI_BASE_URL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${FALLBACK_AI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: FALLBACK_AI_MODEL,
-        messages: msgs,
-        // Cerebras' free tier caps context at 8192 tokens — keep the output
-        // modest so a long chat still fits within it.
-        max_tokens: Math.min(maxTokens, 4096),
-        temperature: 0.7,
-      }),
-    })
-    const data = (await r.json().catch(() => null)) as {
-      choices?: Array<{ message?: { content?: string } }>
-      error?: { message?: string }
-    } | null
-    if (!r.ok) {
-      return {
-        ok: false,
-        status: r.status,
-        error: data?.error?.message || `fallback HTTP ${r.status}`,
+
+  let last: AiResult = { ok: false, status: 0, error: 'fallback not attempted' }
+  // Try each candidate model until one answers. A model that's been
+  // deprecated returns a 400/404 — we just move to the next.
+  for (const model of FALLBACK_AI_MODELS) {
+    try {
+      const r = await fetch(`${FALLBACK_AI_BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${FALLBACK_AI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: msgs,
+          // Cerebras' free tier caps context at 8192 tokens — keep the
+          // output modest so a long chat still fits within it.
+          max_tokens: Math.min(maxTokens, 4096),
+          temperature: 0.7,
+        }),
+      })
+      const data = (await r.json().catch(() => null)) as {
+        choices?: Array<{ message?: { content?: string } }>
+        error?: { message?: string }
+      } | null
+      if (!r.ok) {
+        const msg = data?.error?.message || `HTTP ${r.status}`
+        console.error(
+          `[ai-fallback] model="${model}" base="${FALLBACK_AI_BASE_URL}" failed ${r.status}: ${msg}`,
+        )
+        last = { ok: false, status: r.status, error: `fallback(${model}) ${r.status}: ${msg}` }
+        continue
       }
-    }
-    const text = String(data?.choices?.[0]?.message?.content || '').trim()
-    if (!text) return { ok: false, status: 460, error: 'fallback empty' }
-    return { ok: true, text }
-  } catch (e) {
-    return {
-      ok: false,
-      status: 0,
-      error: (e as Error)?.message || 'fallback error',
+      const text = String(data?.choices?.[0]?.message?.content || '').trim()
+      if (!text) {
+        console.error(`[ai-fallback] model="${model}" returned empty`)
+        last = { ok: false, status: 460, error: `fallback(${model}) empty` }
+        continue
+      }
+      console.error(`[ai-fallback] OK via model="${model}"`)
+      return { ok: true, text }
+    } catch (e) {
+      const m = (e as Error)?.message || 'error'
+      console.error(`[ai-fallback] model="${model}" exception: ${m}`)
+      last = { ok: false, status: 0, error: `fallback(${model}) ${m}` }
     }
   }
+  return last
 }
 
 async function handleAiChat(req: VercelRequest, res: VercelResponse) {
@@ -6630,20 +6648,18 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
   // Primary: Gemini (the smart model the user wants to stay on).
   let result = await callGemini(apiKey, contents, systemParts, maxTokens)
 
-  // Safety net: if Gemini is over quota (429), down (5xx), unreachable
-  // (network = 0), or returned empty/blocked (460), and a free fallback is
-  // configured — transparently use it so the advisor never goes dark. We
-  // do NOT fall back on 400/403 (our request was malformed / the key was
-  // rejected; the backup would fail the same way and Gemini's error is the
-  // more useful one to surface).
-  if (
-    !result.ok &&
-    FALLBACK_AI_API_KEY &&
-    result.status !== 400 &&
-    result.status !== 403
-  ) {
-    const fb = await callFallbackAi(messages, maxTokens)
-    if (fb.ok) result = fb
+  // Safety net: any Gemini failure except a genuinely malformed request
+  // (400 — the backup would choke on it too) falls back to the free
+  // provider so the advisor never goes dark. Logged so the Vercel function
+  // logs show exactly what happened on both the primary and the fallback.
+  if (!result.ok) {
+    console.error(
+      `[ai] gemini failed status=${result.status}: ${result.error.slice(0, 180)}`,
+    )
+    if (FALLBACK_AI_API_KEY && result.status !== 400) {
+      const fb = await callFallbackAi(messages, maxTokens)
+      if (fb.ok) result = fb
+    }
   }
 
   if (result.ok) {
