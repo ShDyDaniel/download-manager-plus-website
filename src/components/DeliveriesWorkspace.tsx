@@ -666,28 +666,34 @@ function DeliveryComposerModal({
                         {staged.map((item) => (
                           <div
                             key={item.id}
-                            className="flex items-center gap-3 rounded-lg border border-border bg-bg/50 px-3 py-2"
+                            className="flex items-center gap-2.5 rounded-lg border border-border bg-bg/50 px-3 py-2"
                           >
                             {item.kind === 'file' ? (
                               <FileVideo className="h-4 w-4 shrink-0 text-primary" />
                             ) : (
                               <Link2 className="h-4 w-4 shrink-0 text-primary" />
                             )}
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm text-fg" dir="ltr">
-                                {item.kind === 'file' ? item.file.name : item.url}
-                              </p>
-                              <p className="text-[11px] text-fg-muted">
-                                {item.kind === 'file'
-                                  ? formatBytes(item.file.size)
-                                  : 'ייבוא מקישור Google Drive'}
-                              </p>
-                            </div>
+                            {/* One line: name (right, after icon) then
+                                size (left). dir=ltr so neither flips. */}
+                            <span
+                              className="min-w-0 flex-1 truncate text-sm text-fg"
+                              dir="ltr"
+                            >
+                              {item.kind === 'file' ? item.file.name : item.url}
+                            </span>
+                            <span
+                              className="shrink-0 text-[11px] text-fg-muted"
+                              dir="ltr"
+                            >
+                              {item.kind === 'file'
+                                ? formatBytes(item.file.size)
+                                : 'קישור Drive'}
+                            </span>
                             {!busy && (
                               <button
                                 type="button"
                                 onClick={() => removeItem(item.id)}
-                                className="rounded p-1 text-fg-muted hover:text-destructive"
+                                className="shrink-0 rounded p-1 text-fg-muted hover:text-destructive"
                                 aria-label="הסר"
                               >
                                 <X className="h-4 w-4" />
@@ -697,9 +703,12 @@ function DeliveryComposerModal({
                         ))}
                         <p className="text-[11px] text-fg-muted">
                           {staged.length} סרטונים
-                          {totalStagedBytes > 0
-                            ? ` · ${formatBytes(totalStagedBytes)}`
-                            : ''}
+                          {totalStagedBytes > 0 && (
+                            <>
+                              {' · '}
+                              <span dir="ltr">{formatBytes(totalStagedBytes)}</span>
+                            </>
+                          )}
                         </p>
                       </div>
                     )}
@@ -910,10 +919,6 @@ function MultiDropZone({
 
   return (
     <div>
-      <label className="mb-2 flex items-center justify-between text-xs text-fg-muted">
-        <span>קבצי וידאו</span>
-        <span className="text-fg-faint">כל גודל שנכנס במכסה</span>
-      </label>
       <div
         role="button"
         tabIndex={disabled ? -1 : 0}
@@ -944,7 +949,7 @@ function MultiDropZone({
         }}
         onDrop={handleDrop}
         className={
-          'group relative flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-10 text-center transition-all ' +
+          'group relative flex flex-col items-center justify-center gap-2.5 rounded-xl border-2 border-dashed px-6 py-5 text-center transition-all ' +
           (disabled
             ? 'cursor-not-allowed border-border bg-bg-card/40 opacity-60'
             : dragOver
@@ -954,20 +959,21 @@ function MultiDropZone({
       >
         <div
           className={
-            'flex h-14 w-14 items-center justify-center rounded-2xl transition-colors ' +
+            'flex h-10 w-10 items-center justify-center rounded-xl transition-colors ' +
             (dragOver
               ? 'bg-primary/20 text-primary'
               : 'bg-bg-elevated text-fg-muted group-hover:bg-primary/10 group-hover:text-primary')
           }
         >
-          <Upload className="h-7 w-7" />
+          <Upload className="h-5 w-5" />
         </div>
         <div>
           <div className="text-sm font-medium text-fg">
             {dragOver ? 'שחרר כאן' : 'גרור קבצי וידאו לכאן'}
           </div>
           <div className="mt-1 text-xs text-fg-muted">
-            או <span className="text-primary">לחץ כדי לבחור</span> מהמחשב
+            או <span className="text-primary">לחץ כדי לבחור</span> · כל גודל
+            שנכנס במכסה
           </div>
         </div>
       </div>
