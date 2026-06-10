@@ -6417,6 +6417,172 @@ async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
  * ────────────────────────────────────────────────────────────── */
 const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim()
 
+/* ── Free fallback provider (the "safety net") ──────────────────────────
+ *  When Gemini hits its daily/rate cap (429), is briefly down (5xx),
+ *  unreachable, or returns empty — we transparently fall back to a second,
+ *  OpenAI-compatible provider so the advisor never goes dark. Gemini stays
+ *  the PRIMARY (quality); this only kicks in when it's unavailable.
+ *
+ *  Configured ENTIRELY by env (no key ships in the app). Point it at any
+ *  free OpenAI-compatible tier — just set the three vars in Vercel:
+ *    Cerebras   base https://api.cerebras.ai/v1     model llama-3.3-70b   (1M free tokens/day)
+ *    Groq       base https://api.groq.com/openai/v1  model llama-3.3-70b-versatile
+ *    OpenRouter base https://openrouter.ai/api/v1    model <something>:free
+ *  Defaults to Cerebras. If FALLBACK_AI_API_KEY is unset, behaviour is
+ *  unchanged (Gemini only). */
+const FALLBACK_AI_API_KEY = (process.env.FALLBACK_AI_API_KEY || '').trim()
+const FALLBACK_AI_BASE_URL = (
+  process.env.FALLBACK_AI_BASE_URL || 'https://api.cerebras.ai/v1'
+)
+  .trim()
+  .replace(/\/$/, '')
+const FALLBACK_AI_MODEL = (
+  process.env.FALLBACK_AI_MODEL || 'llama-3.3-70b'
+).trim()
+
+type AiResult =
+  | { ok: true; text: string }
+  | { ok: false; status: number; error: string }
+
+/** Call Gemini (the primary). Returns a normalized result; the caller
+ *  decides whether to fall back. Retries once on a 5xx/network blip; never
+ *  retries a 429 (that just burns more quota). status 460 = empty/blocked. */
+async function callGemini(
+  apiKey: string,
+  contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>,
+  systemParts: string[],
+  maxTokens: number,
+): Promise<AiResult> {
+  const payload: Record<string, unknown> = {
+    contents,
+    generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
+  }
+  if (systemParts.length) {
+    payload.systemInstruction = { parts: [{ text: systemParts.join('\n\n') }] }
+  }
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(
+    apiKey,
+  )}`
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  let lastErr = 'AI error'
+  let lastStatus = 0
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = (await r.json().catch(() => null)) as {
+        candidates?: Array<{
+          content?: { parts?: Array<{ text?: string }> }
+          finishReason?: string
+        }>
+        error?: { message?: string }
+        promptFeedback?: { blockReason?: string }
+      } | null
+      if (!r.ok) {
+        lastStatus = r.status
+        const gMsg = data?.error?.message || `HTTP ${r.status}`
+        let tagged = gMsg
+        if (r.status === 429)
+          tagged = `rate limit / too many requests (429) — ${gMsg}`
+        else if (r.status === 400) tagged = `bad request (400) — ${gMsg}`
+        else if (r.status === 403)
+          tagged = `403 forbidden — מפתח ה-AI נדחה או חסר הרשאה — ${gMsg}`
+        else if (r.status >= 500)
+          tagged = `503 service unavailable (${r.status}) — ${gMsg}`
+        if (r.status >= 500 && attempt === 0) {
+          await sleep(1200)
+          continue
+        }
+        return { ok: false, status: r.status, error: tagged }
+      }
+      const text =
+        data?.candidates?.[0]?.content?.parts
+          ?.map((p) => p.text || '')
+          .join('')
+          .trim() || ''
+      if (!text) {
+        const blocked = data?.promptFeedback?.blockReason
+        const finish = data?.candidates?.[0]?.finishReason
+        return {
+          ok: false,
+          status: 460,
+          error: blocked
+            ? `התוכן נחסם (${blocked})`
+            : finish === 'MAX_TOKENS'
+              ? 'התשובה נקטעה באמצע (חריגת אורך). נסו שוב.'
+              : 'תשובת AI ריקה',
+        }
+      }
+      return { ok: true, text }
+    } catch (e) {
+      lastErr = (e as Error)?.message || 'AI error'
+      if (attempt === 0) {
+        await sleep(1200)
+        continue
+      }
+    }
+  }
+  return { ok: false, status: lastStatus || 0, error: lastErr }
+}
+
+/** The free safety-net: an OpenAI-compatible chat completion. Forwards the
+ *  ORIGINAL OpenAI-style messages (system + history) verbatim. */
+async function callFallbackAi(
+  messages: Array<{ role?: string; content?: string }>,
+  maxTokens: number,
+): Promise<AiResult> {
+  if (!FALLBACK_AI_API_KEY) {
+    return { ok: false, status: 0, error: 'no fallback configured' }
+  }
+  const msgs = messages
+    .map((m) => ({
+      role: String(m?.role || 'user'),
+      content: String(m?.content || ''),
+    }))
+    .filter((m) => m.content)
+  if (msgs.length === 0) return { ok: false, status: 400, error: 'no messages' }
+  try {
+    const r = await fetch(`${FALLBACK_AI_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${FALLBACK_AI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: FALLBACK_AI_MODEL,
+        messages: msgs,
+        // Cerebras' free tier caps context at 8192 tokens — keep the output
+        // modest so a long chat still fits within it.
+        max_tokens: Math.min(maxTokens, 4096),
+        temperature: 0.7,
+      }),
+    })
+    const data = (await r.json().catch(() => null)) as {
+      choices?: Array<{ message?: { content?: string } }>
+      error?: { message?: string }
+    } | null
+    if (!r.ok) {
+      return {
+        ok: false,
+        status: r.status,
+        error: data?.error?.message || `fallback HTTP ${r.status}`,
+      }
+    }
+    const text = String(data?.choices?.[0]?.message?.content || '').trim()
+    if (!text) return { ok: false, status: 460, error: 'fallback empty' }
+    return { ok: true, text }
+  } catch (e) {
+    return {
+      ok: false,
+      status: 0,
+      error: (e as Error)?.message || 'fallback error',
+    }
+  }
+}
+
 async function handleAiChat(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -6461,103 +6627,34 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ ok: false, error: 'no user message' })
   }
 
-  const payload: Record<string, unknown> = {
-    contents,
-    generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
-  }
-  if (systemParts.length) {
-    payload.systemInstruction = { parts: [{ text: systemParts.join('\n\n') }] }
+  // Primary: Gemini (the smart model the user wants to stay on).
+  let result = await callGemini(apiKey, contents, systemParts, maxTokens)
+
+  // Safety net: if Gemini is over quota (429), down (5xx), unreachable
+  // (network = 0), or returned empty/blocked (460), and a free fallback is
+  // configured — transparently use it so the advisor never goes dark. We
+  // do NOT fall back on 400/403 (our request was malformed / the key was
+  // rejected; the backup would fail the same way and Gemini's error is the
+  // more useful one to surface).
+  if (
+    !result.ok &&
+    FALLBACK_AI_API_KEY &&
+    result.status !== 400 &&
+    result.status !== 403
+  ) {
+    const fb = await callFallbackAi(messages, maxTokens)
+    if (fb.ok) result = fb
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(
-    apiKey,
-  )}`
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-  // Up to 2 attempts: a transient 429 / 5xx or a network blip retries once
-  // after a short wait, so a one-off hiccup doesn't surface as an error.
-  let lastErr = 'AI error'
-  let lastStatus = 0
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const r = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      const data = (await r.json().catch(() => null)) as {
-        candidates?: Array<{
-          content?: { parts?: Array<{ text?: string }> }
-          finishReason?: string
-        }>
-        error?: { message?: string }
-        promptFeedback?: { blockReason?: string }
-      } | null
-
-      if (!r.ok) {
-        lastStatus = r.status
-        const gMsg = data?.error?.message || `HTTP ${r.status}`
-        // Tag the message with phrases the desktop's friendlyAiError()
-        // recognizes, so users on already-shipped builds see an ACCURATE
-        // reason (quota vs bad-request vs server-down) instead of the
-        // generic "transient error" — and so we can diagnose remotely.
-        let tagged = gMsg
-        if (r.status === 429)
-          tagged = `rate limit / too many requests (429) — ${gMsg}`
-        else if (r.status === 400) tagged = `bad request (400) — ${gMsg}`
-        else if (r.status === 403)
-          tagged = `403 forbidden — מפתח ה-AI נדחה או חסר הרשאה — ${gMsg}`
-        else if (r.status >= 500)
-          tagged = `503 service unavailable (${r.status}) — ${gMsg}`
-        lastErr = tagged
-        // Retry ONLY genuine server-side / network blips (5xx). Do NOT
-        // retry a 429: it means we're over the rate/quota limit, and
-        // hammering again within the same window just burns more quota
-        // and keeps failing. Return it immediately so the client can tell
-        // the user to wait.
-        if (r.status >= 500 && attempt === 0) {
-          await sleep(1200)
-          continue
-        }
-        return res
-          .status(200)
-          .json({ ok: false, status: r.status, error: lastErr.slice(0, 300) })
-      }
-      const text =
-        data?.candidates?.[0]?.content?.parts
-          ?.map((p) => p.text || '')
-          .join('')
-          .trim() || ''
-      if (!text) {
-        const blocked = data?.promptFeedback?.blockReason
-        const finish = data?.candidates?.[0]?.finishReason
-        // With thinking disabled this should be rare, but keep a clear,
-        // distinguishable message so any future empty reply is diagnosable
-        // (truncation vs safety-block vs genuinely empty) instead of
-        // collapsing into the generic "transient error".
-        return res.status(200).json({
-          ok: false,
-          error: blocked
-            ? `התוכן נחסם (${blocked})`
-            : finish === 'MAX_TOKENS'
-              ? 'התשובה נקטעה באמצע (חריגת אורך). נסו שוב.'
-              : 'תשובת AI ריקה',
-        })
-      }
-      // OpenAI-shaped reply so the desktop client parsing stays the same.
-      return res
-        .status(200)
-        .json({ ok: true, json: { choices: [{ message: { content: text } }] } })
-    } catch (e) {
-      lastErr = (e as Error)?.message || 'AI error'
-      if (attempt === 0) {
-        await sleep(1200)
-        continue
-      }
-    }
+  if (result.ok) {
+    // OpenAI-shaped reply so the desktop client parsing stays the same.
+    return res
+      .status(200)
+      .json({ ok: true, json: { choices: [{ message: { content: result.text } }] } })
   }
   return res
     .status(200)
-    .json({ ok: false, status: lastStatus, error: lastErr.slice(0, 300) })
+    .json({ ok: false, status: result.status, error: result.error.slice(0, 300) })
 }
 
 /* ── Vercel invocation counter (self-metered) — twin of api/paypal.ts.
