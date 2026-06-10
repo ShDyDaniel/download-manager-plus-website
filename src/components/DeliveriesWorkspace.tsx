@@ -6,6 +6,7 @@ import {
   Loader2,
   Copy,
   Check,
+  CheckCircle2,
   Trash2,
   Lock,
   Clock,
@@ -364,6 +365,10 @@ function DeliveryComposerModal({
     importing?: boolean
   } | null>(null)
   const [error, setError] = useState('')
+  // After a successful create the modal body swaps to a success view
+  // with the shareable link (mirrors the revisions modal).
+  const [done, setDone] = useState<{ shareUrl: string } | null>(null)
+  const [copied, setCopied] = useState(false)
   const idRef = useRef(0)
   const nextId = () => `s${(idRef.current += 1)}`
 
@@ -376,6 +381,19 @@ function DeliveryComposerModal({
     setPassword('')
     setProgress(null)
     setError('')
+    setDone(null)
+    setCopied(false)
+  }
+
+  async function copyShareLink() {
+    if (!done) return
+    try {
+      await navigator.clipboard.writeText(done.shareUrl)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1800)
+    } catch {
+      /* ignore */
+    }
   }
 
   function close() {
@@ -463,15 +481,16 @@ function DeliveryComposerModal({
           })
         }
       }
-      await createDelivery({
+      const created = await createDelivery({
         title: title.trim(),
         expiryDays,
         password: pw || undefined,
         videos: uploaded,
       })
       await onCreated()
-      reset() // clear inputs for next time
-      onClose() // success → close the modal
+      // Success → swap the modal body to the share-link view (the user
+      // closes it themselves with "סיום").
+      setDone({ shareUrl: `${SITE}/deliver/${created.shareToken}` })
     } catch (e) {
       setError((e as Error)?.message || 'ההעלאה נכשלה. נסו שוב.')
       // Stay in the (still-open) modal so the error + inputs show.
@@ -524,7 +543,14 @@ function DeliveryComposerModal({
               </div>
 
               <div className="flex-1 space-y-5 overflow-y-auto p-5">
-                {busy && progress ? (
+                {done ? (
+                  <DeliverySuccessView
+                    shareUrl={done.shareUrl}
+                    copied={copied}
+                    onCopy={copyShareLink}
+                    onClose={close}
+                  />
+                ) : busy && progress ? (
                   <DeliveryProgressView
                     idx={progress.idx}
                     total={progress.total}
@@ -738,7 +764,7 @@ function DeliveryComposerModal({
                 )}
               </div>
 
-              {!busy && (
+              {!busy && !done && (
                 <div className="border-t border-border p-4">
                   <button
                     type="button"
@@ -754,6 +780,68 @@ function DeliveryComposerModal({
         </motion.div>
       </motion.div>
     </Portal>
+  )
+}
+
+/* ── In-modal success view — shown after a delivery is created. Gives
+ *    the shareable link + a copy button (mirrors the revisions modal).
+ *    The user closes it themselves with "סיום". ─────────────────────── */
+function DeliverySuccessView({
+  shareUrl,
+  copied,
+  onCopy,
+  onClose,
+}: {
+  shareUrl: string
+  copied: boolean
+  onCopy: () => void
+  onClose: () => void
+}) {
+  return (
+    <div className="space-y-5 py-2 text-center">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-success/15 text-success">
+        <CheckCircle2 className="h-7 w-7" strokeWidth={1.8} />
+      </div>
+      <div>
+        <h3 className="text-base font-medium text-fg">
+          הסרטון הועלה והקישור מוכן
+        </h3>
+        <p className="mt-2 text-xs text-fg-muted">
+          שלחו את הקישור הזה ללקוח — הוא יוכל לצפות בסרטון ולהוריד אותו.
+        </p>
+      </div>
+
+      {/* Share URL + copy */}
+      <div className="flex items-stretch gap-2">
+        <input
+          readOnly
+          value={shareUrl}
+          dir="ltr"
+          className="block flex-1 truncate rounded-md border border-border bg-bg px-3 py-2.5 text-xs text-fg"
+          onClick={(e) => (e.currentTarget as HTMLInputElement).select()}
+        />
+        <button
+          type="button"
+          onClick={onCopy}
+          className="flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-2.5 text-xs font-medium text-bg transition-all hover:bg-primary-hover"
+        >
+          {copied ? (
+            <Check className="h-3.5 w-3.5" />
+          ) : (
+            <Copy className="h-3.5 w-3.5" />
+          )}
+          {copied ? 'הועתק' : 'העתק'}
+        </button>
+      </div>
+
+      <button
+        type="button"
+        onClick={onClose}
+        className="w-full rounded-md border border-border px-4 py-2.5 text-sm text-fg transition-colors hover:bg-bg-card"
+      >
+        סיום
+      </button>
+    </div>
   )
 }
 

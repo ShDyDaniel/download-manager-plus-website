@@ -226,6 +226,14 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
   // <video> below preloads (it's in the DOM but visually collapsed, so
   // preload="auto" still fetches).
   const [ready, setReady] = useState(data.videos.length === 0)
+  // Videos the browser couldn't decode (e.g. a ProRes/HEVC .mov). We
+  // swap those for a clean "download to view" card instead of a black
+  // box, so the client always has a way to get the file.
+  const [errored, setErrored] = useState<Record<number, boolean>>({})
+  const markErrored = (i: number) => {
+    setErrored((prev) => (prev[i] ? prev : { ...prev, [i]: true }))
+    if (i === 0) setReady(true)
+  }
 
   // Safety net: never strand the client on the loader. If `canplay`
   // doesn't fire within 15s (slow line, codec quirk), reveal anyway —
@@ -267,16 +275,36 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
                 className="overflow-hidden rounded-3xl border border-border bg-card shadow-2xl shadow-black/40"
               >
                 {/* Big hero player. Wait for the FIRST video's canplay
-                    to reveal the page. */}
-                <video
-                  src={v.streamUrl}
-                  controls
-                  playsInline
-                  preload="auto"
-                  onCanPlay={i === 0 ? () => setReady(true) : undefined}
-                  onError={i === 0 ? () => setReady(true) : undefined}
-                  className="block max-h-[78vh] w-full bg-black"
-                />
+                    to reveal the page. If the browser can't decode the
+                    file, fall back to a download card. */}
+                {errored[i] ? (
+                  <div className="flex aspect-video w-full flex-col items-center justify-center gap-4 bg-black/40 p-8 text-center">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                      <FileVideo className="h-7 w-7" />
+                    </div>
+                    <p className="max-w-sm text-sm text-muted-foreground">
+                      לא ניתן להציג תצוגה מקדימה של הפורמט הזה בדפדפן. אפשר
+                      להוריד את הסרטון ולצפות בו במחשב.
+                    </p>
+                    <a
+                      href={v.downloadUrl}
+                      className="inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 transition-opacity hover:opacity-90"
+                    >
+                      <DownloadIcon className="h-4 w-4" />
+                      הורדת הסרטון
+                    </a>
+                  </div>
+                ) : (
+                  <video
+                    src={v.streamUrl}
+                    controls
+                    playsInline
+                    preload="auto"
+                    onCanPlay={i === 0 ? () => setReady(true) : undefined}
+                    onError={() => markErrored(i)}
+                    className="block max-h-[78vh] w-full bg-black"
+                  />
+                )}
                 {/* Info bar — name + size on ONE line, download CTA. */}
                 <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
                   <div className="flex min-w-0 items-center gap-3">
