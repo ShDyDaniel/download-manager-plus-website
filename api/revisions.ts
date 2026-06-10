@@ -343,6 +343,32 @@ async function r2DeleteObject(key: string): Promise<boolean> {
   }
 }
 
+// R2/S3 has no real folders — a "folder" is just a key prefix that
+// disappears from the dashboard the moment its last object is deleted.
+// To keep each user's folders visible + stable even when empty, we drop
+// a tiny zero-byte marker object AT the prefix (key ends in "/", which
+// the R2 console renders as the folder). Every deletion in this file is
+// key-SPECIFIC (r2DeleteObject on a full file key), so none of them ever
+// touch this marker — the folder persists no matter what; only the
+// actual files are ever removed. Best-effort; awaited so it lands before
+// the response returns (the serverless function may freeze right after).
+async function ensureFolderMarker(
+  uid: string,
+  sub: 'videos' | 'finals' | 'notes',
+): Promise<void> {
+  try {
+    await getR2().send(
+      new PutObjectCommand({
+        Bucket: R2_BUCKET,
+        Key: `${uid}/${sub}/`,
+        Body: '',
+      }),
+    )
+  } catch (e) {
+    console.warn('[r2] folder marker failed:', uid, sub, e)
+  }
+}
+
 // Presigned GET URL for a note-media object. Note media is small and
 // immutable, so the browser can fetch it directly from R2 via this
 // short-lived URL — no Worker hop needed (unlike video, which streams
@@ -488,6 +514,9 @@ async function handleR2UploadInit(req: VercelRequest, res: VercelResponse) {
   }
 
   const key = buildVideoKey(verified.uid, fileName)
+  // Keep the user's videos/ folder present even after its last file is
+  // deleted (see ensureFolderMarker).
+  await ensureFolderMarker(verified.uid, 'videos')
 
   try {
     const out = await getR2().send(
@@ -6318,6 +6347,9 @@ async function handleDeliveryUploadInit(
   }
 
   const key = buildFinalKey(verified.uid, fileName)
+  // Keep the user's finals/ folder present even after its last file is
+  // deleted (see ensureFolderMarker).
+  await ensureFolderMarker(verified.uid, 'finals')
   try {
     const out = await getR2().send(
       new CreateMultipartUploadCommand({

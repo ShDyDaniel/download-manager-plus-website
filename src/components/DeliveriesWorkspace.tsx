@@ -123,7 +123,7 @@ export function DeliveriesWorkspace() {
           className="inline-flex shrink-0 items-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover"
         >
           <Plus className="h-4 w-4" />
-          מסירה חדשה
+          שליחה חדשה
         </button>
       </div>
 
@@ -138,7 +138,7 @@ export function DeliveriesWorkspace() {
             <Send className="h-6 w-6" />
           </div>
           <p className="text-sm leading-relaxed text-fg-muted">
-            עדיין אין מסירות. לחצו "מסירה חדשה" כדי להעלות סרטון
+            עדיין אין מסירות. לחצו "שליחה חדשה" כדי להעלות סרטון
             סופי ולקבל קישור לשליחה ללקוח.
           </p>
         </div>
@@ -256,7 +256,7 @@ function StorageBar({
       <div className="mb-2 flex items-center justify-between">
         <span className="flex items-center gap-1.5">
           <HardDrive className="h-3.5 w-3.5" aria-hidden />
-          שטח אחסון בחשבון (משותף עם סבבי התיקונים)
+          שטח אחסון בחשבון
         </span>
         <span dir="ltr" className="font-mono text-fg">
           {formatBytes(storage.usedBytes)} / {formatBytes(storage.limitBytes)}
@@ -467,7 +467,7 @@ function DeliveryComposerModal({
               className="flex max-h-[90vh] w-[min(560px,94vw)] flex-col overflow-hidden rounded-2xl border border-border bg-bg-elevated shadow-2xl"
             >
               <div className="flex items-center justify-between border-b border-border p-4">
-                <h2 className="text-base font-medium text-fg">מסירה חדשה</h2>
+                <h2 className="text-base font-medium text-fg">שליחה חדשה</h2>
                 <button
                   type="button"
                   onClick={close}
