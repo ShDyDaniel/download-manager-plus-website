@@ -7,6 +7,7 @@ import {
   Clock,
   Download as DownloadIcon,
   ArrowLeft,
+  FileVideo,
 } from 'lucide-react'
 
 /**
@@ -153,7 +154,7 @@ export function DeliveryPage() {
   return (
     <div dir="rtl" className="flex min-h-dvh flex-col bg-background text-foreground">
       <BrandBar />
-      <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-8">
+      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 md:py-10">
         {state.kind === 'loading' && (
           <Centered>
             <Loader2 className="h-7 w-7 animate-spin text-primary" />
@@ -210,42 +211,59 @@ export function DeliveryPage() {
         )}
 
         {state.kind === 'ready' && (
-          <div className="space-y-6">
+          <div className="space-y-8">
             <header className="text-center">
-              <h1 className="text-2xl font-bold">{state.data.title || 'הסרטונים שלך'}</h1>
-              <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+              <h1 className="font-display text-3xl font-bold tracking-tight md:text-4xl">
+                {state.data.title || 'הסרטונים שלך'}
+              </h1>
+              <p className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground">
                 <Clock className="h-3.5 w-3.5" />
                 {expiryText(state.data.expiresAt)}
               </p>
             </header>
 
-            <div className="space-y-5">
+            <div className="space-y-8">
               {state.data.videos.map((v, i) => (
                 <div
                   key={i}
-                  className="overflow-hidden rounded-2xl border border-border bg-card"
+                  className="overflow-hidden rounded-3xl border border-border bg-card shadow-2xl shadow-black/40"
                 >
+                  {/* Big hero player — fills the wide container, capped
+                      at most of the viewport height so it stays visible
+                      without scrolling. */}
                   <video
                     src={v.streamUrl}
                     controls
                     playsInline
-                    className="w-full bg-black"
-                    style={{ maxHeight: '70vh' }}
+                    className="block max-h-[78vh] w-full bg-black"
                   />
-                  <div className="flex items-center justify-between gap-3 p-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium" dir="ltr">
-                        {v.name}
-                      </p>
-                      {formatBytes(v.sizeBytes) && (
-                        <p className="text-[11px] text-muted-foreground" dir="ltr">
-                          {formatBytes(v.sizeBytes)}
+                  {/* Clean info bar: file icon + name + size on one side,
+                      a prominent download button on the other. */}
+                  <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                        <FileVideo className="h-5 w-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <p
+                          className="truncate text-sm font-semibold text-foreground"
+                          dir="ltr"
+                        >
+                          {v.name}
                         </p>
-                      )}
+                        {formatBytes(v.sizeBytes) && (
+                          <p
+                            className="mt-0.5 text-xs text-muted-foreground"
+                            dir="ltr"
+                          >
+                            {formatBytes(v.sizeBytes)}
+                          </p>
+                        )}
+                      </div>
                     </div>
                     <a
                       href={v.downloadUrl}
-                      className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+                      className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 transition-opacity hover:opacity-90"
                     >
                       <DownloadIcon className="h-4 w-4" />
                       הורדה
@@ -268,7 +286,7 @@ export function DeliveryPage() {
 function BrandBar() {
   return (
     <header className="border-b border-border">
-      <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-4 py-3">
+      <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-4 py-3">
         <a
           href={SITE_URL}
           className="flex items-baseline gap-1.5 text-lg font-bold tracking-tight"
@@ -292,7 +310,7 @@ function BrandBar() {
 function BrandFooter() {
   return (
     <footer className="border-t border-border">
-      <div className="mx-auto w-full max-w-3xl px-4 py-6 text-center">
+      <div className="mx-auto w-full max-w-3xl px-4 py-8 text-center">
         <p className="text-sm text-foreground">
           הסרטון נשלח אליך דרך{' '}
           <a href={SITE_URL} className="font-semibold text-primary underline underline-offset-2">
