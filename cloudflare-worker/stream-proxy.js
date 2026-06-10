@@ -62,8 +62,10 @@ function videoTypeFromKey(key) {
     case 'mp4':
     case 'm4v':
       return 'video/mp4'
+    // .mov is the same container as .mp4; H.264 content plays when
+    // served as video/mp4, but Chrome refuses video/quicktime.
     case 'mov':
-      return 'video/quicktime'
+      return 'video/mp4'
     case 'webm':
       return 'video/webm'
     case 'mkv':
@@ -81,7 +83,16 @@ function videoTypeFromKey(key) {
 
 function ensureVideoContentType(headers, key) {
   const ct = (headers.get('content-type') || '').toLowerCase()
-  if (!ct || ct === 'application/octet-stream' || ct === 'binary/octet-stream') {
+  // Override generic types AND video/quicktime: Chrome won't play
+  // quicktime even for H.264 .mov bytes, so re-serve those as the
+  // key-derived type (video/mp4 for .mov). This also fixes older
+  // objects already stored as video/quicktime.
+  if (
+    !ct ||
+    ct === 'application/octet-stream' ||
+    ct === 'binary/octet-stream' ||
+    ct === 'video/quicktime'
+  ) {
     headers.set('content-type', videoTypeFromKey(key))
   }
 }

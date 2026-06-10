@@ -236,8 +236,12 @@ function videoTypeFromFileName(name: string): string {
     case 'mp4':
     case 'm4v':
       return 'video/mp4'
+    // A .mov is the same ISO base-media container as .mp4. The common
+    // editor output (H.264/AAC) plays in every browser when served as
+    // video/mp4 — but Chrome refuses video/quicktime for the identical
+    // bytes. So we deliberately serve .mov as video/mp4.
     case 'mov':
-      return 'video/quicktime'
+      return 'video/mp4'
     case 'webm':
       return 'video/webm'
     case 'mkv':
@@ -251,6 +255,35 @@ function videoTypeFromFileName(name: string): string {
     default:
       return 'video/mp4'
   }
+}
+
+const KNOWN_VIDEO_EXTS = new Set([
+  'mp4',
+  'm4v',
+  'mov',
+  'webm',
+  'mkv',
+  'avi',
+  'wmv',
+  'flv',
+])
+
+function isKnownVideoExt(name: string): boolean {
+  const m = /\.([a-z0-9]+)$/i.exec(String(name || '').trim())
+  return m ? KNOWN_VIDEO_EXTS.has(m[1].toLowerCase()) : false
+}
+
+// Resolve the Content-Type to STORE for an uploaded video. The
+// extension is authoritative for known video types — this normalises
+// the browser's unreliable video/quicktime (.mov) to video/mp4 so the
+// file actually plays in the browser. For anything else we trust a
+// client-sent video/* type, otherwise default to video/mp4.
+function resolveVideoContentType(fileName: string, clientType?: string): string {
+  if (isKnownVideoExt(fileName)) return videoTypeFromFileName(fileName)
+  const ct = String(clientType || '')
+    .toLowerCase()
+    .slice(0, 100)
+  return ct.startsWith('video/') ? ct : videoTypeFromFileName(fileName)
 }
 
 function buildNoteMediaKey(uid: string, ext: string): string {
@@ -479,15 +512,11 @@ async function handleR2UploadInit(req: VercelRequest, res: VercelResponse) {
     sizeBytes?: number
   }
   const fileName = String(body.fileName || 'video').slice(0, 300)
-  // Store a real video/* content-type so the <video> player on the
-  // review page renders a picture (a generic octet-stream makes some
-  // browsers mis-sniff the file as audio-only). Trust the client's
-  // type only when it's already a video/* value; otherwise derive it
-  // from the file extension.
-  const clientType = String(body.contentType || '').toLowerCase()
-  const contentType = clientType.startsWith('video/')
-    ? clientType.slice(0, 100)
-    : videoTypeFromFileName(fileName)
+  // Store a browser-playable video/* content-type. The extension is the
+  // source of truth for known video types (it normalises the browser's
+  // unreliable video/quicktime for .mov → video/mp4); only unknown
+  // extensions fall back to a client-sent video/* type.
+  const contentType = resolveVideoContentType(fileName, body.contentType)
   const sizeBytes = Math.max(0, Math.floor(Number(body.sizeBytes) || 0))
 
   // Storage-quota gate, BEFORE the upload starts. We require a real
@@ -6321,10 +6350,9 @@ async function handleDeliveryUploadInit(
     sizeBytes?: number
   }
   const fileName = String(body.fileName || 'video').slice(0, 300)
-  const clientType = String(body.contentType || '').toLowerCase()
-  const contentType = clientType.startsWith('video/')
-    ? clientType.slice(0, 100)
-    : videoTypeFromFileName(fileName)
+  // Extension-authoritative content-type so .mov is stored as video/mp4
+  // (Chrome won't play video/quicktime). See resolveVideoContentType.
+  const contentType = resolveVideoContentType(fileName, body.contentType)
   const sizeBytes = Math.max(0, Math.floor(Number(body.sizeBytes) || 0))
 
   const { usedBytes, limitBytes } = await getStorageState(verified.uid)
@@ -6577,9 +6605,18 @@ async function handleDeliveryView(req: VercelRequest, res: VercelResponse) {
   }> = []
   for (const v of videos) {
     try {
+      // Force a browser-playable Content-Type on the streaming URL,
+      // derived from the filename. This overrides whatever is stored on
+      // the object (older .mov uploads / Drive imports may be stored as
+      // video/quicktime, which Chrome refuses to play) so the in-page
+      // player always gets video/mp4 for H.264 .mov/.mp4 content.
       const streamUrl = await getSignedUrl(
         getR2(),
-        new GetObjectCommand({ Bucket: R2_BUCKET, Key: v.r2Key }),
+        new GetObjectCommand({
+          Bucket: R2_BUCKET,
+          Key: v.r2Key,
+          ResponseContentType: videoTypeFromFileName(v.name || v.r2Key),
+        }),
         { expiresIn: R2_PRESIGN_TTL },
       )
       const downloadUrl = await getSignedUrl(

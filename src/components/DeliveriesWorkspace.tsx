@@ -251,7 +251,6 @@ export function DeliveriesWorkspace() {
       <DeliveryComposerModal
         open={composerOpen}
         onClose={() => setComposerOpen(false)}
-        onReopen={() => setComposerOpen(true)}
         onCreated={refresh}
       />
     </div>
@@ -345,14 +344,10 @@ type StagedItem =
 function DeliveryComposerModal({
   open,
   onClose,
-  onReopen,
   onCreated,
 }: {
   open: boolean
   onClose: () => void
-  /** Re-open the modal (to surface an upload error after we closed it
-   *  on submit). */
-  onReopen: () => void
   onCreated: () => Promise<void> | void
 }) {
   const [staged, setStaged] = useState<StagedItem[]>([])
@@ -434,9 +429,6 @@ function DeliveryComposerModal({
     setBusy(true)
     setError('')
     setProgress({ idx: 0, total: staged.length, frac: 0 })
-    // Close the modal immediately — only the floating progress bar
-    // remains while the upload runs in the background.
-    onClose()
     try {
       const uploaded: Array<{
         r2Key: string
@@ -478,10 +470,11 @@ function DeliveryComposerModal({
         videos: uploaded,
       })
       await onCreated()
-      reset() // clear inputs for next time; modal already closed
+      reset() // clear inputs for next time
+      onClose() // success → close the modal
     } catch (e) {
       setError((e as Error)?.message || 'ההעלאה נכשלה. נסו שוב.')
-      onReopen() // bring the modal back so the error + inputs show
+      // Stay in the (still-open) modal so the error + inputs show.
     } finally {
       setBusy(false)
       setProgress(null)
@@ -492,41 +485,6 @@ function DeliveryComposerModal({
     (s, it) => s + (it.kind === 'file' ? it.file.size : 0),
     0,
   )
-
-  // Uploading → show ONLY a slim floating progress bar (no backdrop),
-  // so the rest of the page stays usable. The modal itself is "closed"
-  // (we called onClose() on submit).
-  if (busy && progress) {
-    const pct = Math.round(progress.frac * 100)
-    return (
-      <Portal>
-        <div
-          dir="rtl"
-          className="pointer-events-none fixed inset-x-0 bottom-4 z-[200] flex justify-center px-4"
-        >
-          <div className="pointer-events-auto w-[min(420px,92vw)] rounded-xl border border-border bg-bg-elevated/95 p-3 shadow-2xl backdrop-blur">
-            <div className="mb-1.5 flex items-center justify-between text-[11px] text-fg-muted">
-              <span>
-                {progress.importing ? 'מייבא מ-Drive' : 'מעלה'} סרטון{' '}
-                {progress.idx + 1} מתוך {progress.total}
-              </span>
-              {!progress.importing && <span dir="ltr">{pct}%</span>}
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-primary/15">
-              {progress.importing ? (
-                <div className="h-full w-1/3 animate-pulse rounded-full bg-primary/60" />
-              ) : (
-                <div
-                  className="h-full rounded-full bg-primary transition-all"
-                  style={{ width: `${pct}%` }}
-                />
-              )}
-            </div>
-          </div>
-        </div>
-      </Portal>
-    )
-  }
 
   // Closed → render NOTHING. The Portal is rendered DIRECTLY (no
   // AnimatePresence wrapping it) — wrapping a Portal in AnimatePresence
@@ -566,7 +524,14 @@ function DeliveryComposerModal({
               </div>
 
               <div className="flex-1 space-y-5 overflow-y-auto p-5">
-                {(
+                {busy && progress ? (
+                  <DeliveryProgressView
+                    idx={progress.idx}
+                    total={progress.total}
+                    frac={progress.frac}
+                    importing={progress.importing}
+                  />
+                ) : (
                   <>
                     {/* Source toggle — upload from computer OR import a
                         public Drive link (same control as revisions). */}
@@ -773,20 +738,77 @@ function DeliveryComposerModal({
                 )}
               </div>
 
-              <div className="border-t border-border p-4">
-                <button
-                  type="button"
-                  onClick={handleCreate}
-                  disabled={staged.length === 0}
-                  className="flex w-full items-center justify-center gap-2 rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover disabled:opacity-40"
-                >
-                  <Upload className="h-4 w-4" />
-                  צור קישור לשליחה
-                </button>
-              </div>
+              {!busy && (
+                <div className="border-t border-border p-4">
+                  <button
+                    type="button"
+                    onClick={handleCreate}
+                    disabled={staged.length === 0}
+                    className="flex w-full items-center justify-center gap-2 rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover disabled:opacity-40"
+                  >
+                    <Upload className="h-4 w-4" />
+                    צור קישור לשליחה
+                  </button>
+                </div>
+              )}
         </motion.div>
       </motion.div>
     </Portal>
+  )
+}
+
+/* ── In-modal upload progress — the composer body swaps to THIS while
+ *    the upload/import runs (mirrors the revisions modal). The modal
+ *    stays open the whole time; closes itself on success. ─────────── */
+function DeliveryProgressView({
+  idx,
+  total,
+  frac,
+  importing,
+}: {
+  idx: number
+  total: number
+  frac: number
+  importing?: boolean
+}) {
+  const pct = Math.max(0, Math.min(100, Math.round(frac * 100)))
+  return (
+    <div className="space-y-5 py-6 text-center">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+        <Loader2 className="h-7 w-7 animate-spin" strokeWidth={1.8} />
+      </div>
+      <div>
+        <h3 className="text-base font-medium text-fg">
+          {importing ? 'מייבא את הסרטון מ-Drive…' : 'מעלה את הסרטון…'}
+        </h3>
+        {total > 1 && (
+          <p className="mt-1 text-xs text-fg-muted">
+            סרטון {idx + 1} מתוך {total}
+          </p>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-primary/15">
+          {importing ? (
+            <div className="absolute inset-y-0 right-0 w-1/3 animate-pulse rounded-full bg-primary/60" />
+          ) : (
+            <motion.div
+              className="absolute inset-y-0 right-0 rounded-full bg-primary"
+              animate={{ width: `${pct}%` }}
+              transition={{ duration: 0.3, ease: 'easeOut' }}
+            />
+          )}
+        </div>
+        {!importing && (
+          <p className="text-[11px] text-fg-muted" dir="ltr">
+            {pct}%
+          </p>
+        )}
+      </div>
+      <p className="text-[11px] leading-relaxed text-fg-muted">
+        הסרטון נשמר באחסון שלכם. אל תסגרו את החלון.
+      </p>
+    </div>
   )
 }
 
