@@ -6503,7 +6503,12 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
         else if (r.status >= 500)
           tagged = `503 service unavailable (${r.status}) — ${gMsg}`
         lastErr = tagged
-        if ((r.status === 429 || r.status >= 500) && attempt === 0) {
+        // Retry ONLY genuine server-side / network blips (5xx). Do NOT
+        // retry a 429: it means we're over the rate/quota limit, and
+        // hammering again within the same window just burns more quota
+        // and keeps failing. Return it immediately so the client can tell
+        // the user to wait.
+        if (r.status >= 500 && attempt === 0) {
           await sleep(1200)
           continue
         }
