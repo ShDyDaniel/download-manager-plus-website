@@ -25,6 +25,7 @@ import {
   fetchStorageBackend,
   fetchStorageState,
   formatBytes,
+  formatStorageSize,
   importDriveLinkToR2,
   listDeliveries,
   type DeliveryRow,
@@ -309,7 +310,8 @@ function StorageBar({
           שטח אחסון בחשבון
         </span>
         <span dir="ltr" className="font-mono text-fg">
-          {formatBytes(storage.usedBytes)} / {formatBytes(storage.limitBytes)}
+          {formatStorageSize(storage.usedBytes)} /{' '}
+          {formatStorageSize(storage.limitBytes)}
         </span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-bg-elevated">

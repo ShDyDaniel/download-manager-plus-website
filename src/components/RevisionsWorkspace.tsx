@@ -67,6 +67,7 @@ import {
   importDriveLinkToR2,
   fetchNoteMediaAsObjectUrl,
   formatBytes,
+  formatStorageSize,
   listGroupsForOwner,
   listRoundsForOwner,
   listNotesAsOwner,
@@ -1459,7 +1460,8 @@ function DriveStorageFooter({
         </span>
         {/* Numbers + slash in LTR so 4.3 GB / 15 GB doesn't reverse */}
         <span dir="ltr" className="font-mono text-fg">
-          {formatBytes(storage.usageBytes)} / {formatBytes(storage.limitBytes)}
+          {formatStorageSize(storage.usageBytes)} /{' '}
+          {formatStorageSize(storage.limitBytes)}
         </span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-bg-elevated">
@@ -1489,7 +1491,7 @@ function R2StorageBar({
       <div className="mb-2 flex items-center justify-between">
         <span>שטח אחסון בחשבון</span>
         <span dir="ltr" className="font-mono text-fg">
-          {formatBytes(usedBytes)} / {formatBytes(limitBytes)}
+          {formatStorageSize(usedBytes)} / {formatStorageSize(limitBytes)}
         </span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-bg-elevated">

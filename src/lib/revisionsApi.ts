@@ -811,6 +811,21 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / 1_000_000_000).toFixed(2)} GB`
 }
 
+// The STORAGE QUOTA is binary (1024-based): an admin-configured "100 GB"
+// limit is stored as 100 * 1024^3 bytes, so it must display as exactly
+// "100.00 GB" — NOT 107.37. Used + limit share this base so the bar and
+// number match the admin panel everywhere. (File sizes use formatBytes,
+// which is decimal to match Finder — a deliberate, separate choice.)
+export function formatStorageSize(bytes: number): string {
+  if (!Number.isFinite(bytes)) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
 /* ──────────────────────────────────────────────────────────────
  *  Client deliveries ("מסירה ללקוח")
  *
