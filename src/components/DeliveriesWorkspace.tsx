@@ -251,6 +251,7 @@ export function DeliveriesWorkspace() {
       <DeliveryComposerModal
         open={composerOpen}
         onClose={() => setComposerOpen(false)}
+        onReopen={() => setComposerOpen(true)}
         onCreated={refresh}
       />
     </div>
@@ -344,10 +345,14 @@ type StagedItem =
 function DeliveryComposerModal({
   open,
   onClose,
+  onReopen,
   onCreated,
 }: {
   open: boolean
   onClose: () => void
+  /** Re-open the modal (to surface an upload error after we closed it
+   *  on submit). */
+  onReopen: () => void
   onCreated: () => Promise<void> | void
 }) {
   const [staged, setStaged] = useState<StagedItem[]>([])
@@ -364,8 +369,6 @@ function DeliveryComposerModal({
     importing?: boolean
   } | null>(null)
   const [error, setError] = useState('')
-  const [createdLink, setCreatedLink] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
   const idRef = useRef(0)
   const nextId = () => `s${(idRef.current += 1)}`
 
@@ -378,8 +381,6 @@ function DeliveryComposerModal({
     setPassword('')
     setProgress(null)
     setError('')
-    setCreatedLink(null)
-    setCopied(false)
   }
 
   function close() {
@@ -432,6 +433,10 @@ function DeliveryComposerModal({
     }
     setBusy(true)
     setError('')
+    setProgress({ idx: 0, total: staged.length, frac: 0 })
+    // Close the modal immediately — only the floating progress bar
+    // remains while the upload runs in the background.
+    onClose()
     try {
       const uploaded: Array<{
         r2Key: string
@@ -466,23 +471,17 @@ function DeliveryComposerModal({
           })
         }
       }
-      const { shareToken } = await createDelivery({
+      await createDelivery({
         title: title.trim(),
         expiryDays,
         password: pw || undefined,
         videos: uploaded,
       })
-      const link = `${SITE}/deliver/${shareToken}`
-      setCreatedLink(link)
-      try {
-        await navigator.clipboard.writeText(link)
-        setCopied(true)
-      } catch {
-        /* ignore */
-      }
       await onCreated()
+      reset() // clear inputs for next time; modal already closed
     } catch (e) {
       setError((e as Error)?.message || 'ההעלאה נכשלה. נסו שוב.')
+      onReopen() // bring the modal back so the error + inputs show
     } finally {
       setBusy(false)
       setProgress(null)
@@ -493,6 +492,41 @@ function DeliveryComposerModal({
     (s, it) => s + (it.kind === 'file' ? it.file.size : 0),
     0,
   )
+
+  // Uploading → show ONLY a slim floating progress bar (no backdrop),
+  // so the rest of the page stays usable. The modal itself is "closed"
+  // (we called onClose() on submit).
+  if (busy && progress) {
+    const pct = Math.round(progress.frac * 100)
+    return (
+      <Portal>
+        <div
+          dir="rtl"
+          className="pointer-events-none fixed inset-x-0 bottom-4 z-[200] flex justify-center px-4"
+        >
+          <div className="pointer-events-auto w-[min(420px,92vw)] rounded-xl border border-border bg-bg-elevated/95 p-3 shadow-2xl backdrop-blur">
+            <div className="mb-1.5 flex items-center justify-between text-[11px] text-fg-muted">
+              <span>
+                {progress.importing ? 'מייבא מ-Drive' : 'מעלה'} סרטון{' '}
+                {progress.idx + 1} מתוך {progress.total}
+              </span>
+              {!progress.importing && <span dir="ltr">{pct}%</span>}
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-primary/15">
+              {progress.importing ? (
+                <div className="h-full w-1/3 animate-pulse rounded-full bg-primary/60" />
+              ) : (
+                <div
+                  className="h-full rounded-full bg-primary transition-all"
+                  style={{ width: `${pct}%` }}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      </Portal>
+    )
+  }
 
   // Closed → render NOTHING. The Portal is rendered DIRECTLY (no
   // AnimatePresence wrapping it) — wrapping a Portal in AnimatePresence
@@ -532,67 +566,7 @@ function DeliveryComposerModal({
               </div>
 
               <div className="flex-1 space-y-5 overflow-y-auto p-5">
-                {createdLink ? (
-                  /* Success — show the link to copy & send. */
-                  <div className="space-y-4 py-2 text-center">
-                    <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-success/15 text-success">
-                      <Check className="h-6 w-6" />
-                    </div>
-                    <div>
-                      <h3 className="text-base font-semibold text-fg">
-                        המסירה מוכנה!
-                      </h3>
-                      <p className="mt-1 text-xs text-fg-muted">
-                        שלחו את הקישור ללקוח. הוא יוכל לצפות ולהוריד עד
-                        שהתוקף יפוג.
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2 rounded-lg border border-border bg-bg/50 px-3 py-2">
-                      <Link2 className="h-4 w-4 shrink-0 text-primary" />
-                      <span
-                        className="min-w-0 flex-1 truncate text-xs text-fg"
-                        dir="ltr"
-                      >
-                        {createdLink}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(createdLink)
-                            setCopied(true)
-                          } catch {
-                            /* ignore */
-                          }
-                        }}
-                        className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-bg"
-                      >
-                        {copied ? (
-                          <Check className="h-3.5 w-3.5" />
-                        ) : (
-                          <Copy className="h-3.5 w-3.5" />
-                        )}
-                        {copied ? 'הועתק' : 'העתק'}
-                      </button>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={reset}
-                        className="flex-1 rounded-md border border-border py-2.5 text-sm font-medium text-fg transition-colors hover:border-primary/50"
-                      >
-                        מסירה נוספת
-                      </button>
-                      <button
-                        type="button"
-                        onClick={close}
-                        className="flex-1 rounded-md bg-primary py-2.5 text-sm font-medium text-bg"
-                      >
-                        סיום
-                      </button>
-                    </div>
-                  </div>
-                ) : (
+                {(
                   <>
                     {/* Source toggle — upload from computer OR import a
                         public Drive link (same control as revisions). */}
@@ -666,39 +640,44 @@ function DeliveryComposerModal({
                         {staged.map((item) => (
                           <div
                             key={item.id}
-                            className="flex items-center gap-2.5 rounded-lg border border-border bg-bg/50 px-3 py-2"
+                            className="flex items-center justify-between gap-2.5 rounded-lg border border-border bg-bg/50 px-3 py-2"
                           >
-                            {item.kind === 'file' ? (
-                              <FileVideo className="h-4 w-4 shrink-0 text-primary" />
-                            ) : (
-                              <Link2 className="h-4 w-4 shrink-0 text-primary" />
-                            )}
-                            {/* One line: name (right, after icon) then
-                                size (left). dir=ltr so neither flips. */}
-                            <span
-                              className="min-w-0 flex-1 truncate text-sm text-fg"
-                              dir="ltr"
-                            >
-                              {item.kind === 'file' ? item.file.name : item.url}
-                            </span>
-                            <span
-                              className="shrink-0 text-[11px] text-fg-muted"
-                              dir="ltr"
-                            >
-                              {item.kind === 'file'
-                                ? formatBytes(item.file.size)
-                                : 'קישור Drive'}
-                            </span>
-                            {!busy && (
-                              <button
-                                type="button"
-                                onClick={() => removeItem(item.id)}
-                                className="shrink-0 rounded p-1 text-fg-muted hover:text-destructive"
-                                aria-label="הסר"
+                            {/* Right group: name (far right) then size.
+                                dir=ltr so neither flips. */}
+                            <div className="flex min-w-0 items-baseline gap-2">
+                              <span
+                                dir="ltr"
+                                className="min-w-0 truncate text-sm text-fg"
                               >
-                                <X className="h-4 w-4" />
-                              </button>
-                            )}
+                                {item.kind === 'file' ? item.file.name : item.url}
+                              </span>
+                              <span
+                                dir="ltr"
+                                className="shrink-0 text-[11px] text-fg-muted"
+                              >
+                                {item.kind === 'file'
+                                  ? formatBytes(item.file.size)
+                                  : 'קישור Drive'}
+                              </span>
+                            </div>
+                            {/* Left group: type icon + remove. */}
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              {item.kind === 'file' ? (
+                                <FileVideo className="h-4 w-4 text-primary" />
+                              ) : (
+                                <Link2 className="h-4 w-4 text-primary" />
+                              )}
+                              {!busy && (
+                                <button
+                                  type="button"
+                                  onClick={() => removeItem(item.id)}
+                                  className="rounded p-1 text-fg-muted hover:text-destructive"
+                                  aria-label="הסר"
+                                >
+                                  <X className="h-4 w-4" />
+                                </button>
+                              )}
+                            </div>
                           </div>
                         ))}
                         <p className="text-[11px] text-fg-muted">
@@ -790,55 +769,21 @@ function DeliveryComposerModal({
                         {error}
                       </p>
                     )}
-
-                    {busy && progress && (
-                      <div className="space-y-1.5">
-                        <div className="flex justify-between text-[11px] text-fg-muted">
-                          <span>
-                            {progress.importing ? 'מייבא מ-Drive' : 'מעלה'}{' '}
-                            {progress.idx + 1} מתוך {progress.total}
-                          </span>
-                          {!progress.importing && (
-                            <span dir="ltr">
-                              {Math.round(progress.frac * 100)}%
-                            </span>
-                          )}
-                        </div>
-                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-primary/15">
-                          {progress.importing ? (
-                            <div className="h-full w-1/3 animate-pulse rounded-full bg-primary/60" />
-                          ) : (
-                            <div
-                              className="h-full rounded-full bg-primary transition-all"
-                              style={{
-                                width: `${Math.round(progress.frac * 100)}%`,
-                              }}
-                            />
-                          )}
-                        </div>
-                      </div>
-                    )}
                   </>
                 )}
               </div>
 
-              {!createdLink && (
-                <div className="border-t border-border p-4">
-                  <button
-                    type="button"
-                    onClick={handleCreate}
-                    disabled={busy || staged.length === 0}
-                    className="flex w-full items-center justify-center gap-2 rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover disabled:opacity-40"
-                  >
-                    {busy ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Upload className="h-4 w-4" />
-                    )}
-                    צור קישור לשליחה
-                  </button>
-                </div>
-              )}
+              <div className="border-t border-border p-4">
+                <button
+                  type="button"
+                  onClick={handleCreate}
+                  disabled={staged.length === 0}
+                  className="flex w-full items-center justify-center gap-2 rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover disabled:opacity-40"
+                >
+                  <Upload className="h-4 w-4" />
+                  צור קישור לשליחה
+                </button>
+              </div>
         </motion.div>
       </motion.div>
     </Portal>
