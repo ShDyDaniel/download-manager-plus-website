@@ -1131,6 +1131,20 @@ async function getStorageState(
         usedBytes += Number(r.videoSizeBytes) || 0
       }
     }
+    // Client deliveries share the SAME quota pool as revisions. Sum the
+    // videos of every non-deleted delivery the user owns.
+    const delivSnap = await getDb()
+      .collection('deliveries')
+      .where('ownerUid', '==', uid)
+      .get()
+    for (const d of delivSnap.docs) {
+      const del = d.data() as {
+        videos?: Array<{ sizeBytes?: number }>
+        status?: string
+      }
+      if (del.status === 'deleted') continue
+      for (const v of del.videos || []) usedBytes += Number(v.sizeBytes) || 0
+    }
   } catch (e) {
     console.warn('[storage] usage sum failed:', uid, e)
   }
@@ -6220,6 +6234,270 @@ function verifyPasswordToken(token: string, expectedProjectId: string): boolean 
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  CLIENT DELIVERY — send the FINAL video(s) to a client with an
+ *  expiry. Separate product from revisions (which is review/feedback),
+ *  but shares the SAME R2 bucket + storage quota. One delivery = a
+ *  bundle of videos with ONE share link and ONE expiry (3 / 7 / 14
+ *  days). Videos are uploaded first via the existing r2-upload-* flow
+ *  (which enforces the quota and returns the r2Key); delivery-create
+ *  records the bundle. Expired deliveries are purged by the cron sweep.
+ * ────────────────────────────────────────────────────────────── */
+
+const DELIVERY_EXPIRY_DAYS = new Set([3, 7, 14])
+
+interface DeliveryVideo {
+  r2Key: string
+  name: string
+  sizeBytes: number
+  mime: string
+}
+
+async function handleDeliveryCreate(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
+
+  const body = (req.body || {}) as {
+    title?: string
+    expiryDays?: number
+    password?: string
+    videos?: Array<{
+      r2Key?: string
+      name?: string
+      sizeBytes?: number
+      mime?: string
+    }>
+  }
+  const title = String(body.title || '').trim().slice(0, 200)
+  const expiryDays = Math.floor(Number(body.expiryDays) || 0)
+  if (!DELIVERY_EXPIRY_DAYS.has(expiryDays)) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'תוקף לא תקין (3 / 7 / 14 ימים)' })
+  }
+  const videos: DeliveryVideo[] = []
+  for (const v of (Array.isArray(body.videos) ? body.videos : []).slice(0, 50)) {
+    const r2Key = String(v?.r2Key || '').trim()
+    if (!r2Key) continue
+    // Security: every key MUST sit under the owner's own prefix — never
+    // trust a client-supplied key that points at another tenant.
+    if (!keyBelongsToUser(r2Key, verified.uid)) {
+      return res.status(403).json({ ok: false, error: 'forbidden key' })
+    }
+    videos.push({
+      r2Key,
+      name: String(v?.name || 'video').trim().slice(0, 300),
+      sizeBytes: Math.max(0, Math.floor(Number(v?.sizeBytes) || 0)),
+      mime: String(v?.mime || '').trim().slice(0, 100),
+    })
+  }
+  if (videos.length === 0) {
+    return res.status(400).json({ ok: false, error: 'אין סרטונים במסירה' })
+  }
+
+  const password = String(body.password || '')
+  if (password && password.length < 4) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'הסיסמה קצרה מדי (4 תווים מינימום)' })
+  }
+  const pw = hashPasswordOrNull(password)
+
+  const shareToken = crypto.randomBytes(16).toString('base64url')
+  const now = Date.now()
+  const expiresAt = now + expiryDays * 24 * 60 * 60 * 1000
+  const ref = getDb().collection('deliveries').doc()
+  await ref.set({
+    id: ref.id,
+    ownerUid: verified.uid,
+    ownerEmail: verified.email,
+    title: title || 'מסירה ללקוח',
+    shareToken,
+    passwordHash: pw?.passwordHash ?? null,
+    passwordSalt: pw?.passwordSalt ?? null,
+    videos,
+    expiryDays,
+    expiresAt,
+    status: 'active',
+    createdAt: now,
+  })
+  return res.status(200).json({ ok: true, id: ref.id, shareToken, expiresAt })
+}
+
+async function handleDeliveryList(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const snap = await getDb()
+    .collection('deliveries')
+    .where('ownerUid', '==', verified.uid)
+    .get()
+  const items = snap.docs
+    .map((d) => d.data() as Record<string, unknown>)
+    .filter((d) => d.status !== 'deleted')
+    .map((d) => {
+      const videos = (d.videos as DeliveryVideo[] | undefined) || []
+      return {
+        id: String(d.id || ''),
+        title: String(d.title || ''),
+        shareToken: String(d.shareToken || ''),
+        videoCount: videos.length,
+        sizeBytes: videos.reduce((s, v) => s + (Number(v.sizeBytes) || 0), 0),
+        expiresAt: Number(d.expiresAt) || 0,
+        hasPassword: !!d.passwordHash,
+        createdAt: Number(d.createdAt) || 0,
+      }
+    })
+    .sort((a, b) => b.createdAt - a.createdAt)
+  return res.status(200).json({ ok: true, deliveries: items })
+}
+
+async function handleDeliveryDelete(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const id = String((req.body as { id?: string })?.id || '').trim()
+  if (!id) return res.status(400).json({ ok: false, error: 'id required' })
+  const ref = getDb().collection('deliveries').doc(id)
+  const snap = await ref.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'not found' })
+  const del = snap.data() as { ownerUid?: string; videos?: DeliveryVideo[] }
+  if (del.ownerUid !== verified.uid) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  // Best-effort R2 cleanup — only keys under the owner's own prefix.
+  for (const v of del.videos || []) {
+    if (v.r2Key && keyBelongsToUser(v.r2Key, verified.uid)) {
+      await getR2()
+        .send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: v.r2Key }))
+        .catch(() => undefined)
+    }
+  }
+  await ref.delete().catch(() => ref.set({ status: 'deleted' }, { merge: true }))
+  return res.status(200).json({ ok: true })
+}
+
+/** Resolve a delivery by its public share token (ignores deleted). */
+async function resolveDelivery(
+  shareToken: string,
+): Promise<Record<string, unknown> | null> {
+  if (!shareToken) return null
+  const snap = await getDb()
+    .collection('deliveries')
+    .where('shareToken', '==', shareToken)
+    .limit(1)
+    .get()
+  if (snap.empty) return null
+  const d = snap.docs[0].data() as Record<string, unknown>
+  return d.status === 'deleted' ? null : d
+}
+
+async function handleDeliveryVerifyPassword(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as { shareToken?: string; password?: string }
+  const shareToken = String(body.shareToken || '').trim()
+  const password = String(body.password || '')
+  if (!shareToken || !password) {
+    return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
+  }
+  const del = await resolveDelivery(shareToken)
+  if (!del) return res.status(404).json({ ok: false, error: 'לא נמצא' })
+  const passwordHash = del.passwordHash as string | null
+  const passwordSalt = del.passwordSalt as string | null
+  if (!passwordHash || !passwordSalt) {
+    return res.status(400).json({ ok: false, error: 'למסירה הזו אין סיסמה' })
+  }
+  const computed = crypto
+    .pbkdf2Sync(password, passwordSalt, 100_000, 32, 'sha256')
+    .toString('hex')
+  if (computed !== passwordHash) {
+    return res.status(401).json({ ok: false, error: 'סיסמה שגויה' })
+  }
+  return res.status(200).json({
+    ok: true,
+    passwordToken: mintPasswordToken(String(del.id || '')),
+  })
+}
+
+/** PUBLIC — the client opens the delivery link. Returns the bundle's
+ *  videos with short-lived presigned stream + download URLs, unless it's
+ *  expired or password-protected (and no valid passwordToken supplied). */
+async function handleDeliveryView(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+  }
+  const shareToken = String(body.shareToken || '').trim()
+  const del = await resolveDelivery(shareToken)
+  if (!del) return res.status(404).json({ ok: false, error: 'הקישור לא נמצא' })
+
+  const expiresAt = Number(del.expiresAt) || 0
+  if (expiresAt && Date.now() > expiresAt) {
+    return res
+      .status(200)
+      .json({ ok: false, expired: true, title: String(del.title || '') })
+  }
+
+  if (del.passwordHash) {
+    const okPw = verifyPasswordToken(
+      String(body.passwordToken || ''),
+      String(del.id || ''),
+    )
+    if (!okPw) {
+      return res.status(200).json({
+        ok: true,
+        locked: true,
+        needsPassword: true,
+        title: String(del.title || ''),
+      })
+    }
+  }
+
+  const videos = ((del.videos as DeliveryVideo[] | undefined) || []).filter(
+    (v) => v.r2Key,
+  )
+  const out: Array<{
+    name: string
+    sizeBytes: number
+    streamUrl: string
+    downloadUrl: string
+  }> = []
+  for (const v of videos) {
+    try {
+      const streamUrl = await getSignedUrl(
+        getR2(),
+        new GetObjectCommand({ Bucket: R2_BUCKET, Key: v.r2Key }),
+        { expiresIn: R2_PRESIGN_TTL },
+      )
+      const downloadUrl = await getSignedUrl(
+        getR2(),
+        new GetObjectCommand({
+          Bucket: R2_BUCKET,
+          Key: v.r2Key,
+          ResponseContentDisposition: `attachment; filename="${encodeURIComponent(
+            v.name || 'video.mp4',
+          )}"`,
+        }),
+        { expiresIn: R2_PRESIGN_TTL },
+      )
+      out.push({
+        name: v.name,
+        sizeBytes: Number(v.sizeBytes) || 0,
+        streamUrl,
+        downloadUrl,
+      })
+    } catch (e) {
+      console.warn('[delivery-view] presign failed:', v.r2Key, e)
+    }
+  }
+
+  return res.status(200).json({
+    ok: true,
+    delivery: { title: String(del.title || ''), expiresAt, videos: out },
+  })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Kill switch (maintenance mode) — mirror of api/paypal.ts.
  *
  *  This endpoint serves the revisions workspace (uploads, reviewer
@@ -6864,6 +7142,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleStreamVideo(req, res)
       case 'auth-stream':
         return await handleAuthStream(req, res)
+      case 'delivery-create':
+        return await handleDeliveryCreate(req, res)
+      case 'delivery-list':
+        return await handleDeliveryList(req, res)
+      case 'delivery-delete':
+        return await handleDeliveryDelete(req, res)
+      case 'delivery-view':
+        return await handleDeliveryView(req, res)
+      case 'delivery-verify-password':
+        return await handleDeliveryVerifyPassword(req, res)
       default:
         return res
           .status(400)

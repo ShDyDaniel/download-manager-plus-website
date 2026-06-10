@@ -444,6 +444,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // grace window. Runs in this same daily cron (Hobby = 1 cron).
     const purgeResults = await runStoragePurgeSweep(db)
 
+    // ─── Client-delivery expiry sweep ─────────────────────────
+    // Delete the R2 videos + doc of any client delivery whose chosen
+    // expiry (3 / 7 / 14 days) has passed. Independent of the lapsed-
+    // access purge above — this is a per-item TTL.
+    const deliveryResults = await runDeliveryExpirySweep(db)
+
     // NOTE: Firestore backups used to run here too. They've moved
     // entirely to the dedicated Cloudflare backup worker
     // (dmplus-backup-cron → admin-run-auto-backup), so the two systems
@@ -459,6 +465,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       results,
       annual: annualResults,
       purge: purgeResults,
+      deliveries: deliveryResults,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
@@ -671,6 +678,54 @@ function getR2OrNull(): S3Client | null {
 async function r2Delete(r2: S3Client, key: string): Promise<void> {
   if (!key) return
   await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }))
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Client-delivery expiry sweep — per-item TTL (3 / 7 / 14 days).
+ *  Deletes the R2 videos + the Firestore doc of every delivery whose
+ *  `expiresAt` has passed. Independent of the lapsed-access purge.
+ * ────────────────────────────────────────────────────────────── */
+async function runDeliveryExpirySweep(
+  db: ReturnType<typeof getFirestore>,
+): Promise<{ ran: boolean; expired: number; filesDeleted: number; reason?: string }> {
+  const r2 = getR2OrNull()
+  if (!r2) return { ran: false, expired: 0, filesDeleted: 0, reason: 'R2 not configured' }
+  const now = Date.now()
+  let expired = 0
+  let filesDeleted = 0
+  try {
+    const snap = await db
+      .collection('deliveries')
+      .where('expiresAt', '<', now)
+      .get()
+    for (const doc of snap.docs) {
+      const del = doc.data() as {
+        videos?: Array<{ r2Key?: string }>
+        status?: string
+      }
+      if (del.status === 'deleted') {
+        // Already cleaned — just remove the leftover doc.
+        await doc.ref.delete().catch(() => undefined)
+        continue
+      }
+      for (const v of del.videos || []) {
+        if (v.r2Key) {
+          try {
+            await r2Delete(r2, v.r2Key)
+            filesDeleted++
+          } catch (e) {
+            console.warn('[delivery-sweep] r2 delete failed:', v.r2Key, e)
+          }
+        }
+      }
+      await doc.ref.delete().catch(() => undefined)
+      expired++
+    }
+  } catch (e) {
+    console.warn('[delivery-sweep] failed:', e)
+    return { ran: false, expired, filesDeleted, reason: 'sweep error' }
+  }
+  return { ran: true, expired, filesDeleted }
 }
 
 /** Best-effort owner alert in Telegram (same channel as the rest of the
