@@ -6544,13 +6544,22 @@ async function callFallbackAi(
     console.error('[ai-fallback] skipped: FALLBACK_AI_API_KEY is not set')
     return { ok: false, status: 0, error: 'no fallback configured' }
   }
-  const msgs = messages
+  const allMsgs = messages
     .map((m) => ({
       role: String(m?.role || 'user'),
       content: String(m?.content || ''),
     }))
     .filter((m) => m.content)
-  if (msgs.length === 0) return { ok: false, status: 400, error: 'no messages' }
+  if (allMsgs.length === 0)
+    return { ok: false, status: 400, error: 'no messages' }
+  // Cerebras' free tier caps TOTAL context at 8192 tokens. Our system
+  // prompt is large, so on a long chat the whole request blows past 8192
+  // and every model 400s — exactly when the fallback is needed. Keep the
+  // system prompt (essential: rates + current quote) but trim the
+  // conversation to the most recent few turns so we stay under the cap.
+  const sysMsgs = allMsgs.filter((m) => m.role === 'system')
+  const convo = allMsgs.filter((m) => m.role !== 'system')
+  const msgs = [...sysMsgs, ...convo.slice(-4)]
 
   let last: AiResult = { ok: false, status: 0, error: 'fallback not attempted' }
   // Try each candidate model until one answers. A model that's been
@@ -6566,9 +6575,9 @@ async function callFallbackAi(
         body: JSON.stringify({
           model,
           messages: msgs,
-          // Cerebras' free tier caps context at 8192 tokens — keep the
-          // output modest so a long chat still fits within it.
-          max_tokens: Math.min(maxTokens, 4096),
+          // Keep output modest so input + output stay under Cerebras' free
+          // 8192-token context cap.
+          max_tokens: Math.min(maxTokens, 2048),
           temperature: 0.7,
         }),
       })
