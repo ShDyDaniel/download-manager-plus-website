@@ -307,7 +307,6 @@ function DeliveryComposerModal({
   const [linkUrl, setLinkUrl] = useState('')
   const [title, setTitle] = useState('')
   const [expiryDays, setExpiryDays] = useState<3 | 7 | 14>(7)
-  const [usePassword, setUsePassword] = useState(false)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<{
@@ -328,7 +327,6 @@ function DeliveryComposerModal({
     setLinkUrl('')
     setTitle('')
     setExpiryDays(7)
-    setUsePassword(false)
     setPassword('')
     setProgress(null)
     setError('')
@@ -380,7 +378,8 @@ function DeliveryComposerModal({
   async function handleCreate() {
     if (busy) return
     if (staged.length === 0) return setError('הוסיפו לפחות סרטון אחד.')
-    if (usePassword && password.trim().length < 4) {
+    const pw = password.trim()
+    if (pw && pw.length < 4) {
       return setError('סיסמה קצרה מדי (4 תווים מינימום).')
     }
     setBusy(true)
@@ -422,7 +421,7 @@ function DeliveryComposerModal({
       const { shareToken } = await createDelivery({
         title: title.trim(),
         expiryDays,
-        password: usePassword ? password : undefined,
+        password: pw || undefined,
         videos: uploaded,
       })
       const link = `${SITE}/deliver/${shareToken}`
@@ -456,7 +455,7 @@ function DeliveryComposerModal({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             dir="rtl"
-            className="fixed inset-0 z-[200] flex items-center justify-center bg-bg/80 p-4 backdrop-blur-md"
+            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
             onClick={close}
           >
             <motion.div
@@ -465,7 +464,7 @@ function DeliveryComposerModal({
               exit={{ scale: 0.96, y: 14, opacity: 0 }}
               transition={{ type: 'spring', stiffness: 360, damping: 30 }}
               onClick={(e) => e.stopPropagation()}
-              className="flex max-h-[90vh] w-[min(560px,94vw)] flex-col overflow-hidden rounded-2xl border border-border bg-bg-card shadow-2xl"
+              className="flex max-h-[90vh] w-[min(560px,94vw)] flex-col overflow-hidden rounded-2xl border border-border bg-bg-elevated shadow-2xl"
             >
               <div className="flex items-center justify-between border-b border-border p-4">
                 <h2 className="text-base font-medium text-fg">מסירה חדשה</h2>
@@ -663,49 +662,62 @@ function DeliveryComposerModal({
                       />
                     </div>
 
-                    {/* Expiry */}
+                    {/* Expiry — segmented control, same style as the
+                        upload/link source toggle above. */}
                     <div>
                       <label className="mb-1.5 block text-xs text-fg-muted">
                         הקישור יהיה פעיל למשך
                       </label>
-                      <div className="grid grid-cols-3 gap-2">
-                        {EXPIRY_OPTIONS.map((o) => (
-                          <button
-                            key={o.days}
-                            type="button"
-                            onClick={() => setExpiryDays(o.days)}
-                            disabled={busy}
-                            className={cn(
-                              'rounded-lg border py-2 text-sm font-medium transition-colors disabled:opacity-60',
-                              expiryDays === o.days
-                                ? 'border-primary bg-primary/15 text-fg'
-                                : 'border-border text-fg-muted hover:border-primary/40',
-                            )}
-                          >
-                            {o.label}
-                          </button>
-                        ))}
+                      <div className="relative grid grid-cols-3 rounded-md border border-border bg-bg-card p-1">
+                        {EXPIRY_OPTIONS.map((o) => {
+                          const active = expiryDays === o.days
+                          return (
+                            <button
+                              key={o.days}
+                              type="button"
+                              disabled={busy}
+                              onClick={() => setExpiryDays(o.days)}
+                              className="relative flex items-center justify-center rounded px-3 py-2 text-xs font-medium disabled:cursor-not-allowed"
+                            >
+                              {active && (
+                                <motion.span
+                                  layoutId="dlv-expiry-indicator"
+                                  transition={{
+                                    type: 'spring',
+                                    stiffness: 420,
+                                    damping: 34,
+                                  }}
+                                  className="absolute inset-0 rounded bg-primary"
+                                />
+                              )}
+                              <span
+                                className={
+                                  'relative z-10 transition-colors ' +
+                                  (active ? 'text-bg' : 'text-fg-muted hover:text-fg')
+                                }
+                              >
+                                {o.label}
+                              </span>
+                            </button>
+                          )
+                        })}
                       </div>
                     </div>
 
-                    {/* Password — copper Switch toggle row. */}
-                    <div className="space-y-2">
-                      <ToggleRow
-                        label="הגן בסיסמה"
-                        description="הלקוח יצטרך להזין סיסמה כדי לצפות. שלחו אותה לו בנפרד."
-                        value={usePassword}
-                        onChange={setUsePassword}
+                    {/* Password — leave empty for no password (same as
+                        the revisions modal). */}
+                    <div>
+                      <label className="mb-1.5 block text-xs text-fg-muted">
+                        סיסמה (אופציונלי)
+                      </label>
+                      <input
+                        type="text"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="ריק = ללא סיסמה. אחרת תישלח ללקוח בנפרד"
                         disabled={busy}
+                        className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-primary disabled:opacity-60"
                       />
-                      {usePassword && (
-                        <input
-                          value={password}
-                          onChange={(e) => setPassword(e.target.value)}
-                          placeholder="סיסמה לשליחה ללקוח בנפרד"
-                          disabled={busy}
-                          className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-primary disabled:opacity-60"
-                        />
-                      )}
                     </div>
 
                     {error && (
@@ -921,87 +933,3 @@ function MultiDropZone({
   )
 }
 
-/* ── Toggle row + copper Switch — mirrors the revisions modal. ───── */
-function ToggleRow({
-  label,
-  description,
-  value,
-  onChange,
-  disabled,
-}: {
-  label: string
-  description?: string
-  value: boolean
-  onChange: (v: boolean) => void
-  disabled?: boolean
-}) {
-  return (
-    <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-bg-card px-3 py-2.5">
-      <div>
-        <div className="flex items-center gap-1.5 text-sm text-fg">
-          <Lock className="h-3.5 w-3.5 text-fg-muted" />
-          {label}
-        </div>
-        {description && (
-          <div className="mt-0.5 text-xs text-fg-muted">{description}</div>
-        )}
-      </div>
-      <Switch checked={value} onChange={onChange} disabled={disabled} />
-    </div>
-  )
-}
-
-/** Copper squared switch — identical to the revisions/desktop one:
- *  square track, tile thumb, copper "on" state with a soft halo,
- *  RTL thumb travels right→left. */
-function Switch({
-  checked,
-  onChange,
-  disabled,
-}: {
-  checked: boolean
-  onChange: (next: boolean) => void
-  disabled?: boolean
-}) {
-  return (
-    <motion.button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={(e) => {
-        e.preventDefault()
-        if (!disabled) onChange(!checked)
-      }}
-      whileTap={disabled ? undefined : { scale: 0.95 }}
-      animate={{
-        backgroundColor: checked ? 'var(--primary)' : 'rgba(255,255,255,0.04)',
-        borderColor: checked ? 'var(--primary)' : 'var(--border)',
-      }}
-      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-      className={
-        'relative mt-0.5 inline-flex h-5 w-10 shrink-0 items-center rounded-md border ' +
-        (disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer')
-      }
-    >
-      <motion.span
-        aria-hidden="true"
-        animate={{ opacity: checked ? 1 : 0 }}
-        transition={{ duration: 0.22 }}
-        className="pointer-events-none absolute inset-0 rounded-md bg-primary/40 blur-md"
-      />
-      <motion.span
-        aria-hidden="true"
-        animate={{
-          x: checked ? -18 : -3,
-          backgroundColor: checked ? 'var(--bg)' : 'rgba(245,239,230,0.95)',
-        }}
-        transition={{
-          x: { type: 'spring', stiffness: 500, damping: 32, mass: 0.8 },
-          backgroundColor: { duration: 0.22 },
-        }}
-        className="pointer-events-none relative z-10 block h-3.5 w-3.5 rounded-sm shadow-lg"
-      />
-    </motion.button>
-  )
-}
