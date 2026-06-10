@@ -6427,7 +6427,13 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
     max_tokens?: number
   }
   const messages = Array.isArray(body.messages) ? body.messages : []
-  const maxTokens = Math.min(8192, Math.max(256, Number(body.max_tokens) || 4000))
+  // Generous output budget. gemini-2.5-flash can spend part of its output
+  // allowance on internal "thinking"; a low ceiling left nothing for the
+  // visible answer on longer chats (empty reply). Floor high so thinking +
+  // answer both fit. (We do NOT use generationConfig.thinkingConfig — it
+  // returns HTTP 400 on some model versions, which broke EVERY request,
+  // including the opener.)
+  const maxTokens = Math.min(8192, Math.max(4096, Number(body.max_tokens) || 8192))
 
   // Map OpenAI-style roles → Gemini: 'system' → systemInstruction,
   // 'assistant' → 'model', everything else → 'user'.
@@ -6451,20 +6457,7 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
 
   const payload: Record<string, unknown> = {
     contents,
-    generationConfig: {
-      maxOutputTokens: maxTokens,
-      temperature: 0.7,
-      // gemini-2.5-flash is a THINKING model. Left to its defaults it
-      // spends output tokens on hidden internal "thinking" — and on a
-      // longer conversation that reasoning can consume the ENTIRE
-      // maxOutputTokens budget, returning a candidate with
-      // finishReason=MAX_TOKENS and ZERO visible text. That surfaced to
-      // users as "תשובת AI ריקה" → a generic error that got worse the
-      // longer the chat grew (exactly the "stops responding" bug). A
-      // pricing advisor needs no chain-of-thought, so we turn thinking
-      // OFF and hand the whole budget to the actual answer.
-      thinkingConfig: { thinkingBudget: 0 },
-    },
+    generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
   }
   if (systemParts.length) {
     payload.systemInstruction = { parts: [{ text: systemParts.join('\n\n') }] }
@@ -6496,7 +6489,20 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
 
       if (!r.ok) {
         lastStatus = r.status
-        lastErr = data?.error?.message || `HTTP ${r.status}`
+        const gMsg = data?.error?.message || `HTTP ${r.status}`
+        // Tag the message with phrases the desktop's friendlyAiError()
+        // recognizes, so users on already-shipped builds see an ACCURATE
+        // reason (quota vs bad-request vs server-down) instead of the
+        // generic "transient error" — and so we can diagnose remotely.
+        let tagged = gMsg
+        if (r.status === 429)
+          tagged = `rate limit / too many requests (429) — ${gMsg}`
+        else if (r.status === 400) tagged = `bad request (400) — ${gMsg}`
+        else if (r.status === 403)
+          tagged = `403 forbidden — מפתח ה-AI נדחה או חסר הרשאה — ${gMsg}`
+        else if (r.status >= 500)
+          tagged = `503 service unavailable (${r.status}) — ${gMsg}`
+        lastErr = tagged
         if ((r.status === 429 || r.status >= 500) && attempt === 0) {
           await sleep(1200)
           continue
