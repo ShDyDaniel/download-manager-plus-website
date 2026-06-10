@@ -154,7 +154,12 @@ export async function fetchStorageState(): Promise<{
  *  streams the bytes Drive → R2 (nothing through the browser or
  *  Vercel). Resolves to the r2 pointer + metadata the create/add
  *  calls need. Throws a Hebrew message on quota / sharing errors. */
-export async function importDriveLinkToR2(driveUrl: string): Promise<{
+export async function importDriveLinkToR2(
+  driveUrl: string,
+  /** 'finals' imports into {uid}/finals/ (deliveries); omitted imports
+   *  into {uid}/videos/ (revisions, the default). */
+  target?: 'finals',
+): Promise<{
   r2Key: string
   videoFileName: string
   videoSizeBytes: number
@@ -166,7 +171,7 @@ export async function importDriveLinkToR2(driveUrl: string): Promise<{
   const initResp = await fetch(`${API_BASE}?action=drive-import-init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionToken: token, driveUrl }),
+    body: JSON.stringify({ sessionToken: token, driveUrl, target }),
   })
   const init = (await initResp.json().catch(() => ({}))) as {
     ok?: boolean

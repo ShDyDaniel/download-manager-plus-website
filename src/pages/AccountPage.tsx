@@ -410,12 +410,9 @@ export default function AccountPage() {
         // sessionStorage disabled — degrade gracefully.
       }
       // Hand off to the shared helper in webSession.ts so both
-      // /account and /revisions share one implementation. The
-      // helper also has the [pw-save] diagnostic logs, so we'll
-      // see in DevTools whether the credential store + history
-      // replaceState fired here too. Must happen BEFORE
-      // setPassword('') so the form's password input still has a
-      // value when PasswordCredential reads it.
+      // /account and /revisions share one implementation. Must
+      // happen BEFORE setPassword('') so the form's password input
+      // still has a value when PasswordCredential reads it.
       await offerCredentialSave(loginFormRef.current)
       setPassword('')
     } catch (err) {

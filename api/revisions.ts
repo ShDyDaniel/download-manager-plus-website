@@ -676,7 +676,11 @@ async function handleDriveImportInit(req: VercelRequest, res: VercelResponse) {
     })
   }
 
-  const body = (req.body || {}) as { driveUrl?: string }
+  const body = (req.body || {}) as { driveUrl?: string; target?: string }
+  // Deliveries import into {uid}/finals/; revisions (default) into
+  // {uid}/videos/. Both stay under the owner prefix so the quota +
+  // ownership guards treat them identically.
+  const toFinals = body.target === 'finals'
   const fileId = extractDriveFileId(String(body.driveUrl || ''))
   if (!fileId) {
     return res.status(400).json({
@@ -712,7 +716,9 @@ async function handleDriveImportInit(req: VercelRequest, res: VercelResponse) {
     })
   }
 
-  const key = buildVideoKey(verified.uid, meta.name)
+  const key = toFinals
+    ? buildFinalKey(verified.uid, meta.name)
+    : buildVideoKey(verified.uid, meta.name)
   const nonce = crypto.randomBytes(24).toString('hex')
   const now = Date.now()
   await getDb()

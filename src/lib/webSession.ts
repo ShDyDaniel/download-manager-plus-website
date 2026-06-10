@@ -298,49 +298,27 @@ async function postJson<T>(
 export async function offerCredentialSave(
   form: HTMLFormElement | null,
 ): Promise<void> {
-  // Diagnostic logs (temporary — remove once the operator
-  // confirms the save prompt is firing). Each log is prefixed
-  // with [pw-save] so it's filterable in DevTools console. If a
-  // step says "skipped" or "failed", that's our culprit.
-  console.log('[pw-save] offerCredentialSave called', {
-    formPresent: !!form,
-    formAction: form?.action,
-    formMethod: form?.method,
-    inputCount: form?.elements.length,
-  })
-  if (!form) {
-    console.warn('[pw-save] SKIPPED — no form element')
-    return
-  }
+  if (!form) return
   try {
     const PC = (
       window as unknown as {
         PasswordCredential?: new (form: HTMLFormElement) => Credential
       }
     ).PasswordCredential
-    console.log('[pw-save] PasswordCredential available?', !!PC)
-    if (!PC) {
-      console.warn('[pw-save] SKIPPED — PasswordCredential not in window')
-      return
-    }
-    console.log('[pw-save] navigator.credentials available?', !!navigator.credentials, '/ .store?', !!navigator.credentials?.store)
-    if (!navigator.credentials || !navigator.credentials.store) {
-      console.warn('[pw-save] SKIPPED — navigator.credentials.store missing')
-      return
-    }
+    if (!PC) return
+    if (!navigator.credentials || !navigator.credentials.store) return
     const cred = new PC(form)
-    console.log('[pw-save] PasswordCredential constructed', cred)
     await navigator.credentials.store(cred)
-    console.log('[pw-save] credentials.store() resolved successfully')
-  } catch (err) {
-    console.error('[pw-save] FAILED in credential store:', err)
+  } catch {
+    // Browser doesn't support the Credential Management API, or the
+    // user dismissed the prompt — nothing to do, the login still
+    // succeeded.
   }
   try {
     const here = window.location.pathname + window.location.search
     window.history.replaceState(window.history.state, '', here)
-    console.log('[pw-save] history.replaceState fired for', here)
-  } catch (err) {
-    console.error('[pw-save] FAILED in history.replaceState:', err)
+  } catch {
+    /* replaceState blocked — harmless, the save heuristic is best-effort */
   }
 }
 
