@@ -1601,7 +1601,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // it's hit by a GET link inside a marketing email so the
   // recipient can click straight from their inbox. We still reject
   // GETs for anything else to keep the surface area tight.
-  if (req.method !== 'POST' && !(req.method === 'GET' && action === 'unsubscribe')) {
+  // GET is allowed for `unsubscribe` (email link) and `telegram-setup`
+  // (one-time webhook registration the operator opens in a browser).
+  const getAllowed = action === 'unsubscribe' || action === 'telegram-setup'
+  if (req.method !== 'POST' && !(req.method === 'GET' && getAllowed)) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
   }
 
@@ -1779,6 +1782,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // One-time: register the alert bot's webhook (admin-gated).
       case 'admin-telegram-setup-webhook':
         return await handleAdminTelegramSetupWebhook(req, res)
+      // Same, but self-service via a browser link guarded by the env
+      // secret (?secret=…) — no curl/2FA needed for first setup.
+      case 'telegram-setup':
+        return await handleTelegramSetup(req, res)
       // Telegram inline-button presses land here (self-verified via the
       // secret-token header — NOT admin-gated, Telegram can't carry our
       // session). Powers the backup "📊 פירוט" drill-in.
@@ -8506,25 +8513,28 @@ async function handleTelegramWebhook(req: VercelRequest, res: VercelResponse) {
   return res.status(200).json({ ok: true })
 }
 
-/** One-time setup: point the alert bot's webhook at this endpoint with
- *  a secret token, and subscribe ONLY to callback_query updates. Admin-
- *  gated; reads the token + secret from env so they never leave Vercel. */
-async function handleAdminTelegramSetupWebhook(
+/** Build the webhook URL from the request host so it ALWAYS points at a
+ *  host that actually serves (Telegram doesn't follow redirects, so a
+ *  www/non-www mismatch would silently break delivery). Falls back to
+ *  the canonical base if the host header is absent. */
+function telegramWebhookUrl(req: VercelRequest): string {
+  const host =
+    (req.headers['x-forwarded-host'] as string | undefined) ||
+    (req.headers.host as string | undefined)
+  const base = host ? `https://${host}` : WEBSITE_BASE
+  return `${base}/api/paypal?action=telegram-webhook`
+}
+
+/** Call Telegram setWebhook with our endpoint + secret token. Shared by
+ *  the admin action and the browser-link setup. */
+async function registerTelegramWebhook(
   req: VercelRequest,
-  res: VercelResponse,
-) {
-  if (!(await verifyAdmin2FA(req))) {
-    return res.status(403).json({ ok: false, error: 'forbidden' })
-  }
+): Promise<{ ok: boolean; url: string; telegram: unknown; error?: string }> {
   const token = process.env.TELEGRAM_ALERT_BOT_TOKEN
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET
-  if (!token) {
-    return res.status(400).json({ ok: false, error: 'TELEGRAM_ALERT_BOT_TOKEN missing' })
-  }
-  if (!secret) {
-    return res.status(400).json({ ok: false, error: 'TELEGRAM_WEBHOOK_SECRET missing' })
-  }
-  const url = `${WEBSITE_BASE}/api/paypal?action=telegram-webhook`
+  if (!token) return { ok: false, url: '', telegram: null, error: 'TELEGRAM_ALERT_BOT_TOKEN missing' }
+  if (!secret) return { ok: false, url: '', telegram: null, error: 'TELEGRAM_WEBHOOK_SECRET missing' }
+  const url = telegramWebhookUrl(req)
   const r = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -8535,7 +8545,49 @@ async function handleAdminTelegramSetupWebhook(
     }),
   })
   const telegram = await r.json().catch(() => ({}))
-  return res.status(200).json({ ok: true, url, telegram })
+  return { ok: true, url, telegram }
+}
+
+/** One-time setup: point the alert bot's webhook at this endpoint with
+ *  a secret token, and subscribe ONLY to callback_query updates. Admin-
+ *  gated; reads the token + secret from env so they never leave Vercel. */
+async function handleAdminTelegramSetupWebhook(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const result = await registerTelegramWebhook(req)
+  if (!result.ok) return res.status(400).json({ ok: false, error: result.error })
+  return res.status(200).json({ ok: true, url: result.url, telegram: result.telegram })
+}
+
+/** Browser-friendly one-time setup: open
+ *    /api/paypal?action=telegram-setup&secret=<TELEGRAM_WEBHOOK_SECRET>
+ *  in a browser to register the webhook — no terminal/curl needed. The
+ *  query secret must match the env secret (which only the operator
+ *  knows), so it's a safe self-service trigger. GET-allowed. */
+async function handleTelegramSetup(req: VercelRequest, res: VercelResponse) {
+  const provided =
+    typeof req.query.secret === 'string' ? req.query.secret : ''
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET
+  if (!secret) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'TELEGRAM_WEBHOOK_SECRET missing in env' })
+  }
+  if (!provided || provided !== secret) {
+    return res.status(403).json({ ok: false, error: 'secret mismatch' })
+  }
+  const result = await registerTelegramWebhook(req)
+  if (!result.ok) return res.status(400).json({ ok: false, error: result.error })
+  return res.status(200).json({
+    ok: true,
+    message: 'Webhook registered. הכפתור יעבוד בגיבוי הבא.',
+    url: result.url,
+    telegram: result.telegram,
+  })
 }
 
 /** Collections that are restored as a UNION (never purged), to avoid
