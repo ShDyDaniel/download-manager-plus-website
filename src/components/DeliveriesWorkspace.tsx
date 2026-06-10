@@ -379,8 +379,7 @@ function DeliveryComposerModal({
 
   function close() {
     if (busy) return
-    // Reset on AnimatePresence's onExitComplete (below), not here — so
-    // the content stays stable through the close animation.
+    reset()
     onClose()
   }
 
@@ -490,30 +489,27 @@ function DeliveryComposerModal({
     0,
   )
 
-  // CRITICAL: Portal is the OUTERMOST element; AnimatePresence lives
-  // INSIDE it with the keyed motion.div overlay as its direct child.
-  // Proper exit animation + clean unmount. Do NOT wrap the Portal in
-  // AnimatePresence — that leaves the fixed-inset overlay stuck at
-  // opacity 0 (invisible click-blocker that freezes the page). reset()
-  // runs on onExitComplete so content stays stable through the fade-out.
+  // Closed → render NOTHING. The Portal is rendered DIRECTLY (no
+  // AnimatePresence wrapping it) — wrapping a Portal in AnimatePresence
+  // left the fixed-inset overlay stuck at opacity 0, an invisible
+  // click-blocker that froze the page. (The inner source-mode
+  // AnimatePresence below is fine: returning null here force-unmounts
+  // it on close, so it can never linger.)
+  if (!open) return null
+
   return (
     <Portal>
-      <AnimatePresence onExitComplete={reset}>
-        {open && (
-          <motion.div
-            key="dlv-composer-overlay"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            dir="rtl"
-            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
-            onClick={close}
-          >
-            <motion.div
-              initial={{ scale: 0.96, y: 14, opacity: 0 }}
-              animate={{ scale: 1, y: 0, opacity: 1 }}
-              exit={{ scale: 0.96, y: 14, opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 360, damping: 30 }}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        dir="rtl"
+        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+        onClick={close}
+      >
+        <motion.div
+          initial={{ scale: 0.96, y: 14, opacity: 0 }}
+          animate={{ scale: 1, y: 0, opacity: 1 }}
+          transition={{ type: 'spring', stiffness: 360, damping: 30 }}
               onClick={(e) => e.stopPropagation()}
               className="flex max-h-[90vh] w-[min(560px,94vw)] flex-col overflow-hidden rounded-2xl border border-border bg-bg-elevated shadow-2xl"
             >
@@ -604,11 +600,19 @@ function DeliveryComposerModal({
                       disabled={busy}
                     />
 
-                    {/* Source content swaps INSTANTLY (no nested
-                        AnimatePresence). A mode change mid-close used to
-                        deadlock the outer exit and leave the backdrop
-                        stuck over the whole app. */}
-                    {mode === 'upload' ? (
+                    {/* Source content slides between upload / Drive-link.
+                        Safe: the whole modal unmounts on close (return
+                        null above), so this inner AnimatePresence is
+                        force-unmounted and can never linger. */}
+                    <AnimatePresence mode="wait" initial={false}>
+                      <motion.div
+                        key={mode}
+                        initial={{ opacity: 0, x: mode === 'upload' ? -10 : 10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: mode === 'upload' ? 10 : -10 }}
+                        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                      >
+                        {mode === 'upload' ? (
                           <MultiDropZone onAdd={addFiles} disabled={busy} />
                         ) : (
                           <div className="rounded-xl border-2 border-border bg-bg-card px-5 py-5">
@@ -647,7 +651,9 @@ function DeliveryComposerModal({
                               להוריד ולהעלות מחדש.
                             </p>
                           </div>
-                    )}
+                        )}
+                      </motion.div>
+                    </AnimatePresence>
 
                     {/* Staged videos */}
                     {staged.length > 0 && (
@@ -819,10 +825,8 @@ function DeliveryComposerModal({
                   </button>
                 </div>
               )}
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+        </motion.div>
+      </motion.div>
     </Portal>
   )
 }
