@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { motion } from 'framer-motion'
 import {
   Send,
   Upload,
@@ -489,18 +489,20 @@ function DeliveryComposerModal({
     0,
   )
 
+  // Closed → render NOTHING. Wrapping the Portal in <AnimatePresence>
+  // could leave the fixed-inset overlay mounted at opacity 0 after
+  // close — an invisible click-blocker that freezes the whole page.
+  if (!open) return null
+
   return (
-    <AnimatePresence>
-      {open && (
-        <Portal>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            dir="rtl"
-            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
-            onClick={close}
-          >
+    <Portal>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        dir="rtl"
+        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+        onClick={close}
+      >
             <motion.div
               initial={{ scale: 0.96, y: 14, opacity: 0 }}
               animate={{ scale: 1, y: 0, opacity: 1 }}
@@ -813,9 +815,7 @@ function DeliveryComposerModal({
               )}
             </motion.div>
           </motion.div>
-        </Portal>
-      )}
-    </AnimatePresence>
+    </Portal>
   )
 }
 
