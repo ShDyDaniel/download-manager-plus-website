@@ -442,6 +442,24 @@ async function r2HeadSize(key: string): Promise<number> {
   }
 }
 
+// Authoritative stored size for an uploaded video. We NEVER trust the
+// client's byte count for the storage quota — for an R2-backed object we
+// HEAD the real object, so a caller can't declare "1 byte" at init,
+// upload 5 GB, then register the round as 1 byte and store unlimited
+// real data under the cap. Falls back to the sanitised client value only
+// when there is no R2 key (Drive-backed rounds, which don't count toward
+// the R2 quota) or on a transient HEAD failure (the upload-complete path
+// already validated the real size against the quota at upload time).
+async function authoritativeVideoSize(
+  r2Key: string,
+  clientSize: unknown,
+): Promise<number> {
+  const fallback = Math.max(0, Math.floor(Number(clientSize) || 0))
+  if (!r2Key) return fallback
+  const real = await r2HeadSize(r2Key)
+  return real > 0 ? real : fallback
+}
+
 // Delete every R2 note-media object (screenshots / audio) attached to a
 // round's notes. Safe no-op for notes that still use Drive. Note media
 // is tiny so it isn't tracked in the storage quota counter.
@@ -2516,7 +2534,8 @@ async function handleCreateProjectGroup(
   const driveFolderId = String(body.driveFolderId || '').trim() || null
   const hasVideo = !!(r2Key || driveFileId)
   const videoFileName = String(body.videoFileName || '').trim().slice(0, 300)
-  const videoSizeBytes = Number(body.videoSizeBytes) || 0
+  // Quota-safe: for an R2 object use its REAL size, not the client number.
+  const videoSizeBytes = await authoritativeVideoSize(r2Key, body.videoSizeBytes)
   const videoMime = String(body.videoMime || '').trim().slice(0, 100)
   const password = String(body.password || '')
   const roundNumber = Math.max(
@@ -2709,6 +2728,8 @@ async function handleAddRoundToGroup(
 
   const roundRef = db.collection('revisionProjects').doc()
   const now = Date.now()
+  // Quota-safe: store the REAL R2 object size, not the client number.
+  const videoSizeBytes = await authoritativeVideoSize(r2Key, body.videoSizeBytes)
   await roundRef.set({
     id: roundRef.id,
     groupId,
@@ -2718,7 +2739,7 @@ async function handleAddRoundToGroup(
     driveFileId: driveFileId || null,
     driveFolderId: driveFolderId || group.driveFolderId || null,
     videoFileName: String(body.videoFileName || '').trim().slice(0, 300),
-    videoSizeBytes: Number(body.videoSizeBytes) || 0,
+    videoSizeBytes,
     videoMime: String(body.videoMime || '').trim().slice(0, 100),
     videoStatus: 'ready',
     roundNumber,
@@ -5964,7 +5985,6 @@ async function handleReplaceProjectVideo(
   const newR2Key = String(body.r2Key || '').trim()
   const newDriveFileId = String(body.driveFileId || '').trim()
   const videoFileName = String(body.videoFileName || '').trim().slice(0, 300)
-  const videoSizeBytes = Number(body.videoSizeBytes) || 0
   const videoMime = String(body.videoMime || '').trim().slice(0, 100)
   if (!projectId || (!newR2Key && !newDriveFileId)) {
     return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
@@ -5972,6 +5992,8 @@ async function handleReplaceProjectVideo(
   if (newR2Key && !keyBelongsToUser(newR2Key, verified.uid)) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
+  // Quota-safe: real R2 object size, not the client number.
+  const videoSizeBytes = await authoritativeVideoSize(newR2Key, body.videoSizeBytes)
 
   const docRef = getDb().collection('revisionProjects').doc(projectId)
   const snap = await docRef.get()
@@ -6455,7 +6477,8 @@ async function handleDeliveryCreate(req: VercelRequest, res: VercelResponse) {
     videos.push({
       r2Key,
       name: String(v?.name || 'video').trim().slice(0, 300),
-      sizeBytes: Math.max(0, Math.floor(Number(v?.sizeBytes) || 0)),
+      // Quota-safe: real R2 object size, not the client number.
+      sizeBytes: await authoritativeVideoSize(r2Key, v?.sizeBytes),
       mime: String(v?.mime || '').trim().slice(0, 100),
     })
   }
