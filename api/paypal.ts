@@ -4079,6 +4079,46 @@ async function loadAllChargesMerged(): Promise<MergedCharge[]> {
     }
   }
 
+  // 4) Last-resort attribution recovery for OLD charges (recorded before
+  //    the ledger carried referredBy) whose KEY is gone: the buyer's
+  //    user account still carries the referral stamp from signup. Map
+  //    the charge's email → users.referredBy. Only query the emails we
+  //    still couldn't attribute, in `in`-chunks of 30.
+  const needEmails = [
+    ...new Set(
+      [...byId.values()]
+        .filter((c) => !c.referredBy && c.email)
+        .map((c) => c.email.toLowerCase()),
+    ),
+  ]
+  if (needEmails.length > 0) {
+    const emailToRef = new Map<string, string>()
+    for (let i = 0; i < needEmails.length; i += 30) {
+      const chunk = needEmails.slice(i, i + 30)
+      try {
+        const snap = await db
+          .collection('users')
+          .where('email', 'in', chunk)
+          .get()
+        for (const u of snap.docs) {
+          const ud = u.data() as { email?: string; referredBy?: string }
+          if (ud.email && typeof ud.referredBy === 'string' && ud.referredBy)
+            emailToRef.set(ud.email.toLowerCase(), ud.referredBy)
+        }
+      } catch (err) {
+        console.warn('[loadAllChargesMerged] user email lookup failed:', err)
+      }
+    }
+    if (emailToRef.size > 0) {
+      for (const c of byId.values()) {
+        if (!c.referredBy && c.email) {
+          const ref = emailToRef.get(c.email.toLowerCase())
+          if (ref) c.referredBy = ref
+        }
+      }
+    }
+  }
+
   return [...byId.values()]
 }
 
