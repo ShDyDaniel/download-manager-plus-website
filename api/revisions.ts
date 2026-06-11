@@ -4239,71 +4239,26 @@ async function handleNoteMedia(req: VercelRequest, res: VercelResponse) {
     audioR2Key?: string | null
   }
 
-  // ── R2-backed note media — stream straight from our bucket ──
-  // Small files (screenshots/voice notes), so we pull the whole
-  // object server-side and pipe it back. No Range, no CORS concerns
-  // (the bytes flow R2 → Vercel → browser, same-origin to the client).
+  // REDIRECT, never proxy bytes through Vercel. This legacy route is
+  // kept working for any old/cached client, but instead of streaming
+  // the file through our function (which would burn Vercel origin
+  // transfer), we 302 to where the bytes actually live: a presigned R2
+  // GET for R2-backed media, or the media Worker for Drive-backed media.
+  // The browser's <img>/<audio> follows the redirect transparently, and
+  // not a single file byte passes through Vercel.
   const r2Key = kind === 'image' ? note.screenshotR2Key : note.audioR2Key
   if (r2Key) {
-    try {
-      const r2 = getR2()
-      const obj = await r2.send(
-        new GetObjectCommand({ Bucket: R2_BUCKET, Key: r2Key }),
-      )
-      const contentType = obj.ContentType || 'application/octet-stream'
-      res.setHeader('Content-Type', contentType)
-      if (typeof obj.ContentLength === 'number') {
-        res.setHeader('Content-Length', String(obj.ContentLength))
-      }
-      res.setHeader('Cache-Control', 'private, max-age=3600')
-      res.setHeader('Content-Disposition', 'inline')
-      const bytes = await obj.Body?.transformToByteArray()
-      if (!bytes) return res.status(404).end('media not attached')
-      return res.status(200).send(Buffer.from(bytes))
-    } catch (err) {
-      console.warn('[revisions/note-media] R2 fetch failed:', err)
-      return res.status(404).end('media not attached')
-    }
+    const url = await r2PresignGet(String(r2Key))
+    res.setHeader('Cache-Control', 'private, max-age=300')
+    return res.redirect(302, url)
   }
-
   const driveFileId =
     kind === 'image' ? note.screenshotDriveFileId : note.audioDriveFileId
   if (!driveFileId) return res.status(404).end('media not attached')
-
-  // Mint a Drive access token via the owner's refresh token.
-  const integrationSnap = await integrationDocRef(ownerUid).get()
-  if (!integrationSnap.exists) return res.status(500).end('drive not connected')
-  const integration = integrationSnap.data() as IntegrationDoc
-  const refreshToken = decryptToken(integration.refreshTokenEnc)
-  let accessToken: string
-  try {
-    const r = await refreshAccessToken(refreshToken)
-    accessToken = r.accessToken
-  } catch {
-    return res.status(401).end('drive auth expired')
-  }
-
-  // Pull the bytes from Drive and stream them back. Note media is
-  // small enough that we don't bother with Range support — the
-  // browser fetches the whole thing once and caches it.
-  const driveResp = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  )
-  if (!driveResp.ok) {
-    return res.status(driveResp.status).end('drive fetch failed')
-  }
-  const contentType = driveResp.headers.get('content-type') || 'application/octet-stream'
-  const contentLength = driveResp.headers.get('content-length')
-  res.setHeader('Content-Type', contentType)
-  if (contentLength) res.setHeader('Content-Length', contentLength)
-  // 1-hour browser cache — note media is immutable once uploaded
-  // (delete-note tears it down rather than overwrites), so caching
-  // is safe and cuts repeat-view roundtrips.
-  res.setHeader('Cache-Control', 'private, max-age=3600')
-  res.setHeader('Content-Disposition', 'inline')
-  const buf = Buffer.from(await driveResp.arrayBuffer())
-  return res.status(200).send(buf)
+  const workerUrl = mintMediaWorkerUrl(ownerUid, String(driveFileId))
+  if (!workerUrl) return res.status(500).end('media worker not configured')
+  res.setHeader('Cache-Control', 'private, max-age=300')
+  return res.redirect(302, workerUrl)
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -4355,57 +4310,22 @@ async function handleNoteMediaOwner(
     audioR2Key?: string | null
   }
 
-  // R2-backed note media — stream straight from our bucket. Same as
-  // the public note-media endpoint; works for the desktop owner view
-  // without any bucket-CORS dependency (bytes flow R2 → Vercel → app).
+  // REDIRECT, never proxy bytes through Vercel (legacy route — current
+  // owners use note-media-owner-url). 302 to a presigned R2 GET, or the
+  // media Worker for Drive-backed media. Zero file bytes through Vercel.
   const r2Key = kind === 'image' ? note.screenshotR2Key : note.audioR2Key
   if (r2Key) {
-    try {
-      const r2 = getR2()
-      const obj = await r2.send(
-        new GetObjectCommand({ Bucket: R2_BUCKET, Key: r2Key }),
-      )
-      res.setHeader('Content-Type', obj.ContentType || 'application/octet-stream')
-      if (typeof obj.ContentLength === 'number') {
-        res.setHeader('Content-Length', String(obj.ContentLength))
-      }
-      res.setHeader('Cache-Control', 'private, max-age=3600')
-      res.setHeader('Content-Disposition', 'inline')
-      const bytes = await obj.Body?.transformToByteArray()
-      if (!bytes) return res.status(404).end('media not attached')
-      return res.status(200).send(Buffer.from(bytes))
-    } catch (err) {
-      console.warn('[revisions/note-media-owner] R2 fetch failed:', err)
-      return res.status(404).end('media not attached')
-    }
+    const url = await r2PresignGet(String(r2Key))
+    res.setHeader('Cache-Control', 'private, max-age=300')
+    return res.redirect(302, url)
   }
-
   const driveFileId =
     kind === 'image' ? note.screenshotDriveFileId : note.audioDriveFileId
   if (!driveFileId) return res.status(404).end('media not attached')
-
-  const integrationSnap = await integrationDocRef(project.ownerUid).get()
-  if (!integrationSnap.exists) return res.status(500).end('drive not connected')
-  const integration = integrationSnap.data() as IntegrationDoc
-  const refreshToken = decryptToken(integration.refreshTokenEnc)
-  let accessToken: string
-  try {
-    const r = await refreshAccessToken(refreshToken)
-    accessToken = r.accessToken
-  } catch {
-    return res.status(401).end('drive auth expired')
-  }
-
-  const driveResp = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  )
-  if (!driveResp.ok) return res.status(driveResp.status).end('drive fetch failed')
-  const contentType = driveResp.headers.get('content-type') || 'application/octet-stream'
-  res.setHeader('Content-Type', contentType)
-  res.setHeader('Cache-Control', 'private, max-age=3600')
-  const buf = Buffer.from(await driveResp.arrayBuffer())
-  return res.status(200).send(buf)
+  const workerUrl = mintMediaWorkerUrl(project.ownerUid, String(driveFileId))
+  if (!workerUrl) return res.status(500).end('media worker not configured')
+  res.setHeader('Cache-Control', 'private, max-age=300')
+  return res.redirect(302, workerUrl)
 }
 
 /* ──────────────────────────────────────────────────────────────
