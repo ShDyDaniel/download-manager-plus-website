@@ -10412,52 +10412,71 @@ async function handleAdminReferralDetail(
   if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
   const db = getDb()
 
-  const [usersSnap, keysSnap] = await Promise.all([
+  // Charges come from the durable ledger (∪ live keys) filtered to this
+  // partner, so a buyer whose key was deleted or whose subscription
+  // ended STILL shows up with the revenue they generated.
+  const [usersSnap, allCharges] = await Promise.all([
     db.collection('users').where('referredBy', '==', code).get(),
-    db.collection('productKeys').where('referredBy', '==', code).get(),
+    loadAllChargesMerged(),
   ])
+  const charges = allCharges.filter((c) => c.referredBy === code)
 
   const paidEmails = new Set<string>()
   const revenueByMonth: Record<string, Record<string, number>> = {}
-  for (const k of keysSnap.docs) {
-    const kd = k.data() as {
-      nonPaidGrant?: boolean
-      buyerEmail?: string
-      redeemedByEmail?: string
-      billingHistory?: Array<{ at?: string; amount?: number; currency?: string }>
+  // First-seen info per paying email, so buyers with no user/key record
+  // can still be listed as accounts below.
+  const payerFirst = new Map<string, { email: string; at: string }>()
+  for (const c of charges) {
+    const email = c.email.toLowerCase()
+    if (email) {
+      paidEmails.add(email)
+      const ex = payerFirst.get(email)
+      if (!ex || (c.at && c.at < ex.at))
+        payerFirst.set(email, { email: c.email, at: c.at || '' })
     }
-    if (kd.nonPaidGrant) continue
-    const email = (kd.buyerEmail || kd.redeemedByEmail || '').toLowerCase()
-    const hist = Array.isArray(kd.billingHistory) ? kd.billingHistory : []
-    if (hist.length > 0 && email) paidEmails.add(email)
-    for (const h of hist) {
-      const d = h.at ? new Date(h.at) : null
-      const month =
-        d && !isNaN(d.getTime())
-          ? `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
-          : 'לא ידוע'
-      const cur = (h.currency || 'ILS').toUpperCase()
-      const amt = typeof h.amount === 'number' ? h.amount : 0
-      revenueByMonth[month] = revenueByMonth[month] || {}
-      revenueByMonth[month][cur] = (revenueByMonth[month][cur] || 0) + amt
-    }
+    const d = c.at ? new Date(c.at) : null
+    const month =
+      d && !isNaN(d.getTime())
+        ? `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+        : 'לא ידוע'
+    revenueByMonth[month] = revenueByMonth[month] || {}
+    revenueByMonth[month][c.currency] =
+      (revenueByMonth[month][c.currency] || 0) + c.gross
   }
 
-  const accounts = usersSnap.docs
-    .map((d) => {
-      const u = d.data() as {
-        email?: string
-        createdAt?: string
-        referredAt?: string
-      }
-      const email = (u.email || '').toLowerCase()
-      return {
-        email: u.email || '',
-        createdAt: u.createdAt || u.referredAt || '',
-        paid: paidEmails.has(email),
-      }
+  const seen = new Set<string>()
+  const accounts: Array<{
+    email: string
+    createdAt: string
+    paid: boolean
+    keyless?: boolean
+  }> = []
+  for (const d of usersSnap.docs) {
+    const u = d.data() as {
+      email?: string
+      createdAt?: string
+      referredAt?: string
+    }
+    const email = (u.email || '').toLowerCase()
+    if (email) seen.add(email)
+    accounts.push({
+      email: u.email || '',
+      createdAt: u.createdAt || u.referredAt || '',
+      paid: paidEmails.has(email),
     })
-    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+  }
+  // Paying buyers no longer present as users/keys (deleted / ended) —
+  // surface them so their revenue isn't invisible. keyless flags them.
+  for (const [email, info] of payerFirst) {
+    if (seen.has(email)) continue
+    accounts.push({
+      email: info.email,
+      createdAt: info.at,
+      paid: true,
+      keyless: true,
+    })
+  }
+  accounts.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
 
   return res.status(200).json({ ok: true, accounts, revenueByMonth })
 }
@@ -10490,17 +10509,46 @@ async function handleAdminReferralExport(
     casualVatRatePercent(),
   ])
 
-  const [partnerSnap, usersSnap, keysSnap] = await Promise.all([
+  const [partnerSnap, usersSnap, keysSnap, allCharges] = await Promise.all([
     db.collection('referralPartners').doc(code).get(),
     db.collection('users').where('referredBy', '==', code).get(),
     db.collection('productKeys').where('referredBy', '==', code).get(),
+    loadAllChargesMerged(),
   ])
+  const charges = allCharges.filter((c) => c.referredBy === code)
 
   const emailToName: Record<string, string> = {}
   for (const u of usersSnap.docs) {
     const d = u.data() as { email?: string; name?: string }
     if (d.email) emailToName[d.email.toLowerCase()] = d.name || ''
   }
+
+  // Plan-type lookup (monthly/yearly) from live keys — used as a
+  // best-effort label for charges; ledger-only charges (deleted key)
+  // fall back to 'monthly'.
+  const emailToPlan: Record<string, 'monthly' | 'yearly'> = {}
+  const subToPlan: Record<string, 'monthly' | 'yearly'> = {}
+  for (const k of keysSnap.docs) {
+    const kd = k.data() as {
+      nonPaidGrant?: boolean
+      buyerEmail?: string
+      redeemedByEmail?: string
+      subscriptionId?: string
+      subscriptionPlanDays?: number
+      planDays?: number
+    }
+    if (kd.nonPaidGrant) continue
+    const email = (kd.buyerEmail || kd.redeemedByEmail || '').toLowerCase()
+    const days = kd.subscriptionPlanDays || kd.planDays || 30
+    const planType: 'monthly' | 'yearly' = days >= 365 ? 'yearly' : 'monthly'
+    if (email) emailToPlan[email] = planType
+    if (kd.subscriptionId) subToPlan[kd.subscriptionId] = planType
+  }
+
+  const planFor = (c: MergedCharge): 'monthly' | 'yearly' =>
+    subToPlan[c.subscriptionId] ||
+    emailToPlan[c.email.toLowerCase()] ||
+    'monthly'
 
   const payments: Array<{
     at: string
@@ -10513,79 +10561,86 @@ async function handleAdminReferralExport(
     net: number
     currency: string
   }> = []
-  // Map each buyer email → their plan type (from their key) so the
-  // accounts roster can show "חודשי/שנתי" even for users whose
-  // payments fall outside the selected date range.
-  const emailToPlan: Record<string, 'monthly' | 'yearly'> = {}
-
-  for (const k of keysSnap.docs) {
-    const kd = k.data() as {
-      nonPaidGrant?: boolean
-      buyerEmail?: string
-      redeemedByEmail?: string
-      subscriptionPlanDays?: number
-      planDays?: number
-      billingHistory?: Array<{
-        at?: string
-        amount?: number
-        currency?: string
-        fee?: number
-      }>
-    }
-    if (kd.nonPaidGrant) continue
-    const email = (kd.buyerEmail || kd.redeemedByEmail || '').toLowerCase()
-    const days = kd.subscriptionPlanDays || kd.planDays || 30
-    const planType: 'monthly' | 'yearly' = days >= 365 ? 'yearly' : 'monthly'
-    if (email) emailToPlan[email] = planType
-    for (const h of kd.billingHistory || []) {
-      if (!h.at) continue
-      const ms = Date.parse(h.at)
-      if (isNaN(ms)) continue
-      if (fromMs !== null && ms < fromMs) continue
-      if (toMs !== null && ms > toMs) continue
-      const cur = (h.currency || 'ILS').toUpperCase()
-      const b = chargeNetBreakdown({
-        amount: typeof h.amount === 'number' ? h.amount : 0,
-        currency: cur,
-        fee: typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0,
-        vatPercent,
-        receiptsEnabled: receiptsOn,
-      })
-      payments.push({
-        at: h.at,
-        email,
-        name: emailToName[email] || '',
-        planType,
-        amount: b.gross,
-        fee: b.fee,
-        vat: b.vat,
-        net: b.net,
-        currency: cur,
-      })
-    }
+  for (const c of charges) {
+    const ms = Date.parse(c.at)
+    if (isNaN(ms)) continue
+    if (fromMs !== null && ms < fromMs) continue
+    if (toMs !== null && ms > toMs) continue
+    const b = chargeNetBreakdown({
+      amount: c.gross,
+      currency: c.currency,
+      fee: c.fee,
+      vatPercent,
+      receiptsEnabled: receiptsOn,
+    })
+    const email = c.email.toLowerCase()
+    payments.push({
+      at: c.at,
+      email: c.email,
+      name: emailToName[email] || c.name || '',
+      planType: planFor(c),
+      amount: b.gross,
+      fee: b.fee,
+      vat: b.vat,
+      net: b.net,
+      currency: c.currency,
+    })
   }
 
   payments.sort((a, b) => a.at.localeCompare(b.at))
 
-  // Full roster: every account that came from this partner, paid or
-  // not. The CSV lists these even with zero revenue.
-  const accounts = usersSnap.docs
-    .map((u) => {
-      const d = u.data() as {
-        email?: string
-        name?: string
-        createdAt?: string
-        referredAt?: string
-      }
-      const email = (d.email || '').toLowerCase()
-      return {
-        email: d.email || '',
-        name: d.name || '',
-        createdAt: d.createdAt || d.referredAt || '',
-        planType: emailToPlan[email] || null,
-      }
+  // Full roster: every referred account, plus any paying buyer whose
+  // user/key record is gone (deleted / ended) so the CSV still lists
+  // them. The CSV lists referred accounts even with zero revenue.
+  const seen = new Set<string>()
+  const accounts: Array<{
+    email: string
+    name: string
+    createdAt: string
+    planType: 'monthly' | 'yearly' | null
+  }> = []
+  for (const u of usersSnap.docs) {
+    const d = u.data() as {
+      email?: string
+      name?: string
+      createdAt?: string
+      referredAt?: string
+    }
+    const email = (d.email || '').toLowerCase()
+    if (email) seen.add(email)
+    accounts.push({
+      email: d.email || '',
+      name: d.name || '',
+      createdAt: d.createdAt || d.referredAt || '',
+      planType: emailToPlan[email] || null,
     })
-    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+  }
+  const payerFirst = new Map<
+    string,
+    { email: string; name: string; at: string; plan: 'monthly' | 'yearly' }
+  >()
+  for (const c of charges) {
+    const email = c.email.toLowerCase()
+    if (!email) continue
+    const ex = payerFirst.get(email)
+    if (!ex || (c.at && c.at < ex.at))
+      payerFirst.set(email, {
+        email: c.email,
+        name: c.name,
+        at: c.at || '',
+        plan: planFor(c),
+      })
+  }
+  for (const [email, info] of payerFirst) {
+    if (seen.has(email)) continue
+    accounts.push({
+      email: info.email,
+      name: emailToName[email] || info.name || '',
+      createdAt: info.at,
+      planType: info.plan,
+    })
+  }
+  accounts.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
 
   const partnerName =
     (partnerSnap.data() as { name?: string } | undefined)?.name || code
