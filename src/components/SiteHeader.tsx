@@ -1,139 +1,146 @@
+import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { motion, AnimatePresence } from 'framer-motion'
+import { Menu, X } from 'lucide-react'
 
 /**
- * Editorial top-left "החשבון שלי" link.
+ * Marketing-site top-left navigation.
  *
- * Visual treatment: plain text — no border, no background, no chip.
- * The marketing voice is editorial (subtle wordmark, em-dash
- * labels, "איך זה עובד" scroll cue), so anything chip-like would
- * have read as a banner ad. Same `text-fg-muted → text-fg` hover
- * treatment as the in-page scroll cue so all secondary affordances
- * feel like one family.
+ * Desktop: three editorial text links (סבבי תיקונים · מסירה ללקוח ·
+ * החשבון שלי) anchored to the left edge of the page's content rail.
  *
- * Layout — anchored to whichever content rail this route uses, so
- * the link always sits at the visual LEFT edge of the same column
- * as the page's other top-level chrome:
- *   - `/`     → Hero is centered inside max-w-6xl. Link aligns
- *               with the LEFT edge of that rail, opposite the
- *               brand wordmark on the RIGHT edge.
- *   - `/buy`  → BuyPage content is centered inside max-w-3xl. Link
- *               aligns with the LEFT edge of that narrower rail,
- *               opposite the "חזרה לדף הבית" back-link on the
- *               RIGHT edge.
+ * Mobile: those links don't fit cleanly at the top (and on /buy they
+ * collided with the page's own back-link), so instead we show a small
+ * SQUARE copper menu button (three lines, like a settings icon). Tapping
+ * it opens a side drawer that lists the same destinations. This keeps
+ * the top of the screen clean and the brand color consistent.
  *
- * Without this per-route width the link sat against the edge of
- * the wider 6xl rail even on /buy where the actual content lives
- * inside 3xl — it looked detached, like a stray UI element.
- *
- * Vertical position also matches each page's top content y:
- *   - `/`     → top-12 / md:top-[5.5rem] centers with the Hero
- *               brand icon (pt-10/pt-20 + h-10/2).
- *   - `/buy`  → top-12 / md:top-20 matches the BuyPage's
- *               py-12/py-20 — same y as the back-to-home link.
- *
- * Position is `absolute` (NOT `fixed`) so the link scrolls away
- * with the page content. The marketing site is meant to be read
- * top-to-bottom; a sticky corner element would compete with that
- * reading rhythm.
- *
- * Hidden on /account because the destination IS /account. The
- * startsWith match also catches any future sub-routes like
- * /account/settings.
+ * Hidden on /account, /auth-action, /review, /revisions, /deliveries —
+ * those have their own chrome (see per-route guards below).
  */
+const NAV_LINKS = [
+  { to: '/revisions', label: 'סבבי תיקונים' },
+  { to: '/deliveries', label: 'מסירה ללקוח' },
+  { to: '/account', label: 'החשבון שלי' },
+]
+
 export function SiteHeader() {
   const location = useLocation()
-  // Hide on /account (the link's destination) and on /auth-action
-  // (the user is mid-flow on a password reset — surfacing a "go to
-  // account" link there would be distracting).
+  const [open, setOpen] = useState(false)
+
   if (location.pathname.startsWith('/account')) return null
   if (location.pathname.startsWith('/auth-action')) return null
-  // /review/:token is a standalone client-review tool with its own
-  // header (logo + project title + branding). The global "החשבון
-  // שלי" link belongs to the operator's flow, not the end-client
-  // who clicked a share link — surfacing it would just confuse them.
   if (location.pathname.startsWith('/review')) return null
-  // /revisions has its own workspace chrome (project list, account
-  // pill, Drive footer); the marketing header would duplicate the
-  // "סבבי תיקונים" link the user just clicked to get there.
   if (location.pathname.startsWith('/revisions')) return null
-  // /deliveries — same story: it renders its own ProWorkspaceShell
-  // header, so the marketing rail would just duplicate chrome.
   if (location.pathname.startsWith('/deliveries')) return null
 
-  // Per-route alignment. If we add more pages later (e.g. /pricing,
-  // /docs), extend this conditional with their max-width and top
-  // offset. Keeping it inline rather than a config map because
-  // there are only two destinations today and a switch reads more
-  // naturally at this scale.
+  // Per-route alignment — match the page's content rail so the cluster
+  // lines up under the same column as the rest of the chrome.
   const isBuyPage = location.pathname === '/buy'
   const widthClass = isBuyPage ? 'max-w-3xl' : 'max-w-6xl'
   const topClass = isBuyPage ? 'top-12 md:top-20' : 'top-12 md:top-[5.5rem]'
 
   return (
-    // pointer-events-none on the wrapper so the invisible full-width
-    // div doesn't intercept clicks on whatever sits below it. The
-    // wrapper IS full-width (inset-x-0) so the inner max-w container
-    // can center on wide screens, but that means without this guard
-    // the wrapper's transparent area was eating clicks on the
-    // /buy "חזרה לדף הבית" back-link that lives at the same
-    // y-position on the opposite side of the rail.
-    //
-    // The Link itself opts back into pointer-events so it stays
-    // clickable — only the empty space around it passes clicks
-    // through to the page beneath.
-    // On /buy the page already has its own "חזרה לדף הבית" back-link on
-    // the RIGHT edge of the same narrow rail at the same y. On a phone
-    // there isn't room for both, so they overlapped — hide the marketing
-    // cluster on mobile for /buy only (desktop has the width, keeps it).
-    <div
-      className={`pointer-events-none absolute inset-x-0 z-10 ${topClass} ${
-        isBuyPage ? 'hidden md:block' : ''
-      }`}
-    >
-      <div className={`mx-auto px-5 md:px-6 ${widthClass}`}>
-        {/* Two editorial links separated by a hair-thin dot. DOM
-            order matters in an RTL document: the FIRST link sits
-            visually to the RIGHT of the second within the cluster,
-            so listing "סבבי תיקונים" before "החשבון שלי" produces
-            the right-to-left reading order requested by the
-            operator — "Revisions" reads first, "Account" reads
-            after it. The whole cluster is left-anchored (text-left)
-            so it lines up under the same column as the rest of the
-            page chrome. Compact on mobile (smaller text + tighter
-            dots) so it doesn't dominate the top of the screen. */}
-        <div className="text-left">
-          <Link
-            to="/revisions"
-            className="pointer-events-auto text-xs text-fg-muted transition-colors hover:text-fg md:text-sm"
-          >
-            סבבי תיקונים
-          </Link>
-          <span
-            aria-hidden="true"
-            className="select-none px-1.5 text-fg-muted/40 md:px-3"
-          >
-            ·
-          </span>
-          <Link
-            to="/deliveries"
-            className="pointer-events-auto text-xs text-fg-muted transition-colors hover:text-fg md:text-sm"
-          >
-            מסירה ללקוח
-          </Link>
-          <span
-            aria-hidden="true"
-            className="select-none px-1.5 text-fg-muted/40 md:px-3"
-          >
-            ·
-          </span>
-          <Link
-            to="/account"
-            className="pointer-events-auto text-xs text-fg-muted transition-colors hover:text-fg md:text-sm"
-          >
-            החשבון שלי
-          </Link>
+    <>
+      <div className={`pointer-events-none absolute inset-x-0 z-10 ${topClass}`}>
+        <div className={`mx-auto px-5 md:px-6 ${widthClass}`}>
+          <div className="text-left">
+            {/* ── MOBILE: square copper menu button (three lines) ── */}
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              aria-label="פתח תפריט"
+              className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-lg border border-primary/40 bg-primary/10 text-primary transition-colors hover:bg-primary/20 active:scale-95 md:hidden"
+            >
+              <Menu className="h-5 w-5" strokeWidth={2.25} />
+            </button>
+
+            {/* ── DESKTOP: inline editorial links ── */}
+            <div className="hidden md:block">
+              <Link
+                to="/revisions"
+                className="pointer-events-auto text-sm text-fg-muted transition-colors hover:text-fg"
+              >
+                סבבי תיקונים
+              </Link>
+              <span aria-hidden="true" className="select-none px-3 text-fg-muted/40">
+                ·
+              </span>
+              <Link
+                to="/deliveries"
+                className="pointer-events-auto text-sm text-fg-muted transition-colors hover:text-fg"
+              >
+                מסירה ללקוח
+              </Link>
+              <span aria-hidden="true" className="select-none px-3 text-fg-muted/40">
+                ·
+              </span>
+              <Link
+                to="/account"
+                className="pointer-events-auto text-sm text-fg-muted transition-colors hover:text-fg"
+              >
+                החשבון שלי
+              </Link>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
+
+      {/* ── MOBILE side drawer ── */}
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            dir="rtl"
+            className="fixed inset-0 z-50 md:hidden"
+          >
+            {/* Backdrop */}
+            <button
+              type="button"
+              aria-label="סגור תפריט"
+              onClick={() => setOpen(false)}
+              className="absolute inset-0 h-full w-full bg-black/60 backdrop-blur-sm"
+            />
+            {/* Panel — slides in from the right (RTL) */}
+            <motion.nav
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', stiffness: 360, damping: 34 }}
+              className="absolute right-0 top-0 flex h-full w-64 max-w-[78%] flex-col border-l border-border bg-bg-elevated p-5 shadow-2xl"
+            >
+              <div className="mb-6 flex items-center justify-between">
+                <span className="text-xs font-medium uppercase tracking-[0.16em] text-fg-muted">
+                  תפריט
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  aria-label="סגור"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-bg hover:text-fg"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex flex-col gap-1">
+                {NAV_LINKS.map((l) => (
+                  <Link
+                    key={l.to}
+                    to={l.to}
+                    onClick={() => setOpen(false)}
+                    className="rounded-lg px-3 py-3 text-base font-medium text-fg transition-colors hover:bg-primary/10 hover:text-primary"
+                  >
+                    {l.label}
+                  </Link>
+                ))}
+              </div>
+            </motion.nav>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   )
 }
