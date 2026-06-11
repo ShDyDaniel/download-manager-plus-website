@@ -2121,6 +2121,7 @@ async function handleSaleCompleted(
     fee: parseFloat(resource.transaction_fee?.value || '0') || 0,
     subscriptionId,
     kind: 'renewal',
+    referredBy: (key as { referredBy?: string }).referredBy || null,
   })
 
   // Issue + email + log a SUMIT tax receipt for this charge. Fully
@@ -2380,6 +2381,7 @@ async function ensureKeyForSubscription(
         currency: planCurrency,
         subscriptionId,
         kind: 'renewal',
+        referredBy: (existing as { referredBy?: string }).referredBy || null,
       })
 
       // ── Cancel the OLD PayPal subscription, if any ──
@@ -2591,6 +2593,7 @@ async function ensureKeyForSubscription(
     currency: planCurrency,
     subscriptionId,
     kind: 'initial',
+    referredBy: keyReferredBy || null,
   })
   // Welcome email — always sent, even when the key was auto-
   // redeemed in the linkToUid branch above. Backup safety net so
@@ -3928,6 +3931,9 @@ async function recordCasualCharge(args: {
   fee?: number
   subscriptionId?: string | null
   kind: 'initial' | 'renewal'
+  /** Partner code this charge is attributed to. Stored on the ledger so
+   *  commission survives even after the key is cancelled/deleted. */
+  referredBy?: string | null
 }): Promise<void> {
   try {
     if (!args.id || !(args.amount > 0)) return
@@ -3945,12 +3951,135 @@ async function recordCasualCharge(args: {
           fee: typeof args.fee === 'number' ? args.fee : 0,
           subscriptionId: args.subscriptionId || null,
           kind: args.kind,
+          referredBy: args.referredBy || null,
         },
         { merge: true },
       )
   } catch (err) {
     console.warn('[casualLedger] write failed (ignored):', err)
   }
+}
+
+/** A single charge, normalised from the durable `casualLedger` (source
+ *  of truth) unioned with any charge still living only in a key's
+ *  `billingHistory`. Deduped by eventId — the ledger wins because it
+ *  survives key cancellation/deletion. This is what the revenue and
+ *  referral reports aggregate, so the numbers reflect money that
+ *  ACTUALLY came in, regardless of whether the subscription is still
+ *  active (a cancelled/deleted key must not erase past revenue or the
+ *  commission a partner already earned). */
+interface MergedCharge {
+  eventId: string
+  at: string
+  email: string
+  name: string
+  currency: string
+  gross: number
+  fee: number
+  referredBy: string
+  subscriptionId: string
+}
+
+async function loadAllChargesMerged(): Promise<MergedCharge[]> {
+  const db = getDb()
+  const [ledgerSnap, keysSnap] = await Promise.all([
+    db.collection('casualLedger').get(),
+    db.collection('productKeys').get(),
+  ])
+  const byId = new Map<string, MergedCharge>()
+
+  // 1) Durable ledger first — the canonical record of money charged.
+  for (const doc of ledgerSnap.docs) {
+    const d = doc.data() as {
+      eventId?: string
+      at?: string
+      email?: string
+      name?: string
+      amount?: number
+      currency?: string
+      fee?: number
+      referredBy?: string
+      subscriptionId?: string
+    }
+    const gross = typeof d.amount === 'number' ? d.amount : 0
+    if (!(gross > 0) || !d.at) continue
+    const id = d.eventId || doc.id
+    byId.set(id, {
+      eventId: id,
+      at: d.at,
+      email: (d.email || '').trim(),
+      name: (d.name || '').trim(),
+      currency: (d.currency || 'ILS').toUpperCase(),
+      gross,
+      fee: typeof d.fee === 'number' && d.fee > 0 ? d.fee : 0,
+      referredBy: typeof d.referredBy === 'string' ? d.referredBy : '',
+      subscriptionId: typeof d.subscriptionId === 'string' ? d.subscriptionId : '',
+    })
+  }
+
+  // 2) Live keys — recover attribution for ledger rows that predate the
+  //    referredBy stamp, and fold in any charge that only exists in a
+  //    key's billingHistory (pre-ledger history). nonPaidGrant (comp)
+  //    keys never represent real money, so skip them.
+  const subToRef = new Map<string, string>()
+  for (const doc of keysSnap.docs) {
+    const kd = doc.data() as {
+      nonPaidGrant?: boolean
+      referredBy?: string
+      subscriptionId?: string
+      buyerEmail?: string
+      redeemedByEmail?: string
+      buyerName?: string
+      billingHistory?: Array<{
+        at?: string
+        amount?: number
+        currency?: string
+        fee?: number
+        eventId?: string
+      }>
+    }
+    if (kd.nonPaidGrant) continue
+    const ref = typeof kd.referredBy === 'string' ? kd.referredBy : ''
+    if (kd.subscriptionId && ref) subToRef.set(kd.subscriptionId, ref)
+    const email = (kd.buyerEmail || kd.redeemedByEmail || '').trim()
+    const name = (kd.buyerName || '').trim()
+    const hist = Array.isArray(kd.billingHistory) ? kd.billingHistory : []
+    for (const h of hist) {
+      const gross = typeof h.amount === 'number' ? h.amount : 0
+      if (!(gross > 0) || !h.at) continue
+      const id = h.eventId || `${doc.id}:${h.at}:${gross}`
+      const existing = byId.get(id)
+      if (existing) {
+        if (!existing.referredBy && ref) existing.referredBy = ref
+        if (!existing.email && email) existing.email = email
+        if (!existing.name && name) existing.name = name
+        if (!existing.subscriptionId && kd.subscriptionId)
+          existing.subscriptionId = kd.subscriptionId
+      } else {
+        byId.set(id, {
+          eventId: id,
+          at: h.at,
+          email,
+          name,
+          currency: (h.currency || 'ILS').toUpperCase(),
+          gross,
+          fee: typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0,
+          referredBy: ref,
+          subscriptionId: kd.subscriptionId || '',
+        })
+      }
+    }
+  }
+
+  // 3) Backfill attribution for ledger-only charges whose key still
+  //    exists (cancelled but not deleted) via the subscriptionId map.
+  for (const c of byId.values()) {
+    if (!c.referredBy && c.subscriptionId && subToRef.has(c.subscriptionId)) {
+      c.referredBy = subToRef.get(c.subscriptionId) || ''
+    }
+  }
+
+  return [...byId.values()]
 }
 
 async function issueSumitReceipt(args: {
@@ -6789,8 +6918,12 @@ async function handleAdminRevenueReport(
   ])
 
   const db = getDb()
-  const [keysSnap, partnersSnap] = await Promise.all([
-    db.collection('productKeys').get(),
+  // Revenue is driven by the durable casualLedger (money that ACTUALLY
+  // came in), unioned with any live billingHistory — NOT by whether the
+  // subscription is still active. A cancelled/deleted key must never
+  // erase past revenue. loadAllChargesMerged() encapsulates that union.
+  const [charges, partnersSnap] = await Promise.all([
+    loadAllChargesMerged(),
     db.collection('referralPartners').get(),
   ])
 
@@ -6830,47 +6963,31 @@ async function handleAdminRevenueReport(
     return cur
   }
 
-  for (const k of keysSnap.docs) {
-    const kd = k.data() as {
-      nonPaidGrant?: boolean
-      referredBy?: string
-      billingHistory?: Array<{
-        at?: string
-        amount?: number
-        currency?: string
-        fee?: number
-      }>
-    }
-    if (kd.nonPaidGrant) continue
-    const refCode = typeof kd.referredBy === 'string' ? kd.referredBy : ''
+  for (const c of charges) {
+    const cur = c.currency
+    const b = chargeNetBreakdown({
+      amount: c.gross,
+      currency: cur,
+      fee: c.fee,
+      vatPercent,
+      receiptsEnabled: receiptsOn,
+    })
+    const net = b.net
+    const m = c.at ? String(c.at).slice(0, 7) : 'unknown'
+    const M = ensureMonth(m)
+    revAdd(M.gross, cur, b.gross)
+    revAdd(M.fee, cur, b.fee)
+    revAdd(M.vat, cur, b.vat)
+    revAdd(M.net, cur, net)
+    const refCode = c.referredBy
     const partner = refCode ? partners.get(refCode) : undefined
-    const hist = Array.isArray(kd.billingHistory) ? kd.billingHistory : []
-    for (const h of hist) {
-      const cur = (h.currency || 'ILS').toUpperCase()
-      const amt = typeof h.amount === 'number' ? h.amount : 0
-      const fee = typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0
-      const b = chargeNetBreakdown({
-        amount: amt,
-        currency: cur,
-        fee,
-        vatPercent,
-        receiptsEnabled: receiptsOn,
-      })
-      const net = b.net
-      const m = h.at ? String(h.at).slice(0, 7) : 'unknown'
-      const M = ensureMonth(m)
-      revAdd(M.gross, cur, b.gross)
-      revAdd(M.fee, cur, b.fee)
-      revAdd(M.vat, cur, b.vat)
-      revAdd(M.net, cur, net)
-      if (partner && partner.type && (partner.value || 0) > 0) {
-        M.payouts[refCode] = M.payouts[refCode] || {}
-        if (partner.type === 'percent') {
-          revAdd(M.payouts[refCode], cur, net * ((partner.value || 0) / 100))
-        } else {
-          // fixed: a flat amount per charge, in the partner's currency.
-          revAdd(M.payouts[refCode], partner.currency, partner.value || 0)
-        }
+    if (partner && partner.type && (partner.value || 0) > 0) {
+      M.payouts[refCode] = M.payouts[refCode] || {}
+      if (partner.type === 'percent') {
+        revAdd(M.payouts[refCode], cur, net * ((partner.value || 0) / 100))
+      } else {
+        // fixed: a flat amount per charge, in the partner's currency.
+        revAdd(M.payouts[refCode], partner.currency, partner.value || 0)
       }
     }
   }
@@ -10191,43 +10308,56 @@ async function handleAdminReferralReport(
     .orderBy('createdAt', 'desc')
     .get()
 
+  // Attribute by ACTUAL charges (durable casualLedger ∪ live billing),
+  // not by live keys — so a partner keeps the commission they earned
+  // even after the buyer cancelled and the key was removed. Aggregate
+  // once, then look each partner up by code.
+  const charges = await loadAllChargesMerged()
+  interface PartnerAgg {
+    paymentCount: number
+    accounts: Set<string>
+    revenueByCurrency: Record<string, number>
+    netByCurrency: Record<string, number>
+  }
+  const byPartner = new Map<string, PartnerAgg>()
+  for (const c of charges) {
+    if (!c.referredBy) continue
+    let agg = byPartner.get(c.referredBy)
+    if (!agg) {
+      agg = {
+        paymentCount: 0,
+        accounts: new Set(),
+        revenueByCurrency: {},
+        netByCurrency: {},
+      }
+      byPartner.set(c.referredBy, agg)
+    }
+    const b = chargeNetBreakdown({
+      amount: c.gross,
+      currency: c.currency,
+      fee: c.fee,
+      vatPercent,
+      receiptsEnabled: receiptsOn,
+    })
+    agg.revenueByCurrency[c.currency] =
+      (agg.revenueByCurrency[c.currency] || 0) + b.gross
+    agg.netByCurrency[c.currency] = (agg.netByCurrency[c.currency] || 0) + b.net
+    agg.paymentCount++
+    if (c.email) agg.accounts.add(c.email.toLowerCase())
+    else if (c.subscriptionId) agg.accounts.add(`sub:${c.subscriptionId}`)
+  }
+
   const rows = []
   for (const d of partnersSnap.docs) {
     const data = d.data() as ReferralPartnerDoc & { loginEmail?: string }
-    // Keys attributed to this partner (revenue source).
-    const keysSnap = await db
-      .collection('productKeys')
-      .where('referredBy', '==', data.code)
-      .get()
-    let paidAccounts = 0
-    let paymentCount = 0
-    const revenueByCurrency: Record<string, number> = {}
+    const agg = byPartner.get(data.code)
+    const paidAccounts = agg ? agg.accounts.size : 0
+    const paymentCount = agg ? agg.paymentCount : 0
+    const revenueByCurrency: Record<string, number> = agg
+      ? agg.revenueByCurrency
+      : {}
     // Net after PayPal fee + VAT — the real base for the commission.
-    const netByCurrency: Record<string, number> = {}
-    for (const k of keysSnap.docs) {
-      const kd = k.data() as {
-        nonPaidGrant?: boolean
-        billingHistory?: Array<{ amount?: number; currency?: string; fee?: number }>
-      }
-      if (kd.nonPaidGrant) continue
-      const hist = Array.isArray(kd.billingHistory) ? kd.billingHistory : []
-      if (hist.length > 0) paidAccounts++
-      for (const h of hist) {
-        const amt = typeof h.amount === 'number' ? h.amount : 0
-        const cur = (h.currency || 'ILS').toUpperCase()
-        const fee = typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0
-        const b = chargeNetBreakdown({
-          amount: amt,
-          currency: cur,
-          fee,
-          vatPercent,
-          receiptsEnabled: receiptsOn,
-        })
-        revenueByCurrency[cur] = (revenueByCurrency[cur] || 0) + amt
-        netByCurrency[cur] = (netByCurrency[cur] || 0) + b.net
-        paymentCount++
-      }
-    }
+    const netByCurrency: Record<string, number> = agg ? agg.netByCurrency : {}
     const commission =
       data.commissionType && data.commissionValue
         ? {
