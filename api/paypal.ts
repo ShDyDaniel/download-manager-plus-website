@@ -1231,6 +1231,11 @@ const BACKUP_COLLECTIONS = [
   'productKeys',
   'users',
   'appConfig',
+  // Admin-only persistent config (sibling of appConfig): logs password,
+  // Pro/trial storage quotas, and the עוסק identity + signature for the
+  // 8356 PDF. Set manually by the admin and not derivable from anything
+  // else, so it MUST be in the backup — appConfig alone isn't enough.
+  'adminConfig',
   'referralPartners',
   'receipts',
   // Permanent, key-independent tax ledger behind the עסקת אקראי
