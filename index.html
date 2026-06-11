@@ -23,7 +23,7 @@
       name="format-detection"
       content="telephone=no, address=no, email=no, date=no"
     />
-    <title>ניהול הורדות פלוס</title>
+    <title>ניהול הורדות פלוס — תוכנה ליוצרי תוכן ועורכי וידאו</title>
     <meta
       name="description"
       content='יוצרי תוכן ועורכי וידיאו? זה בשבילכם, "ניהול הורדות פלוס" התוכנה שתסדר לכם את ההורדות לפי פרוייקטים, תוריד לכם סרטונים, תמיר קבצים, תבנה הצעות מחיר ותפתור לכם הרבה כאב ראש'
@@ -33,7 +33,7 @@
       property="og:description"
       content='יוצרי תוכן ועורכי וידיאו? זה בשבילכם, "ניהול הורדות פלוס" התוכנה שתסדר לכם את ההורדות לפי פרוייקטים, תוריד לכם סרטונים, תמיר קבצים, תבנה הצעות מחיר ותפתור לכם הרבה כאב ראש'
     />
-    <meta property="og:image" content="https://dmplus.net/icon.png" />
+    <meta property="og:image" content="https://www.dmplus.net/icon.png" />
     <meta property="og:image:width" content="512" />
     <meta property="og:image:height" content="512" />
     <meta property="og:image:alt" content="ניהול הורדות פלוס" />
@@ -48,7 +48,71 @@
       name="twitter:description"
       content='יוצרי תוכן ועורכי וידיאו? זה בשבילכם, "ניהול הורדות פלוס" התוכנה שתסדר לכם את ההורדות לפי פרוייקטים, תוריד לכם סרטונים, תמיר קבצים, תבנה הצעות מחיר ותפתור לכם הרבה כאב ראש'
     />
-    <meta name="twitter:image" content="https://dmplus.net/icon.png" />
+    <meta name="twitter:image" content="https://www.dmplus.net/icon.png" />
+    <meta name="twitter:image:alt" content="ניהול הורדות פלוס" />
+
+    <!-- ── SEO: canonical, crawl directives, brand identity ──
+         Canonical host is www (the apex 307-redirects to it). These
+         help the brand name + its variations surface for branded
+         searches without keyword stuffing. -->
+    <link rel="canonical" href="https://www.dmplus.net/" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <meta name="application-name" content="ניהול הורדות פלוס" />
+    <meta name="author" content="ניהול הורדות פלוס" />
+    <meta property="og:site_name" content="ניהול הורדות פלוס" />
+    <meta property="og:locale" content="he_IL" />
+    <meta property="og:url" content="https://www.dmplus.net/" />
+    <link rel="apple-touch-icon" href="/icon.png" />
+    <meta name="apple-mobile-web-app-title" content="ניהול הורדות פלוס" />
+
+    <!-- ── Structured data (JSON-LD) ──
+         Organization + WebSite + SoftwareApplication. alternateName
+         lists the real name variations (Hebrew / English / short
+         forms) so Google maps every spelling to this one brand. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://www.dmplus.net/#organization",
+            "name": "ניהול הורדות פלוס",
+            "alternateName": ["Download Manager Plus", "DM Plus", "DMPlus", "dmplus"],
+            "url": "https://www.dmplus.net/",
+            "logo": "https://www.dmplus.net/icon.png"
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://www.dmplus.net/#website",
+            "name": "ניהול הורדות פלוס",
+            "alternateName": ["Download Manager Plus", "DM Plus", "DMPlus", "DM+", "dmplus", "ניהול הורדות +", "דיאם פלוס"],
+            "url": "https://www.dmplus.net/",
+            "inLanguage": "he-IL",
+            "publisher": { "@id": "https://www.dmplus.net/#organization" }
+          },
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://www.dmplus.net/#app",
+            "name": "ניהול הורדות פלוס",
+            "alternateName": ["Download Manager Plus", "DM Plus", "DMPlus"],
+            "description": "תוכנה ליוצרי תוכן ועורכי וידאו: ניהול ומיון הורדות לפי פרויקטים, הורדת סרטונים, המרת קבצים, סבבי תיקונים מול לקוחות, מסירה ללקוח, הצעות מחיר וניהול תשלומים.",
+            "applicationCategory": "MultimediaApplication",
+            "operatingSystem": "macOS, Windows",
+            "inLanguage": "he-IL",
+            "url": "https://www.dmplus.net/",
+            "downloadUrl": "https://www.dmplus.net/",
+            "image": "https://www.dmplus.net/icon.png",
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "ILS",
+              "description": "הורדה חינם; מנוי Pro בתשלום החל מ-5 ₪ לחודש"
+            },
+            "publisher": { "@id": "https://www.dmplus.net/#organization" }
+          }
+        ]
+      }
+    </script>
     <!-- Fonts are self-hosted (src/fonts.css). No Google Fonts request. -->
   </head>
   <!--
