@@ -9837,6 +9837,8 @@ interface CasualBusiness {
   houseNumber?: string
   zip?: string
   phone?: string
+  /** One-time signature as a PNG data URL, stamped onto every PDF. */
+  signature?: string
 }
 
 /** Read the reporter identity from adminConfig/global.casualBusiness. */
@@ -9923,6 +9925,15 @@ async function handleAdminSetReceiptsSettings(
       houseNumber: str(b.houseNumber, 12),
       zip: str(b.zip, 12),
       phone: str(b.phone, 25),
+      // Signature is a PNG data URL — allow it to be long, but only if
+      // it's an image data URL, and cap at ~400KB so the doc stays well
+      // under Firestore's 1MB limit.
+      signature:
+        typeof b.signature === 'string' &&
+        b.signature.startsWith('data:image/') &&
+        b.signature.length <= 400_000
+          ? b.signature
+          : '',
     }
     await getDb()
       .collection('adminConfig')

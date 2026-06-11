@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   RefreshCw,
   Loader2,
@@ -11,6 +11,7 @@ import {
   Check,
   Building2,
   Save,
+  Eraser,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 
@@ -60,6 +61,8 @@ interface CasualBusiness {
   houseNumber: string
   zip: string
   phone: string
+  /** One-time saved signature as a PNG data URL; stamped onto every PDF. */
+  signature: string
 }
 
 const EMPTY_BUSINESS: CasualBusiness = {
@@ -71,6 +74,7 @@ const EMPTY_BUSINESS: CasualBusiness = {
   houseNumber: '',
   zip: '',
   phone: '',
+  signature: '',
 }
 
 function fmtDate(iso: string): string {
@@ -453,7 +457,11 @@ export default function ReceiptsTab({
   .amounts tr:last-child td { border-bottom:0; background:#faf6f0; }
   .note { margin-top:22px; background:#faf6f0; border:1px solid #ece2d5; border-radius:12px; padding:14px 18px; font-size:12px; color:#5f564d; line-height:1.7; }
   .sign { margin-top:30px; display:flex; justify-content:space-between; gap:24px; }
-  .sign div { flex:1; border-top:1px solid #c9bcab; padding-top:6px; font-size:12px; color:#7a6f64; text-align:center; }
+  .sign .col { flex:1; text-align:center; }
+  .sign .slot { height:58px; display:flex; align-items:flex-end; justify-content:center; padding-bottom:4px; }
+  .sign .slot img { max-height:54px; max-width:92%; object-fit:contain; }
+  .sign .slot .dateval { font-size:15px; color:#1f1a16; }
+  .sign .label { border-top:1px solid #c9bcab; padding-top:6px; font-size:12px; color:#7a6f64; }
   .foot { margin-top:26px; text-align:center; color:#9a8d7e; font-size:11px; }
 </style></head><body>
   <div class="header">${logo ? `<img src="${logo}" alt="logo"/>` : ''}<div class="brand">דיווח עסקת אקראי<b>ניהול הורדות פלוס</b></div></div>
@@ -496,8 +504,14 @@ export default function ReceiptsTab({
     </div>
 
     <div class="sign">
-      <div>חתימת המדווח</div>
-      <div>תאריך</div>
+      <div class="col">
+        <div class="slot">${business.signature ? `<img src="${business.signature}" alt="חתימה"/>` : ''}</div>
+        <div class="label">חתימת המדווח</div>
+      </div>
+      <div class="col">
+        <div class="slot"><span class="dateval">${esc(today)}</span></div>
+        <div class="label">תאריך</div>
+      </div>
     </div>
 
     <div class="foot">הופק ע״י ניהול הורדות פלוס · dmplus.net · ${esc(today)}</div>
@@ -1132,6 +1146,20 @@ function BusinessDetailsCard({
           {field('מספר בית', 'houseNumber')}
           {field('מיקוד', 'zip', { ltr: true })}
         </div>
+
+        {/* One-time signature — drawn once, stamped onto every PDF. */}
+        <div className="mt-4">
+          <div className="mb-1 text-xs text-fg-muted">חתימה</div>
+          <SignaturePad
+            value={business.signature}
+            onChange={(sig) => set({ signature: sig })}
+          />
+          <p className="mt-1 text-[11px] text-fg-faint">
+            חתמו פעם אחת בעכבר (או באצבע במסך מגע). החתימה תופיע אוטומטית
+            בכל מסמך PDF, יחד עם התאריך.
+          </p>
+        </div>
+
         <div className="mt-4 flex items-center gap-3">
           <button
             type="button"
@@ -1155,5 +1183,119 @@ function BusinessDetailsCard({
         </div>
       </div>
     </details>
+  )
+}
+
+/* ── One-time signature pad ───────────────────────────────────── */
+/** A small canvas the admin signs once (mouse or touch). Exports a
+ *  transparent PNG (dark strokes) so it drops cleanly onto the white
+ *  PDF. CSS gives the pad a white background for visibility while
+ *  drawing — that background is NOT part of the exported pixels. */
+function SignaturePad({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (dataUrl: string) => void
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const drawing = useRef(false)
+  // The value currently painted on the canvas — lets us ignore the
+  // round-trip from our own onChange and only repaint on real external
+  // changes (e.g. the saved signature arriving from the server).
+  const synced = useRef<string>('')
+
+  useEffect(() => {
+    const c = canvasRef.current
+    if (!c) return
+    const ctx = c.getContext('2d')
+    if (!ctx) return
+    if (value === synced.current) return
+    ctx.clearRect(0, 0, c.width, c.height)
+    if (value) {
+      const img = new Image()
+      img.onload = () => ctx.drawImage(img, 0, 0, c.width, c.height)
+      img.src = value
+    }
+    synced.current = value
+  }, [value])
+
+  function point(e: React.PointerEvent<HTMLCanvasElement>) {
+    const c = canvasRef.current!
+    const r = c.getBoundingClientRect()
+    return {
+      x: (e.clientX - r.left) * (c.width / r.width),
+      y: (e.clientY - r.top) * (c.height / r.height),
+    }
+  }
+  function down(e: React.PointerEvent<HTMLCanvasElement>) {
+    e.preventDefault()
+    const c = canvasRef.current
+    const ctx = c?.getContext('2d')
+    if (!c || !ctx) return
+    drawing.current = true
+    ctx.lineWidth = 2.5
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.strokeStyle = '#16110D'
+    const p = point(e)
+    ctx.beginPath()
+    ctx.moveTo(p.x, p.y)
+    try {
+      c.setPointerCapture(e.pointerId)
+    } catch {
+      /* not all browsers */
+    }
+  }
+  function move(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!drawing.current) return
+    const ctx = canvasRef.current?.getContext('2d')
+    if (!ctx) return
+    const p = point(e)
+    ctx.lineTo(p.x, p.y)
+    ctx.stroke()
+  }
+  function up() {
+    if (!drawing.current) return
+    drawing.current = false
+    const c = canvasRef.current
+    if (!c) return
+    const data = c.toDataURL('image/png')
+    synced.current = data
+    onChange(data)
+  }
+  function clear() {
+    const c = canvasRef.current
+    const ctx = c?.getContext('2d')
+    if (!c || !ctx) return
+    ctx.clearRect(0, 0, c.width, c.height)
+    synced.current = ''
+    onChange('')
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <canvas
+        ref={canvasRef}
+        width={560}
+        height={150}
+        onPointerDown={down}
+        onPointerMove={move}
+        onPointerUp={up}
+        onPointerLeave={up}
+        style={{ touchAction: 'none' }}
+        className="w-full max-w-md cursor-crosshair rounded-md border border-border bg-white"
+      />
+      <div>
+        <button
+          type="button"
+          onClick={clear}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:border-primary/40 hover:text-fg"
+        >
+          <Eraser className="h-3.5 w-3.5" />
+          נקה חתימה
+        </button>
+      </div>
+    </div>
   )
 }
