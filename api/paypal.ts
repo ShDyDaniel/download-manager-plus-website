@@ -7876,6 +7876,18 @@ async function handleAdminGetAppConfig(
     backupIntervalMinutes?: number
     backupNotify?: boolean
   }
+  // Sensitive fields (logs password + storage quotas) now live in the
+  // admin-only adminConfig/global (clients can't read it). Prefer those;
+  // fall back to the legacy appConfig copy during the transition.
+  const adminSnap = await getDb().collection('adminConfig').doc('global').get()
+  const ad = (adminSnap.exists ? adminSnap.data() : {}) as {
+    logsPassword?: string
+    proStorageGb?: number
+    trialStorageGb?: number
+  }
+  if (typeof ad.logsPassword === 'string') d.logsPassword = ad.logsPassword
+  if (typeof ad.proStorageGb === 'number') d.proStorageGb = ad.proStorageGb
+  if (typeof ad.trialStorageGb === 'number') d.trialStorageGb = ad.trialStorageGb
   // Canonical backup cadence is now in MINUTES (lets the schedule go
   // below a day for testing / multiple-per-day). Older configs only
   // stored days — migrate on read so nothing breaks.
@@ -7944,13 +7956,17 @@ async function handleAdminSetAppConfig(
     backupNotify?: boolean
   }
   const patch: Record<string, unknown> = {}
+  // Sensitive fields go to the admin-only adminConfig/global, NOT the
+  // client-readable appConfig/global.
+  const adminPatch: Record<string, unknown> = {}
   if (typeof body.betaMode === 'boolean') patch.betaMode = body.betaMode
   if (body.planMode === 'hybrid' || body.planMode === 'subscription') {
     patch.planMode = body.planMode
   }
-  // Logs/DevTools password for the desktop Ctrl+Shift+1 shortcut.
+  // Logs/DevTools password for the desktop Ctrl+Shift+1 shortcut —
+  // admin-only (verified server-side via verify-logs-password).
   if (typeof body.logsPassword === 'string') {
-    patch.logsPassword = body.logsPassword.trim()
+    adminPatch.logsPassword = body.logsPassword.trim()
   }
   // Per-tier R2 storage quotas in GB (fractional allowed, e.g. 1.5).
   // Bounded to a sane range so a typo can't hand out petabytes.
@@ -7962,7 +7978,7 @@ async function handleAdminSetAppConfig(
         .status(400)
         .json({ ok: false, error: 'proStorageGb לא תקין (0–100000)' })
     }
-    patch.proStorageGb = body.proStorageGb
+    adminPatch.proStorageGb = body.proStorageGb
   }
   if (body.trialStorageGb !== undefined) {
     if (!validGb(body.trialStorageGb)) {
@@ -7970,7 +7986,7 @@ async function handleAdminSetAppConfig(
         .status(400)
         .json({ ok: false, error: 'trialStorageGb לא תקין (0–100000)' })
     }
-    patch.trialStorageGb = body.trialStorageGb
+    adminPatch.trialStorageGb = body.trialStorageGb
   }
   // ── Cost protection / kill switch ──────────────────────────────
   if (typeof body.killSwitch === 'boolean') patch.killSwitch = body.killSwitch
@@ -8021,13 +8037,29 @@ async function handleAdminSetAppConfig(
   if (typeof body.backupNotify === 'boolean') {
     patch.backupNotify = body.backupNotify
   }
-  if (Object.keys(patch).length === 0) {
+  if (Object.keys(patch).length === 0 && Object.keys(adminPatch).length === 0) {
     return res.status(400).json({ ok: false, error: 'no fields' })
   }
-  await getDb()
-    .collection('appConfig')
-    .doc('global')
-    .set(patch, { merge: true })
+  if (Object.keys(patch).length > 0) {
+    await getDb()
+      .collection('appConfig')
+      .doc('global')
+      .set(patch, { merge: true })
+  }
+  // Sensitive fields → admin-only doc, and DELETE any legacy copies left
+  // in the client-readable appConfig/global so they stop being exposed.
+  if (Object.keys(adminPatch).length > 0) {
+    await getDb()
+      .collection('adminConfig')
+      .doc('global')
+      .set(adminPatch, { merge: true })
+    const strip: Record<string, unknown> = {}
+    for (const k of Object.keys(adminPatch)) strip[k] = FieldValue.delete()
+    await getDb()
+      .collection('appConfig')
+      .doc('global')
+      .set(strip, { merge: true })
+  }
   // Reflect a kill-switch change in this instance's cache immediately so
   // the operator sees maintenance mode engage/disengage without waiting
   // out the 30s TTL.

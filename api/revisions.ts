@@ -1160,10 +1160,24 @@ async function getStorageQuotaBytes(): Promise<{
   trialBytes: number
 }> {
   try {
-    const snap = await getDb().collection('appConfig').doc('global').get()
-    const d = (snap.exists ? snap.data() : {}) as {
+    // Sensitive quotas now live in the admin-only adminConfig/global
+    // (server/Admin-SDK readable; clients can't read it). Fall back to
+    // the legacy appConfig/global copy during the transition.
+    const [adminSnap, legacySnap] = await Promise.all([
+      getDb().collection('adminConfig').doc('global').get(),
+      getDb().collection('appConfig').doc('global').get(),
+    ])
+    const ad = (adminSnap.exists ? adminSnap.data() : {}) as {
       proStorageGb?: unknown
       trialStorageGb?: unknown
+    }
+    const lg = (legacySnap.exists ? legacySnap.data() : {}) as {
+      proStorageGb?: unknown
+      trialStorageGb?: unknown
+    }
+    const d = {
+      proStorageGb: ad.proStorageGb ?? lg.proStorageGb,
+      trialStorageGb: ad.trialStorageGb ?? lg.trialStorageGb,
     }
     const proGb =
       typeof d.proStorageGb === 'number' && d.proStorageGb > 0
@@ -6787,6 +6801,50 @@ interface ClientLogEntry {
   context?: unknown
 }
 
+/* ── verify-logs-password ────────────────────────────────────────────
+ *  The desktop Ctrl+Shift+1 DevTools gate. The password used to live in
+ *  client-readable appConfig/global — any signed-in user could read it.
+ *  It now lives in the admin-only adminConfig/global (server/Admin-SDK
+ *  only), so the desktop sends the typed candidate here and we compare
+ *  it server-side. Low-stakes (opens DevTools on the user's own machine)
+ *  so a signed-in token is enough; never reveals the stored password. */
+const LOGS_PASSWORD_FALLBACK = 'dmplus-logs'
+
+async function handleVerifyLogsPassword(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const candidate = String((req.body || {}).password || '').trim()
+  let expected = LOGS_PASSWORD_FALLBACK
+  try {
+    const [adminSnap, legacySnap] = await Promise.all([
+      getDb().collection('adminConfig').doc('global').get(),
+      getDb().collection('appConfig').doc('global').get(),
+    ])
+    const ad = (adminSnap.exists ? adminSnap.data() : {}) as {
+      logsPassword?: unknown
+    }
+    const lg = (legacySnap.exists ? legacySnap.data() : {}) as {
+      logsPassword?: unknown
+    }
+    const cfg =
+      typeof ad.logsPassword === 'string' && ad.logsPassword.trim()
+        ? ad.logsPassword.trim()
+        : typeof lg.logsPassword === 'string'
+          ? lg.logsPassword.trim()
+          : ''
+    if (cfg) expected = cfg
+  } catch {
+    /* fall back to the built-in default */
+  }
+  const a = Buffer.from(candidate)
+  const b = Buffer.from(expected)
+  const valid = a.length === b.length && crypto.timingSafeEqual(a, b)
+  return res.status(200).json({ ok: true, valid })
+}
+
 async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -7334,6 +7392,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminUsage(req, res)
       case 'client-log-ingest':
         return await handleClientLogIngest(req, res)
+      case 'verify-logs-password':
+        return await handleVerifyLogsPassword(req, res)
       case 'ai-chat':
         return await handleAiChat(req, res)
       case 'get-stream-token':
