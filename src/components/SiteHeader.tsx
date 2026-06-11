@@ -54,7 +54,7 @@ export function SiteHeader() {
               type="button"
               onClick={() => setOpen(true)}
               aria-label="פתח תפריט"
-              className="pointer-events-auto -ml-1.5 flex h-10 w-10 items-center justify-center text-primary transition-transform active:scale-90 md:hidden"
+              className="pointer-events-auto -ml-1.5 inline-flex h-10 w-10 items-center justify-center text-primary transition-transform active:scale-90 md:hidden"
             >
               <Menu className="h-6 w-6" strokeWidth={2.25} />
             </button>
@@ -94,10 +94,14 @@ export function SiteHeader() {
       <AnimatePresence>
         {open && (
           <motion.div
+            // The whole overlay (backdrop dim + blur) fades 0→1 over
+            // ~0.35s — the same window the panel takes to slide in — so
+            // the rest of the site blurs PROGRESSIVELY as the drawer
+            // enters, instead of snapping to full blur after it lands.
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
+            transition={{ duration: 0.35, ease: 'easeOut' }}
             dir="rtl"
             className="fixed inset-0 z-50 md:hidden"
           >
@@ -108,14 +112,13 @@ export function SiteHeader() {
               onClick={() => setOpen(false)}
               className="absolute inset-0 h-full w-full bg-black/60 backdrop-blur-sm"
             />
-            {/* Panel — slides in from the LEFT, to match the menu
-                button which sits on the left edge of the screen. */}
+            {/* Panel — slides in from the RIGHT (RTL convention). */}
             <motion.nav
-              initial={{ x: '-100%' }}
+              initial={{ x: '100%' }}
               animate={{ x: 0 }}
-              exit={{ x: '-100%' }}
-              transition={{ type: 'spring', stiffness: 360, damping: 34 }}
-              className="absolute left-0 top-0 flex h-full w-64 max-w-[78%] flex-col border-r border-border bg-bg-elevated p-5 shadow-2xl"
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', stiffness: 320, damping: 34 }}
+              className="absolute right-0 top-0 flex h-full w-64 max-w-[78%] flex-col border-l border-border bg-bg-elevated p-5 shadow-2xl"
             >
               <div className="mb-6 flex items-center justify-between">
                 <span className="text-xs font-medium uppercase tracking-[0.16em] text-fg-muted">
