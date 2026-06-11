@@ -60,7 +60,6 @@ interface CasualBusiness {
   houseNumber: string
   zip: string
   phone: string
-  osekType: 'exempt' | 'licensed'
 }
 
 const EMPTY_BUSINESS: CasualBusiness = {
@@ -72,7 +71,6 @@ const EMPTY_BUSINESS: CasualBusiness = {
   houseNumber: '',
   zip: '',
   phone: '',
-  osekType: 'exempt',
 }
 
 function fmtDate(iso: string): string {
@@ -418,14 +416,12 @@ export default function ReceiptsTab({
       business.zip,
     ].filter(Boolean)
     const address = addressParts.join(', ')
-    const osekLabel =
-      business.osekType === 'licensed' ? 'עוסק מורשה' : 'עוסק פטור'
     const deadline = reportDeadline(row.at)
     const today = new Date().toLocaleDateString('he-IL')
     const dash = '—'
     const infoMissing =
       !fullName || !business.idNumber || !address
-        ? `<div class="warn">⚠ חלק מפרטי העוסק חסרים. מלאו אותם ב"פרטי העוסק לדיווח" כדי שהמסמך יהיה שלם לשליחה.</div>`
+        ? `<div class="warn">⚠ חלק מפרטי המדווח חסרים. מלאו אותם ב"פרטי המדווח לדיווח" כדי שהמסמך יהיה שלם לשליחה.</div>`
         : ''
 
     const rowHtml = (label: string, value: string, strong = false) =>
@@ -467,13 +463,12 @@ export default function ReceiptsTab({
     <div class="sub">עסקה מס׳ ${esc(row.seq)} · הופק בתאריך ${esc(today)}</div>
     ${infoMissing}
 
-    <h2>פרטי המדווח (העוסק)</h2>
+    <h2>פרטי המדווח</h2>
     <table>
       ${rowHtml('שם מלא', esc(fullName || dash))}
-      ${rowHtml('מספר זהות / עוסק', `<span class="ltr">${esc(business.idNumber || dash)}</span>`)}
+      ${rowHtml('מספר תעודת זהות', `<span class="ltr">${esc(business.idNumber || dash)}</span>`)}
       ${rowHtml('כתובת', esc(address || dash))}
       ${rowHtml('טלפון', `<span class="ltr">${esc(business.phone || dash)}</span>`)}
-      ${rowHtml('סוג עוסק', esc(osekLabel))}
     </table>
 
     <h2>פרטי העסקה</h2>
@@ -1111,7 +1106,7 @@ function BusinessDetailsCard({
       <summary className="flex cursor-pointer items-center justify-between gap-2 px-4 py-3 text-sm font-semibold text-fg">
         <span className="flex items-center gap-2">
           <Building2 className="h-4 w-4 text-primary" />
-          פרטי העוסק לדיווח (טופס 8356)
+          פרטי המדווח לדיווח (טופס 8356)
         </span>
         <span className="text-[11px] font-normal text-fg-muted">
           מופיעים בכל מסמך PDF · לחצו לעריכה
@@ -1119,14 +1114,15 @@ function BusinessDetailsCard({
       </summary>
       <div className="border-t border-border p-4">
         <p className="mb-3 text-xs leading-relaxed text-fg-muted">
-          אלה הפרטים שטופס 8356 מבקש על נותן השירות (המדווח). הם נשמרים
+          אלה הפרטים שטופס 8356 מבקש על המדווח (נותן השירות). עסקת אקראי
+          מדווחת על ידי אדם פרטי — לא דרושים פרטי עוסק. הפרטים נשמרים
           אצלך בלבד (לא חשופים לאפליקציה) ומשובצים אוטומטית בכל מסמך
           שתורידו. מלאו פעם אחת.
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           {field('שם פרטי', 'firstName')}
           {field('שם משפחה', 'lastName')}
-          {field('מספר ת.ז / עוסק', 'idNumber', {
+          {field('מספר תעודת זהות', 'idNumber', {
             ltr: true,
             placeholder: '000000000',
           })}
@@ -1135,22 +1131,6 @@ function BusinessDetailsCard({
           {field('רחוב', 'street')}
           {field('מספר בית', 'houseNumber')}
           {field('מיקוד', 'zip', { ltr: true })}
-          <label className="flex flex-col gap-1 text-xs text-fg-muted">
-            סוג עוסק
-            <select
-              value={business.osekType}
-              onChange={(e) =>
-                set({
-                  osekType:
-                    e.target.value === 'licensed' ? 'licensed' : 'exempt',
-                })
-              }
-              className="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg"
-            >
-              <option value="exempt">עוסק פטור</option>
-              <option value="licensed">עוסק מורשה</option>
-            </select>
-          </label>
         </div>
         <div className="mt-4 flex items-center gap-3">
           <button
@@ -1164,7 +1144,7 @@ function BusinessDetailsCard({
             ) : (
               <Save className="h-3.5 w-3.5" />
             )}
-            שמירת פרטי עוסק
+            שמירת פרטי המדווח
           </button>
           {saved && (
             <span className="flex items-center gap-1 text-xs text-emerald-400">

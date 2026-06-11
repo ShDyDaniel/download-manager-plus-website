@@ -9837,7 +9837,6 @@ interface CasualBusiness {
   houseNumber?: string
   zip?: string
   phone?: string
-  osekType?: 'exempt' | 'licensed'
 }
 
 /** Read the reporter identity from adminConfig/global.casualBusiness. */
@@ -9924,7 +9923,6 @@ async function handleAdminSetReceiptsSettings(
       houseNumber: str(b.houseNumber, 12),
       zip: str(b.zip, 12),
       phone: str(b.phone, 25),
-      osekType: b.osekType === 'licensed' ? 'licensed' : 'exempt',
     }
     await getDb()
       .collection('adminConfig')
