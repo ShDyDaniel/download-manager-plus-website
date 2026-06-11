@@ -2506,6 +2506,12 @@ async function handleCreateProjectGroup(
   const title = String(body.title || '').trim().slice(0, 200)
   const r2Key = String(body.r2Key || '').trim()
   const driveFileId = String(body.driveFileId || '').trim()
+  // Cross-tenant guard: the r2Key must live under the caller's own prefix
+  // (mirrors add-round-to-group / replace-project-video). Stops a user
+  // from registering a first round that points at another user's R2 file.
+  if (r2Key && !keyBelongsToUser(r2Key, verified.uid)) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
   // Drive note-media needs the parent folder; R2 rounds leave it null.
   const driveFolderId = String(body.driveFolderId || '').trim() || null
   const hasVideo = !!(r2Key || driveFileId)
@@ -2665,6 +2671,13 @@ async function handleAddRoundToGroup(
   if (!groupId) return res.status(400).json({ ok: false, error: 'groupId required' })
   if (!r2Key && !driveFileId)
     return res.status(400).json({ ok: false, error: 'r2Key or driveFileId required' })
+  // Cross-tenant guard: the r2Key must live under the caller's own prefix
+  // (mirrors replace-project-video / delivery-create). Without it a user
+  // could register a round pointing at another user's R2 object and then
+  // stream OR delete it via their own share link / delete-round.
+  if (r2Key && !keyBelongsToUser(r2Key, verified.uid)) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
 
   const db = getDb()
   const groupRef = db.collection('revisionGroups').doc(groupId)
@@ -3668,7 +3681,7 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
   if (!resolved.ok) {
     return res.status(resolved.status).json({ ok: false, error: resolved.error })
   }
-  const { roundRef, roundData } = resolved
+  const { roundRef, roundData, group } = resolved
   // Locked rounds: existing notes stay readable but no new ones
   // accepted. 423 Locked is the right HTTP semantic; the client
   // surfaces the friendly Hebrew message.
@@ -3677,6 +3690,20 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
       ok: false,
       error: 'הסבב נסגר לתיקונים. תוכלו לראות את הסרטון ואת התיקונים הקודמים אבל אי אפשר להוסיף חדשים.',
     })
+  }
+
+  // Cross-tenant guard: a reviewer (anonymous, share-token only) may only
+  // attach R2 media that lives under THIS project owner's prefix — the
+  // exact keys upload-note-media / note-media-upload-url mint
+  // (buildNoteMediaKey → `${ownerUid}/notes/...`). Without this, a client
+  // could plant another user's key (e.g. `<victimUid>/finals/x.mp4`) on a
+  // note and then read it back via note-media-url's presign. Reject it.
+  const noteOwnerUid = String(group?.ownerUid || roundData.ownerUid || '')
+  if (
+    (screenshotR2Key && !keyBelongsToUser(screenshotR2Key, noteOwnerUid)) ||
+    (audioR2Key && !keyBelongsToUser(audioR2Key, noteOwnerUid))
+  ) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
   }
 
   // Screenshot size sanity check — Firestore's 1 MB doc cap means
