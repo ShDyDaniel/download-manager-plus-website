@@ -27,12 +27,17 @@ const STEPS: Step[] = [
     title: 'מקבלים את כל התיקונים',
     body: 'ההערות מופיעות אצלכם אוטומטית, מסודרות לפי סבב. עם אופציה לסמן איזה תוקן הושלם ואיזה לא, הלקוחות יראו אצלם ישר את תהליך התיקונים',
   },
+  {
+    num: '04',
+    title: 'מוסרים ללקוח',
+    body: 'כשהגרסה מאושרת — שולחים את הקובץ הסופי בקישור מאובטח עם תוקף מוגבל (3 / 7 / 14 ימים). הלקוח מוריד ישירות, בלי קבצים כבדים במייל ובלי תוכנות נוספות.',
+  },
 ]
 
 type Stat = { stat: string; label: string }
 
 const STATS: Stat[] = [
-  { stat: '100GB', label: 'נפח אחסון לסבבי התיקונים' },
+  { stat: '100GB', label: 'נפח אחסון לסבבי התיקונים ולמסירות' },
   { stat: '4K', label: 'תמיכה בסרטונים באיכות גבוהה' },
   { stat: 'ללא הגבלה', label: 'מספר הפרויקטים שתוכלו לפתוח' },
 ]
@@ -68,23 +73,24 @@ export function RevisionsHighlight() {
               fontSize: 'clamp(34px, 5vw, 60px)',
               lineHeight: 1.05,
               letterSpacing: '-0.015em',
-              maxWidth: '760px',
+              maxWidth: '820px',
             }}
           >
-מערכת סבבי תיקונים <span className="accent-word">מלאה</span>
+מערכות סבבי תיקונים ומסירה <span className="accent-word">מלאות</span>
           </h2>
 
           <p
             className="mt-6 max-w-2xl text-fg-secondary"
             style={{ fontSize: '17px', lineHeight: 1.6 }}
           >
-            כל תהליך התיקונים מול הלקוח במקום אחד — שולחים קישור לצפייה,
-            הלקוח מסמן הערות ותיקונים, והכל חוזר אליכם בצורה מסודרת.
+            כל תהליך העבודה מול הלקוח במקום אחד — שולחים קישור ביקורת, הלקוח
+            מסמן הערות ותיקונים, והכל חוזר אליכם מסודר. ובסיום — מוסרים את
+            הקובץ הסופי בקישור מאובטח עם תוקף מוגבל.
           </p>
         </motion.div>
 
-        {/* 3-step flow */}
-        <div className="grid grid-cols-1 gap-x-16 gap-y-10 md:grid-cols-3 md:gap-y-0">
+        {/* 4-step flow: 3 revision steps + the final delivery step */}
+        <div className="grid grid-cols-1 gap-x-16 gap-y-10 md:grid-cols-2 md:gap-y-12">
           {STEPS.map((step, idx) => (
             <motion.div
               key={step.num}
