@@ -15,8 +15,23 @@ import { adminApi } from '../../lib/adminApi'
 import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
 
 interface ReferralDetail {
-  accounts: { email: string; createdAt: string; paid: boolean }[]
+  accounts: {
+    email: string
+    createdAt: string
+    paid: boolean
+    status?: string
+    keyless?: boolean
+  }[]
   revenueByMonth: Record<string, Record<string, number>>
+}
+
+/** Subscription-status chip styling shown next to a paying account. */
+const STATUS_META: Record<string, { label: string; cls: string }> = {
+  active: { label: 'מנוי פעיל', cls: 'bg-success/15 text-success' },
+  cancelled: { label: 'מנוי בוטל', cls: 'bg-amber-500/15 text-amber-400' },
+  expired: { label: 'מנוי הסתיים', cls: 'bg-white/5 text-fg-muted' },
+  suspended: { label: 'מנוי מושהה', cls: 'bg-amber-500/15 text-amber-400' },
+  ended: { label: 'מנוי הסתיים', cls: 'bg-white/5 text-fg-muted' },
 }
 
 interface Partner {
@@ -832,9 +847,20 @@ function PartnerCard({
                         </span>
                         <span className="flex shrink-0 items-center gap-2">
                           {a.paid ? (
-                            <span className="rounded bg-success/15 px-1.5 py-0.5 text-[10px] font-medium text-success">
-                              קנה
-                            </span>
+                            (() => {
+                              const meta =
+                                (a.status && STATUS_META[a.status]) || {
+                                  label: 'קנה',
+                                  cls: 'bg-success/15 text-success',
+                                }
+                              return (
+                                <span
+                                  className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${meta.cls}`}
+                                >
+                                  {meta.label}
+                                </span>
+                              )
+                            })()
                           ) : (
                             <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-fg-muted">
                               נרשם

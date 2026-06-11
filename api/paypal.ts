@@ -10454,12 +10454,41 @@ async function handleAdminReferralDetail(
 
   // Charges come from the durable ledger (∪ live keys) filtered to this
   // partner, so a buyer whose key was deleted or whose subscription
-  // ended STILL shows up with the revenue they generated.
-  const [usersSnap, allCharges] = await Promise.all([
+  // ended STILL shows up with the revenue they generated. keysSnap is
+  // read alongside only to label each account's CURRENT subscription
+  // status.
+  const [usersSnap, keysSnap, allCharges] = await Promise.all([
     db.collection('users').where('referredBy', '==', code).get(),
+    db.collection('productKeys').where('referredBy', '==', code).get(),
     loadAllChargesMerged(),
   ])
   const charges = allCharges.filter((c) => c.referredBy === code)
+
+  // email → current subscription status, from the live key (if any).
+  const nowMs = Date.now()
+  const emailToStatus = new Map<
+    string,
+    'active' | 'cancelled' | 'expired' | 'suspended'
+  >()
+  for (const k of keysSnap.docs) {
+    const kd = k.data() as {
+      nonPaidGrant?: boolean
+      buyerEmail?: string
+      redeemedByEmail?: string
+      subscriptionStatus?: string
+      expiresAt?: string
+    }
+    if (kd.nonPaidGrant) continue
+    const email = (kd.buyerEmail || kd.redeemedByEmail || '').toLowerCase()
+    if (!email) continue
+    const expired = kd.expiresAt ? Date.parse(kd.expiresAt) < nowMs : false
+    let st: 'active' | 'cancelled' | 'expired' | 'suspended'
+    if (kd.subscriptionStatus === 'cancelled') st = 'cancelled'
+    else if (kd.subscriptionStatus === 'suspended') st = 'suspended'
+    else if (kd.subscriptionStatus === 'expired' || expired) st = 'expired'
+    else st = 'active'
+    emailToStatus.set(email, st)
+  }
 
   const paidEmails = new Set<string>()
   const revenueByMonth: Record<string, Record<string, number>> = {}
@@ -10484,11 +10513,25 @@ async function handleAdminReferralDetail(
       (revenueByMonth[month][c.currency] || 0) + c.gross
   }
 
+  // status: the subscription state shown next to each account.
+  //   active/cancelled/expired/suspended — from a live key.
+  //   ended  — paid in the past but the key is gone (deleted / removed).
+  //   none   — signed up but never paid.
+  const statusFor = (
+    email: string,
+    paid: boolean,
+  ): 'active' | 'cancelled' | 'expired' | 'suspended' | 'ended' | 'none' => {
+    const live = emailToStatus.get(email)
+    if (live) return live
+    return paid ? 'ended' : 'none'
+  }
+
   const seen = new Set<string>()
   const accounts: Array<{
     email: string
     createdAt: string
     paid: boolean
+    status: string
     keyless?: boolean
   }> = []
   for (const d of usersSnap.docs) {
@@ -10499,10 +10542,12 @@ async function handleAdminReferralDetail(
     }
     const email = (u.email || '').toLowerCase()
     if (email) seen.add(email)
+    const paid = paidEmails.has(email)
     accounts.push({
       email: u.email || '',
       createdAt: u.createdAt || u.referredAt || '',
-      paid: paidEmails.has(email),
+      paid,
+      status: statusFor(email, paid),
     })
   }
   // Paying buyers no longer present as users/keys (deleted / ended) —
@@ -10513,6 +10558,7 @@ async function handleAdminReferralDetail(
       email: info.email,
       createdAt: info.at,
       paid: true,
+      status: statusFor(email.toLowerCase(), true),
       keyless: true,
     })
   }
@@ -10797,11 +10843,15 @@ async function computePartnerStats(code: string) {
     receiptsEnabled(),
     casualVatRatePercent(),
   ])
-  const [partnerSnap, usersSnap, keysSnap] = await Promise.all([
+  // Earnings come from the durable ledger (∪ live billing) filtered to
+  // this partner — so the partner keeps the commission they earned even
+  // after the buyer cancelled and the key was removed.
+  const [partnerSnap, usersSnap, allCharges] = await Promise.all([
     db.collection('referralPartners').doc(code).get(),
     db.collection('users').where('referredBy', '==', code).get(),
-    db.collection('productKeys').where('referredBy', '==', code).get(),
+    loadAllChargesMerged(),
   ])
+  const charges = allCharges.filter((c) => c.referredBy === code)
   const paidEmails = new Set<string>()
   const grossByCurrency: Record<string, number> = {}
   const grossByMonth: Record<string, Record<string, number>> = {}
@@ -10813,45 +10863,27 @@ async function computePartnerStats(code: string) {
   const feeByCurrency: Record<string, number> = {}
   // VAT shaved off per currency (only when receipts are OFF).
   const vatByCurrency: Record<string, number> = {}
-  for (const k of keysSnap.docs) {
-    const kd = k.data() as {
-      nonPaidGrant?: boolean
-      buyerEmail?: string
-      redeemedByEmail?: string
-      billingHistory?: Array<{
-        at?: string
-        amount?: number
-        currency?: string
-        fee?: number
-      }>
-    }
-    if (kd.nonPaidGrant) continue
-    const email = (kd.buyerEmail || kd.redeemedByEmail || '').toLowerCase()
-    const hist = Array.isArray(kd.billingHistory) ? kd.billingHistory : []
-    if (hist.length > 0 && email) paidEmails.add(email)
-    for (const h of hist) {
-      const cur = (h.currency || 'ILS').toUpperCase()
-      const amt = typeof h.amount === 'number' ? h.amount : 0
-      const fee = typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0
-      const b = chargeNetBreakdown({
-        amount: amt,
-        currency: cur,
-        fee,
-        vatPercent,
-        receiptsEnabled: receiptsOn,
-      })
-      const net = b.net
-      const m = h.at ? h.at.slice(0, 7) : 'unknown'
-      grossByCurrency[cur] = (grossByCurrency[cur] || 0) + amt
-      grossByMonth[m] = grossByMonth[m] || {}
-      grossByMonth[m][cur] = (grossByMonth[m][cur] || 0) + amt
-      netByCurrency[cur] = (netByCurrency[cur] || 0) + net
-      netByMonth[m] = netByMonth[m] || {}
-      netByMonth[m][cur] = (netByMonth[m][cur] || 0) + net
-      feeByCurrency[cur] = (feeByCurrency[cur] || 0) + b.fee
-      vatByCurrency[cur] = (vatByCurrency[cur] || 0) + b.vat
-      countByMonth[m] = (countByMonth[m] || 0) + 1
-    }
+  for (const c of charges) {
+    const cur = c.currency
+    const b = chargeNetBreakdown({
+      amount: c.gross,
+      currency: cur,
+      fee: c.fee,
+      vatPercent,
+      receiptsEnabled: receiptsOn,
+    })
+    const net = b.net
+    const m = c.at ? c.at.slice(0, 7) : 'unknown'
+    if (c.email) paidEmails.add(c.email.toLowerCase())
+    grossByCurrency[cur] = (grossByCurrency[cur] || 0) + b.gross
+    grossByMonth[m] = grossByMonth[m] || {}
+    grossByMonth[m][cur] = (grossByMonth[m][cur] || 0) + b.gross
+    netByCurrency[cur] = (netByCurrency[cur] || 0) + net
+    netByMonth[m] = netByMonth[m] || {}
+    netByMonth[m][cur] = (netByMonth[m][cur] || 0) + net
+    feeByCurrency[cur] = (feeByCurrency[cur] || 0) + b.fee
+    vatByCurrency[cur] = (vatByCurrency[cur] || 0) + b.vat
+    countByMonth[m] = (countByMonth[m] || 0) + 1
   }
   const data = partnerSnap.data() as ReferralPartnerDoc | undefined
   const commission =
