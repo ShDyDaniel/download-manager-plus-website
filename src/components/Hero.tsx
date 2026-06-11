@@ -77,7 +77,7 @@ export function Hero() {
   }
 
   return (
-    <section className="relative overflow-hidden px-5 pt-10 pb-14 md:px-6 md:pt-20 md:pb-28">
+    <section className="relative overflow-hidden px-5 pt-16 pb-14 md:px-6 md:pt-20 md:pb-28">
       {/* Single warm ambient glow, top-left in RTL = top-right in
           the visual. Intentionally minimal — one glow, not two
           competing blobs. */}
@@ -242,10 +242,10 @@ export function Hero() {
                 + gradient still differentiate the action. */}
             <Link
               to="/buy"
-              className="group relative mt-1 flex min-h-[40px] items-center justify-center gap-1.5 overflow-hidden rounded-xl border border-primary/60 bg-gradient-to-l from-primary/15 to-primary/5 px-3 py-2 text-xs font-semibold text-fg shadow-lg shadow-primary/10 transition-all hover:border-primary hover:from-primary/25 hover:to-primary/10 hover:shadow-xl hover:shadow-primary/20 md:mt-2 md:min-h-[44px] md:gap-3 md:rounded-2xl md:px-6 md:py-4 md:text-base"
+              className="group relative mt-1 flex min-h-[40px] items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap rounded-xl border border-primary/60 bg-gradient-to-l from-primary/15 to-primary/5 px-3 py-2 text-xs font-semibold text-fg shadow-lg shadow-primary/10 transition-all hover:border-primary hover:from-primary/25 hover:to-primary/10 hover:shadow-xl hover:shadow-primary/20 md:mt-2 md:min-h-[44px] md:gap-3 md:rounded-2xl md:px-6 md:py-4 md:text-base"
             >
-              <Crown className="h-3.5 w-3.5 text-primary md:h-5 md:w-5" />
-              <span className="flex items-baseline gap-2">
+              <Crown className="h-3.5 w-3.5 shrink-0 text-primary md:h-5 md:w-5" />
+              <span className="flex items-baseline gap-2 whitespace-nowrap">
                 <span className="text-xs md:text-lg">רכישת מנוי Pro</span>
                 {minPerMonth !== null && (
                   <span className="text-xs font-medium text-fg-muted">
@@ -253,7 +253,7 @@ export function Hero() {
                   </span>
                 )}
               </span>
-              <ChevronDown className="h-4 w-4 -rotate-90 text-primary transition-transform group-hover:-translate-x-1" />
+              <ChevronDown className="h-4 w-4 shrink-0 -rotate-90 text-primary transition-transform group-hover:-translate-x-1" />
             </Link>
 
             {/* Sub-meta — platform support note. Drive lives in the

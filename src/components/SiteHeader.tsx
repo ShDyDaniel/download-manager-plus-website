@@ -81,7 +81,15 @@ export function SiteHeader() {
     // The Link itself opts back into pointer-events so it stays
     // clickable — only the empty space around it passes clicks
     // through to the page beneath.
-    <div className={`pointer-events-none absolute inset-x-0 z-10 ${topClass}`}>
+    // On /buy the page already has its own "חזרה לדף הבית" back-link on
+    // the RIGHT edge of the same narrow rail at the same y. On a phone
+    // there isn't room for both, so they overlapped — hide the marketing
+    // cluster on mobile for /buy only (desktop has the width, keeps it).
+    <div
+      className={`pointer-events-none absolute inset-x-0 z-10 ${topClass} ${
+        isBuyPage ? 'hidden md:block' : ''
+      }`}
+    >
       <div className={`mx-auto px-5 md:px-6 ${widthClass}`}>
         {/* Two editorial links separated by a hair-thin dot. DOM
             order matters in an RTL document: the FIRST link sits
@@ -91,35 +99,36 @@ export function SiteHeader() {
             operator — "Revisions" reads first, "Account" reads
             after it. The whole cluster is left-anchored (text-left)
             so it lines up under the same column as the rest of the
-            page chrome. */}
+            page chrome. Compact on mobile (smaller text + tighter
+            dots) so it doesn't dominate the top of the screen. */}
         <div className="text-left">
           <Link
             to="/revisions"
-            className="pointer-events-auto text-sm text-fg-muted transition-colors hover:text-fg"
+            className="pointer-events-auto text-xs text-fg-muted transition-colors hover:text-fg md:text-sm"
           >
             סבבי תיקונים
           </Link>
           <span
             aria-hidden="true"
-            className="px-3 text-fg-muted/40 select-none"
+            className="select-none px-1.5 text-fg-muted/40 md:px-3"
           >
             ·
           </span>
           <Link
             to="/deliveries"
-            className="pointer-events-auto text-sm text-fg-muted transition-colors hover:text-fg"
+            className="pointer-events-auto text-xs text-fg-muted transition-colors hover:text-fg md:text-sm"
           >
             מסירה ללקוח
           </Link>
           <span
             aria-hidden="true"
-            className="px-3 text-fg-muted/40 select-none"
+            className="select-none px-1.5 text-fg-muted/40 md:px-3"
           >
             ·
           </span>
           <Link
             to="/account"
-            className="pointer-events-auto text-sm text-fg-muted transition-colors hover:text-fg"
+            className="pointer-events-auto text-xs text-fg-muted transition-colors hover:text-fg md:text-sm"
           >
             החשבון שלי
           </Link>
