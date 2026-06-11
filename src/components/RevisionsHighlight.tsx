@@ -76,7 +76,9 @@ export function RevisionsHighlight() {
               maxWidth: '820px',
             }}
           >
-מערכות סבבי תיקונים ומסירה <span className="accent-word">מלאות</span>
+מערכות סבבי תיקונים{' '}
+            <br />
+            ומסירה <span className="accent-word">מלאות</span>
           </h2>
 
           <p
