@@ -575,7 +575,7 @@ export function ReviewPage() {
     return (
       <ReviewShell>
         <CenterCard>
-          <OwnerInactiveState ownerEmail={state.ownerEmail} />
+          <OwnerInactiveState />
         </CenterCard>
       </ReviewShell>
     )
@@ -1356,40 +1356,24 @@ function NotFoundState({ message }: { message: string }) {
 }
 
 /** Shown when the project's owner (the editor) doesn't currently
- *  have an active Pro subscription. The viewer can't open the
- *  workspace, but we surface the editor's email as a mailto:
- *  link so they have a one-tap way to ask the editor to renew
- *  or send the material another way. The pre-filled subject
- *  saves the viewer from having to summarize the situation. */
-function OwnerInactiveState({ ownerEmail }: { ownerEmail: string }) {
-  // Build the mailto URL. We KNOW we're allowed to render a real
-  // mailto here (this is a contact action the viewer chose) so
-  // the email-detector mitigations we use elsewhere in the page
-  // (SafeEmail / format-detection meta) don't apply.
-  const mailto = ownerEmail
-    ? `mailto:${ownerEmail}?subject=${encodeURIComponent('בקשה לצפייה בסרטון לתיקונים')}`
-    : null
+ *  have an active Pro subscription, so the link can't be served.
+ *  Styled in the brand copper (not the old amber) and points the
+ *  viewer back to whoever sent them the link to sort out the
+ *  subscription — no email button (the viewer already knows who
+ *  sent it). */
+function OwnerInactiveState() {
   return (
-    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-8 text-center">
-      <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-500/20 text-amber-400">
+    <div className="rounded-2xl border border-primary/30 bg-primary/[0.08] p-8 text-center">
+      <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary">
         <AlertTriangle className="h-6 w-6" />
       </div>
       <h1 className="mb-3 text-lg font-medium text-fg">
-        הקישור לא זמין כרגע
+        הקישור אינו זמין כרגע
       </h1>
-      <p className="mx-auto mb-5 max-w-md text-sm leading-relaxed text-fg-muted">
-        המנוי של העורך שלכם הסתיים, ולכן הסרטון לא נטען. מומלץ
-        ליצור איתם קשר ישירות כדי להמשיך בתהליך התיקונים.
+      <p className="mx-auto max-w-md text-sm leading-relaxed text-fg-muted">
+        הקישור אינו זמין עקב בעיה במנוי. פנו למי ששלח/ה לכם את הקישור
+        כדי שיסדיר את המנוי, והקישור יחזור להיות זמין.
       </p>
-      {mailto && (
-        <a
-          href={mailto}
-          className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-amber-500/90 px-5 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-amber-500"
-        >
-          <Mail className="h-4 w-4" />
-          שלחו מייל לעורך
-        </a>
-      )}
     </div>
   )
 }

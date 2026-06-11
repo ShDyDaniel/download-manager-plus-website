@@ -6,8 +6,11 @@ import {
   ExternalLink,
   Download,
   FileText,
+  FileDown,
   Receipt,
   Check,
+  Building2,
+  Save,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 
@@ -43,6 +46,33 @@ interface CasualTotals {
   gross: number
   vat: number
   net: number
+}
+
+/** Reporter ("עוסק") identity for the עסקת-אקראי report (טופס 8356).
+ *  Exactly the fields the form asks about the seller/service-provider.
+ *  Persisted admin-side; reused on every per-row PDF. */
+interface CasualBusiness {
+  firstName: string
+  lastName: string
+  idNumber: string
+  city: string
+  street: string
+  houseNumber: string
+  zip: string
+  phone: string
+  osekType: 'exempt' | 'licensed'
+}
+
+const EMPTY_BUSINESS: CasualBusiness = {
+  firstName: '',
+  lastName: '',
+  idNumber: '',
+  city: '',
+  street: '',
+  houseNumber: '',
+  zip: '',
+  phone: '',
+  osekType: 'exempt',
 }
 
 function fmtDate(iso: string): string {
@@ -127,6 +157,14 @@ export default function ReceiptsTab({
   const [casualLoading, setCasualLoading] = useState(false)
   const [casualVat, setCasualVat] = useState(18)
 
+  // ── Reporter ("עוסק") identity for the 8356 PDF ───────────────
+  const [business, setBusiness] = useState<CasualBusiness>(EMPTY_BUSINESS)
+  const [savingBusiness, setSavingBusiness] = useState(false)
+  const [businessSaved, setBusinessSaved] = useState(false)
+  // Effective VAT % the server used for this month's rows — shown on
+  // each generated 8356 document.
+  const [casualVatPercent, setCasualVatPercent] = useState(18)
+
   function handleErr(e: unknown) {
     const err = e as Error & { code?: string }
     if (err.code === 'auth') return onAuthExpired()
@@ -141,6 +179,7 @@ export default function ReceiptsTab({
         vatAuto: boolean
         currentIlVat: number
         sumitConfigured: boolean
+        business?: Partial<CasualBusiness>
       }>('admin-get-receipts-settings')
       setSumitEnabled(Boolean(r.receiptsEnabled))
       setSumitConfigured(Boolean(r.sumitConfigured))
@@ -148,6 +187,8 @@ export default function ReceiptsTab({
       setCurrentIlVat(r.currentIlVat || 18)
       setVatRate(r.vatRate || 18)
       setCasualVat(r.vatRate || 18)
+      if (r.business)
+        setBusiness({ ...EMPTY_BUSINESS, ...r.business })
     } catch (e) {
       handleErr(e)
     }
@@ -188,6 +229,21 @@ export default function ReceiptsTab({
       void loadCasual()
     } catch (e) {
       handleErr(e)
+    }
+  }
+
+  async function saveBusiness() {
+    setSavingBusiness(true)
+    setBusinessSaved(false)
+    setError('')
+    try {
+      await adminApi('admin-set-receipts-settings', { business })
+      setBusinessSaved(true)
+      setTimeout(() => setBusinessSaved(false), 2500)
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setSavingBusiness(false)
     }
   }
 
@@ -247,6 +303,8 @@ export default function ReceiptsTab({
       }>('admin-casual-report', { year, month: m })
       setCasualRows(Array.isArray(r.rows) ? r.rows : [])
       setCasualTotals(r.totals || {})
+      if (typeof r.vatPercent === 'number' && r.vatPercent > 0)
+        setCasualVatPercent(r.vatPercent)
     } catch (e) {
       handleErr(e)
     } finally {
@@ -320,6 +378,146 @@ export default function ReceiptsTab({
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+  }
+
+  /** Build a print-ready "דיווח עסקת אקראי – טופס 8356" document for a
+   *  single transaction and open the browser print dialog (Save as PDF).
+   *  Mirrors the partner-report print flow. Includes the reporter
+   *  identity (from settings) plus the full VAT breakdown — exactly the
+   *  fields form 8356 asks for. */
+  async function downloadCasualPdf(row: CasualRow) {
+    const esc = (s: string | number) =>
+      String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+    const money = (n: number) =>
+      `${(Number(n) || 0).toLocaleString('he-IL', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })} ${row.currency}`
+    let logo = ''
+    try {
+      const lr = await fetch('/icon.png')
+      if (lr.ok) {
+        const b = await lr.blob()
+        logo = await new Promise<string>((res) => {
+          const fr = new FileReader()
+          fr.onload = () => res(String(fr.result))
+          fr.readAsDataURL(b)
+        })
+      }
+    } catch {
+      /* logo optional */
+    }
+
+    const fullName = `${business.firstName} ${business.lastName}`.trim()
+    const addressParts = [
+      [business.street, business.houseNumber].filter(Boolean).join(' '),
+      business.city,
+      business.zip,
+    ].filter(Boolean)
+    const address = addressParts.join(', ')
+    const osekLabel =
+      business.osekType === 'licensed' ? 'עוסק מורשה' : 'עוסק פטור'
+    const deadline = reportDeadline(row.at)
+    const today = new Date().toLocaleDateString('he-IL')
+    const dash = '—'
+    const infoMissing =
+      !fullName || !business.idNumber || !address
+        ? `<div class="warn">⚠ חלק מפרטי העוסק חסרים. מלאו אותם ב"פרטי העוסק לדיווח" כדי שהמסמך יהיה שלם לשליחה.</div>`
+        : ''
+
+    const rowHtml = (label: string, value: string, strong = false) =>
+      `<tr><td class="lbl">${esc(label)}</td><td class="${strong ? 'val strong' : 'val'}">${value}</td></tr>`
+
+    const html = `<!doctype html><html dir="rtl" lang="he"><head><meta charset="utf-8"><title>דיווח עסקת אקראי - עסקה ${esc(row.seq)}</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Heebo','Assistant','Arial',sans-serif; color: #1f1a16; background: #fff; }
+  .header { background: #16110D; color: #F5EFE6; padding: 26px 36px; display: flex; align-items: center; gap: 16px; }
+  .header img { width: 46px; height: 46px; border-radius: 11px; }
+  .brand { font-size: 13px; letter-spacing: .04em; color: #cdbba6; }
+  .brand b { display:block; font-size: 19px; color: #F5EFE6; font-weight: 600; }
+  .accent { height: 4px; background: linear-gradient(90deg,#C8843C,#9c6328); }
+  .wrap { padding: 28px 36px; }
+  h1 { font-size: 23px; margin: 0 0 4px; }
+  .sub { color:#7a6f64; font-size: 13px; margin-bottom: 18px; }
+  .warn { background:#fdf0e3; border:1px solid #f0c89a; color:#92560f; border-radius:10px; padding:10px 14px; font-size:12px; margin-bottom:16px; }
+  h2 { font-size:14px; margin: 20px 0 8px; padding-right:10px; border-right:3px solid #C8843C; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td { padding:8px 12px; border-bottom:1px solid #eee3d6; vertical-align:top; }
+  td.lbl { color:#7a6f64; width:38%; }
+  td.val { color:#1f1a16; }
+  td.val.strong { font-weight:700; font-size:15px; color:#9c6328; }
+  .ltr { direction:ltr; unicode-bidi:isolate; }
+  .amounts { margin-top:6px; border:1px solid #ece2d5; border-radius:12px; overflow:hidden; }
+  .amounts td { border-bottom:1px solid #f1e8db; }
+  .amounts tr:last-child td { border-bottom:0; background:#faf6f0; }
+  .note { margin-top:22px; background:#faf6f0; border:1px solid #ece2d5; border-radius:12px; padding:14px 18px; font-size:12px; color:#5f564d; line-height:1.7; }
+  .sign { margin-top:30px; display:flex; justify-content:space-between; gap:24px; }
+  .sign div { flex:1; border-top:1px solid #c9bcab; padding-top:6px; font-size:12px; color:#7a6f64; text-align:center; }
+  .foot { margin-top:26px; text-align:center; color:#9a8d7e; font-size:11px; }
+</style></head><body>
+  <div class="header">${logo ? `<img src="${logo}" alt="logo"/>` : ''}<div class="brand">דיווח עסקת אקראי<b>ניהול הורדות פלוס</b></div></div>
+  <div class="accent"></div>
+  <div class="wrap">
+    <h1>דיווח עסקת אקראי — טופס 8356</h1>
+    <div class="sub">עסקה מס׳ ${esc(row.seq)} · הופק בתאריך ${esc(today)}</div>
+    ${infoMissing}
+
+    <h2>פרטי המדווח (העוסק)</h2>
+    <table>
+      ${rowHtml('שם מלא', esc(fullName || dash))}
+      ${rowHtml('מספר זהות / עוסק', `<span class="ltr">${esc(business.idNumber || dash)}</span>`)}
+      ${rowHtml('כתובת', esc(address || dash))}
+      ${rowHtml('טלפון', `<span class="ltr">${esc(business.phone || dash)}</span>`)}
+      ${rowHtml('סוג עוסק', esc(osekLabel))}
+    </table>
+
+    <h2>פרטי העסקה</h2>
+    <table>
+      ${rowHtml('תאריך העסקה', `<span class="ltr">${esc(fmtDateOnly(row.at))}</span>`)}
+      ${rowHtml('מועד דיווח אחרון (30 יום)', `<span class="ltr">${esc(deadline.label || dash)}</span>${deadline.overdue ? ' · <b style="color:#b4231f">חלף המועד</b>' : ''}`)}
+      ${rowHtml('תיאור השירות', esc(row.description || 'שירות דיגיטלי'))}
+      ${rowHtml('שם הצד השני (הלקוח)', esc(row.name || dash))}
+      ${rowHtml('דוא״ל הלקוח', `<span class="ltr">${esc(row.email || dash)}</span>`)}
+    </table>
+
+    <h2>פירוט סכומים</h2>
+    <table class="amounts">
+      ${rowHtml('מטבע', esc(row.currency))}
+      ${rowHtml('סכום לפני מע״מ', `<span class="ltr">${money(row.net)}</span>`)}
+      ${rowHtml('שיעור מע״מ', `${esc(casualVatPercent)}%`)}
+      ${rowHtml('סכום המע״מ', `<span class="ltr">${money(row.vat)}</span>`)}
+      ${rowHtml('סכום כולל מע״מ', `<span class="ltr">${money(row.gross)}</span>`, true)}
+    </table>
+
+    <div class="note">
+      עסקת אקראי מדווחת לכל עסקה בנפרד בטופס 8356, ויש לדווח ולשלם את המע״מ
+      תוך 30 יום ממועד העסקה. נותן השירות הוא החייב בתשלום המע״מ. ניתן
+      להגיש את הדיווח באתר רשות המסים או בסניף מע״מ.
+    </div>
+
+    <div class="sign">
+      <div>חתימת המדווח</div>
+      <div>תאריך</div>
+    </div>
+
+    <div class="foot">הופק ע״י ניהול הורדות פלוס · dmplus.net · ${esc(today)}</div>
+  </div>
+  <script>window.onload=function(){setTimeout(function(){window.print()},300)}</script>
+</body></html>`
+
+    const w = window.open('', '_blank', 'width=900,height=1200')
+    if (!w) {
+      setError('הדפדפן חסם את חלון ההדפסה — אפשר חלונות קופצים ונסה שוב')
+      return
+    }
+    w.document.open()
+    w.document.write(html)
+    w.document.close()
   }
 
   return (
@@ -431,6 +629,12 @@ export default function ReceiptsTab({
           onSetVatMode={setVatMode}
           onMark={markReported}
           marking={marking}
+          onDownloadPdf={downloadCasualPdf}
+          business={business}
+          setBusiness={setBusiness}
+          onSaveBusiness={saveBusiness}
+          savingBusiness={savingBusiness}
+          businessSaved={businessSaved}
         />
       )}
     </div>
@@ -556,6 +760,12 @@ function CasualReport({
   onSetVatMode,
   onMark,
   marking,
+  onDownloadPdf,
+  business,
+  setBusiness,
+  onSaveBusiness,
+  savingBusiness,
+  businessSaved,
 }: {
   month: string
   setMonth: (m: string) => void
@@ -573,6 +783,12 @@ function CasualReport({
   onSetVatMode: (auto: boolean) => void
   onMark: (row: CasualRow, reported: boolean) => void
   marking: string | null
+  onDownloadPdf: (row: CasualRow) => void
+  business: CasualBusiness
+  setBusiness: (b: CasualBusiness) => void
+  onSaveBusiness: () => void
+  savingBusiness: boolean
+  businessSaved: boolean
 }) {
   const hasRows = rows && rows.length > 0
   const reportedCount = rows ? rows.filter((r) => r.reported).length : 0
@@ -678,6 +894,16 @@ function CasualReport({
         </button>
       </div>
 
+      {/* Reporter ("עוסק") details — used on every per-row 8356 PDF.
+          Fill once; reused for all transactions. */}
+      <BusinessDetailsCard
+        business={business}
+        setBusiness={setBusiness}
+        onSave={onSaveBusiness}
+        saving={savingBusiness}
+        saved={businessSaved}
+      />
+
       {/* Totals */}
       {Object.keys(totals).length > 0 && (
         <div className="grid gap-3 sm:grid-cols-3">
@@ -736,15 +962,16 @@ function CasualReport({
           <table className="w-full text-right text-sm">
             <thead>
               <tr className="border-b border-border text-xs text-fg-muted">
-                <th className="px-4 py-3 font-medium">מס׳</th>
-                <th className="px-4 py-3 font-medium">תאריך עסקה</th>
-                <th className="px-4 py-3 font-medium">דיווח עד</th>
-                <th className="px-4 py-3 font-medium">לקוח</th>
-                <th className="px-4 py-3 font-medium">מטבע</th>
-                <th className="px-4 py-3 font-medium">כולל מע"מ</th>
-                <th className="px-4 py-3 font-medium">מע"מ</th>
-                <th className="px-4 py-3 font-medium">לפני מע"מ</th>
-                <th className="px-4 py-3 font-medium">דיווח</th>
+                <th className="whitespace-nowrap px-4 py-3 font-medium">מס׳</th>
+                <th className="whitespace-nowrap px-4 py-3 font-medium">תאריך עסקה</th>
+                <th className="whitespace-nowrap px-4 py-3 font-medium">דיווח עד</th>
+                <th className="whitespace-nowrap px-4 py-3 font-medium">לקוח</th>
+                <th className="whitespace-nowrap px-4 py-3 font-medium">מטבע</th>
+                <th className="whitespace-nowrap px-4 py-3 font-medium">כולל מע"מ</th>
+                <th className="whitespace-nowrap px-4 py-3 font-medium">מע"מ</th>
+                <th className="whitespace-nowrap px-4 py-3 font-medium">לפני מע"מ</th>
+                <th className="whitespace-nowrap px-4 py-3 font-medium">מסמך</th>
+                <th className="whitespace-nowrap px-4 py-3 font-medium">דיווח</th>
               </tr>
             </thead>
             <tbody>
@@ -770,9 +997,14 @@ function CasualReport({
                   >
                     {reportDeadline(row.at).label}
                   </td>
-                  <td className="break-all px-4 py-3">
-                    <div className="text-fg">{row.name || '—'}</div>
-                    <div className="text-[11px] text-fg-muted" dir="ltr">
+                  <td className="px-4 py-3">
+                    <div className="whitespace-nowrap text-fg">
+                      {row.name || '—'}
+                    </div>
+                    <div
+                      className="whitespace-nowrap text-[11px] text-fg-muted"
+                      dir="ltr"
+                    >
                       {row.email || ''}
                     </div>
                   </td>
@@ -787,6 +1019,17 @@ function CasualReport({
                   </td>
                   <td className="whitespace-nowrap px-4 py-3" dir="ltr">
                     {row.net.toLocaleString('he-IL')}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => onDownloadPdf(row)}
+                      title="הורד מסמך PDF לדיווח מע״מ (טופס 8356)"
+                      className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/15"
+                    >
+                      <FileDown className="h-3 w-3" />
+                      PDF
+                    </button>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3">
                     {row.reported ? (
@@ -825,5 +1068,112 @@ function CasualReport({
         </div>
       )}
     </div>
+  )
+}
+
+/* ── Reporter ("עוסק") details form ───────────────────────────── */
+function BusinessDetailsCard({
+  business,
+  setBusiness,
+  onSave,
+  saving,
+  saved,
+}: {
+  business: CasualBusiness
+  setBusiness: (b: CasualBusiness) => void
+  onSave: () => void
+  saving: boolean
+  saved: boolean
+}) {
+  const set = (patch: Partial<CasualBusiness>) =>
+    setBusiness({ ...business, ...patch })
+  const field = (
+    label: string,
+    key: keyof CasualBusiness,
+    opts: { ltr?: boolean; placeholder?: string } = {},
+  ) => (
+    <label className="flex flex-col gap-1 text-xs text-fg-muted">
+      {label}
+      <input
+        type="text"
+        value={(business[key] as string) || ''}
+        onChange={(e) =>
+          set({ [key]: e.target.value } as Partial<CasualBusiness>)
+        }
+        placeholder={opts.placeholder}
+        dir={opts.ltr ? 'ltr' : undefined}
+        className="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg"
+      />
+    </label>
+  )
+  return (
+    <details className="group rounded-2xl border border-border bg-card">
+      <summary className="flex cursor-pointer items-center justify-between gap-2 px-4 py-3 text-sm font-semibold text-fg">
+        <span className="flex items-center gap-2">
+          <Building2 className="h-4 w-4 text-primary" />
+          פרטי העוסק לדיווח (טופס 8356)
+        </span>
+        <span className="text-[11px] font-normal text-fg-muted">
+          מופיעים בכל מסמך PDF · לחצו לעריכה
+        </span>
+      </summary>
+      <div className="border-t border-border p-4">
+        <p className="mb-3 text-xs leading-relaxed text-fg-muted">
+          אלה הפרטים שטופס 8356 מבקש על נותן השירות (המדווח). הם נשמרים
+          אצלך בלבד (לא חשופים לאפליקציה) ומשובצים אוטומטית בכל מסמך
+          שתורידו. מלאו פעם אחת.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {field('שם פרטי', 'firstName')}
+          {field('שם משפחה', 'lastName')}
+          {field('מספר ת.ז / עוסק', 'idNumber', {
+            ltr: true,
+            placeholder: '000000000',
+          })}
+          {field('טלפון', 'phone', { ltr: true, placeholder: '050-0000000' })}
+          {field('יישוב', 'city')}
+          {field('רחוב', 'street')}
+          {field('מספר בית', 'houseNumber')}
+          {field('מיקוד', 'zip', { ltr: true })}
+          <label className="flex flex-col gap-1 text-xs text-fg-muted">
+            סוג עוסק
+            <select
+              value={business.osekType}
+              onChange={(e) =>
+                set({
+                  osekType:
+                    e.target.value === 'licensed' ? 'licensed' : 'exempt',
+                })
+              }
+              className="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg"
+            >
+              <option value="exempt">עוסק פטור</option>
+              <option value="licensed">עוסק מורשה</option>
+            </select>
+          </label>
+        </div>
+        <div className="mt-4 flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving}
+            className="flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+          >
+            {saving ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Save className="h-3.5 w-3.5" />
+            )}
+            שמירת פרטי עוסק
+          </button>
+          {saved && (
+            <span className="flex items-center gap-1 text-xs text-emerald-400">
+              <Check className="h-3.5 w-3.5" />
+              נשמר
+            </span>
+          )}
+        </div>
+      </div>
+    </details>
   )
 }

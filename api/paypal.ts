@@ -9823,6 +9823,34 @@ async function handleAdminListReceipts(
  *  regardless of SUMIT — so it's complete even when SUMIT is off.
  * ────────────────────────────────────────────────────────────── */
 
+/** Reporter ("עוסק") identity for the עסקת-אקראי report (form 8356).
+ *  These are the exact fields the form asks for about the seller/
+ *  service-provider. Stored in the admin-only adminConfig/global —
+ *  NOT appConfig (which clients can read) — because the ID number and
+ *  home address are personal data that must never leak to the app. */
+interface CasualBusiness {
+  firstName?: string
+  lastName?: string
+  idNumber?: string
+  city?: string
+  street?: string
+  houseNumber?: string
+  zip?: string
+  phone?: string
+  osekType?: 'exempt' | 'licensed'
+}
+
+/** Read the reporter identity from adminConfig/global.casualBusiness. */
+async function readCasualBusiness(): Promise<CasualBusiness> {
+  const snap = await getDb().collection('adminConfig').doc('global').get()
+  const d = (snap.exists ? snap.data() : {}) as {
+    casualBusiness?: CasualBusiness
+  }
+  return d.casualBusiness && typeof d.casualBusiness === 'object'
+    ? d.casualBusiness
+    : {}
+}
+
 async function handleAdminGetReceiptsSettings(
   req: VercelRequest,
   res: VercelResponse,
@@ -9848,6 +9876,8 @@ async function handleAdminGetReceiptsSettings(
         : CURRENT_IL_VAT_PERCENT,
     currentIlVat: CURRENT_IL_VAT_PERCENT,
     sumitConfigured: sumitConfigured(),
+    // Reporter identity for the 8356 PDF (admin-only data).
+    business: await readCasualBusiness(),
   })
 }
 
@@ -9864,6 +9894,7 @@ async function handleAdminSetReceiptsSettings(
     receiptsEnabled?: boolean
     vatRate?: number
     vatAuto?: boolean
+    business?: Record<string, unknown>
   }
   const patch: Record<string, unknown> = {}
   if (typeof body.receiptsEnabled === 'boolean')
@@ -9875,12 +9906,40 @@ async function handleAdminSetReceiptsSettings(
     body.vatRate < 100
   )
     patch.vatRate = Math.round(body.vatRate * 100) / 100
-  if (Object.keys(patch).length === 0)
+
+  // Reporter identity → admin-only adminConfig/global.casualBusiness.
+  // Kept out of appConfig so the ID number + home address never reach
+  // any client. Each field is trimmed and length-capped defensively.
+  let businessPatched = false
+  if (body.business && typeof body.business === 'object') {
+    const b = body.business
+    const str = (v: unknown, max = 120) =>
+      typeof v === 'string' ? v.trim().slice(0, max) : ''
+    const business: CasualBusiness = {
+      firstName: str(b.firstName, 60),
+      lastName: str(b.lastName, 60),
+      idNumber: str(b.idNumber, 20),
+      city: str(b.city, 60),
+      street: str(b.street, 80),
+      houseNumber: str(b.houseNumber, 12),
+      zip: str(b.zip, 12),
+      phone: str(b.phone, 25),
+      osekType: b.osekType === 'licensed' ? 'licensed' : 'exempt',
+    }
+    await getDb()
+      .collection('adminConfig')
+      .doc('global')
+      .set({ casualBusiness: business }, { merge: true })
+    businessPatched = true
+  }
+
+  if (Object.keys(patch).length === 0 && !businessPatched)
     return res.status(400).json({ ok: false, error: 'nothing to update' })
-  await getDb()
-    .collection('appConfig')
-    .doc('global')
-    .set(patch, { merge: true })
+  if (Object.keys(patch).length > 0)
+    await getDb()
+      .collection('appConfig')
+      .doc('global')
+      .set(patch, { merge: true })
   return res.status(200).json({ ok: true, ...patch })
 }
 
