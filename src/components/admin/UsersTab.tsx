@@ -366,7 +366,7 @@ function UserRow({
 
   return (
     <div className="rounded-2xl border border-border bg-card p-3">
-      <div className="flex items-stretch gap-3">
+      <div className="flex flex-wrap items-stretch gap-3">
         <div className="relative shrink-0">
           <div
             className={
@@ -443,7 +443,7 @@ function UserRow({
           </div>
 
           {!isAdmin && (
-            <div className="flex items-center gap-1 pt-1">
+            <div className="flex flex-wrap items-center gap-1 pt-1">
               <span className="text-[10px] text-fg-faint">שנה תוכנית:</span>
               <PlanChip
                 label="חינם"
@@ -482,11 +482,11 @@ function UserRow({
           )}
         </div>
 
-        <div className="flex shrink-0 flex-col items-end justify-between gap-2">
+        <div className="flex w-full flex-row-reverse items-center justify-between gap-2 border-t border-border/60 pt-2 sm:w-auto sm:shrink-0 sm:flex-col sm:items-end sm:border-0 sm:pt-0">
           <div className="text-[10px] text-fg-faint" dir="ltr">
             {user.uid.slice(0, 10)}…
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1">
             <IconBtn
               title={blocked ? 'בטל חסימה' : 'חסום משתמש'}
               busy={busy === 'block'}
