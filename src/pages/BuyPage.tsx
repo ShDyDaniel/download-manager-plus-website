@@ -1889,7 +1889,8 @@ function PlanCard({
             <span className="text-sm">{sym}</span>
           </div>
           <div className="flex items-baseline justify-end gap-1.5">
-            <span className="text-xs text-fg-muted">/ {cycle}</span>
+            <span className="text-xs text-fg-muted">{cycle}</span>
+            <span className="text-xs text-fg-muted">/</span>
             <span className="text-4xl font-bold tabular-nums text-success">
               {formatPrice(salePrice)}
             </span>
@@ -1901,7 +1902,8 @@ function PlanCard({
           className="mb-1 flex items-baseline justify-end gap-1.5"
           dir="ltr"
         >
-          <span className="text-xs text-fg-muted">/ {cycle}</span>
+          <span className="text-xs text-fg-muted">{cycle}</span>
+          <span className="text-xs text-fg-muted">/</span>
           <span className="text-4xl font-bold tabular-nums">
             {formatPrice(regularPrice)}
           </span>
