@@ -1875,9 +1875,9 @@ function PlanCard({
       {loading ? (
         <div className="mb-1" dir="ltr">
           <div className="flex items-baseline justify-end gap-1.5">
+            <span className="h-3 w-10 animate-pulse rounded bg-fg-muted/10" />
             <span className="h-9 w-16 animate-pulse rounded bg-fg-muted/20" />
             <span className="h-5 w-3 animate-pulse rounded bg-fg-muted/15" />
-            <span className="h-3 w-10 animate-pulse rounded bg-fg-muted/10" />
           </div>
         </div>
       ) : onSale ? (
@@ -1889,11 +1889,11 @@ function PlanCard({
             <span className="text-sm">{sym}</span>
           </div>
           <div className="flex items-baseline justify-end gap-1.5">
+            <span className="text-xs text-fg-muted">/ {cycle}</span>
             <span className="text-4xl font-bold tabular-nums text-success">
               {formatPrice(salePrice)}
             </span>
             <span className="text-lg text-success/80">{sym}</span>
-            <span className="text-xs text-fg-muted">/ {cycle}</span>
           </div>
         </div>
       ) : (
@@ -1901,11 +1901,11 @@ function PlanCard({
           className="mb-1 flex items-baseline justify-end gap-1.5"
           dir="ltr"
         >
+          <span className="text-xs text-fg-muted">/ {cycle}</span>
           <span className="text-4xl font-bold tabular-nums">
             {formatPrice(regularPrice)}
           </span>
           <span className="text-lg text-fg-secondary">{sym}</span>
-          <span className="text-xs text-fg-muted">/ {cycle}</span>
         </div>
       )}
 
