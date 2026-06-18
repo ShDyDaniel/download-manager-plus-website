@@ -6918,9 +6918,19 @@ async function callGemini(
   systemParts: string[],
   maxTokens: number,
 ): Promise<AiResult> {
+  const genCfg: Record<string, unknown> = {
+    maxOutputTokens: maxTokens,
+    temperature: 0.7,
+    // Disable "thinking" so gemini-2.5-flash never emits its internal
+    // chain-of-thought as visible text (the user must only ever see the
+    // final answer). Some model versions reject thinkingConfig with a
+    // 400 — the loop below strips it and retries so a single request
+    // never goes dark.
+    thinkingConfig: { thinkingBudget: 0 },
+  }
   const payload: Record<string, unknown> = {
     contents,
-    generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
+    generationConfig: genCfg,
   }
   if (systemParts.length) {
     payload.systemInstruction = { parts: [{ text: systemParts.join('\n\n') }] }
@@ -6931,7 +6941,7 @@ async function callGemini(
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
   let lastErr = 'AI error'
   let lastStatus = 0
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const r = await fetch(url, {
         method: 'POST',
@@ -6940,13 +6950,20 @@ async function callGemini(
       })
       const data = (await r.json().catch(() => null)) as {
         candidates?: Array<{
-          content?: { parts?: Array<{ text?: string }> }
+          content?: { parts?: Array<{ text?: string; thought?: boolean }> }
           finishReason?: string
         }>
         error?: { message?: string }
         promptFeedback?: { blockReason?: string }
       } | null
       if (!r.ok) {
+        // A 400 while thinkingConfig is present is almost always caused by
+        // it (older model versions don't accept it). Strip it and retry
+        // immediately rather than failing the whole request.
+        if (r.status === 400 && 'thinkingConfig' in genCfg) {
+          delete genCfg.thinkingConfig
+          continue
+        }
         lastStatus = r.status
         const gMsg = data?.error?.message || `HTTP ${r.status}`
         let tagged = gMsg
@@ -6965,7 +6982,10 @@ async function callGemini(
       }
       const text =
         data?.candidates?.[0]?.content?.parts
-          ?.map((p) => p.text || '')
+          // Drop any "thought" parts — the model's internal reasoning must
+          // never reach the user, only the final answer.
+          ?.filter((p) => !p.thought)
+          .map((p) => p.text || '')
           .join('')
           .trim() || ''
       if (!text) {
