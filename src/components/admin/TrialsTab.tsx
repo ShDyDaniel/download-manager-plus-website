@@ -125,11 +125,17 @@ export default function TrialsTab({
                   <div className="truncate text-xs text-fg-muted" dir="ltr">
                     {u.email}
                   </div>
-                  <div className="text-[11px] text-fg-faint">
-                    עד {fmtDate(u.trialExpiresAt)}
+                  {/* Each part is its own flex item (and each number is
+                      wrapped in <bdi>) so the LTR date and the LTR
+                      day-count don't merge into one bidi run — that bug
+                      jammed them together as "5.7.202614". */}
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-fg-faint">
+                    <span>
+                      עד <bdi>{fmtDate(u.trialExpiresAt)}</bdi>
+                    </span>
                     {left != null && (
-                      <span className="mr-1.5 rounded-full bg-accent/20 px-1.5 py-0.5 font-mono text-accent">
-                        {left} ימים נותרו
+                      <span className="rounded-full bg-accent/20 px-1.5 py-0.5 text-accent">
+                        נותרו <bdi>{left}</bdi> ימים
                       </span>
                     )}
                   </div>
