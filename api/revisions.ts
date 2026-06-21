@@ -1139,7 +1139,7 @@ function serverIsTrialActive(user: Record<string, unknown>): boolean {
  *  R2 storage quota (per user)
  *
  *  Paid (Pro) users get the full quota; users whose access is a
- *  14-day trial get a small one. The counter (users.storageUsedBytes)
+ *  7-day trial get a small one. The counter (users.storageUsedBytes)
  *  is bumped on round create / replace and decremented on delete —
  *  only for R2-backed rounds (Drive videos live in the user's own
  *  Drive and don't count against our storage).

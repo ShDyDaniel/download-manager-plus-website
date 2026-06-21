@@ -178,7 +178,7 @@ function addCalendarSubscriptionPeriod(from: Date, planDays: number): Date {
     return result
   }
   // Fallback for non-subscription day counts (e.g. 7-day admin grant,
-  // 14-day trial): use literal day arithmetic, which is what the
+  // 7-day trial): use literal day arithmetic, which is what the
   // caller actually means in those cases.
   result.setTime(result.getTime() + planDays * 86_400_000)
   return result
@@ -7832,7 +7832,7 @@ async function handleAdminApproveTrial(
   }
   const uid = String(body.uid || '').trim()
   if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
-  const days = Math.max(1, Math.min(365, Math.floor(Number(body.days) || 14)))
+  const days = Math.max(1, Math.min(365, Math.floor(Number(body.days) || 7)))
   const db = getDb()
 
   if (body.demoteFirst) {

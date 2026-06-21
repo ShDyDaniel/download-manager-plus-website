@@ -80,7 +80,7 @@ export default function TrialsTab({
             משתמשים בתקופת ניסיון
           </h2>
           <p className="mt-1 text-sm text-fg-muted">
-            מי שנמצא כרגע בתקופת ניסיון של 14 יום.
+            מי שנמצא כרגע בתקופת ניסיון של 7 ימים.
           </p>
         </div>
         <button

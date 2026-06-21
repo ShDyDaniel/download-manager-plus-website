@@ -642,7 +642,7 @@ async function sendAnnualReportEmail(args: {
  *  Storage purge — warn-then-delete R2 files for lapsed users
  *
  *  Users who lose access (subscription expired / cancelled-and-ended,
- *  or a 14-day trial that ended) can't reach their Revisions videos.
+ *  or a 7-day trial that ended) can't reach their Revisions videos.
  *  We don't delete immediately — a grace window lets them renew and
  *  "rescue" their files. Per-user timeline (tracked on the user doc):
  *    - day 0  (first run with no access): warning #1 + stamp filesPurgeAt

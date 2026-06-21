@@ -86,7 +86,7 @@ const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
   { key: 'overview', label: 'נתונים כלליים', icon: LayoutDashboard },
   { key: 'users', label: 'משתמשים', icon: UsersIcon },
   { key: 'keys', label: 'מפתח מוצר', icon: KeyIcon },
-  { key: 'trials', label: 'ניסיון 14 יום', icon: Clock },
+  { key: 'trials', label: 'ניסיון 7 יום', icon: Clock },
   { key: 'data', label: 'נתוני שימוש', icon: BarChart3 },
   { key: 'dashboard', label: 'דשבורד', icon: Activity },
   { key: 'revenue', label: 'הכנסות', icon: Coins },
