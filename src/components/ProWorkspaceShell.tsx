@@ -808,7 +808,7 @@ function SignupVerifyForm({
         disabled={busy || code.length !== 6}
         className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
       >
-        {busy ? 'יוצר חשבון…' : 'אימות והשלמת ההרשמה'}
+        {busy ? 'יוצר חשבון…' : 'אימות ויצירת החשבון'}
       </button>
       <div className="flex items-center justify-between text-xs text-fg-muted">
         <button
