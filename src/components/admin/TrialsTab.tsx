@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react'
-import { RefreshCw, Loader2, Ban, AlertTriangle, RotateCcw } from 'lucide-react'
+import {
+  RefreshCw,
+  Loader2,
+  Ban,
+  AlertTriangle,
+  RotateCcw,
+  MonitorSmartphone,
+  Copy,
+  Check,
+  Link2,
+  CheckCircle2,
+} from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 
 interface UserDoc {
@@ -29,6 +40,274 @@ function daysLeft(s?: string): number | null {
   if (!s) return null
   const ms = new Date(s).getTime() - Date.now()
   return Number.isFinite(ms) ? Math.max(0, Math.ceil(ms / 86400000)) : null
+}
+
+interface DeviceCheck {
+  id: string
+  code: string
+  status: string
+  url?: string
+  expiresAt?: string
+  deviceId?: string
+  reportedAt?: string
+  reportedByEmail?: string | null
+  matched?: boolean
+  matchedUid?: string | null
+  matchedEmail?: string | null
+  matchedName?: string | null
+  matchedTrialAt?: string | null
+}
+
+/**
+ * Support tool: generate a one-time link the user opens to report their
+ * machine's device signature, then see whether an old account already took
+ * a trial on that machine — and reset it so they can trial again.
+ */
+function DeviceCheckCard({
+  onAuthExpired,
+  onChanged,
+}: {
+  onAuthExpired: () => void
+  onChanged: () => void
+}) {
+  const [check, setCheck] = useState<DeviceCheck | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [copied, setCopied] = useState(false)
+  const [resetDone, setResetDone] = useState(false)
+
+  function handleErr(e: unknown) {
+    const x = e as Error & { code?: string }
+    if (x.code === 'auth') return onAuthExpired()
+    setErr(x.message || 'שגיאה')
+  }
+
+  async function create() {
+    if (busy) return
+    setBusy(true)
+    setErr('')
+    setResetDone(false)
+    try {
+      const r = await adminApi<{
+        code: string
+        url: string
+        expiresAt: string
+      }>('admin-device-check-create')
+      setCheck({
+        id: r.code,
+        code: r.code,
+        status: 'pending',
+        url: r.url,
+        expiresAt: r.expiresAt,
+      })
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Poll for the user's report while the check is still pending.
+  useEffect(() => {
+    if (!check || check.status === 'reported') return
+    let alive = true
+    const id = setInterval(async () => {
+      try {
+        const r = await adminApi<{ check: DeviceCheck }>(
+          'admin-device-check-get',
+          { code: check.code },
+        )
+        if (alive && r.check) setCheck(r.check)
+      } catch {
+        /* transient — keep polling */
+      }
+    }, 3000)
+    return () => {
+      alive = false
+      clearInterval(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [check?.code, check?.status])
+
+  async function resetMatched() {
+    if (busy || !check?.matchedUid) return
+    if (
+      !window.confirm(
+        'לאפס את הזכאות לניסיון של החשבון שנמצא?\nהפעולה תמחק את טביעת המחשב — המחשב יוכל לקבל שוב 7 ימי ניסיון חינם.',
+      )
+    )
+      return
+    setBusy(true)
+    setErr('')
+    try {
+      await adminApi('admin-reset-trial', { uid: check.matchedUid })
+      setResetDone(true)
+      onChanged()
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function copyLink() {
+    if (!check?.url) return
+    try {
+      await navigator.clipboard.writeText(check.url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const reported = check?.status === 'reported'
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/15 text-primary">
+          <MonitorSmartphone className="h-4 w-4" />
+        </div>
+        <div className="flex-1">
+          <h3 className="text-sm font-semibold text-fg">בדיקת מחשב לתמיכה</h3>
+          <p className="mt-0.5 text-xs text-fg-muted">
+            יצרו קישור, שלחו אותו למשתמש, והוא יפתח את התוכנה וישלח את חתימת
+            המחשב. כך תדעו אם חשבון אחר כבר ניצל ניסיון על אותו מחשב.
+          </p>
+        </div>
+        {!check && (
+          <button
+            type="button"
+            onClick={create}
+            disabled={busy}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Link2 className="h-3.5 w-3.5" />
+            )}
+            צור קישור בדיקה
+          </button>
+        )}
+      </div>
+
+      {err && (
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertTriangle className="h-3.5 w-3.5" /> {err}
+        </div>
+      )}
+
+      {check && (
+        <div className="mt-4 space-y-3">
+          {/* Link + code */}
+          <div className="flex items-center gap-2">
+            <code
+              dir="ltr"
+              className="flex-1 select-all truncate rounded-lg border border-border bg-bg px-3 py-2 text-xs text-fg"
+            >
+              {check.url}
+            </code>
+            <button
+              type="button"
+              onClick={copyLink}
+              aria-label="העתק קישור"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border text-fg-muted transition-colors hover:text-fg"
+            >
+              {copied ? (
+                <Check className="h-4 w-4 text-success" />
+              ) : (
+                <Copy className="h-4 w-4" />
+              )}
+            </button>
+          </div>
+          <div className="text-[11px] text-fg-faint">
+            קוד גיבוי להדבקה ידנית בתוכנה:{' '}
+            <span dir="ltr" className="font-mono text-fg">
+              {check.code}
+            </span>
+          </div>
+
+          {/* Status / result */}
+          {!reported ? (
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-bg px-3 py-2.5 text-xs text-fg-muted">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              ממתין לתגובה מהמשתמש… (השאירו את החלון פתוח)
+            </div>
+          ) : check.matched ? (
+            <div className="rounded-lg border border-accent/30 bg-accent/[0.06] px-3 py-3">
+              <div className="text-xs font-medium text-fg">
+                נמצא חשבון שכבר ניצל ניסיון על המחשב הזה:
+              </div>
+              <div className="mt-1 text-sm font-semibold text-fg">
+                {check.matchedName || check.matchedEmail}
+              </div>
+              {check.matchedEmail && (
+                <div className="text-xs text-fg-muted" dir="ltr">
+                  {check.matchedEmail}
+                </div>
+              )}
+              {check.matchedTrialAt && (
+                <div className="mt-0.5 text-[11px] text-fg-faint">
+                  ניסיון נלקח: <bdi>{fmtDate(check.matchedTrialAt)}</bdi>
+                </div>
+              )}
+              {check.reportedByEmail &&
+                check.reportedByEmail !== check.matchedEmail && (
+                  <div className="mt-1 text-[11px] text-fg-faint">
+                    החשבון שמחובר כעת במחשב:{' '}
+                    <span dir="ltr">{check.reportedByEmail}</span>
+                  </div>
+                )}
+              {resetDone ? (
+                <div className="mt-3 flex items-center gap-1.5 text-xs text-success">
+                  <CheckCircle2 className="h-3.5 w-3.5" /> הזכאות אופסה — המחשב
+                  יכול לקבל ניסיון מחדש.
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={resetMatched}
+                  disabled={busy}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-accent/40 px-3 py-1.5 text-xs text-accent transition-colors hover:bg-accent/10 disabled:opacity-50"
+                >
+                  {busy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  )}
+                  אפס זכאות למחשב הזה
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-border bg-bg px-3 py-3 text-xs text-fg-muted">
+              לא נמצא חשבון קודם שניצל ניסיון על המחשב הזה.
+              {check.reportedByEmail && (
+                <div className="mt-1 text-[11px] text-fg-faint">
+                  החשבון שמחובר כעת:{' '}
+                  <span dir="ltr">{check.reportedByEmail}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setCheck(null)
+              setErr('')
+              setResetDone(false)
+            }}
+            className="text-[11px] text-fg-muted underline-offset-2 hover:underline"
+          >
+            צור קישור חדש
+          </button>
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function TrialsTab({
@@ -129,6 +408,8 @@ export default function TrialsTab({
           <AlertTriangle className="h-4 w-4" /> {error}
         </div>
       )}
+
+      <DeviceCheckCard onAuthExpired={onAuthExpired} onChanged={load} />
 
       {users === null ? (
         <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-10 text-sm text-fg-muted">

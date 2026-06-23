@@ -1758,6 +1758,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminRevokeTrial(req, res)
       case 'admin-reset-trial':
         return await handleAdminResetTrial(req, res)
+      case 'admin-device-check-create':
+        return await handleAdminDeviceCheckCreate(req, res)
+      case 'admin-device-check-get':
+        return await handleAdminDeviceCheckGet(req, res)
+      case 'device-check-report':
+        return await handleDeviceCheckReport(req, res)
       case 'admin-list-keys':
         return await handleAdminListKeys(req, res)
       case 'admin-create-key':
@@ -8140,6 +8146,181 @@ async function handleAdminResetTrial(req: VercelRequest, res: VercelResponse) {
   return res
     .status(200)
     .json({ ok: true, fingerprintsDeleted: fpSnap.size })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Device-check (support tool). Lets support figure out whether a
+ *  machine already has an account that took a trial — for users who
+ *  forgot they made an account on the same computer and can't
+ *  understand why they get no free trial on a new account.
+ *
+ *  Flow: admin generates a one-time code (admin-device-check-create),
+ *  sends the link https://dmplus.net/device-check/<code> to the user.
+ *  The link opens the desktop app (dmplus:// protocol) OR the user
+ *  pastes the code into the app manually. The app reports its device
+ *  signature (device-check-report, public). The server looks up the
+ *  device fingerprint and records which account (if any) already took
+ *  a trial on that machine. Admin polls admin-device-check-get.
+ * ────────────────────────────────────────────────────────────── */
+
+/** Human-typeable one-time code, e.g. "K7Q2M-9XPRT". Avoids
+ *  ambiguous chars (no I/O/0/1). Valid as a Firestore doc id. */
+function genDeviceCheckCode(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  const bytes = crypto.randomBytes(10)
+  let s = ''
+  for (let i = 0; i < 10; i++) s += alphabet[bytes[i] % alphabet.length]
+  return `${s.slice(0, 5)}-${s.slice(5)}`
+}
+
+async function handleAdminDeviceCheckCreate(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const adminEmail = await verifyAdminStepUp(req)
+  if (!adminEmail) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const code = genDeviceCheckCode()
+  const now = new Date()
+  // 60-minute window — long enough to email the user and have them act.
+  const expiresAt = new Date(now.getTime() + 60 * 60 * 1000)
+  await getDb()
+    .collection('deviceChecks')
+    .doc(code)
+    .set({
+      code,
+      createdAt: now.toISOString(),
+      createdBy: adminEmail,
+      expiresAt: expiresAt.toISOString(),
+      status: 'pending',
+    })
+  return res.status(200).json({
+    ok: true,
+    code,
+    url: `https://dmplus.net/device-check/${code}`,
+    expiresAt: expiresAt.toISOString(),
+  })
+}
+
+async function handleAdminDeviceCheckGet(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { code?: string }
+  const code = String(body.code || (req.query.code as string) || '')
+    .trim()
+    .toUpperCase()
+  if (!code) return res.status(400).json({ ok: false, error: 'code' })
+  const snap = await getDb().collection('deviceChecks').doc(code).get()
+  if (!snap.exists) {
+    return res.status(404).json({ ok: false, error: 'not-found' })
+  }
+  return res.status(200).json({ ok: true, check: { id: snap.id, ...snap.data() } })
+}
+
+/**
+ * PUBLIC — the desktop app calls this (it is NOT an admin). It is
+ * gated by possession of a valid, unexpired code (admin-issued,
+ * single-purpose, 60-min TTL). It records the reporting machine's
+ * device signature and resolves whether any account already took a
+ * trial on that machine. The matched account is NEVER returned to
+ * the caller — only stored for the admin to read.
+ */
+async function handleDeviceCheckReport(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const body = (req.body || {}) as {
+    code?: string
+    deviceId?: string
+    idToken?: string
+  }
+  const code = String(body.code || '').trim().toUpperCase()
+  const deviceId = String(body.deviceId || '').trim()
+  if (!code) return res.status(400).json({ ok: false, error: 'קוד חסר' })
+  if (!deviceId || deviceId.length < 16) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'לא ניתן לזהות את המחשב' })
+  }
+
+  const db = getDb()
+  const ref = db.collection('deviceChecks').doc(code)
+  const snap = await ref.get()
+  if (!snap.exists) {
+    return res.status(404).json({ ok: false, error: 'קוד לא תקין' })
+  }
+  const data = snap.data() as { expiresAt?: string } | undefined
+  if (data?.expiresAt && new Date(data.expiresAt).getTime() < Date.now()) {
+    return res.status(410).json({ ok: false, error: 'הקוד פג תוקף' })
+  }
+
+  // Optional logged-in context — which account is on this machine RIGHT
+  // NOW (usually the confused "new" account). Best-effort; never required.
+  let reportedByUid: string | null = null
+  let reportedByEmail: string | null = null
+  if (body.idToken) {
+    try {
+      const { getAuth } = await import('firebase-admin/auth')
+      const dec = await getAuth(getFirebase()).verifyIdToken(String(body.idToken))
+      reportedByUid = dec.uid
+      reportedByEmail = (dec.email || '').toLowerCase() || null
+    } catch {
+      /* ignore — context only */
+    }
+  }
+
+  // Resolve the device fingerprint → which account took a trial here.
+  const san = (s: string) => s.toLowerCase().replace(/[^a-z0-9_-]/g, '_')
+  const fpSnap = await db
+    .collection('trialFingerprints')
+    .doc(`device_${san(deviceId)}`)
+    .get()
+  let matched = false
+  let matchedUid: string | null = null
+  let matchedEmail: string | null = null
+  let matchedName: string | null = null
+  let matchedTrialAt: string | null = null
+  if (fpSnap.exists) {
+    const fp = fpSnap.data() as
+      | { uid?: string; email?: string; requestedAt?: string }
+      | undefined
+    matched = true
+    matchedUid = fp?.uid || null
+    matchedEmail = fp?.email || null
+    matchedTrialAt = fp?.requestedAt || null
+    if (matchedUid) {
+      try {
+        const us = await db.collection('users').doc(matchedUid).get()
+        const ud = us.data() as
+          | { name?: string; email?: string }
+          | undefined
+        matchedName = ud?.name || null
+        if (!matchedEmail) matchedEmail = ud?.email || null
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  await ref.update({
+    status: 'reported',
+    deviceId,
+    reportedAt: new Date().toISOString(),
+    reportedByUid,
+    reportedByEmail,
+    matched,
+    matchedUid,
+    matchedEmail,
+    matchedName,
+    matchedTrialAt,
+  })
+
+  return res.status(200).json({ ok: true })
 }
 
 /* ──────────────────────────────────────────────────────────────
