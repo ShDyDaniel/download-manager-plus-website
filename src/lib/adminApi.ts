@@ -309,6 +309,7 @@ const STEPUP_ACTIONS = new Set<string>([
   'admin-set-referral-credentials',
   'admin-set-referral-commission',
   'admin-set-referral-visibility',
+  'admin-attribute-referral',
   'admin-grant-pro',
   'admin-passkey-delete',
   'admin-set-gate-key',
@@ -335,6 +336,7 @@ const STEPUP_ACTIONS = new Set<string>([
   'admin-set-terms',
   'admin-set-privacy',
   'admin-set-accessibility',
+  'admin-set-partner-terms',
   'admin-set-feedback-resolved',
   'admin-delete-feedback',
 ])
