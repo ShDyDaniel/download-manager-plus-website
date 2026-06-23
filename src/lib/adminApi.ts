@@ -321,6 +321,8 @@ const STEPUP_ACTIONS = new Set<string>([
   'admin-delete-user',
   'admin-approve-trial',
   'admin-revoke-trial',
+  'admin-reset-trial',
+  'admin-device-check-create',
   'admin-create-key',
   'admin-delete-key',
   'admin-set-key-expiry',

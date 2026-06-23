@@ -8207,7 +8207,10 @@ async function handleAdminDeviceCheckGet(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdminStepUp(req))) {
+  // Read-only poll (every few seconds) — gate with the normal admin
+  // 2FA session, NOT step-up, so it doesn't re-prompt a passkey on
+  // every poll. The create action above is the step-up'd mutation.
+  if (!(await verifyAdmin2FA(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { code?: string }
