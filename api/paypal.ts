@@ -1626,6 +1626,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     switch (action) {
+      // Trusted server clock — the desktop app calls this to correct a
+      // skewed local clock before stamping lastSeenAt (a wrong clock
+      // otherwise made the admin panel show "just now" forever).
+      case 'now':
+        return res.status(200).json({ ok: true, now: new Date().toISOString() })
       case 'webhook':
         return await handleWebhook(req, res)
       case 'create-subscription':

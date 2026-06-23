@@ -101,6 +101,10 @@ function relTime(iso?: string): string {
   const t = new Date(iso).getTime()
   if (!Number.isFinite(t)) return '—'
   const diff = Date.now() - t
+  // A timestamp well in the FUTURE means that machine's clock is skewed
+  // (older builds stamped lastSeenAt from the local clock). Don't show a
+  // misleading "just now" — fall back to the absolute date.
+  if (diff < -2 * 60000) return new Date(iso).toLocaleDateString('he-IL')
   const m = Math.floor(diff / 60000)
   if (m < 1) return 'הרגע'
   if (m < 60) return `לפני ${m} ד׳`
