@@ -46,6 +46,7 @@ interface Partner {
   commissionType?: 'percent' | 'fixed' | null
   commissionValue?: number | null
   commissionCurrency?: string | null
+  commissionFirstOnly?: boolean | null
   earningsByCurrency?: Record<string, number>
   visibility?: { revenue: boolean; earnings: boolean; counts: boolean }
 }
@@ -61,9 +62,10 @@ function fmtMoney(rev?: Record<string, number>): string {
 }
 function commissionLabel(p: Partner): string {
   if (!p.commissionType || !p.commissionValue) return 'לא הוגדר'
+  const scope = p.commissionFirstOnly ? 'על קנייה ראשונה' : 'על כל קנייה / חידוש'
   return p.commissionType === 'percent'
-    ? `${p.commissionValue}% מכל קנייה`
-    : `${p.commissionValue} ${p.commissionCurrency || 'ILS'} לכל קנייה`
+    ? `${p.commissionValue}% ${scope}`
+    : `${p.commissionValue} ${p.commissionCurrency || 'ILS'} ${scope}`
 }
 
 export default function ReferralsTab({
@@ -86,6 +88,7 @@ export default function ReferralsTab({
   const [loginEmail, setLoginEmail] = useState('')
   const [commType, setCommType] = useState<'none' | 'percent' | 'fixed'>('none')
   const [commValue, setCommValue] = useState('')
+  const [commFirstOnly, setCommFirstOnly] = useState(false)
   const [creating, setCreating] = useState(false)
   // Result of the last create — shows the emailed temp password as a
   // copy-fallback (the email is the primary delivery).
@@ -142,6 +145,7 @@ export default function ReferralsTab({
             commType !== 'none' && commValue.trim()
               ? Number(commValue)
               : undefined,
+          commissionFirstOnly: commType !== 'none' ? commFirstOnly : undefined,
         },
       )
       if (email) {
@@ -270,6 +274,17 @@ export default function ReferralsTab({
             צור שותף
           </button>
         </div>
+        {commType !== 'none' && (
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-fg">
+            <input
+              type="checkbox"
+              checked={commFirstOnly}
+              onChange={(e) => setCommFirstOnly(e.target.checked)}
+              className="h-4 w-4 accent-primary"
+            />
+            <span>מקנייה ראשונה בלבד (התשלום הראשון) — לא על חידושים</span>
+          </label>
+        )}
       </div>
 
       {error && (
@@ -353,6 +368,9 @@ function PartnerCard({
     p.commissionType || 'none',
   )
   const [commValue, setCommValue] = useState(String(p.commissionValue || ''))
+  const [commFirstOnly, setCommFirstOnly] = useState(
+    p.commissionFirstOnly === true,
+  )
   const [vis, setVis] = useState(
     p.visibility || { revenue: false, earnings: true, counts: true },
   )
@@ -973,12 +991,26 @@ function PartnerCard({
                       commissionType: commType !== 'none' ? commType : null,
                       commissionValue:
                         commType !== 'none' ? Number(commValue) || 0 : null,
+                      commissionFirstOnly: commType !== 'none' && commFirstOnly,
                     },
                     'comm',
                   )
                 }
               />
             </div>
+            {commType !== 'none' && (
+              <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-fg">
+                <input
+                  type="checkbox"
+                  checked={commFirstOnly}
+                  onChange={(e) => setCommFirstOnly(e.target.checked)}
+                  className="h-4 w-4 accent-primary"
+                />
+                <span>
+                  מקנייה ראשונה בלבד (התשלום הראשון) — לא על חידושים
+                </span>
+              </label>
+            )}
           </Editor>
 
           {/* Visibility editor */}

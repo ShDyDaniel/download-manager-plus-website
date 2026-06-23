@@ -33,6 +33,7 @@ interface PartnerStats {
     commissionType: 'percent' | 'fixed'
     commissionValue: number
     commissionCurrency: string
+    firstOnly?: boolean
   } | null
   earningsByCurrency: Record<string, number> | null
   earningsByMonth: Record<string, Record<string, number>> | null
@@ -62,9 +63,10 @@ function fmtMoney(m: Record<string, number>): string {
 }
 function commissionLabel(c: PartnerStats['commission']): string {
   if (!c) return 'ההסכם טרם הוגדר'
+  const scope = c.firstOnly ? 'על קנייה ראשונה' : 'על כל קנייה / חידוש'
   return c.commissionType === 'percent'
-    ? `${c.commissionValue}% מכל קנייה / חידוש`
-    : `${c.commissionValue} ${curSym(c.commissionCurrency)} לכל קנייה / חידוש`
+    ? `${c.commissionValue}% ${scope}`
+    : `${c.commissionValue} ${curSym(c.commissionCurrency)} ${scope}`
 }
 
 async function api<T>(action: string, body: unknown): Promise<T> {

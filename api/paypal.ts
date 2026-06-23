@@ -3991,6 +3991,9 @@ interface MergedCharge {
   fee: number
   referredBy: string
   subscriptionId: string
+  /** 'initial' = the first payment (activation); 'renewal' = a recurring
+   *  charge. Used by the "first purchase only" commission rule. */
+  kind: 'initial' | 'renewal'
 }
 
 async function loadAllChargesMerged(): Promise<MergedCharge[]> {
@@ -4017,6 +4020,7 @@ async function loadAllChargesMerged(): Promise<MergedCharge[]> {
       fee?: number
       referredBy?: string
       subscriptionId?: string
+      kind?: string
     }
     const gross = typeof d.amount === 'number' ? d.amount : 0
     if (!(gross > 0) || !d.at) continue
@@ -4031,6 +4035,12 @@ async function loadAllChargesMerged(): Promise<MergedCharge[]> {
       fee: typeof d.fee === 'number' && d.fee > 0 ? d.fee : 0,
       referredBy: typeof d.referredBy === 'string' ? d.referredBy : '',
       subscriptionId: typeof d.subscriptionId === 'string' ? d.subscriptionId : '',
+      kind:
+        d.kind === 'initial' || d.kind === 'renewal'
+          ? d.kind
+          : id.startsWith('initial-')
+            ? 'initial'
+            : 'renewal',
     })
     if (!(typeof d.referredBy === 'string' && d.referredBy)) {
       ledgerMissingRef.add(id)
@@ -4086,6 +4096,7 @@ async function loadAllChargesMerged(): Promise<MergedCharge[]> {
           fee: typeof h.fee === 'number' && h.fee > 0 ? h.fee : 0,
           referredBy: ref,
           subscriptionId: kd.subscriptionId || '',
+          kind: id.startsWith('initial-') ? 'initial' : 'renewal',
         })
       }
     }
@@ -6813,6 +6824,10 @@ interface ReferralPartnerDoc {
   commissionType?: 'percent' | 'fixed'
   commissionValue?: number
   commissionCurrency?: string
+  // When true, commission is earned on the FIRST purchase only (the
+  // initial charge / first payment) — not on renewals. Applies to both
+  // percent and fixed.
+  commissionFirstOnly?: boolean
   // What the partner sees on their dashboard (modular). Positive
   // flags — if both money flags are off, the partner sees no money.
   visibility?: { revenue?: boolean; earnings?: boolean; counts?: boolean }
@@ -9986,6 +10001,23 @@ async function handleAdminCreateReferral(
     createdBy: admin,
     signups: 0,
   }
+  // Commission can be set right at creation (was previously ignored here
+  // and only settable via the edit panel).
+  const createComm = parseCommission(
+    req.body as {
+      commissionType?: unknown
+      commissionValue?: unknown
+      commissionCurrency?: unknown
+    },
+  )
+  if (createComm) {
+    doc.commissionType = createComm.commissionType
+    doc.commissionValue = createComm.commissionValue
+    doc.commissionCurrency = createComm.commissionCurrency
+    doc.commissionFirstOnly =
+      (req.body as { commissionFirstOnly?: unknown }).commissionFirstOnly ===
+      true
+  }
   // When a login email is given, AUTO-GENERATE a temporary password and
   // email it — the admin never types one. The partner is forced to
   // replace it + accept the terms on first login.
@@ -10504,6 +10536,10 @@ async function handleAdminReferralReport(
     accounts: Set<string>
     revenueByCurrency: Record<string, number>
     netByCurrency: Record<string, number>
+    // Initial-charge-only base, for partners on a "first purchase only"
+    // commission.
+    initialPaymentCount: number
+    initialNetByCurrency: Record<string, number>
   }
   const byPartner = new Map<string, PartnerAgg>()
   for (const c of charges) {
@@ -10515,6 +10551,8 @@ async function handleAdminReferralReport(
         accounts: new Set(),
         revenueByCurrency: {},
         netByCurrency: {},
+        initialPaymentCount: 0,
+        initialNetByCurrency: {},
       }
       byPartner.set(c.referredBy, agg)
     }
@@ -10529,6 +10567,11 @@ async function handleAdminReferralReport(
       (agg.revenueByCurrency[c.currency] || 0) + b.gross
     agg.netByCurrency[c.currency] = (agg.netByCurrency[c.currency] || 0) + b.net
     agg.paymentCount++
+    if (c.kind === 'initial') {
+      agg.initialNetByCurrency[c.currency] =
+        (agg.initialNetByCurrency[c.currency] || 0) + b.net
+      agg.initialPaymentCount++
+    }
     if (c.email) agg.accounts.add(c.email.toLowerCase())
     else if (c.subscriptionId) agg.accounts.add(`sub:${c.subscriptionId}`)
   }
@@ -10553,16 +10596,22 @@ async function handleAdminReferralReport(
           }
         : null
     // Commission owed (what the admin pays the partner) — percentage is
-    // taken on the NET (after PayPal fee + VAT), not the gross.
+    // taken on the NET (after PayPal fee + VAT), not the gross. When the
+    // partner is on "first purchase only", the base is the initial
+    // charges alone (net + count), not renewals.
+    const firstOnly = data.commissionFirstOnly === true
+    const earnNet = firstOnly && agg ? agg.initialNetByCurrency : netByCurrency
+    const earnCount =
+      firstOnly && agg ? agg.initialPaymentCount : paymentCount
     const earningsByCurrency: Record<string, number> = {}
     if (commission?.commissionType === 'percent') {
       const f = commission.commissionValue / 100
-      for (const [c, v] of Object.entries(netByCurrency)) {
+      for (const [c, v] of Object.entries(earnNet)) {
         earningsByCurrency[c] = v * f
       }
     } else if (commission?.commissionType === 'fixed') {
       earningsByCurrency[commission.commissionCurrency] =
-        paymentCount * commission.commissionValue
+        earnCount * commission.commissionValue
     }
     rows.push({
       code: data.code,
@@ -10576,6 +10625,7 @@ async function handleAdminReferralReport(
       commissionType: commission?.commissionType || null,
       commissionValue: commission?.commissionValue || null,
       commissionCurrency: commission?.commissionCurrency || null,
+      commissionFirstOnly: firstOnly,
       earningsByCurrency,
       visibility: resolveVisibility(data.visibility),
     })
@@ -10999,46 +11049,73 @@ async function computePartnerStats(code: string) {
     partnerTermsVersion(),
   ])
   const charges = allCharges.filter((c) => c.referredBy === code)
-  const paidEmails = new Set<string>()
-  const grossByCurrency: Record<string, number> = {}
-  const grossByMonth: Record<string, Record<string, number>> = {}
-  const countByMonth: Record<string, number> = {}
-  // NET = gross minus PayPal's actual per-transaction fee. feeByCurrency
-  // is the total PayPal fee on this partner's attributed sales.
-  const netByCurrency: Record<string, number> = {}
-  const netByMonth: Record<string, Record<string, number>> = {}
-  const feeByCurrency: Record<string, number> = {}
-  // VAT shaved off per currency (only when receipts are OFF).
-  const vatByCurrency: Record<string, number> = {}
-  for (const c of charges) {
-    const cur = c.currency
-    const b = chargeNetBreakdown({
-      amount: c.gross,
-      currency: cur,
-      fee: c.fee,
-      vatPercent,
-      receiptsEnabled: receiptsOn,
-    })
-    const net = b.net
-    const m = c.at ? c.at.slice(0, 7) : 'unknown'
-    if (c.email) paidEmails.add(c.email.toLowerCase())
-    grossByCurrency[cur] = (grossByCurrency[cur] || 0) + b.gross
-    grossByMonth[m] = grossByMonth[m] || {}
-    grossByMonth[m][cur] = (grossByMonth[m][cur] || 0) + b.gross
-    netByCurrency[cur] = (netByCurrency[cur] || 0) + net
-    netByMonth[m] = netByMonth[m] || {}
-    netByMonth[m][cur] = (netByMonth[m][cur] || 0) + net
-    feeByCurrency[cur] = (feeByCurrency[cur] || 0) + b.fee
-    vatByCurrency[cur] = (vatByCurrency[cur] || 0) + b.vat
-    countByMonth[m] = (countByMonth[m] || 0) + 1
-  }
   const data = partnerSnap.data() as ReferralPartnerDoc | undefined
+  // "מקנייה ראשונה בלבד": commission is earned on the initial charge (the
+  // first payment) only — NOT on renewals.
+  const firstOnly = data?.commissionFirstOnly === true
+
+  // Aggregate a charge list into by-currency / by-month buckets.
+  // chargeNetBreakdown applies the PayPal fee and (receipts OFF) VAT, so
+  // NET is what actually landed.
+  function buildAgg(list: MergedCharge[]) {
+    const grossByCurrency: Record<string, number> = {}
+    const grossByMonth: Record<string, Record<string, number>> = {}
+    const countByMonth: Record<string, number> = {}
+    const netByCurrency: Record<string, number> = {}
+    const netByMonth: Record<string, Record<string, number>> = {}
+    const feeByCurrency: Record<string, number> = {}
+    const vatByCurrency: Record<string, number> = {}
+    for (const c of list) {
+      const cur = c.currency
+      const b = chargeNetBreakdown({
+        amount: c.gross,
+        currency: cur,
+        fee: c.fee,
+        vatPercent,
+        receiptsEnabled: receiptsOn,
+      })
+      const m = c.at ? c.at.slice(0, 7) : 'unknown'
+      grossByCurrency[cur] = (grossByCurrency[cur] || 0) + b.gross
+      grossByMonth[m] = grossByMonth[m] || {}
+      grossByMonth[m][cur] = (grossByMonth[m][cur] || 0) + b.gross
+      netByCurrency[cur] = (netByCurrency[cur] || 0) + b.net
+      netByMonth[m] = netByMonth[m] || {}
+      netByMonth[m][cur] = (netByMonth[m][cur] || 0) + b.net
+      feeByCurrency[cur] = (feeByCurrency[cur] || 0) + b.fee
+      vatByCurrency[cur] = (vatByCurrency[cur] || 0) + b.vat
+      countByMonth[m] = (countByMonth[m] || 0) + 1
+    }
+    return {
+      grossByCurrency,
+      grossByMonth,
+      countByMonth,
+      netByCurrency,
+      netByMonth,
+      feeByCurrency,
+      vatByCurrency,
+    }
+  }
+
+  // Paying-account count = all attributed charges (the revenue view shows
+  // every sale regardless of the first-only commission rule).
+  const paidEmails = new Set<string>()
+  for (const c of charges) if (c.email) paidEmails.add(c.email.toLowerCase())
+
+  // FULL drives the revenue display; EARN drives the commission — when
+  // "first purchase only" is set, the commission is computed over the
+  // initial charges alone, not renewals.
+  const full = buildAgg(charges)
+  const earn = buildAgg(
+    firstOnly ? charges.filter((c) => c.kind === 'initial') : charges,
+  )
+
   const commission =
     data?.commissionType && data?.commissionValue
       ? {
           commissionType: data.commissionType,
           commissionValue: data.commissionValue,
           commissionCurrency: data.commissionCurrency || 'ILS',
+          firstOnly,
         }
       : null
   // Gross earnings (before PayPal fee) + NET earnings (after fee).
@@ -11047,15 +11124,15 @@ async function computePartnerStats(code: string) {
   // post-fee revenue.
   const grossEarnings = computeEarnings(
     commission,
-    grossByCurrency,
-    grossByMonth,
-    countByMonth,
+    earn.grossByCurrency,
+    earn.grossByMonth,
+    earn.countByMonth,
   )
   const netEarnings = computeEarnings(
     commission,
-    netByCurrency,
-    netByMonth,
-    countByMonth,
+    earn.netByCurrency,
+    earn.netByMonth,
+    earn.countByMonth,
   )
   // Split the deduction from the partner's earnings into its two parts:
   // the PayPal-fee portion and the VAT portion (VAT only when receipts
@@ -11068,11 +11145,11 @@ async function computePartnerStats(code: string) {
   const earningsPaypalFeeByCurrency: Record<string, number> = {}
   const earningsVatByCurrency: Record<string, number> = {}
   if (f > 0) {
-    for (const [c, v] of Object.entries(feeByCurrency)) {
+    for (const [c, v] of Object.entries(earn.feeByCurrency)) {
       const x = v * f
       if (x > 0.0001) earningsPaypalFeeByCurrency[c] = x
     }
-    for (const [c, v] of Object.entries(vatByCurrency)) {
+    for (const [c, v] of Object.entries(earn.vatByCurrency)) {
       const x = v * f
       if (x > 0.0001) earningsVatByCurrency[c] = x
     }
@@ -11126,8 +11203,8 @@ async function computePartnerStats(code: string) {
       : null,
     earningsVatByCurrency: vis.earnings ? earningsVatByCurrency : null,
     receiptsEnabled: receiptsOn,
-    revenueByCurrency: vis.revenue ? grossByCurrency : null,
-    revenueByMonth: vis.revenue ? grossByMonth : null,
+    revenueByCurrency: vis.revenue ? full.grossByCurrency : null,
+    revenueByMonth: vis.revenue ? full.grossByMonth : null,
   }
 }
 
@@ -11345,11 +11422,14 @@ async function handleAdminSetReferralCommission(
       commissionCurrency?: unknown
     },
   )
+  const firstOnly =
+    (req.body as { commissionFirstOnly?: unknown }).commissionFirstOnly === true
   if (commission) {
     await ref.update({
       commissionType: commission.commissionType,
       commissionValue: commission.commissionValue,
       commissionCurrency: commission.commissionCurrency,
+      commissionFirstOnly: firstOnly,
     })
   } else {
     // Clear the agreement.
@@ -11357,6 +11437,7 @@ async function handleAdminSetReferralCommission(
       commissionType: FieldValue.delete(),
       commissionValue: FieldValue.delete(),
       commissionCurrency: FieldValue.delete(),
+      commissionFirstOnly: FieldValue.delete(),
     })
   }
   return res.status(200).json({ ok: true })
