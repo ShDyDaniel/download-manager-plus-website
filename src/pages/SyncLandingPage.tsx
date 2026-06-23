@@ -465,11 +465,13 @@ function ExportRow() {
           <span className="hidden sm:inline">FCPXML · Final Cut</span>
         </span>
       </div>
-      <span className="inline-flex h-9 items-center gap-2 px-2 text-sm font-medium text-fg-muted sm:h-11 sm:px-3">
+      {/* Reset + synced count are secondary — hidden on mobile so the two
+          export buttons sit on a single clean row; shown on desktop. */}
+      <span className="hidden h-11 items-center gap-2 px-3 text-sm font-medium text-fg-muted sm:inline-flex">
         <RotateCcw className="h-4 w-4" />
         איפוס
       </span>
-      <span className="flex items-center gap-1.5 text-sm text-fg-muted">
+      <span className="hidden items-center gap-1.5 text-sm text-fg-muted sm:flex">
         <CheckCircle2 className="h-4 w-4" style={{ color: 'var(--success)' }} />
         <bdi>6</bdi> סונכרנו
       </span>
