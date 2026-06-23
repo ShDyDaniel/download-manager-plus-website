@@ -403,7 +403,11 @@ function SyncBar() {
               <motion.span
                 key={i}
                 className="w-[2px] rounded-full"
+                // height lives in `style` (not `initial`) so the bars are
+                // always visible — `initial={false}` on the AnimatePresence
+                // made the first cycle skip an initial-only height → no bars.
                 style={{
+                  height: '62%',
                   backgroundColor: i < lit ? 'var(--primary)' : 'rgba(245,239,230,0.08)',
                   transformOrigin: 'center',
                 }}
@@ -414,7 +418,6 @@ function SyncBar() {
                   ease: 'easeInOut',
                   delay: (i % 13) * 0.07,
                 }}
-                initial={{ scaleY: 0.5, height: '62%' }}
               />
             ))}
           </div>
@@ -434,31 +437,35 @@ function SyncBar() {
 function ExportRow() {
   return (
     <motion.div
-      className="flex flex-wrap items-center gap-3"
+      className="flex flex-wrap items-center gap-x-3 gap-y-2.5"
       initial={{ opacity: 0, scale: 0.94, y: 6 }}
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.94 }}
       transition={{ type: 'spring', stiffness: 260, damping: 22 }}
       dir="rtl"
     >
-      {/* Match the desktop action row exactly: copper primary + card/border
-          secondary export buttons, a ghost "איפוס" reset, then the synced
-          stat. Buttons: rounded-xl, comfortable height, Download icon. */}
-      <span
-        className="inline-flex h-11 items-center gap-2 rounded-xl px-5 text-[15px] font-semibold"
-        style={{ backgroundColor: 'var(--primary)', color: 'var(--bg)' }}
-      >
-        <Download className="h-[18px] w-[18px]" />
-        XML · Resolve / Premiere
-      </span>
-      <span
-        className="inline-flex h-11 items-center gap-2 rounded-xl border px-5 text-[15px] font-medium text-fg"
-        style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border)' }}
-      >
-        <Download className="h-[18px] w-[18px]" />
-        FCPXML · Final Cut
-      </span>
-      <span className="inline-flex h-11 items-center gap-2 px-3 text-sm font-medium text-fg-muted">
+      {/* The two export buttons stay on ONE row together (no wrap between
+          them). Compact on mobile (smaller size + shorter labels) so both
+          fit side by side; full app-style size + labels on desktop. */}
+      <div className="flex items-center gap-2">
+        <span
+          className="inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-xs font-semibold sm:h-11 sm:gap-2 sm:rounded-xl sm:px-5 sm:text-[15px]"
+          style={{ backgroundColor: 'var(--primary)', color: 'var(--bg)' }}
+        >
+          <Download className="h-3.5 w-3.5 sm:h-[18px] sm:w-[18px]" />
+          <span className="sm:hidden">Resolve / Premiere</span>
+          <span className="hidden sm:inline">XML · Resolve / Premiere</span>
+        </span>
+        <span
+          className="inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 text-xs font-medium text-fg sm:h-11 sm:gap-2 sm:rounded-xl sm:px-5 sm:text-[15px]"
+          style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border)' }}
+        >
+          <Download className="h-3.5 w-3.5 sm:h-[18px] sm:w-[18px]" />
+          <span className="sm:hidden">Final Cut</span>
+          <span className="hidden sm:inline">FCPXML · Final Cut</span>
+        </span>
+      </div>
+      <span className="inline-flex h-9 items-center gap-2 px-2 text-sm font-medium text-fg-muted sm:h-11 sm:px-3">
         <RotateCcw className="h-4 w-4" />
         איפוס
       </span>
