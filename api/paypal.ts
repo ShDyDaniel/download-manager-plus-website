@@ -1700,6 +1700,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSetReferralCommission(req, res)
       case 'admin-set-referral-visibility':
         return await handleAdminSetReferralVisibility(req, res)
+      case 'admin-attribute-referral':
+        return await handleAdminAttributeReferral(req, res)
       case 'partner-login':
         return await handlePartnerLogin(req, res)
       case 'partner-stats':
@@ -11381,6 +11383,100 @@ async function handleAdminSetReferralVisibility(
   }
   await ref.update({ visibility: resolveVisibility(body.visibility) })
   return res.status(200).json({ ok: true })
+}
+
+/** ADMIN manual attribution — durably assign a buyer's past charges to a
+ *  partner by the buyer's email. The fix for "a partner sale was lost
+ *  because the buyer was never ref-bound, or the account/key was later
+ *  deleted": writes `referredBy` straight onto the durable casualLedger
+ *  entries (which survive account/key deletion), and best-effort onto the
+ *  live key + user account if they still exist. Step-up required. Money
+ *  operation — only ADDS attribution, idempotent (re-running is a no-op).
+ *  POST { idToken, code, email } → { ok, ledgerCount, keyCount, userUpdated } */
+async function handleAdminAttributeReferral(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+  const body = (req.body || {}) as { code?: string; email?: string }
+  const code = (body.code || '').trim()
+  const email = (body.email || '').trim()
+  const target = email.toLowerCase()
+  if (!code || !target) {
+    return res.status(400).json({ ok: false, error: 'חסר קוד שותף או אימייל' })
+  }
+  const db = getDb()
+  if (!(await db.collection('referralPartners').doc(code).get()).exists) {
+    return res.status(404).json({ ok: false, error: 'שותף לא קיים' })
+  }
+
+  let ledgerCount = 0
+  let keyCount = 0
+  let userUpdated = false
+
+  // 1) The durable record — stamp referredBy on every casualLedger charge
+  //    for this email. casualLedger is one small doc per charge.
+  try {
+    const snap = await db.collection('casualLedger').get()
+    let batch = db.batch()
+    let ops = 0
+    for (const doc of snap.docs) {
+      const d = doc.data() as { email?: string; referredBy?: string }
+      if ((d.email || '').toLowerCase() === target && d.referredBy !== code) {
+        batch.set(doc.ref, { referredBy: code }, { merge: true })
+        ledgerCount += 1
+        ops += 1
+        if (ops === 400) {
+          await batch.commit()
+          batch = db.batch()
+          ops = 0
+        }
+      }
+    }
+    if (ops > 0) await batch.commit()
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: 'ledger: ' + (e as Error).message })
+  }
+
+  // 2) Best-effort: live keys for this buyer (so the live view + future
+  //    renewals attribute too). Keys may be gone — that's fine.
+  try {
+    for (const field of ['buyerEmail', 'redeemedByEmail'] as const) {
+      const ks = await db.collection('productKeys').where(field, '==', email).get()
+      for (const doc of ks.docs) {
+        const kd = doc.data() as { referredBy?: string }
+        if (kd.referredBy !== code) {
+          await doc.ref.set({ referredBy: code }, { merge: true })
+          keyCount += 1
+        }
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+
+  // 3) Best-effort: the user account, if it still exists, so it counts as
+  //    a referred signup and any future charge attributes automatically.
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const rec = await getAuth(getFirebase()).getUserByEmail(email)
+    const uref = db.collection('users').doc(rec.uid)
+    const usnap = await uref.get()
+    const had = (usnap.data() as { referredBy?: string } | undefined)?.referredBy
+    if (had !== code) {
+      await uref.set(
+        { referredBy: code, referredAt: new Date().toISOString() },
+        { merge: true },
+      )
+      userUpdated = true
+    }
+  } catch {
+    /* no account (deleted/guest) — the ledger stamp above is what counts */
+  }
+
+  return res.status(200).json({ ok: true, ledgerCount, keyCount, userUpdated })
 }
 
 /** Stamp a referral onto a freshly-created account. Best-effort —

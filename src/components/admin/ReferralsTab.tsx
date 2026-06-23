@@ -368,6 +368,41 @@ function PartnerCard({
   const [exportTo, setExportTo] = useState('')
   const [detail, setDetail] = useState<ReferralDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  // Manual attribution (assign a past buyer's charges to this partner).
+  const [attrEmail, setAttrEmail] = useState('')
+  const [attrResult, setAttrResult] = useState('')
+
+  async function attributeByEmail() {
+    const email = attrEmail.trim()
+    if (!email || busy) return
+    if (
+      !window.confirm(
+        `לשייך לצמיתות את כל החיובים של ${email} לשותף הזה? פעולה זו רושמת את העמלה על העסקאות עצמן.`,
+      )
+    )
+      return
+    setBusy('attr')
+    setMsg('')
+    setAttrResult('')
+    try {
+      const r = await adminApi<{
+        ledgerCount?: number
+        keyCount?: number
+        userUpdated?: boolean
+      }>('admin-attribute-referral', { code: p.code, email })
+      setAttrResult(
+        `שויכו ${r.ledgerCount ?? 0} עסקאות` +
+          (r.keyCount ? ` · ${r.keyCount} מפתחות` : '') +
+          (r.userUpdated ? ' · חשבון עודכן' : ''),
+      )
+      setAttrEmail('')
+      onChange()
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setBusy('')
+    }
+  }
 
   function handleErr(e: unknown) {
     const err = e as Error & { code?: string }
@@ -877,6 +912,41 @@ function PartnerCard({
               </div>
             </div>
           ) : null}
+
+          {/* Manual attribution — assign a buyer's charges to this partner
+              durably (writes referredBy onto the ledger), for cases where
+              attribution was lost (buyer never ref-bound, or account/key
+              deleted). Works even when the user no longer exists. */}
+          <Editor title="שיוך ידני לפי אימייל הקונה">
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="email"
+                dir="ltr"
+                value={attrEmail}
+                onChange={(e) => setAttrEmail(e.target.value)}
+                placeholder="email@example.com"
+                className="min-w-[200px] flex-1 rounded-lg border border-border bg-transparent px-2 py-1 text-sm text-fg outline-none focus:border-primary"
+              />
+              <button
+                type="button"
+                onClick={attributeByEmail}
+                disabled={busy === 'attr' || !attrEmail.trim()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-50"
+              >
+                {busy === 'attr' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : null}
+                שייך
+              </button>
+            </div>
+            <div className="mt-1.5 text-[11px] text-fg-muted">
+              משייך לצמיתות את כל החיובים של האימייל לשותף הזה — נרשם על
+              העסקאות עצמן, כך שזה לא יאבד גם אם המשתמש נמחק.
+            </div>
+            {attrResult && (
+              <div className="mt-1.5 text-[11px] text-success">{attrResult}</div>
+            )}
+          </Editor>
 
           {/* Commission editor */}
           <Editor title="עמלה">
