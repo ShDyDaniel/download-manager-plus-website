@@ -1814,6 +1814,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSetPrivacy(req, res)
       case 'admin-set-accessibility':
         return await handleAdminSetAccessibility(req, res)
+      case 'admin-set-partner-terms':
+        return await handleAdminSetPartnerTerms(req, res)
       case 'admin-list-feedback':
         return await handleAdminListFeedback(req, res)
       case 'admin-set-feedback-resolved':
@@ -1838,6 +1840,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleGetPrivacy(req, res)
       case 'get-latest-release':
         return await handleGetLatestRelease(req, res)
+      case 'get-partner-terms':
+        return await handleGetPartnerTerms(req, res)
       default:
         return res
           .status(400)
@@ -6442,6 +6446,49 @@ async function handleGetLatestRelease(_req: VercelRequest, res: VercelResponse) 
   }
 }
 
+/* Current published partner-terms version. Returns null when the admin
+ * hasn't published a partner-terms doc yet — in that case the acceptance
+ * gate keeps its legacy behavior (accepted = has a timestamp). Once a doc
+ * exists, the partner's accepted version must match it or they re-accept. */
+async function partnerTermsVersion(): Promise<number | null> {
+  try {
+    const snap = await getDb().collection('appConfig').doc('partnerTerms').get()
+    if (!snap.exists) return null
+    const v = (snap.data() as { version?: number }).version
+    return typeof v === 'number' ? v : 0
+  } catch {
+    return null
+  }
+}
+
+/* get-partner-terms — public read of appConfig/partnerTerms. Same shape as
+ * the other legal docs; the partner dashboard's accept screen renders it
+ * (falling back to its built-in copy when nothing's published yet). */
+async function handleGetPartnerTerms(_req: VercelRequest, res: VercelResponse) {
+  try {
+    const db = getDb()
+    const snap = await db.collection('appConfig').doc('partnerTerms').get()
+    res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=600')
+    if (!snap.exists) {
+      return res.status(200).json({ ok: true, version: 0, lastUpdated: '', sections: [] })
+    }
+    const data = snap.data() as {
+      version?: number
+      lastUpdated?: string
+      sections?: Array<{ title: string; paragraphs: string[] }>
+    }
+    return res.status(200).json({
+      ok: true,
+      version: typeof data.version === 'number' ? data.version : 0,
+      lastUpdated: typeof data.lastUpdated === 'string' ? data.lastUpdated : '',
+      sections: Array.isArray(data.sections) ? data.sections : [],
+    })
+  } catch (err) {
+    console.error('[paypal/get-partner-terms] failed:', err)
+    return res.status(500).json({ ok: false, error: 'לא הצלחנו לטעון את תקנון השותפים.' })
+  }
+}
+
 async function handleGetTerms(_req: VercelRequest, res: VercelResponse) {
   try {
     const db = getDb()
@@ -9243,10 +9290,16 @@ async function handleAdminSetAccessibility(
 ) {
   return setLegalDoc(req, res, 'accessibility')
 }
+async function handleAdminSetPartnerTerms(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  return setLegalDoc(req, res, 'partnerTerms')
+}
 async function setLegalDoc(
   req: VercelRequest,
   res: VercelResponse,
-  doc: 'terms' | 'privacy' | 'accessibility',
+  doc: 'terms' | 'privacy' | 'accessibility' | 'partnerTerms',
 ) {
   // Publishing legal docs bumps the version → forces EVERY user to
   // re-accept on next login. Step-up required.
@@ -10892,10 +10945,11 @@ async function computePartnerStats(code: string) {
   // Earnings come from the durable ledger (∪ live billing) filtered to
   // this partner — so the partner keeps the commission they earned even
   // after the buyer cancelled and the key was removed.
-  const [partnerSnap, usersSnap, allCharges] = await Promise.all([
+  const [partnerSnap, usersSnap, allCharges, curTermsVersion] = await Promise.all([
     db.collection('referralPartners').doc(code).get(),
     db.collection('users').where('referredBy', '==', code).get(),
     loadAllChargesMerged(),
+    partnerTermsVersion(),
   ])
   const charges = allCharges.filter((c) => c.referredBy === code)
   const paidEmails = new Set<string>()
@@ -10997,7 +11051,15 @@ async function computePartnerStats(code: string) {
     // Onboarding gates — always returned (not visibility-gated): the
     // partner must clear these before reaching the dashboard.
     mustChangePassword: data?.mustChangePassword === true,
-    termsAccepted: Boolean(data?.termsAcceptedAt),
+    // Version-aware: once the admin publishes a partner-terms doc, the
+    // partner's accepted version must match the current one — otherwise
+    // they're shown the accept screen again. Before any doc is published,
+    // keep the legacy behavior (accepted = has a timestamp).
+    termsAccepted:
+      curTermsVersion === null
+        ? Boolean(data?.termsAcceptedAt)
+        : Boolean(data?.termsAcceptedAt) &&
+          String(data?.termsVersion ?? '') === String(curTermsVersion),
     signups: vis.counts ? usersSnap.size : null,
     paidAccounts: vis.counts ? paidEmails.size : null,
     commission: vis.earnings ? commission : null,
@@ -11099,9 +11161,14 @@ async function handlePartnerAcceptTerms(
   if (!(await ref.get()).exists) {
     return res.status(404).json({ ok: false, error: 'שותף לא קיים' })
   }
+  // Stamp the CURRENT published partner-terms version (from the DB) so a
+  // later admin edit that bumps the version forces this partner to
+  // re-accept on next login. Falls back to the legacy constant when the
+  // admin hasn't published a doc yet.
+  const ver = await partnerTermsVersion()
   await ref.update({
     termsAcceptedAt: new Date().toISOString(),
-    termsVersion: PARTNER_TERMS_VERSION,
+    termsVersion: ver === null ? PARTNER_TERMS_VERSION : String(ver),
   })
   const stats = await computePartnerStats(claims.code)
   return res.status(200).json({ ok: true, partner: stats })

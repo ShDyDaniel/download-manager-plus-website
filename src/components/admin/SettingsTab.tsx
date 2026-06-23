@@ -138,6 +138,7 @@ export default function SettingsTab({
       <LegalCard kind="terms" title="תנאי שימוש" onErr={handleErr} />
       <LegalCard kind="privacy" title="מדיניות פרטיות" onErr={handleErr} />
       <LegalCard kind="accessibility" title="הצהרת נגישות" onErr={handleErr} />
+      <LegalCard kind="partner-terms" title="תקנון שותפים" onErr={handleErr} />
       <EmailToolsCard onErr={handleErr} />
       <SumitTestCard onErr={handleErr} />
     </div>
@@ -1286,7 +1287,7 @@ function LegalCard({
   title,
   onErr,
 }: {
-  kind: 'terms' | 'privacy' | 'accessibility'
+  kind: 'terms' | 'privacy' | 'accessibility' | 'partner-terms'
   title: string
   onErr: (e: unknown) => void
 }) {

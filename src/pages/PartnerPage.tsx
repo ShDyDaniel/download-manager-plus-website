@@ -579,6 +579,28 @@ function AcceptTermsScreen({
   const [agreed, setAgreed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The admin-editable partner terms (appConfig/partnerTerms). When the
+  // admin hasn't published a doc yet, sections stays empty and we render
+  // the built-in PARTNER_TERMS fallback below.
+  const [sections, setSections] = useState<
+    { title: string; paragraphs: string[] }[]
+  >([])
+  useEffect(() => {
+    let active = true
+    api<{ ok?: boolean; sections?: { title: string; paragraphs: string[] }[] }>(
+      'get-partner-terms',
+      {},
+    )
+      .then((d) => {
+        if (active && Array.isArray(d?.sections)) setSections(d.sections)
+      })
+      .catch(() => {
+        /* keep fallback */
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   async function accept() {
     if (busy || !agreed) return
@@ -602,11 +624,26 @@ function AcceptTermsScreen({
       <div className="w-full max-w-lg">
         <AuthHeader label="— שותפים" title="תקנון תוכנית השותפים" />
         <div className="mb-4 max-h-[50vh] overflow-y-auto rounded-2xl border border-border/60 bg-white/[0.015] p-5 text-sm leading-relaxed text-fg-secondary">
-          {PARTNER_TERMS.map((para, i) => (
-            <p key={i} className={i === 0 ? '' : 'mt-3'}>
-              {para}
-            </p>
-          ))}
+          {sections.length > 0 ? (
+            sections.map((sec, si) => (
+              <div key={si} className={si === 0 ? '' : 'mt-5'}>
+                {sec.title && (
+                  <div className="mb-1.5 font-medium text-fg">{sec.title}</div>
+                )}
+                {sec.paragraphs.map((para, pi) => (
+                  <p key={pi} className={pi === 0 ? '' : 'mt-2'}>
+                    {para}
+                  </p>
+                ))}
+              </div>
+            ))
+          ) : (
+            PARTNER_TERMS.map((para, i) => (
+              <p key={i} className={i === 0 ? '' : 'mt-3'}>
+                {para}
+              </p>
+            ))
+          )}
         </div>
         <label className="mb-4 flex cursor-pointer items-start gap-2.5 text-sm text-fg">
           <input
