@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
-  Check,
   Crown,
   Loader2,
   RefreshCw,
@@ -1159,25 +1158,33 @@ export function BuyPage() {
           transition={{ duration: 0.4, delay: 0.1 }}
           className="card-elevated rounded-lg border-border p-6 md:p-8"
         >
-          <h2 className="mb-4 text-sm font-medium text-fg">
-            כל מה שתקבלו עם מנוי Pro:
+          <h2 className="mb-5 font-display text-xl text-fg md:text-2xl">
+            כל מה שתקבלו עם מנוי <span className="accent-word">Pro</span>
           </h2>
-          <ul className="mb-7 space-y-2 text-sm">
+          <ul className="mb-7 grid grid-cols-1 gap-x-10 gap-y-3 sm:grid-cols-2">
             {[
-              'גישה למערכת סבבי תיקונים',
-              'אחסון של 100 ג׳יגה לסבבי תיקונים',
+              'סנכרון אוטומטי של וידאו וסאונד (מולטיקאם ומיקרופונים חיצוניים)',
+              'סבבי תיקונים — קישור ביקורת ללקוח עם הערות ממוקדות-זמן',
+              'מסירה ללקוח — שליחת הקובץ הסופי בקישור מאובטח עם תוקף',
+              'אחסון של 100 ג׳יגה לסבבי התיקונים ולמסירות',
               'תמיכה בסרטונים באיכות 4K',
               'מספר פרויקטים בלתי מוגבל',
-              'פתיחת תיקייה אחרי העברה באופן אוטומטי',
-              'פתיחת התוכנה באופן אוטומטי בפתיחת תוכנת העריכה',
               'מערכת AI למיון מוזיקה וסאונד אפקט',
+              'פתיחת תיקייה אחרי העברה באופן אוטומטי',
+              'פתיחת התוכנה אוטומטית עם פתיחת תוכנת העריכה',
               'שינוי כללי מיון',
               'דחיסת וידאו למשקל מדויק',
               'מערכת הצעות מחיר מלאה',
               'ניהול תשלומים והכנסות',
             ].map((t) => (
-              <li key={t} className="flex items-start gap-2 text-fg-secondary">
-                <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+              <li
+                key={t}
+                className="flex items-baseline gap-3 text-[15px] text-fg-secondary"
+                style={{ lineHeight: 1.55 }}
+              >
+                <span aria-hidden className="shrink-0 select-none" style={{ color: 'var(--accent)' }}>
+                  —
+                </span>
                 <span>{t}</span>
               </li>
             ))}
