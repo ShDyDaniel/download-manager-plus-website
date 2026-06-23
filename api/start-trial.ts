@@ -75,9 +75,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
   }
 
-  const body = req.body as { idToken?: string; deviceId?: string }
+  const body = req.body as {
+    idToken?: string
+    deviceId?: string
+    /** Dry-run: when true, only REPORT eligibility (no write) so the
+     *  desktop user menu can decide whether to show the trial option. */
+    check?: boolean
+  }
   const idToken = (body.idToken || '').trim()
   const deviceId = (body.deviceId || '').trim()
+  const checkOnly = body.check === true
 
   if (!idToken) {
     return res
@@ -133,6 +140,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const emailFingerprintId = `email_${sanitizeForDocId(email)}`
     const deviceFingerprintId = `device_${sanitizeForDocId(deviceId)}`
+
+    // Dry-run eligibility check — the desktop user menu calls this to decide
+    // whether to SHOW the "start 7-day trial" option. Runs the exact same
+    // gates as activation below, but reads only (no transaction, no write),
+    // and returns { eligible } instead of activating. Keeping the gate logic
+    // identical guarantees the button never appears when activation would fail.
+    if (checkOnly) {
+      const userRef = db.collection('users').doc(uid)
+      const [userSnap, emailSnap, deviceSnap] = await Promise.all([
+        userRef.get(),
+        db.collection('trialFingerprints').doc(emailFingerprintId).get(),
+        db.collection('trialFingerprints').doc(deviceFingerprintId).get(),
+      ])
+      const userData = userSnap.data() as
+        | { subscription?: string; trialStatus?: string; trialExpiresAt?: string }
+        | undefined
+
+      let eligible = true
+      let reason: string | undefined
+      if (!userSnap.exists) {
+        eligible = false
+        reason = 'no-user'
+      } else if (userData?.subscription === 'pro') {
+        eligible = false
+        reason = 'pro'
+      } else if (
+        userData?.trialStatus === 'approved' &&
+        userData?.trialExpiresAt &&
+        new Date(userData.trialExpiresAt).getTime() > Date.now()
+      ) {
+        eligible = false
+        reason = 'on-trial'
+      } else if (emailSnap.exists) {
+        eligible = false
+        reason = 'email-used'
+      } else if (deviceSnap.exists) {
+        eligible = false
+        reason = 'device-used'
+      }
+      return res.status(200).json({ ok: true, eligible, reason })
+    }
 
     // Atomic transaction: read all three docs, validate state,
     // then write fingerprints + user trial-active in one go. If
