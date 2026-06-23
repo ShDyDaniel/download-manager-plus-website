@@ -1125,6 +1125,7 @@ export function BuyPage() {
             saleLabel={pricing.saleLabel}
             cycle="לשנה"
             monthlyEquivalent
+            note="מתחדש אוטומטית מדי שנה"
             comparisonMonthly={pricing.monthly}
             recommended
             loading={false}
@@ -1759,8 +1760,9 @@ function PlanCard({
    *  generated "X% הנחה" label so the admin's marketing copy wins. */
   saleLabel?: string
   cycle: string
-  /** Static note line at the bottom of the card. Mutually
-   *  exclusive with `monthlyEquivalent` — pass one or the other. */
+  /** Static note line at the bottom of the card (e.g. the auto-renewal
+   *  cadence). Can be combined with `monthlyEquivalent` — when both are
+   *  set, the equivalent line renders first and the note below it. */
   note?: string
   /** When true, the bottom note is auto-generated as "שווה ערך ל-X ₪/חודש"
    *  using the effective price ÷ 12. Designed for the yearly plan to
@@ -1854,7 +1856,7 @@ function PlanCard({
       )}
       {!onSale && yearlyVsMonthly != null && yearlyVsMonthly > 0 && (
         <span className="absolute left-3 top-3 rounded-full border border-success/40 bg-success/15 px-2 py-0.5 text-[10px] font-medium text-success">
-          חיסכון {yearlyVsMonthly}%
+          <bdi>{yearlyVsMonthly}%</bdi> חיסכון
         </span>
       )}
 
@@ -1928,12 +1930,19 @@ function PlanCard({
       <div className="mt-auto text-[11px] text-fg-muted">
         {loading ? (
           <span className="inline-block h-3 w-32 animate-pulse rounded bg-fg-muted/15" />
-        ) : monthlyEquivalent ? (
-          `שווה ערך ל-${formatPrice(
-            Math.round((effective / 12) * 100) / 100,
-          )} ${sym}/חודש`
         ) : (
-          note
+          <>
+            {monthlyEquivalent && (
+              <div>
+                {`שווה ערך ל-${formatPrice(
+                  Math.round((effective / 12) * 100) / 100,
+                )} ${sym}/חודש`}
+              </div>
+            )}
+            {note && (
+              <div className={monthlyEquivalent ? "mt-0.5" : undefined}>{note}</div>
+            )}
+          </>
         )}
       </div>
     </button>
