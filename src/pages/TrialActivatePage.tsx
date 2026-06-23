@@ -112,7 +112,7 @@ export default function TrialActivatePage() {
             </p>
             <div className="mt-6 flex items-center justify-center gap-2 rounded-xl border border-success/30 bg-success/[0.06] px-4 py-3 text-sm text-success">
               <CheckCircle2 className="h-4 w-4 shrink-0" />
-              אפשר לסגור את הדף ולחזור ל-Download Manager Plus.
+              אפשר לסגור את הדף ולחזור לתוכנה.
             </div>
           </>
         )}
@@ -127,7 +127,7 @@ export default function TrialActivatePage() {
               {state.msg}
             </p>
             <div className="mt-6 rounded-xl border border-border bg-background px-4 py-3 text-sm text-muted-foreground">
-              אפשר לסגור את הדף ולחזור ל-Download Manager Plus.
+              אפשר לסגור את הדף ולחזור לתוכנה.
             </div>
           </>
         )}
