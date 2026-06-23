@@ -4371,6 +4371,22 @@ async function sendReceiptEmail(args: {
   })
 }
 
+/** Hebrew one-line commission description for partner emails — includes
+ *  whether the commission is on every charge or the first purchase only,
+ *  for full transparency with the partner. */
+function commissionLabelHe(
+  type: 'percent' | 'fixed' | null | undefined,
+  value: number | null | undefined,
+  currency: string | null | undefined,
+  firstOnly: boolean,
+): string {
+  if (!type || !value) return 'ההסכם ייקבע בהמשך'
+  const scope = firstOnly ? 'על קנייה ראשונה בלבד' : 'על כל קנייה / חידוש'
+  return type === 'percent'
+    ? `${value}% ${scope}`
+    : `${value} ${(currency || 'ILS').toUpperCase()} ${scope}`
+}
+
 /** Welcome email for a newly-set-up partner: the dashboard link, their
  *  login email, the TEMPORARY password, their referral link + agreement,
  *  and a note that on first login they must change the password and
@@ -4400,7 +4416,6 @@ async function sendPartnerWelcomeEmail(args: {
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
         שלום ${esc(args.name)}, צירפנו אתכם כשותפים של <strong>ניהול הורדות פלוס</strong>.
-        כל מי שיירשם וירכוש דרך הקישור האישי שלכם — מזוכה לזכותכם.
       </p>
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 16px;border-top:1px solid #2a2520;border-bottom:1px solid #2a2520;">
         ${row('קוד שותף', esc(args.code))}
@@ -4428,6 +4443,57 @@ async function sendPartnerWelcomeEmail(args: {
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
     subject: 'הצטרפתם כשותפים — ניהול הורדות פלוס',
+    html,
+  })
+}
+
+/** Notify a partner when the admin changes their commission terms —
+ *  shows the BEFORE and AFTER so the change is fully transparent. */
+async function sendPartnerCommissionChangeEmail(args: {
+  to: string
+  name: string
+  oldLabel: string
+  newLabel: string
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = makeCountedTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const esc = (s: string) =>
+    String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const dashUrl = `${REFERRAL_LINK_BASE}/partner`
+  const row = (label: string, value: string, strike: boolean) =>
+    `<tr><td style="padding:6px 0;color:#8B8170;font-size:12px;">${label}</td><td style="padding:6px 0;color:${strike ? '#8B8170' : '#F5EFE6'};font-size:13px;font-weight:600;${strike ? 'text-decoration:line-through;' : ''}">${esc(value)}</td></tr>`
+  const html = renderEmail({
+    heading: 'עודכן הסכם העמלה שלכם',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+        שלום ${esc(args.name)}, עדכנו את תנאי התגמול שלכם בתוכנית השותפים. הנה הפירוט:
+      </p>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 16px;border-top:1px solid #2a2520;border-bottom:1px solid #2a2520;">
+        ${row('הסכם קודם', args.oldLabel, true)}
+        ${row('הסכם חדש', args.newLabel, false)}
+      </table>
+      <p style="font-size:13px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
+        התנאים החדשים חלים מעכשיו. כל הנתונים והרווחים שצברתם עד כה נשמרים במלואם בדשבורד.
+      </p>
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:6px 0 18px;">
+        <tr><td align="center">
+          <a href="${dashUrl}" target="_blank" style="display:inline-block;padding:12px 32px;border-radius:8px;background:#B8794F;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:14px;">לדשבורד השותפים</a>
+        </td></tr>
+      </table>
+      <p style="font-size:12px;line-height:1.7;margin:0;color:#8B8170;">
+        אם יש שאלה לגבי השינוי — השיבו למייל הזה ונשמח להבהיר.
+      </p>
+    `,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    subject: 'עודכן הסכם העמלה שלכם — ניהול הורדות פלוס',
     html,
   })
 }
@@ -10001,23 +10067,6 @@ async function handleAdminCreateReferral(
     createdBy: admin,
     signups: 0,
   }
-  // Commission can be set right at creation (was previously ignored here
-  // and only settable via the edit panel).
-  const createComm = parseCommission(
-    req.body as {
-      commissionType?: unknown
-      commissionValue?: unknown
-      commissionCurrency?: unknown
-    },
-  )
-  if (createComm) {
-    doc.commissionType = createComm.commissionType
-    doc.commissionValue = createComm.commissionValue
-    doc.commissionCurrency = createComm.commissionCurrency
-    doc.commissionFirstOnly =
-      (req.body as { commissionFirstOnly?: unknown }).commissionFirstOnly ===
-      true
-  }
   // When a login email is given, AUTO-GENERATE a temporary password and
   // email it — the admin never types one. The partner is forced to
   // replace it + accept the terms on first login.
@@ -10033,10 +10082,13 @@ async function handleAdminCreateReferral(
   const commission = parseCommission(
     req.body as { commissionType?: unknown; commissionValue?: unknown; commissionCurrency?: unknown },
   )
+  const createFirstOnly =
+    (req.body as { commissionFirstOnly?: unknown }).commissionFirstOnly === true
   if (commission) {
     doc.commissionType = commission.commissionType
     doc.commissionValue = commission.commissionValue
     doc.commissionCurrency = commission.commissionCurrency
+    doc.commissionFirstOnly = createFirstOnly
   }
   await db.collection('referralPartners').doc(code).set(doc)
 
@@ -10044,9 +10096,12 @@ async function handleAdminCreateReferral(
   let emailSent = false
   if (loginEmail) {
     const commissionLabel = commission
-      ? commission.commissionType === 'percent'
-        ? `${commission.commissionValue}% מכל קנייה / חידוש`
-        : `${commission.commissionValue} ${commission.commissionCurrency.toUpperCase()} לכל קנייה / חידוש`
+      ? commissionLabelHe(
+          commission.commissionType,
+          commission.commissionValue,
+          commission.commissionCurrency,
+          createFirstOnly,
+        )
       : 'ההסכם ייקבע בהמשך'
     try {
       await sendPartnerWelcomeEmail({
@@ -11372,14 +11427,12 @@ async function handleAdminSetReferralCredentials(
 
   let emailSent = false
   if (regenerate && recipient) {
-    const cv = existingData.commissionValue
-    const ct = existingData.commissionType
-    const commissionLabel =
-      ct === 'percent' && cv
-        ? `${cv}% מכל קנייה / חידוש`
-        : ct === 'fixed' && cv
-          ? `${cv} ${(existingData.commissionCurrency || 'ILS').toUpperCase()} לכל קנייה / חידוש`
-          : 'ההסכם ייקבע בהמשך'
+    const commissionLabel = commissionLabelHe(
+      existingData.commissionType,
+      existingData.commissionValue,
+      existingData.commissionCurrency,
+      existingData.commissionFirstOnly === true,
+    )
     try {
       await sendPartnerWelcomeEmail({
         to: recipient,
@@ -11412,9 +11465,26 @@ async function handleAdminSetReferralCommission(
   if (!code) return res.status(400).json({ ok: false, error: 'missing code' })
   const db = getDb()
   const ref = db.collection('referralPartners').doc(code)
-  if (!(await ref.get()).exists) {
+  const snap = await ref.get()
+  if (!snap.exists) {
     return res.status(404).json({ ok: false, error: 'שותף לא קיים' })
   }
+  const existing = snap.data() as ReferralPartnerDoc & { loginEmail?: string }
+  // 'ללא עמלה' (not the "to be decided" wording) when there's no agreement
+  // — clearer for the before/after change email.
+  const labelFor = (
+    t: 'percent' | 'fixed' | undefined | null,
+    v: number | undefined | null,
+    c: string | undefined | null,
+    f: boolean,
+  ): string => (!t || !v ? 'ללא עמלה' : commissionLabelHe(t, v, c, f))
+  const oldLabel = labelFor(
+    existing.commissionType,
+    existing.commissionValue,
+    existing.commissionCurrency,
+    existing.commissionFirstOnly === true,
+  )
+
   const commission = parseCommission(
     req.body as {
       commissionType?: unknown
@@ -11439,6 +11509,29 @@ async function handleAdminSetReferralCommission(
       commissionCurrency: FieldValue.delete(),
       commissionFirstOnly: FieldValue.delete(),
     })
+  }
+  const newLabel = commission
+    ? commissionLabelHe(
+        commission.commissionType,
+        commission.commissionValue,
+        commission.commissionCurrency,
+        firstOnly,
+      )
+    : 'ללא עמלה'
+
+  // Transparency: email the partner the before/after when their reward
+  // terms actually change (and they have a dashboard login). Best-effort.
+  if (existing.loginEmail && oldLabel !== newLabel) {
+    try {
+      await sendPartnerCommissionChangeEmail({
+        to: existing.loginEmail,
+        name: existing.name || code,
+        oldLabel,
+        newLabel,
+      })
+    } catch (e) {
+      console.warn('[partner] commission-change email failed (ignored):', e)
+    }
   }
   return res.status(200).json({ ok: true })
 }
