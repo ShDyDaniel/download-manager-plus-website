@@ -33,6 +33,7 @@ import { SyncLandingPage } from './pages/SyncLandingPage'
 import DrivePickerPage from './pages/DrivePickerPage'
 import PartnerPage from './pages/PartnerPage'
 import DeviceCheckPage from './pages/DeviceCheckPage'
+import TrialActivatePage from './pages/TrialActivatePage'
 // Lazy — AdminPage pulls in Firebase Auth (signInWithEmailAndPassword).
 // Keeping it out of the main bundle means visitors who never open
 // /admin don't download the Firebase weight.
@@ -58,6 +59,7 @@ function isChromelessRoute(pathname: string): boolean {
     pathname.startsWith('/drive-picker') ||
     pathname.startsWith('/partner') ||
     pathname.startsWith('/device-check') ||
+    pathname.startsWith('/trial') ||
     pathname.startsWith('/admin')
   )
 }
@@ -186,6 +188,9 @@ function AnimatedRoutes() {
         {/* Support device-check landing — opens the desktop app to
             report its device signature (or shows a backup code). */}
         <Route path="/device-check/:code" element={<DeviceCheckPage />} />
+        {/* Trial activation — opened from the desktop user menu; the app
+            passes the ID token + device id on the fragment. */}
+        <Route path="/trial" element={<TrialActivatePage />} />
         {/* Admin panel — 2FA-gated web twin of the desktop panel. */}
         <Route path="/admin" element={<AdminPage />} />
       </Routes>
