@@ -48,10 +48,9 @@ export default function DeviceCheckPage() {
           <MonitorSmartphone className="h-6 w-6" />
         </div>
 
-        <h1 className="mt-4 text-2xl font-bold">אימות מחשב לתמיכה</h1>
+        <h1 className="mt-4 text-2xl font-bold">אימות לתמיכה</h1>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-          כדי לבדוק אם כבר נפתח חשבון על המחשב הזה, נשלח לצוות התמיכה את חתימת
-          המחשב שלך. הפעולה לא משתפת מידע אישי — רק מזהה חומרה.
+          חתימת המחשב תישלח למערכת כדי לבדוק אם נפתח חשבון על המחשב הזה בעבר.
         </p>
 
         <button
@@ -74,7 +73,7 @@ export default function DeviceCheckPage() {
         <div className="mt-7 border-t border-border pt-5 text-right">
           <p className="text-sm font-medium">התוכנה לא נפתחה?</p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            פתחו את התוכנה ידנית, היכנסו להגדרות ← "אימות מחשב לתמיכה",
+            פתחו את התוכנה ידנית, היכנסו להגדרות ← "אימות לתמיכה",
             והדביקו את הקוד הבא:
           </p>
           <div className="mt-3 flex items-center gap-2">
