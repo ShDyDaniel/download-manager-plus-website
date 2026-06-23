@@ -117,7 +117,10 @@ function DeviceCheckCard({
           'admin-device-check-get',
           { code: check.code },
         )
-        if (alive && r.check) setCheck(r.check)
+        // Merge — the server doc has no `url` (only create returns it),
+        // so a plain overwrite would blank out the displayed link.
+        if (alive && r.check)
+          setCheck((prev) => (prev ? { ...prev, ...r.check } : r.check))
       } catch {
         /* transient — keep polling */
       }
