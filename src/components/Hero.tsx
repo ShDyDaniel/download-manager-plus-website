@@ -58,6 +58,30 @@ export function Hero() {
   const [authOpen, setAuthOpen] = useState(false)
   const [pendingUrl, setPendingUrl] = useState<string | null>(null)
 
+  // Resolved download URLs. Start from the hardcoded fallbacks so the
+  // button works on first paint, then fetch the latest published release
+  // (appReleases/latest, the same doc the admin Updates tab publishes)
+  // and override — so the site always serves the newest version without
+  // a code change. If the fetch fails, the fallbacks stay.
+  const [macUrl, setMacUrl] = useState(DOWNLOAD_MAC_GITHUB)
+  const [winUrl, setWinUrl] = useState(DOWNLOAD_WIN_GITHUB)
+  useEffect(() => {
+    let active = true
+    fetch('/api/paypal?action=get-latest-release')
+      .then((r) => r.json())
+      .then((d: { ok?: boolean; release?: { macUrl?: string; winUrl?: string } }) => {
+        if (!active || !d?.release) return
+        if (d.release.macUrl) setMacUrl(d.release.macUrl)
+        if (d.release.winUrl) setWinUrl(d.release.winUrl)
+      })
+      .catch(() => {
+        /* keep the hardcoded fallbacks */
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
   const startDownload = (url: string) => {
     window.open(url, '_blank', 'noopener,noreferrer')
   }
@@ -228,8 +252,8 @@ export function Hero() {
                 icon={
                   <Download className="h-3.5 w-3.5 md:h-[18px] md:w-[18px]" />
                 }
-                macUrl={DOWNLOAD_MAC_GITHUB}
-                winUrl={DOWNLOAD_WIN_GITHUB}
+                macUrl={macUrl}
+                winUrl={winUrl}
                 variant="primary"
                 onDownload={requestDownload}
               />

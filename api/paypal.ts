@@ -1836,6 +1836,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleGetTerms(req, res)
       case 'get-privacy':
         return await handleGetPrivacy(req, res)
+      case 'get-latest-release':
+        return await handleGetLatestRelease(req, res)
       default:
         return res
           .status(400)
@@ -6401,6 +6403,45 @@ async function handleGetPricing(_req: VercelRequest, res: VercelResponse) {
  *  at the edge so repeated modal opens don't keep hammering
  *  Firestore.
  * ───────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────
+ *  get-latest-release — public read of appReleases/latest so the
+ *  marketing site's "הורדה בחינם" button always serves the newest
+ *  published version (the same doc the desktop update-feed reads and
+ *  the admin Updates tab publishes). Public by design — a download
+ *  link isn't a secret. Cached at the edge for a minute.
+ * ───────────────────────────────────────────────────────────── */
+async function handleGetLatestRelease(_req: VercelRequest, res: VercelResponse) {
+  try {
+    const db = getDb()
+    const snap = await db.collection('appReleases').doc('latest').get()
+    res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=600')
+    if (!snap.exists) {
+      return res.status(200).json({ ok: true, release: null })
+    }
+    const d = snap.data() as {
+      version?: string
+      macUrl?: string
+      winUrl?: string
+      macUrlBackup?: string
+      winUrlBackup?: string
+    }
+    return res.status(200).json({
+      ok: true,
+      release: {
+        version: typeof d.version === 'string' ? d.version : '',
+        macUrl: typeof d.macUrl === 'string' ? d.macUrl : '',
+        winUrl: typeof d.winUrl === 'string' ? d.winUrl : '',
+        macUrlBackup: typeof d.macUrlBackup === 'string' ? d.macUrlBackup : '',
+        winUrlBackup: typeof d.winUrlBackup === 'string' ? d.winUrlBackup : '',
+      },
+    })
+  } catch (err) {
+    console.error('[paypal/get-latest-release] failed:', err)
+    // Non-fatal — the client falls back to its hardcoded URLs.
+    return res.status(200).json({ ok: false, release: null })
+  }
+}
+
 async function handleGetTerms(_req: VercelRequest, res: VercelResponse) {
   try {
     const db = getDb()
