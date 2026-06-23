@@ -1756,6 +1756,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminApproveTrial(req, res)
       case 'admin-revoke-trial':
         return await handleAdminRevokeTrial(req, res)
+      case 'admin-reset-trial':
+        return await handleAdminResetTrial(req, res)
       case 'admin-list-keys':
         return await handleAdminListKeys(req, res)
       case 'admin-create-key':
@@ -8100,6 +8102,44 @@ async function handleAdminRevokeTrial(req: VercelRequest, res: VercelResponse) {
   // Keep trialExpiresAt for the audit trail, just flip the status.
   await getDb().collection('users').doc(uid).update({ trialStatus: 'rejected' })
   return res.status(200).json({ ok: true })
+}
+
+/**
+ * Admin → "ניסיון 7 יום" tab. FULL reset of a user's trial eligibility so
+ * they can take a fresh 7-day trial again. Unlike revoke (which only flips the
+ * status), this also DELETES the user's trial fingerprints — both the
+ * email_* doc AND the device_* doc tied to this uid — because start-trial
+ * blocks on either fingerprint existing. Used when support clears a trial for
+ * a user (e.g. they got blocked by an old account on the same machine).
+ */
+async function handleAdminResetTrial(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { uid?: string }
+  const uid = String(body.uid || '').trim()
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
+  const db = getDb()
+
+  // Delete every trial fingerprint owned by this uid (email_* + device_*).
+  const fpSnap = await db
+    .collection('trialFingerprints')
+    .where('uid', '==', uid)
+    .get()
+  const batch = db.batch()
+  fpSnap.docs.forEach((d) => batch.delete(d.ref))
+  // Clear the user's trial state so the on-trial / already-used gates pass.
+  batch.update(db.collection('users').doc(uid), {
+    trialStatus: 'none',
+    trialExpiresAt: null,
+    trialRequestedAt: null,
+    trialApprovedAt: null,
+  })
+  await batch.commit()
+
+  return res
+    .status(200)
+    .json({ ok: true, fingerprintsDeleted: fpSnap.size })
 }
 
 /* ──────────────────────────────────────────────────────────────
