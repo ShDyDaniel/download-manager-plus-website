@@ -20,6 +20,8 @@ const TOKEN_KEY = 'dmplus.partner.v1'
 interface PartnerStats {
   code: string
   name: string
+  /** ISO timestamp the partnership was created (for the "שותף מאז" line). */
+  since?: string | null
   link: string
   visibility: { revenue: boolean; earnings: boolean; counts: boolean }
   /** First-login onboarding gates. */
@@ -228,6 +230,18 @@ export default function PartnerPage() {
             >
               {stats.name}
             </h1>
+            {stats.since && (
+              <div className="mt-1 text-xs text-fg-muted">
+                שותף מאז{' '}
+                <bdi>
+                  {new Date(stats.since).toLocaleDateString('he-IL', {
+                    day: 'numeric',
+                    month: 'long',
+                    year: 'numeric',
+                  })}
+                </bdi>
+              </div>
+            )}
           </div>
           <button
             type="button"
@@ -304,7 +318,10 @@ export default function PartnerPage() {
         {/* Money by month — only when a money figure is visible */}
         {showMoney && (
           <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
-            <div className="mb-3 text-sm font-medium text-fg">{monthsTitle}</div>
+            <div className="mb-1 text-sm font-medium text-fg">{monthsTitle}</div>
+            <div className="mb-3 text-[11px] text-fg-muted">
+              היסטוריה מלאה — כל החודשים מאז תחילת השותפות.
+            </div>
             {months.length === 0 ? (
               <div className="py-6 text-center text-sm text-fg-muted">
                 עדיין אין נתונים.

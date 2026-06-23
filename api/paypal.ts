@@ -3998,6 +3998,10 @@ async function loadAllChargesMerged(): Promise<MergedCharge[]> {
     db.collection('productKeys').get(),
   ])
   const byId = new Map<string, MergedCharge>()
+  // Ledger entries (by id) that arrived WITHOUT a referredBy. If we later
+  // recover one (from a live key or the buyer's account), we write it back
+  // to the ledger doc so the attribution becomes permanent — see step 5.
+  const ledgerMissingRef = new Set<string>()
 
   // 1) Durable ledger first — the canonical record of money charged.
   for (const doc of ledgerSnap.docs) {
@@ -4026,6 +4030,9 @@ async function loadAllChargesMerged(): Promise<MergedCharge[]> {
       referredBy: typeof d.referredBy === 'string' ? d.referredBy : '',
       subscriptionId: typeof d.subscriptionId === 'string' ? d.subscriptionId : '',
     })
+    if (!(typeof d.referredBy === 'string' && d.referredBy)) {
+      ledgerMissingRef.add(id)
+    }
   }
 
   // 2) Live keys — recover attribution for ledger rows that predate the
@@ -4127,6 +4134,44 @@ async function loadAllChargesMerged(): Promise<MergedCharge[]> {
           if (ref) c.referredBy = ref
         }
       }
+    }
+  }
+
+  // 5) DURABILITY — persist recovered attribution back to the ledger.
+  //    A ledger charge that originally had no referredBy but which we
+  //    just recovered (from the still-live key in step 3, or the buyer's
+  //    account in step 4) gets the attribution WRITTEN BACK to its
+  //    casualLedger doc. This is the fix for the "partner sale showed up
+  //    then vanished" bug: once a key is deleted (cancellation cleanup)
+  //    the subscriptionId→key recovery would fail forever, silently
+  //    dropping the partner's commission. Writing it back makes the
+  //    attribution permanent. Only ADDS referredBy (merge) — never
+  //    changes or clears an existing one. Self-healing: once written,
+  //    later loads find it already set and skip the write entirely, so
+  //    this is a one-time cost that converges to zero.
+  const toPersist: { id: string; referredBy: string }[] = []
+  for (const id of ledgerMissingRef) {
+    const c = byId.get(id)
+    if (c && c.referredBy) toPersist.push({ id, referredBy: c.referredBy })
+  }
+  if (toPersist.length > 0) {
+    try {
+      for (let i = 0; i < toPersist.length; i += 400) {
+        const batch = db.batch()
+        for (const t of toPersist.slice(i, i + 400)) {
+          batch.set(
+            db.collection('casualLedger').doc(t.id),
+            { referredBy: t.referredBy },
+            { merge: true },
+          )
+        }
+        await batch.commit()
+      }
+    } catch (err) {
+      console.warn(
+        '[loadAllChargesMerged] referredBy persist-back failed (non-fatal):',
+        err,
+      )
     }
   }
 
@@ -11046,6 +11091,9 @@ async function computePartnerStats(code: string) {
   return {
     code,
     name: data?.name || code,
+    // When the partnership was created — shown on the dashboard so the
+    // partner knows the history below spans the whole partnership.
+    since: typeof data?.createdAt === 'string' ? data.createdAt : null,
     link: `${REFERRAL_LINK_BASE}/?ref=${encodeURIComponent(code)}`,
     visibility: vis,
     // Onboarding gates — always returned (not visibility-gated): the
