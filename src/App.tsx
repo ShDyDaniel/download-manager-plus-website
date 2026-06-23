@@ -29,6 +29,7 @@ import { ReviewPage } from './pages/ReviewPage'
 import { DeliveryPage } from './pages/DeliveryPage'
 import { RevisionsPage } from './pages/RevisionsPage'
 import { DeliveriesPage } from './pages/DeliveriesPage'
+import { SyncLandingPage } from './pages/SyncLandingPage'
 import DrivePickerPage from './pages/DrivePickerPage'
 import PartnerPage from './pages/PartnerPage'
 // Lazy — AdminPage pulls in Firebase Auth (signInWithEmailAndPassword).
@@ -213,6 +214,11 @@ function AnimatedRoutes() {
             }
           />
           <Route path="/buy" element={<BuyPage />} />
+          {/* Marketing landing for the desktop "סנכרון אוטומטי" tab —
+              animated demo of the audio-sync timeline + a download CTA
+              that routes to the home page (single download surface).
+              See pages/SyncLandingPage.tsx. */}
+          <Route path="/sync" element={<SyncLandingPage />} />
           <Route path="/account" element={<AccountPage />} />
           {/* Web /revisions workspace — full editor-side of the
               Revisions feature ported from the desktop app. Lets
