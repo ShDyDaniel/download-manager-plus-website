@@ -695,7 +695,7 @@ function SignupDetailsForm({
           />
           <span>
             אני רוצה לקבל עדכונים על תוספות, הטבות וטיפים. ניתן
-            להסיר את הסכמה בכל עת.
+            להסיר את ההסכמה תמיד.
           </span>
         </label>
         {error && <FieldError>{error}</FieldError>}
