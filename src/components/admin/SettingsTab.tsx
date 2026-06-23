@@ -88,6 +88,68 @@ const ACCESSIBILITY_DEFAULT: { lastUpdated: string; sections: Section[] } = {
   ],
 }
 
+/** Built-in partner-terms (תקנון שותפים), used to SEED the editor the
+ *  first time (before anything is published to appConfig/partnerTerms).
+ *  Mirrors the fallback copy in PartnerPage.tsx so the admin starts from
+ *  the real text and just hits "שמור ופרסם". */
+const PARTNER_TERMS_DEFAULT: { lastUpdated: string; sections: Section[] } = {
+  lastUpdated: 'יוני 2026',
+  sections: [
+    {
+      title: 'ברוכים הבאים',
+      paragraphs: [
+        'ברוכים הבאים לתוכנית השותפים של "ניהול הורדות פלוס". התקנון להלן מסדיר את היחסים בינך לבין החברה כשותף/ה.',
+      ],
+    },
+    {
+      title: '1. שיוך מכירות',
+      paragraphs: [
+        'מכירה תזוכה לך רק כאשר הלקוח נכנס דרך קישור ההפניה האישי שלך וביצע רכישה בפועל. החברה רשאית לבדוק ולאמת כל שיוך.',
+      ],
+    },
+    {
+      title: '2. עמלות',
+      paragraphs: [
+        'גובה העמלה ואופן חישובה נקבעים בהסכם האישי שלך כפי שמוצג בדשבורד. העמלה מחושבת על הסכום שנותר בפועל לאחר עמלת הסליקה ולאחר מע"מ, ומשולמת על עסקאות שלא בוטלו או הוחזרו.',
+      ],
+    },
+    {
+      title: '3. תשלומים',
+      paragraphs: [
+        'תשלום העמלות יבוצע במועדים ובאמצעים שתיאמת עם החברה. עסקה שבוטלה, הוחזרה (chargeback) או לא נגבתה — לא תזכה בעמלה, ותקוזז אם כבר שולמה.',
+      ],
+    },
+    {
+      title: '4. שיווק הוגן',
+      paragraphs: [
+        'אין לפרסם את המוצר בדרכים מטעות, ספאם, או הבטחות שווא, ואין להשתמש במותג החברה באופן שאינו מאושר. החברה רשאית להפסיק את השותפות בגין הפרה.',
+      ],
+    },
+    {
+      title: '5. סודיות ופרטיות',
+      paragraphs: [
+        'נתוני הדשבורד מיועדים לך בלבד. אינך רשאי/ת לחשוף נתונים, רשימות לקוחות או מידע עסקי של החברה.',
+      ],
+    },
+    {
+      title: '6. סיום',
+      paragraphs: [
+        'כל צד רשאי לסיים את השותפות בכל עת. עמלות שנצברו כדין עד מועד הסיום ישולמו בהתאם לתקנון.',
+      ],
+    },
+    {
+      title: '7. שינויים',
+      paragraphs: [
+        'החברה רשאית לעדכן את התקנון מעת לעת. המשך שימוש בדשבורד לאחר עדכון מהווה הסכמה לתנאים המעודכנים.',
+      ],
+    },
+    {
+      title: 'אישור',
+      paragraphs: ['אישור התקנון מהווה הסכמה מלאה לכל האמור לעיל.'],
+    },
+  ],
+}
+
 const TEST_EMAILS: { kind: string; label: string }[] = [
   { kind: 'verify-signup', label: 'קוד אימות הרשמה' },
   { kind: 'verify-existing', label: 'קוד אימות למשתמש קיים' },
@@ -1403,17 +1465,28 @@ function LegalCard({
         setVersion(j.version || 0)
         setLiveVersion(j.version || 0)
         const fetchedSections = j.sections || []
-        // Seed the accessibility editor from the built-in statement when
-        // nothing's been published yet — so the admin starts from the
-        // real content (as editable categories) instead of a blank page.
-        // Until they hit save, the DB stays empty and the public modal
+        // Seed the editor from the built-in default when nothing's been
+        // published yet — so the admin starts from the real content (as
+        // editable categories) instead of a blank page, and just hits
+        // save to publish. Applies to accessibility and partner-terms.
+        // Until they hit save, the DB stays empty and the public surface
         // keeps showing its built-in fallback; saving publishes this.
-        if (kind === 'accessibility' && fetchedSections.length === 0) {
-          setSections(ACCESSIBILITY_DEFAULT.sections.map((s) => ({
-            title: s.title,
-            paragraphs: [...s.paragraphs],
-          })))
-          setLastUpdated(j.lastUpdated || ACCESSIBILITY_DEFAULT.lastUpdated)
+        const seedDefault =
+          fetchedSections.length === 0
+            ? kind === 'accessibility'
+              ? ACCESSIBILITY_DEFAULT
+              : kind === 'partner-terms'
+                ? PARTNER_TERMS_DEFAULT
+                : null
+            : null
+        if (seedDefault) {
+          setSections(
+            seedDefault.sections.map((s) => ({
+              title: s.title,
+              paragraphs: [...s.paragraphs],
+            })),
+          )
+          setLastUpdated(j.lastUpdated || seedDefault.lastUpdated)
         } else {
           setLastUpdated(j.lastUpdated || '')
           setSections(fetchedSections)
