@@ -85,22 +85,23 @@ export function Hero() {
 
   const startDownload = (url: string) => {
     const isMac = /\.(pkg|dmg)(\?|#|$)/i.test(url)
-    // Download via a hidden anchor with NO target — this is a file download,
-    // not a new window, so it is never popup-blocked (the previous
-    // window.open got blocked, especially when called after the async signup
-    // flow, i.e. outside the original click gesture).
+    // Plain link click — NO `download` attribute. For a CROSS-ORIGIN file
+    // (GitHub) a forced `download` makes Chrome flag it ("this file can't be
+    // verified"); a normal click that relies on the server's
+    // Content-Disposition (GitHub sends `attachment`) downloads exactly like
+    // clicking the GitHub link directly — no warning. It's a download, not a
+    // window, so it's never popup-blocked either (even after async signup).
     const a = document.createElement('a')
     a.href = url
-    a.download = ''
     a.rel = 'noopener noreferrer'
     document.body.appendChild(a)
     a.click()
     a.remove()
-    // macOS: show the one-time first-launch guide. SAME-TAB SPA navigation
-    // (not a popup) so it never gets blocked. Pass the URL so the page can
-    // offer a re-download if the click above didn't start one.
+    // macOS: show the one-time first-launch guide via SAME-TAB SPA navigation
+    // (never popup-blocked). Pass the URL via router STATE (not a query
+    // string) so the address bar stays a clean /mac-setup.
     if (isMac) {
-      navigate(`/mac-setup?dl=${encodeURIComponent(url)}`)
+      navigate('/mac-setup', { state: { dl: url } })
     }
   }
   const requestDownload = (url: string) => {

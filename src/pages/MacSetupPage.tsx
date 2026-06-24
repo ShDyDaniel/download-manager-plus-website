@@ -1,5 +1,6 @@
 import { ShieldCheck, Settings, MousePointerClick, RefreshCw } from 'lucide-react'
-import { useSearchParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 
 /**
  * First-launch guide for macOS, opened automatically when a Mac user starts a
@@ -10,8 +11,22 @@ import { useSearchParams } from 'react-router-dom'
  * itself, so no Gatekeeper prompt).
  */
 export default function MacSetupPage() {
-  const [params] = useSearchParams()
-  const dl = params.get('dl')
+  // Download URL for the "didn't start?" fallback link. Arrives via router
+  // state (clean URL — no query string). On a direct visit / refresh, state
+  // is empty, so fall back to the latest published release.
+  const location = useLocation()
+  const [dl, setDl] = useState<string>(
+    (location.state as { dl?: string } | null)?.dl || '',
+  )
+  useEffect(() => {
+    if (dl) return
+    fetch('/api/paypal?action=get-latest-release')
+      .then((r) => r.json())
+      .then((d: { release?: { macUrl?: string } }) => {
+        if (d?.release?.macUrl) setDl(d.release.macUrl)
+      })
+      .catch(() => {})
+  }, [dl])
   return (
     <div
       dir="rtl"
@@ -33,7 +48,6 @@ export default function MacSetupPage() {
             ההורדה לא התחילה?{' '}
             <a
               href={dl}
-              download
               className="font-medium text-primary underline underline-offset-2"
             >
               לחצו כאן להורדה
