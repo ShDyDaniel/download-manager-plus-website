@@ -61,6 +61,7 @@ function isChromelessRoute(pathname: string): boolean {
     pathname.startsWith('/partner') ||
     pathname.startsWith('/device-check') ||
     pathname.startsWith('/trial') ||
+    pathname.startsWith('/install') ||
     pathname.startsWith('/mac-setup') ||
     pathname.startsWith('/admin')
   )

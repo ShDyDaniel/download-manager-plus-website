@@ -1608,7 +1608,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // GETs for anything else to keep the surface area tight.
   // GET is allowed for `unsubscribe` (email link) and `telegram-setup`
   // (one-time webhook registration the operator opens in a browser).
-  const getAllowed = action === 'unsubscribe' || action === 'telegram-setup'
+  const getAllowed =
+    action === 'unsubscribe' ||
+    action === 'telegram-setup' ||
+    action === 'get-latest-release'
   if (req.method !== 'POST' && !(req.method === 'GET' && getAllowed)) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
   }
