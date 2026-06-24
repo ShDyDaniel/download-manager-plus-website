@@ -34,6 +34,7 @@ import DrivePickerPage from './pages/DrivePickerPage'
 import PartnerPage from './pages/PartnerPage'
 import DeviceCheckPage from './pages/DeviceCheckPage'
 import TrialActivatePage from './pages/TrialActivatePage'
+import MacSetupPage from './pages/MacSetupPage'
 // Lazy — AdminPage pulls in Firebase Auth (signInWithEmailAndPassword).
 // Keeping it out of the main bundle means visitors who never open
 // /admin don't download the Firebase weight.
@@ -60,6 +61,7 @@ function isChromelessRoute(pathname: string): boolean {
     pathname.startsWith('/partner') ||
     pathname.startsWith('/device-check') ||
     pathname.startsWith('/trial') ||
+    pathname.startsWith('/mac-setup') ||
     pathname.startsWith('/admin')
   )
 }
@@ -191,6 +193,9 @@ function AnimatedRoutes() {
         {/* Trial activation — opened from the desktop user menu; the app
             passes the ID token + device id on the fragment. */}
         <Route path="/trial" element={<TrialActivatePage />} />
+        {/* macOS first-launch guide — opened automatically when a Mac
+            user starts a download (Gatekeeper one-time bypass). */}
+        <Route path="/mac-setup" element={<MacSetupPage />} />
         {/* Admin panel — 2FA-gated web twin of the desktop panel. */}
         <Route path="/admin" element={<AdminPage />} />
       </Routes>

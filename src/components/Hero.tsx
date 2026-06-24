@@ -83,7 +83,22 @@ export function Hero() {
   }, [])
 
   const startDownload = (url: string) => {
-    window.open(url, '_blank', 'noopener,noreferrer')
+    const isMac = /\.(pkg|dmg)(\?|#|$)/i.test(url)
+    // Trigger the file download via a hidden anchor — reliable, and (unlike a
+    // second window.open, which Safari often blocks) it never counts as a
+    // popup, so the Mac guide below can open in its own tab.
+    const a = document.createElement('a')
+    a.href = url
+    a.target = '_blank'
+    a.rel = 'noopener noreferrer'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    // macOS: open the one-time first-launch guide so the Gatekeeper warning
+    // ("Apple could not verify…") doesn't scare the user off.
+    if (isMac) {
+      window.open('/mac-setup', '_blank', 'noopener,noreferrer')
+    }
   }
   const requestDownload = (url: string) => {
     if (getSession()) {
