@@ -17,7 +17,8 @@ import { getSession } from '../lib/webSession'
  * blocked"; a navigation to a URL that the server serves with
  * Content-Disposition: attachment (GitHub does) downloads exactly like a
  * normal click and isn't flagged. The page also shows the one-time
- * first-launch steps per platform, and a manual fallback link.
+ * first-launch steps per platform. The download is gated behind a
+ * logged-in session.
  */
 export default function InstallPage() {
   const location = useLocation()
@@ -139,14 +140,14 @@ function MacSteps() {
           body="לחצו פעמיים על הקובץ שהורד (‎.pkg‎). אם הוא נפתח רגיל — מצוין, סיימתם."
         />
         <Step
-          icon={<Settings className="h-4 w-4 text-accent" />}
-          title="2. אם הופיעה ההודעה של Apple"
-          body='פתחו: הגדרות מערכת ← פרטיות ואבטחה ← גללו למטה ← לחצו "פתח בכל זאת" (Open Anyway). ואז פתחו שוב את הקובץ ולחצו "פתח".'
+          icon={<MousePointerClick className="h-4 w-4 text-accent" />}
+          title='2. אם הופיעה ההודעה "Apple could not verify"'
+          body='לחצו "Done" (לא "Move to Trash"). זה לא מוחק כלום — רק סוגר את ההודעה.'
         />
         <Step
-          icon={<MousePointerClick className="h-4 w-4 text-accent" />}
-          title="חלופה (ב-macOS ישן יותר)"
-          body='קליק-ימני על הקובץ ← "Open" ← ושוב "Open" בחלון שמופיע.'
+          icon={<Settings className="h-4 w-4 text-accent" />}
+          title="3. אשרו את הפתיחה בהגדרות"
+          body='תפריט Apple ‎() ← הגדרות מערכת ← פרטיות ואבטחה ← גללו לאזור "אבטחה" (Security) ← לחצו "פתח בכל זאת" (Open Anyway) ← אשרו ב"פתח" (Open) והזדהו עם Touch ID או סיסמה.'
         />
       </div>
     </>
