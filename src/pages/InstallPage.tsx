@@ -126,11 +126,10 @@ function MacSteps() {
   return (
     <>
       <div className="mt-6 rounded-2xl border border-border bg-card p-5">
-        <div className="text-sm font-semibold">למה תופיע הודעה של Apple?</div>
-        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-          בפתיחה הראשונה ייתכן שתראו "Apple could not verify…". זה תקין לחלוטין
-          — התוכנה בטוחה, וההודעה מופיעה רק מכיוון שהיא עדיין לא עברה את אישור
-          Apple בתשלום. זה לא אומר שיש בעיה בתוכנה.
+        <p className="text-sm font-medium leading-relaxed text-foreground">
+          בפתיחה הראשונה ייתכן שתראו "Apple could not verify…". זה תקין לחלוטין.
+          ההודעה מופיעה רק בגלל שהיא לא מוגדרת בשרתים של אפל. התוכנה עצמה בטוחה
+          לשימוש.
         </p>
       </div>
       <div className="mt-4 space-y-3">
@@ -147,7 +146,7 @@ function MacSteps() {
         <Step
           icon={<Settings className="h-4 w-4 text-accent" />}
           title="3. אשרו את הפתיחה בהגדרות"
-          body='תפריט Apple ‎() ← הגדרות מערכת ← פרטיות ואבטחה ← גללו לאזור "אבטחה" (Security) ← לחצו "פתח בכל זאת" (Open Anyway) ← אשרו ב"פתח" (Open) והזדהו עם Touch ID או סיסמה.'
+          body='הגדרות מערכת ← פרטיות ואבטחה ← גללו לתחתית הדף לאזור "אבטחה" (Security) ← לחצו "פתח בכל זאת" (Open Anyway) ← אשרו ב"פתח בכל זאת" שוב (Open Anyway) והזדהו עם Touch ID או סיסמה.'
         />
       </div>
     </>
