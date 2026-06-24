@@ -1,4 +1,5 @@
 import { ShieldCheck, Settings, MousePointerClick, RefreshCw } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 
 /**
  * First-launch guide for macOS, opened automatically when a Mac user starts a
@@ -9,6 +10,8 @@ import { ShieldCheck, Settings, MousePointerClick, RefreshCw } from 'lucide-reac
  * itself, so no Gatekeeper prompt).
  */
 export default function MacSetupPage() {
+  const [params] = useSearchParams()
+  const dl = params.get('dl')
   return (
     <div
       dir="rtl"
@@ -25,6 +28,18 @@ export default function MacSetupPage() {
         <p className="mx-auto mt-2 max-w-md text-center text-sm leading-relaxed text-muted-foreground">
           ההורדה החלה ✓ — רק שלב קטן וחד-פעמי לפני שמתחילים.
         </p>
+        {dl && (
+          <p className="mx-auto mt-2 text-center text-xs text-muted-foreground">
+            ההורדה לא התחילה?{' '}
+            <a
+              href={dl}
+              download
+              className="font-medium text-primary underline underline-offset-2"
+            >
+              לחצו כאן להורדה
+            </a>
+          </p>
+        )}
 
         {/* Why */}
         <div className="mt-6 rounded-2xl border border-border bg-card p-5">

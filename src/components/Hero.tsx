@@ -8,7 +8,7 @@ import {
   ChevronDown,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   currencySymbol,
   formatPrice,
@@ -65,6 +65,7 @@ export function Hero() {
   // a code change. If the fetch fails, the fallbacks stay.
   const [macUrl, setMacUrl] = useState(DOWNLOAD_MAC_GITHUB)
   const [winUrl, setWinUrl] = useState(DOWNLOAD_WIN_GITHUB)
+  const navigate = useNavigate()
   useEffect(() => {
     let active = true
     fetch('/api/paypal?action=get-latest-release')
@@ -84,20 +85,22 @@ export function Hero() {
 
   const startDownload = (url: string) => {
     const isMac = /\.(pkg|dmg)(\?|#|$)/i.test(url)
-    // Trigger the file download via a hidden anchor — reliable, and (unlike a
-    // second window.open, which Safari often blocks) it never counts as a
-    // popup, so the Mac guide below can open in its own tab.
+    // Download via a hidden anchor with NO target — this is a file download,
+    // not a new window, so it is never popup-blocked (the previous
+    // window.open got blocked, especially when called after the async signup
+    // flow, i.e. outside the original click gesture).
     const a = document.createElement('a')
     a.href = url
-    a.target = '_blank'
+    a.download = ''
     a.rel = 'noopener noreferrer'
     document.body.appendChild(a)
     a.click()
     a.remove()
-    // macOS: open the one-time first-launch guide so the Gatekeeper warning
-    // ("Apple could not verify…") doesn't scare the user off.
+    // macOS: show the one-time first-launch guide. SAME-TAB SPA navigation
+    // (not a popup) so it never gets blocked. Pass the URL so the page can
+    // offer a re-download if the click above didn't start one.
     if (isMac) {
-      window.open('/mac-setup', '_blank', 'noopener,noreferrer')
+      navigate(`/mac-setup?dl=${encodeURIComponent(url)}`)
     }
   }
   const requestDownload = (url: string) => {
