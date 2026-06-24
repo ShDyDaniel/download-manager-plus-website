@@ -34,7 +34,7 @@ import DrivePickerPage from './pages/DrivePickerPage'
 import PartnerPage from './pages/PartnerPage'
 import DeviceCheckPage from './pages/DeviceCheckPage'
 import TrialActivatePage from './pages/TrialActivatePage'
-import MacSetupPage from './pages/MacSetupPage'
+import InstallPage from './pages/InstallPage'
 // Lazy — AdminPage pulls in Firebase Auth (signInWithEmailAndPassword).
 // Keeping it out of the main bundle means visitors who never open
 // /admin don't download the Firebase weight.
@@ -193,9 +193,10 @@ function AnimatedRoutes() {
         {/* Trial activation — opened from the desktop user menu; the app
             passes the ID token + device id on the fragment. */}
         <Route path="/trial" element={<TrialActivatePage />} />
-        {/* macOS first-launch guide — opened automatically when a Mac
-            user starts a download (Gatekeeper one-time bypass). */}
-        <Route path="/mac-setup" element={<MacSetupPage />} />
+        {/* Install / first-launch page — reached after the account gate;
+            holds the REAL download button + one-time setup steps. */}
+        <Route path="/install" element={<InstallPage />} />
+        <Route path="/mac-setup" element={<InstallPage />} />
         {/* Admin panel — 2FA-gated web twin of the desktop panel. */}
         <Route path="/admin" element={<AdminPage />} />
       </Routes>

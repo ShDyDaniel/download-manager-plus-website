@@ -83,30 +83,17 @@ export function Hero() {
     }
   }, [])
 
-  const startDownload = (url: string) => {
-    const isMac = /\.(pkg|dmg)(\?|#|$)/i.test(url)
-    // Plain link click — NO `download` attribute. For a CROSS-ORIGIN file
-    // (GitHub) a forced `download` makes Chrome flag it ("this file can't be
-    // verified"); a normal click that relies on the server's
-    // Content-Disposition (GitHub sends `attachment`) downloads exactly like
-    // clicking the GitHub link directly — no warning. It's a download, not a
-    // window, so it's never popup-blocked either (even after async signup).
-    const a = document.createElement('a')
-    a.href = url
-    a.rel = 'noopener noreferrer'
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    // macOS: show the one-time first-launch guide via SAME-TAB SPA navigation
-    // (never popup-blocked). Pass the URL via router STATE (not a query
-    // string) so the address bar stays a clean /mac-setup.
-    if (isMac) {
-      navigate('/mac-setup', { state: { dl: url } })
-    }
+  // Don't auto-download from JS — Chrome flags programmatic cross-origin
+  // downloads as "Unverified download blocked". Instead send the user to the
+  // install page, where they click a REAL download link (which downloads
+  // cleanly, just like a manual click) and get the first-launch steps. URL is
+  // passed via router state so the address bar stays a clean /install.
+  const goToInstall = (url: string) => {
+    navigate('/install', { state: { dl: url } })
   }
   const requestDownload = (url: string) => {
     if (getSession()) {
-      startDownload(url)
+      goToInstall(url)
     } else {
       setPendingUrl(url)
       setAuthOpen(true)
@@ -346,7 +333,7 @@ export function Hero() {
         onAuthed={() => {
           setAuthOpen(false)
           if (pendingUrl) {
-            startDownload(pendingUrl)
+            goToInstall(pendingUrl)
             setPendingUrl(null)
           }
         }}
