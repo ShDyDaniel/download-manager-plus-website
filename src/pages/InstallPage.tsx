@@ -1,6 +1,13 @@
-import { ShieldCheck, Settings, MousePointerClick, RefreshCw } from 'lucide-react'
+import {
+  ShieldCheck,
+  Settings,
+  MousePointerClick,
+  RefreshCw,
+  Lock,
+} from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
+import { getSession } from '../lib/webSession'
 
 /**
  * Install / first-launch page, reached right after the account gate (see
@@ -14,6 +21,10 @@ import { useLocation } from 'react-router-dom'
  */
 export default function InstallPage() {
   const location = useLocation()
+  // Gate the download behind a real account — a visitor who just opens
+  // /install directly (no session) gets a "please sign in" view instead of
+  // the file. The download is tied to being logged in, not to knowing the URL.
+  const loggedIn = Boolean(getSession())
   const [dl, setDl] = useState<string>(
     (location.state as { dl?: string } | null)?.dl || '',
   )
@@ -21,9 +32,10 @@ export default function InstallPage() {
     ? /\.(pkg|dmg)(\?|#|$)/i.test(dl)
     : /Mac/i.test(navigator.userAgent)
 
-  // Direct visit / refresh → no state. Pull the latest published release.
+  // Direct visit / refresh → no state. Pull the latest published release —
+  // only when logged in (no point fetching for a visitor who can't download).
   useEffect(() => {
-    if (dl) return
+    if (!loggedIn || dl) return
     fetch('/api/paypal?action=get-latest-release')
       .then((r) => r.json())
       .then((d: { release?: { macUrl?: string; winUrl?: string } }) => {
@@ -31,20 +43,46 @@ export default function InstallPage() {
         if (u) setDl(u)
       })
       .catch(() => {})
-  }, [dl, isMac])
+  }, [loggedIn, dl, isMac])
 
-  // Auto-start the download once we have the URL — via navigation (not a
-  // scripted anchor click). The attachment response downloads the file and
-  // leaves this page in place.
+  // Auto-start the download once we have the URL — ONLY for a logged-in user,
+  // via navigation (not a scripted anchor click). The attachment response
+  // downloads the file and leaves this page in place.
   const started = useRef(false)
   useEffect(() => {
-    if (!dl || started.current) return
+    if (!loggedIn || !dl || started.current) return
     started.current = true
     const t = setTimeout(() => {
       window.location.href = dl
     }, 600)
     return () => clearTimeout(t)
-  }, [dl])
+  }, [loggedIn, dl])
+
+  if (!loggedIn) {
+    return (
+      <div
+        dir="rtl"
+        className="flex min-h-dvh flex-col items-center justify-center bg-background px-4 py-12 text-foreground"
+      >
+        <div className="w-full max-w-md text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/15 text-primary">
+            <Lock className="h-6 w-6" />
+          </div>
+          <h1 className="mt-4 text-2xl font-bold">צריך להתחבר כדי להוריד</h1>
+          <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
+            ההורדה זמינה רק לאחר התחברות לחשבון. עברו לדף הבית, התחברו או צרו
+            חשבון, וההורדה תתחיל אוטומטית.
+          </p>
+          <Link
+            to="/"
+            className="mt-6 inline-flex items-center justify-center rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+          >
+            למעבר לדף הבית
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -63,15 +101,6 @@ export default function InstallPage() {
         </h1>
         <p className="mx-auto mt-2 max-w-md text-center text-sm leading-relaxed text-muted-foreground">
           ההורדה מתחילה אוטומטית ✓ — רק שלב קטן וחד-פעמי לפני שמתחילים.
-        </p>
-        <p className="mx-auto mt-2 text-center text-xs text-muted-foreground/80">
-          ההורדה לא התחילה?{' '}
-          <a
-            href={dl || undefined}
-            className="font-medium text-primary underline underline-offset-2"
-          >
-            לחצו כאן
-          </a>
         </p>
 
         {isMac ? <MacSteps /> : <WindowsSteps />}
