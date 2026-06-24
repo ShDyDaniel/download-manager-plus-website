@@ -2179,6 +2179,30 @@ async function handleSaleCompleted(
     }
   }
 
+  // Tell the customer their subscription just auto-renewed — the charge
+  // went through and access was extended. This branch only runs for a
+  // renewal (the first charge is handled in the "key deferred" branch
+  // above, and the welcome email fires on activation), and the webhook
+  // is deduped per event.id, so exactly one renewal email goes out per
+  // charge. Fully best-effort: an email failure never affects the
+  // renewal itself.
+  try {
+    const recipient = key.buyerEmail || key.redeemedByEmail || ''
+    if (recipient) {
+      await sendRenewalEmail({
+        to: recipient,
+        key: keyDoc.id,
+        planDays: days,
+        price: paidAmount,
+        currency: resource.amount.currency,
+        newExpiresAt,
+        subscriptionId,
+      })
+    }
+  } catch (err) {
+    console.error('[webhook] renewal email failed for', keyDoc.id, err)
+  }
+
   return {
     ok: true,
     summary: `extended ${keyDoc.id} by ${days}d → ${newExpiresAt.toISOString()}`,
@@ -4985,6 +5009,85 @@ async function sendPaymentFailedEmail(args: {
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
     subject: '⚠ עדכון אמצעי תשלום נדרש — ניהול הורדות פלוס',
+    html,
+  })
+}
+
+/**
+ * Confirmation email for an AUTOMATIC subscription renewal — sent from
+ * handleSaleCompleted when PayPal's recurring PAYMENT.SALE.COMPLETED
+ * lands for an existing key (i.e. a renewal, not the first charge).
+ * Reassures the buyer that the periodic charge went through and their
+ * access was extended, so a silent card-charge never surprises them.
+ * Best-effort; the renewal itself never depends on this.
+ */
+async function sendRenewalEmail(args: {
+  to: string
+  key: string
+  planDays: number
+  price: number
+  currency: string
+  newExpiresAt: Date
+  subscriptionId: string
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = makeCountedTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const symbol =
+    args.currency === 'ILS' ? '₪' : args.currency === 'USD' ? '$' : args.currency
+  const isYearly = args.planDays >= 360
+  const planLabel = isYearly ? 'שנתי' : 'חודשי'
+  const cycleWord = isYearly ? 'שנה' : 'חודש'
+  const newExpiresStr = args.newExpiresAt.toLocaleDateString('he-IL', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: 'Asia/Jerusalem',
+  })
+  const html = renderEmail({
+    heading: '✓ המנוי שלך חודש',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
+        החיוב התקופתי עבור <strong>ניהול הורדות פלוס Pro</strong> בוצע בהצלחה, והמנוי ה${planLabel} שלך חודש אוטומטית. אין צורך לעשות דבר — הגישה ממשיכה ברצף מלא.
+      </p>
+      <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:18px;margin:0 0 22px;">
+        <div style="font-size:13px;line-height:1.85;color:#C9BFA8;">
+          <div style="margin-bottom:8px;">
+            ✓ <strong>חויבת ב-${args.price} ${symbol}</strong> עבור ה${cycleWord} הקרוב
+          </div>
+          <div>
+            ✓ <strong>המנוי ה${planLabel} חודש</strong> — הגישה נמשכת ללא הפסקה
+          </div>
+        </div>
+      </div>
+      <h3 style="font-size:14px;margin:24px 0 8px;color:#F5EFE6;font-weight:600;">הגישה תקפה עד</h3>
+      <div style="background:#2A211A;border:1px solid rgba(212,165,116,0.35);border-radius:8px;padding:16px;margin:0 0 22px;">
+        <div style="font-size:20px;color:#D4A574;font-weight:700;">${newExpiresStr}</div>
+        <div style="margin-top:6px;font-size:11px;color:#8B8170;">החיוב ה${planLabel} הבא יתבצע אוטומטית בסמוך לתאריך זה.</div>
+      </div>
+      <h3 style="font-size:14px;margin:0 0 8px;color:#F5EFE6;font-weight:600;">המפתח שלך</h3>
+      <p style="font-size:12px;line-height:1.6;margin:0 0 10px;color:#8B8170;">
+        אותו מפתח נשאר — אין צורך להזין משהו חדש בתוכנה.
+      </p>
+      <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:16px;margin:0 0 22px;">
+        <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:18px;color:#D4A574;letter-spacing:0.08em;font-weight:700;">${args.key}</div>
+      </div>
+      <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
+        אפשר לנהל או לבטל את המנוי בכל עת מ-<a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/account</a>.
+      </p>
+      <p style="margin:0;font-size:11px;color:#5C5444;">
+        מנוי ID: <span dir="ltr">${args.subscriptionId}</span>
+      </p>
+    `,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    subject: `✓ המנוי ה${planLabel} שלך חודש — ניהול הורדות פלוס`,
     html,
   })
 }
