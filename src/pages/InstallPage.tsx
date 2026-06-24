@@ -97,8 +97,8 @@ export default function InstallPage() {
 
         <h1 className="mt-4 text-center text-2xl font-bold">
           {isMac
-            ? 'פתיחת התוכנה בפעם הראשונה ב-Mac'
-            : 'התקנת התוכנה ב-Windows'}
+            ? 'התקנת התוכנה בפעם הראשונה ב-Mac'
+            : 'התקנת התוכנה בפעם הראשונה ב-Windows'}
         </h1>
         <p className="mx-auto mt-2 max-w-md text-center text-sm leading-relaxed text-muted-foreground">
           ההורדה מתחילה אוטומטית ✓ — רק שלב קטן וחד-פעמי לפני שמתחילים.
