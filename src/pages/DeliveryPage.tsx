@@ -246,6 +246,22 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
     return () => clearTimeout(t)
   }, [ready])
 
+  // "Download all" — fire every presigned download in the SAME click gesture
+  // (synchronous, no setTimeout) so the browser treats them as one
+  // user-initiated multi-download (it asks once to allow multiple files)
+  // instead of blocking the later ones as "automatic". Each R2 URL is served
+  // Content-Disposition: attachment, so they save rather than navigate.
+  const downloadAll = () => {
+    for (const v of data.videos) {
+      const a = document.createElement('a')
+      a.href = v.downloadUrl
+      a.rel = 'noopener'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    }
+  }
+
   return (
     <div className="space-y-8">
       {!ready && (
@@ -266,6 +282,17 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
             <Clock className="h-3.5 w-3.5" />
             {expiryText(data.expiresAt)}
           </p>
+          {data.videos.length > 1 && (
+            <div className="mt-5">
+              <button
+                onClick={downloadAll}
+                className="inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 transition-opacity hover:opacity-90"
+              >
+                <DownloadIcon className="h-4 w-4" />
+                הורדת כל הקבצים
+              </button>
+            </div>
+          )}
         </header>
 
         <div className="space-y-8">
