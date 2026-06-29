@@ -39,6 +39,7 @@ interface AdminUsage {
     usedBytes?: number
     usedGb?: number
     roundCount?: number
+    deliveryCount?: number
     freeStorageGb?: number
     costStorage?: number
     costTotal?: number
@@ -377,6 +378,9 @@ function R2Panel({ r2 }: { r2: NonNullable<AdminUsage['r2']> }) {
             {fmtGb(usedGb)} GB
             {r2.roundCount != null && (
               <span className="text-fg-faint"> · {r2.roundCount} סבבים</span>
+            )}
+            {r2.deliveryCount != null && r2.deliveryCount > 0 && (
+              <span className="text-fg-faint"> · {r2.deliveryCount} מסירות</span>
             )}
           </span>
         </div>

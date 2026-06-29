@@ -4820,6 +4820,21 @@ async function fetchR2Usage() {
         roundCount += 1
       }
     }
+    // Client deliveries live in their own collection but share the SAME R2 quota
+    // pool, so the dashboard must count them too (it previously showed revisions
+    // only, under-reporting real storage). Each delivery doc holds videos[].
+    let deliveryBytes = 0
+    let deliveryCount = 0
+    const delivSnap = await getDb().collection('deliveries').get()
+    for (const d of delivSnap.docs) {
+      const del = d.data() as { videos?: Array<{ sizeBytes?: number }>; status?: string }
+      if (del.status === 'deleted') continue
+      for (const v of del.videos || []) {
+        deliveryBytes += Number(v.sizeBytes) || 0
+        deliveryCount += 1
+      }
+    }
+    usedBytes += deliveryBytes
     const usedGb = usedBytes / BYTES_PER_GB
     const billableGb = Math.max(0, usedGb - R2_FREE_STORAGE_GB)
     const costStorage = billableGb * R2_STORAGE_USD_PER_GB_MONTH
@@ -4830,6 +4845,8 @@ async function fetchR2Usage() {
       usedBytes,
       usedGb,
       roundCount,
+      deliveryBytes,
+      deliveryCount,
       freeStorageGb: R2_FREE_STORAGE_GB,
       costStorage,
       costTotal,

@@ -328,8 +328,13 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
                     src={v.streamUrl}
                     controls
                     playsInline
-                    preload="auto"
-                    onCanPlay={i === 0 ? () => setReady(true) : undefined}
+                    // "metadata" (not "auto") + reveal on loadedmetadata: don't
+                    // pre-buffer the whole file before showing the page — load just
+                    // the header, reveal immediately, and stream the rest on play
+                    // (R2 presigned URLs serve HTTP Range). Heavy files no longer
+                    // stall the page until fully downloaded.
+                    preload="metadata"
+                    onLoadedMetadata={i === 0 ? () => setReady(true) : undefined}
                     onError={() => markErrored(i)}
                     className="block max-h-[78vh] w-full bg-black"
                   />

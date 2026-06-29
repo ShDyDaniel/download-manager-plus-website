@@ -25,6 +25,8 @@ import {
   FileVideo,
   Download as DownloadIcon,
   RefreshCw,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react'
 
 /**
@@ -1606,6 +1608,27 @@ function ReviewWorkspace({
   }, [refreshNotes])
 
   const videoRef = useRef<HTMLVideoElement>(null)
+  // Fullscreen the player WRAPPER (not the bare <video>) so the watermark
+  // overlay — a sibling of the video — stays on screen in fullscreen. The
+  // native video fullscreen button only blows up the <video>, dropping any
+  // overlay; so we suppress it (controlsList="nofullscreen") and drive
+  // fullscreen ourselves on the wrapper. (iOS Safari forces its own native
+  // player for video fullscreen and can't host the overlay — there the video
+  // simply stays inline with the watermark visible.)
+  const playerWrapRef = useRef<HTMLDivElement>(null)
+  const [isFs, setIsFs] = useState(false)
+  useEffect(() => {
+    const onChange = () => setIsFs(Boolean(document.fullscreenElement))
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen?.()
+    } else {
+      void playerWrapRef.current?.requestFullscreen?.()
+    }
+  }, [])
 
   const [composer, setComposer] = useState<
     | null
@@ -1961,8 +1984,17 @@ function ReviewWorkspace({
               This means portrait videos look natural (small centered
               rectangle on a black backdrop) instead of huge wasted
               side-bars. */}
-          <div className="relative overflow-hidden rounded-2xl border border-white/5 bg-black">
-            <div className="flex max-h-[72vh] items-center justify-center">
+          <div
+            ref={playerWrapRef}
+            className={`relative overflow-hidden border border-white/5 bg-black ${
+              isFs ? 'flex h-full w-full items-center justify-center rounded-none' : 'rounded-2xl'
+            }`}
+          >
+            <div
+              className={`flex items-center justify-center ${
+                isFs ? 'h-full w-full' : 'max-h-[72vh]'
+              }`}
+            >
               <video
                 ref={videoRef}
                 src={streamUrl}
@@ -1979,9 +2011,12 @@ function ReviewWorkspace({
                 // dedicated "הורדה" button below the player
                 // that hits a SEPARATE attachment-disposition
                 // URL for a proper save.
-                controlsList="nodownload"
+                // When the watermark is on we must keep the viewer inside our
+                // wrapper-fullscreen (which preserves the overlay), so we hide
+                // the native video fullscreen button and offer our own below.
+                controlsList={`nodownload${project.watermark ? ' nofullscreen' : ''}`}
                 onContextMenu={(e) => e.preventDefault()}
-                className="block max-h-[72vh] w-auto max-w-full"
+                className={`block w-auto max-w-full ${isFs ? 'max-h-full' : 'max-h-[72vh]'}`}
               />
             </div>
             {/* Watermark is per-project — editor decides whether the
@@ -1989,6 +2024,22 @@ function ReviewWorkspace({
                 for new projects; can be flipped off from the edit
                 modal when the editor trusts the client. */}
             {project.watermark && <Watermark email={viewerEmail} />}
+            {/* Custom fullscreen toggle — fullscreens the WRAPPER so the
+                watermark survives (the native button would drop it). */}
+            {project.watermark && (
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                aria-label={isFs ? 'יציאה ממסך מלא' : 'מסך מלא'}
+                className="absolute bottom-3 left-3 z-10 rounded-lg bg-black/55 p-2 text-white/80 backdrop-blur transition hover:bg-black/75 hover:text-white"
+              >
+                {isFs ? (
+                  <Minimize2 className="h-4 w-4" strokeWidth={2} />
+                ) : (
+                  <Maximize2 className="h-4 w-4" strokeWidth={2} />
+                )}
+              </button>
+            )}
           </div>
 
           {/* Optional toggleable affordances — both render only
