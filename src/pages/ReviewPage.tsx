@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
@@ -1636,12 +1637,20 @@ function ReviewWorkspace({
       document.body.style.overflow = prev
     }
   }, [pseudoFs])
+  // When the player is portaled in/out for pseudo-fullscreen the <video>
+  // remounts, so remember where we were and resume on the new element.
+  const resumeRef = useRef<{ time: number; playing: boolean } | null>(null)
+  const rememberPlayback = () => {
+    const v = videoRef.current
+    if (v) resumeRef.current = { time: v.currentTime, playing: !v.paused }
+  }
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
       void document.exitFullscreen?.()
       return
     }
     if (pseudoFs) {
+      rememberPlayback()
       setPseudoFs(false)
       return
     }
@@ -1652,7 +1661,9 @@ function ReviewWorkspace({
       return
     }
     // iOS → CSS pseudo-fullscreen (watermark stays on top, unlike the native
-    // iOS video player which would drop it).
+    // iOS video player which would drop it). Portaled to <body> so it escapes
+    // any transformed ancestor and truly fills the viewport.
+    rememberPlayback()
     setPseudoFs(true)
   }, [pseudoFs])
 
@@ -2010,62 +2021,82 @@ function ReviewWorkspace({
               This means portrait videos look natural (small centered
               rectangle on a black backdrop) instead of huge wasted
               side-bars. */}
-          <div
-            ref={playerWrapRef}
-            className={`relative overflow-hidden border border-white/5 bg-black ${
-              fsActive ? 'flex items-center justify-center rounded-none' : 'rounded-2xl'
-            } ${isFs ? 'h-full w-full' : ''} ${
-              pseudoFs ? 'fixed inset-0 z-[100] h-screen w-screen' : ''
-            }`}
-          >
-            <div
-              className={`flex items-center justify-center ${
-                fsActive ? 'h-full w-full' : 'max-h-[72vh]'
-              }`}
-            >
-              {/* Video-box: shrinks to the video itself, so the watermark
-                  overlays exactly the VIDEO (not the letterbox bars). This keeps
-                  the watermark looking IDENTICAL windowed vs fullscreen instead
-                  of spreading across the whole black screen. */}
-              <div className="relative flex max-w-full">
-                <video
-                  ref={videoRef}
-                  src={streamUrl}
-                  controls
-                  crossOrigin="anonymous"
-                  playsInline
-                  // We always disable Chrome's built-in download menu — its UX is
-                  // inconsistent across browsers and the stream is inline-disposition
-                  // anyway. The "Allow download" toggle adds a dedicated button below.
-                  // With a watermark on we also hide the native fullscreen button
-                  // (controlsList + CSS) and drive fullscreen from our own button so
-                  // the overlay survives.
-                  controlsList={`nodownload${project.watermark ? ' nofullscreen' : ''}`}
-                  onContextMenu={(e) => e.preventDefault()}
-                  className={`review-video block w-auto max-w-full ${project.watermark ? 'hide-native-fs' : ''} ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`}
-                />
-                {/* Watermark is per-project. Inside the video-box so it tracks
-                    the video in every mode. */}
-                {project.watermark && <Watermark email={viewerEmail} />}
-                {/* Custom fullscreen toggle — real fullscreen on desktop/Android,
-                    CSS pseudo-fullscreen on iOS; both keep the watermark. */}
-                {project.watermark && (
-                  <button
-                    type="button"
-                    onClick={toggleFullscreen}
-                    aria-label={fsActive ? 'יציאה ממסך מלא' : 'מסך מלא'}
-                    className="absolute top-3 left-3 z-10 rounded-lg bg-black/55 p-2 text-white/80 backdrop-blur transition hover:bg-black/75 hover:text-white"
-                  >
-                    {fsActive ? (
-                      <Minimize2 className="h-4 w-4" strokeWidth={2} />
-                    ) : (
-                      <Maximize2 className="h-4 w-4" strokeWidth={2} />
+          {(() => {
+            const surface = (
+              <div
+                ref={playerWrapRef}
+                className={`relative overflow-hidden border border-white/5 bg-black ${
+                  fsActive ? 'flex items-center justify-center rounded-none' : 'rounded-2xl'
+                } ${isFs ? 'h-full w-full' : ''} ${
+                  pseudoFs ? 'fixed inset-0 z-[100] h-[100dvh] w-screen' : ''
+                }`}
+              >
+                <div
+                  className={`flex items-center justify-center ${
+                    fsActive ? 'h-full w-full' : 'max-h-[72vh]'
+                  }`}
+                >
+                  {/* Video-box: shrinks to the video itself, so the watermark
+                      overlays exactly the VIDEO (not the letterbox bars). Keeps the
+                      watermark IDENTICAL windowed vs fullscreen. */}
+                  <div className="relative flex max-w-full">
+                    <video
+                      ref={videoRef}
+                      src={streamUrl}
+                      controls
+                      crossOrigin="anonymous"
+                      playsInline
+                      // Disable Chrome's download menu (inconsistent + stream is
+                      // inline-disposition anyway). With a watermark on we also hide
+                      // the native fullscreen button and drive fullscreen ourselves
+                      // so the overlay survives.
+                      controlsList={`nodownload${project.watermark ? ' nofullscreen' : ''}`}
+                      onContextMenu={(e) => e.preventDefault()}
+                      onLoadedMetadata={() => {
+                        // After a pseudo-fullscreen portal remount, resume where
+                        // we were.
+                        const r = resumeRef.current
+                        const v = videoRef.current
+                        if (r && v) {
+                          try {
+                            v.currentTime = r.time
+                          } catch {
+                            /* ignore */
+                          }
+                          if (r.playing) void v.play().catch(() => {})
+                          resumeRef.current = null
+                        }
+                      }}
+                      className={`review-video block w-auto max-w-full ${project.watermark ? 'hide-native-fs' : ''} ${fsActive ? 'max-h-[100dvh]' : 'max-h-[72vh]'}`}
+                    />
+                    {/* Watermark is per-project. Inside the video-box so it tracks
+                        the video in every mode. */}
+                    {project.watermark && <Watermark email={viewerEmail} />}
+                    {/* Custom fullscreen toggle — real fullscreen on desktop/Android,
+                        CSS pseudo-fullscreen (portaled to <body>) on iOS; both keep
+                        the watermark. */}
+                    {project.watermark && (
+                      <button
+                        type="button"
+                        onClick={toggleFullscreen}
+                        aria-label={fsActive ? 'יציאה ממסך מלא' : 'מסך מלא'}
+                        className="absolute top-3 left-3 z-10 rounded-lg bg-black/55 p-2 text-white/80 backdrop-blur transition hover:bg-black/75 hover:text-white"
+                      >
+                        {fsActive ? (
+                          <Minimize2 className="h-4 w-4" strokeWidth={2} />
+                        ) : (
+                          <Maximize2 className="h-4 w-4" strokeWidth={2} />
+                        )}
+                      </button>
                     )}
-                  </button>
-                )}
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            )
+            // iOS pseudo-fullscreen must escape any transformed ancestor (which
+            // would confine position:fixed), so render it straight into <body>.
+            return pseudoFs ? createPortal(surface, document.body) : surface
+          })()}
 
           {/* Optional toggleable affordances — both render only
               when the editor explicitly enabled the matching
