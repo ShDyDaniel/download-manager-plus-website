@@ -423,6 +423,8 @@ export interface CreateGroupInput {
   videoFileName: string
   videoSizeBytes: number
   videoMime: string
+  videoWidth?: number
+  videoHeight?: number
   password?: string
   roundNumber?: number
   watermark?: boolean
@@ -481,6 +483,8 @@ export interface AddRoundInput {
   videoFileName: string
   videoSizeBytes: number
   videoMime: string
+  videoWidth?: number
+  videoHeight?: number
   roundNumber?: number
 }
 
@@ -846,6 +850,34 @@ export interface DeliveryVideoInput {
   name: string
   sizeBytes: number
   mime: string
+  width?: number
+  height?: number
+}
+
+/** Read a video file's pixel dimensions in the browser via a throwaway <video>
+ *  element, so the upload can store the aspect ratio (the player then reserves
+ *  the right box before the video loads — no layout jump). Resolves {0,0} on any
+ *  failure so it never blocks an upload. */
+export function readVideoDims(
+  file: File,
+): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    try {
+      const url = URL.createObjectURL(file)
+      const v = document.createElement('video')
+      v.preload = 'metadata'
+      v.muted = true
+      const done = (w: number, h: number) => {
+        URL.revokeObjectURL(url)
+        resolve({ width: w, height: h })
+      }
+      v.onloadedmetadata = () => done(v.videoWidth || 0, v.videoHeight || 0)
+      v.onerror = () => done(0, 0)
+      v.src = url
+    } catch {
+      resolve({ width: 0, height: 0 })
+    }
+  })
 }
 
 /** A delivery row as the list returns it (mirror of the server's

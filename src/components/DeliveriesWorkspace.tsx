@@ -28,6 +28,7 @@ import {
   formatStorageSize,
   importDriveLinkToR2,
   listDeliveries,
+  readVideoDims,
   type DeliveryRow,
 } from '../lib/revisionsApi'
 import { uploadFileToR2 } from '../lib/r2Upload'
@@ -514,11 +515,16 @@ function DeliveryComposerModal({
         name: string
         sizeBytes: number
         mime: string
+        width?: number
+        height?: number
       }> = []
       for (let i = 0; i < staged.length; i++) {
         const item = staged[i]
         if (item.kind === 'file') {
           setProgress({ idx: i, total: staged.length, frac: 0 })
+          // Read the pixel dimensions before upload so the player can reserve
+          // the right aspect ratio (no layout jump when the video loads).
+          const dims = await readVideoDims(item.file)
           const { key, sizeBytes } = await uploadFileToR2(item.file, {
             initAction: 'delivery-upload-init',
             onProgress: (frac) =>
@@ -529,6 +535,9 @@ function DeliveryComposerModal({
             name: item.file.name,
             sizeBytes,
             mime: item.file.type || 'application/octet-stream',
+            ...(dims.width && dims.height
+              ? { width: dims.width, height: dims.height }
+              : {}),
           })
         } else {
           // Drive link → Cloudflare streams it straight into finals/.

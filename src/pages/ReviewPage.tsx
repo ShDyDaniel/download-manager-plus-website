@@ -102,6 +102,11 @@ interface ProjectInfo {
   watermark: boolean
   allowDownload: boolean
   driveViewUrl: string | null
+  /** Pixel dimensions of the round's video (0 when unknown) → the player
+   *  reserves the aspect ratio before the video loads, so it doesn't resize
+   *  when the first frame arrives. */
+  videoWidth?: number
+  videoHeight?: number
   /** Present when this round is part of a multi-round group. The
    *  workspace uses it to render the "back to picker" affordance
    *  and so subsequent fetches that need a roundId can grab it
@@ -2031,13 +2036,23 @@ function ReviewWorkspace({
                   controls
                   crossOrigin="anonymous"
                   playsInline
+                  // Intrinsic dimensions (when known) reserve the correct aspect
+                  // ratio BEFORE the video loads — no resize/jump when the first
+                  // frame arrives. CSS max-w/max-h then scale it down to fit.
+                  width={project.videoWidth || undefined}
+                  height={project.videoHeight || undefined}
+                  style={
+                    project.videoWidth && project.videoHeight
+                      ? { aspectRatio: `${project.videoWidth} / ${project.videoHeight}` }
+                      : undefined
+                  }
                   // Disable Chrome's download menu (inconsistent + stream is
                   // inline-disposition anyway). With a watermark on we also hide the
                   // native fullscreen button and drive fullscreen ourselves so the
                   // overlay survives (desktop/Android).
                   controlsList={`nodownload${project.watermark && supportsElementFs ? ' nofullscreen' : ''}`}
                   onContextMenu={(e) => e.preventDefault()}
-                  className={`review-video block w-auto max-w-full ${project.watermark && supportsElementFs ? 'hide-native-fs' : ''} ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`}
+                  className={`review-video block h-auto w-auto max-w-full ${project.watermark && supportsElementFs ? 'hide-native-fs' : ''} ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`}
                 />
                 {/* Watermark is per-project. Inside the video-box so it tracks the
                     video in every mode. */}

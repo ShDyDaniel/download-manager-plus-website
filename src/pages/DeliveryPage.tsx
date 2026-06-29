@@ -34,6 +34,8 @@ interface DeliveryVideo {
   sizeBytes: number
   streamUrl: string
   downloadUrl: string
+  width?: number
+  height?: number
 }
 interface DeliveryData {
   title: string
@@ -313,6 +315,13 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
                     // The page is no longer gated on this, so a heavy file streams
                     // progressively with the player's own buffering spinner.
                     preload="metadata"
+                    // Reserve the correct aspect ratio BEFORE the video loads (from
+                    // the stored dimensions) so the player doesn't resize/jump when
+                    // the first frame arrives. Falls back to 16/9 when unknown.
+                    style={{
+                      aspectRatio:
+                        v.width && v.height ? `${v.width} / ${v.height}` : '16 / 9',
+                    }}
                     onError={() => markErrored(i)}
                     className="block max-h-[78vh] w-full bg-black"
                   />

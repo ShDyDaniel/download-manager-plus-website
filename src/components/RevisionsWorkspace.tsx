@@ -71,6 +71,7 @@ import {
   listGroupsForOwner,
   listRoundsForOwner,
   listNotesAsOwner,
+  readVideoDims,
   touchWebSeenOnce,
   replaceProjectVideo,
   updateGroup,
@@ -115,6 +116,8 @@ async function uploadRoundVideo(
   videoFileName: string
   videoSizeBytes: number
   videoMime: string
+  videoWidth?: number
+  videoHeight?: number
 }> {
   if (backend === 'drive') {
     const at = await fetchDriveAccessToken()
@@ -122,6 +125,7 @@ async function uploadRoundVideo(
     const folders = await ensureProjectFolders(at.accessToken)
     if (signal.aborted) throw new Error('ההעלאה בוטלה')
     if (source.kind === 'upload') {
+      const dims = await readVideoDims(source.file)
       const upload = await uploadFileToDrive({
         accessToken: at.accessToken,
         file: source.file,
@@ -138,6 +142,8 @@ async function uploadRoundVideo(
         videoFileName: source.file.name,
         videoSizeBytes: source.file.size,
         videoMime: source.file.type || 'video/mp4',
+        videoWidth: dims.width || undefined,
+        videoHeight: dims.height || undefined,
       }
     }
     if (source.kind === 'drive') {
@@ -206,6 +212,7 @@ async function uploadRoundVideo(
     // failure to FETCH the quota should be swallowed.
     if (e instanceof Error && e.message.includes('אין מספיק מקום')) throw e
   }
+  const dims = await readVideoDims(source.file)
   const up = await uploadFileToR2(source.file, {
     signal,
     onProgress: (f) =>
@@ -220,6 +227,8 @@ async function uploadRoundVideo(
     videoFileName: source.file.name,
     videoSizeBytes: up.sizeBytes || source.file.size,
     videoMime: source.file.type || 'video/mp4',
+    videoWidth: dims.width || undefined,
+    videoHeight: dims.height || undefined,
   }
 }
 
@@ -1674,6 +1683,8 @@ function NewProjectModal({
         videoFileName,
         videoSizeBytes,
         videoMime,
+        videoWidth: loc.videoWidth,
+        videoHeight: loc.videoHeight,
         password: password || undefined,
         roundNumber: 1,
         watermark,
@@ -1856,6 +1867,8 @@ function AddRoundModal({
         videoFileName: loc.videoFileName,
         videoSizeBytes: loc.videoSizeBytes,
         videoMime: loc.videoMime,
+        videoWidth: loc.videoWidth,
+        videoHeight: loc.videoHeight,
       })
       onAdded()
     } catch (err) {

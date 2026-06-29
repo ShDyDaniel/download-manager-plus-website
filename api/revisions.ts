@@ -2521,6 +2521,8 @@ async function handleCreateProjectGroup(
     videoFileName?: string
     videoSizeBytes?: number
     videoMime?: string
+    videoWidth?: number
+    videoHeight?: number
     roundNumber?: number
     // Public-review-page toggles, settable at creation time so
     // the editor can pre-configure a project without having to
@@ -2634,6 +2636,9 @@ async function handleCreateProjectGroup(
       videoFileName,
       videoSizeBytes,
       videoMime,
+      // Pixel dimensions → player reserves the aspect ratio pre-load. 0 = unknown.
+      videoWidth: Math.max(0, Math.floor(Number(body.videoWidth) || 0)),
+      videoHeight: Math.max(0, Math.floor(Number(body.videoHeight) || 0)),
       videoStatus: 'ready',
       roundNumber,
       locked: false,
@@ -2691,6 +2696,8 @@ async function handleAddRoundToGroup(
     videoFileName?: string
     videoSizeBytes?: number
     videoMime?: string
+    videoWidth?: number
+    videoHeight?: number
     roundNumber?: number
   }
   const verified = await verifyOwnerAuth(req)
@@ -2755,6 +2762,9 @@ async function handleAddRoundToGroup(
     videoFileName: String(body.videoFileName || '').trim().slice(0, 300),
     videoSizeBytes,
     videoMime: String(body.videoMime || '').trim().slice(0, 100),
+    // Pixel dimensions → player reserves the aspect ratio pre-load. 0 = unknown.
+    videoWidth: Math.max(0, Math.floor(Number(body.videoWidth) || 0)),
+    videoHeight: Math.max(0, Math.floor(Number(body.videoHeight) || 0)),
     videoStatus: 'ready',
     roundNumber,
     locked: false,
@@ -3357,6 +3367,8 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
             embedUrl: null,
             videoSizeBytes: Number(selectedRoundData.videoSizeBytes) || 0,
             videoMime: String(selectedRoundData.videoMime || ''),
+            videoWidth: Number(selectedRoundData.videoWidth) || 0,
+            videoHeight: Number(selectedRoundData.videoHeight) || 0,
             createdAt: selectedRound.createdAt,
             locked: selectedRound.locked,
             clientFinalizedBy: String(
@@ -3422,6 +3434,10 @@ async function handleGetProject(req: VercelRequest, res: VercelResponse) {
       embedUrl: null,
       videoSizeBytes: project.videoSizeBytes,
       videoMime: project.videoMime,
+      videoWidth:
+        Number((project as { videoWidth?: number }).videoWidth) || 0,
+      videoHeight:
+        Number((project as { videoHeight?: number }).videoHeight) || 0,
       createdAt: project.createdAt,
       // Legacy single-round projects pre-date the per-project
       // settings — they always get the original ship defaults
@@ -6329,6 +6345,10 @@ interface DeliveryVideo {
   name: string
   sizeBytes: number
   mime: string
+  // Pixel dimensions (when known) → lets the player reserve the aspect ratio
+  // before the video loads. 0 when unknown (e.g. Drive imports).
+  width?: number
+  height?: number
 }
 
 // Start a multipart upload for a DELIVERY video — its own init so the
@@ -6407,6 +6427,8 @@ async function handleDeliveryCreate(req: VercelRequest, res: VercelResponse) {
       name?: string
       sizeBytes?: number
       mime?: string
+      width?: number
+      height?: number
     }>
   }
   const title = String(body.title || '').trim().slice(0, 200)
@@ -6425,12 +6447,15 @@ async function handleDeliveryCreate(req: VercelRequest, res: VercelResponse) {
     if (!keyBelongsToUser(r2Key, verified.uid)) {
       return res.status(403).json({ ok: false, error: 'forbidden key' })
     }
+    const w = Math.max(0, Math.min(100000, Math.floor(Number(v?.width) || 0)))
+    const h = Math.max(0, Math.min(100000, Math.floor(Number(v?.height) || 0)))
     videos.push({
       r2Key,
       name: String(v?.name || 'video').trim().slice(0, 300),
       // Quota-safe: real R2 object size, not the client number.
       sizeBytes: await authoritativeVideoSize(r2Key, v?.sizeBytes),
       mime: String(v?.mime || '').trim().slice(0, 100),
+      ...(w > 0 && h > 0 ? { width: w, height: h } : {}),
     })
   }
   if (videos.length === 0) {
@@ -6603,6 +6628,8 @@ async function handleDeliveryView(req: VercelRequest, res: VercelResponse) {
     sizeBytes: number
     streamUrl: string
     downloadUrl: string
+    width?: number
+    height?: number
   }> = []
   for (const v of videos) {
     try {
@@ -6636,6 +6663,9 @@ async function handleDeliveryView(req: VercelRequest, res: VercelResponse) {
         sizeBytes: Number(v.sizeBytes) || 0,
         streamUrl,
         downloadUrl,
+        ...(Number(v.width) > 0 && Number(v.height) > 0
+          ? { width: Number(v.width), height: Number(v.height) }
+          : {}),
       })
     } catch (e) {
       console.warn('[delivery-view] presign failed:', v.r2Key, e)
