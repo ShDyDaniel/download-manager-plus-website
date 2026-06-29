@@ -415,3 +415,11 @@ html.a11y-focus *:focus {
   outline: 3px solid #f0c896 !important;
   outline-offset: 2px !important;
 }
+
+/* Watermarked review player: hide the BROWSER's native fullscreen button so
+ * only our custom button (which fullscreens the wrapper + keeps the watermark
+ * overlay) is shown. controlsList="nofullscreen" alone isn't honored by every
+ * browser, so we also force-hide the WebKit/Chromium control. */
+video.hide-native-fs::-webkit-media-controls-fullscreen-button {
+  display: none !important;
+}

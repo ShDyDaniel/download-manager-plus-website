@@ -1625,9 +1625,21 @@ function ReviewWorkspace({
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
       void document.exitFullscreen?.()
-    } else {
-      void playerWrapRef.current?.requestFullscreen?.()
+      return
     }
+    const wrap = playerWrapRef.current
+    // Desktop + Android: fullscreen the WRAPPER so the watermark overlay shows.
+    if (wrap?.requestFullscreen) {
+      void wrap.requestFullscreen()
+      return
+    }
+    // iOS Safari has no element.requestFullscreen — the only fullscreen it
+    // offers is the native VIDEO player (no overlay possible). Fall back to it
+    // so the button at least works on iPhone.
+    const v = videoRef.current as
+      | (HTMLVideoElement & { webkitEnterFullscreen?: () => void })
+      | null
+    v?.webkitEnterFullscreen?.()
   }, [])
 
   const [composer, setComposer] = useState<
@@ -2016,7 +2028,7 @@ function ReviewWorkspace({
                 // the native video fullscreen button and offer our own below.
                 controlsList={`nodownload${project.watermark ? ' nofullscreen' : ''}`}
                 onContextMenu={(e) => e.preventDefault()}
-                className={`block w-auto max-w-full ${isFs ? 'max-h-full' : 'max-h-[72vh]'}`}
+                className={`review-video block w-auto max-w-full ${project.watermark ? 'hide-native-fs' : ''} ${isFs ? 'max-h-full' : 'max-h-[72vh]'}`}
               />
             </div>
             {/* Watermark is per-project — editor decides whether the
@@ -2031,7 +2043,7 @@ function ReviewWorkspace({
                 type="button"
                 onClick={toggleFullscreen}
                 aria-label={isFs ? 'יציאה ממסך מלא' : 'מסך מלא'}
-                className="absolute bottom-3 left-3 z-10 rounded-lg bg-black/55 p-2 text-white/80 backdrop-blur transition hover:bg-black/75 hover:text-white"
+                className="absolute top-3 left-3 z-10 rounded-lg bg-black/55 p-2 text-white/80 backdrop-blur transition hover:bg-black/75 hover:text-white"
               >
                 {isFs ? (
                   <Minimize2 className="h-4 w-4" strokeWidth={2} />

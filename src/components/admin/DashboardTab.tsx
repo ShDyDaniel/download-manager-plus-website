@@ -374,13 +374,22 @@ function R2Panel({ r2 }: { r2: NonNullable<AdminUsage['r2']> }) {
       <div>
         <div className="mb-1.5 flex items-center justify-between text-xs">
           <span className="text-fg-muted">אחסון בשימוש</span>
-          <span className="tabular-nums text-fg" dir="ltr">
-            {fmtGb(usedGb)} GB
+          {/* Hebrew words + Latin numbers in one line → isolate every number
+              in <bdi dir="ltr"> so bidi doesn't swap the counts (the codebase
+              pattern). Container stays RTL so "3 סבבים · 2 מסירות" reads right. */}
+          <span className="tabular-nums text-fg">
+            <bdi dir="ltr">{fmtGb(usedGb)} GB</bdi>
             {r2.roundCount != null && (
-              <span className="text-fg-faint"> · {r2.roundCount} סבבים</span>
+              <span className="text-fg-faint">
+                {' · '}
+                <bdi dir="ltr">{r2.roundCount}</bdi> סבבים
+              </span>
             )}
             {r2.deliveryCount != null && r2.deliveryCount > 0 && (
-              <span className="text-fg-faint"> · {r2.deliveryCount} מסירות</span>
+              <span className="text-fg-faint">
+                {' · '}
+                <bdi dir="ltr">{r2.deliveryCount}</bdi> מסירות
+              </span>
             )}
           </span>
         </div>
