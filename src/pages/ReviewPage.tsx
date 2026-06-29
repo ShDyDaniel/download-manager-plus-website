@@ -2036,6 +2036,11 @@ function ReviewWorkspace({
                   controls
                   crossOrigin="anonymous"
                   playsInline
+                  // Stream progressively: load just the header, then fetch the rest
+                  // on demand over HTTP Range (the stream Worker honors Range). The
+                  // player shows the first frame fast and buffers while playing,
+                  // instead of pre-downloading the whole file.
+                  preload="metadata"
                   // Intrinsic dimensions (when known) reserve the correct aspect
                   // ratio BEFORE the video loads — no resize/jump when the first
                   // frame arrives. CSS max-w/max-h then scale it down to fit.
