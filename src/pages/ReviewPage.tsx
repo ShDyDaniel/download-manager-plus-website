@@ -1617,30 +1617,44 @@ function ReviewWorkspace({
   // simply stays inline with the watermark visible.)
   const playerWrapRef = useRef<HTMLDivElement>(null)
   const [isFs, setIsFs] = useState(false)
+  // iOS Safari has no element.requestFullscreen (and its native VIDEO
+  // fullscreen can't host our overlay) — so on iOS we fake fullscreen with a
+  // fixed-inset CSS layer instead, which KEEPS the watermark visible.
+  const [pseudoFs, setPseudoFs] = useState(false)
+  const fsActive = isFs || pseudoFs
   useEffect(() => {
     const onChange = () => setIsFs(Boolean(document.fullscreenElement))
     document.addEventListener('fullscreenchange', onChange)
     return () => document.removeEventListener('fullscreenchange', onChange)
   }, [])
+  // Lock body scroll while the CSS pseudo-fullscreen layer is up.
+  useEffect(() => {
+    if (!pseudoFs) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prev
+    }
+  }, [pseudoFs])
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
       void document.exitFullscreen?.()
       return
     }
+    if (pseudoFs) {
+      setPseudoFs(false)
+      return
+    }
     const wrap = playerWrapRef.current
-    // Desktop + Android: fullscreen the WRAPPER so the watermark overlay shows.
+    // Desktop + Android: real fullscreen on the WRAPPER so the watermark shows.
     if (wrap?.requestFullscreen) {
       void wrap.requestFullscreen()
       return
     }
-    // iOS Safari has no element.requestFullscreen — the only fullscreen it
-    // offers is the native VIDEO player (no overlay possible). Fall back to it
-    // so the button at least works on iPhone.
-    const v = videoRef.current as
-      | (HTMLVideoElement & { webkitEnterFullscreen?: () => void })
-      | null
-    v?.webkitEnterFullscreen?.()
-  }, [])
+    // iOS → CSS pseudo-fullscreen (watermark stays on top, unlike the native
+    // iOS video player which would drop it).
+    setPseudoFs(true)
+  }, [pseudoFs])
 
   const [composer, setComposer] = useState<
     | null
@@ -1999,59 +2013,58 @@ function ReviewWorkspace({
           <div
             ref={playerWrapRef}
             className={`relative overflow-hidden border border-white/5 bg-black ${
-              isFs ? 'flex h-full w-full items-center justify-center rounded-none' : 'rounded-2xl'
+              fsActive ? 'flex items-center justify-center rounded-none' : 'rounded-2xl'
+            } ${isFs ? 'h-full w-full' : ''} ${
+              pseudoFs ? 'fixed inset-0 z-[100] h-screen w-screen' : ''
             }`}
           >
             <div
               className={`flex items-center justify-center ${
-                isFs ? 'h-full w-full' : 'max-h-[72vh]'
+                fsActive ? 'h-full w-full' : 'max-h-[72vh]'
               }`}
             >
-              <video
-                ref={videoRef}
-                src={streamUrl}
-                controls
-                crossOrigin="anonymous"
-                playsInline
-                // We always disable Chrome's built-in download
-                // menu — its UX is inconsistent across browsers
-                // (Safari hides it, Firefox renders it ugly) and
-                // the streaming URL is wrapped in
-                // Content-Disposition: inline which would
-                // anyway prevent it from working cleanly. The
-                // editor's "Allow download" toggle surfaces a
-                // dedicated "הורדה" button below the player
-                // that hits a SEPARATE attachment-disposition
-                // URL for a proper save.
-                // When the watermark is on we must keep the viewer inside our
-                // wrapper-fullscreen (which preserves the overlay), so we hide
-                // the native video fullscreen button and offer our own below.
-                controlsList={`nodownload${project.watermark ? ' nofullscreen' : ''}`}
-                onContextMenu={(e) => e.preventDefault()}
-                className={`review-video block w-auto max-w-full ${project.watermark ? 'hide-native-fs' : ''} ${isFs ? 'max-h-full' : 'max-h-[72vh]'}`}
-              />
-            </div>
-            {/* Watermark is per-project — editor decides whether the
-                viewer's email shows over the video. Defaults to on
-                for new projects; can be flipped off from the edit
-                modal when the editor trusts the client. */}
-            {project.watermark && <Watermark email={viewerEmail} />}
-            {/* Custom fullscreen toggle — fullscreens the WRAPPER so the
-                watermark survives (the native button would drop it). */}
-            {project.watermark && (
-              <button
-                type="button"
-                onClick={toggleFullscreen}
-                aria-label={isFs ? 'יציאה ממסך מלא' : 'מסך מלא'}
-                className="absolute top-3 left-3 z-10 rounded-lg bg-black/55 p-2 text-white/80 backdrop-blur transition hover:bg-black/75 hover:text-white"
-              >
-                {isFs ? (
-                  <Minimize2 className="h-4 w-4" strokeWidth={2} />
-                ) : (
-                  <Maximize2 className="h-4 w-4" strokeWidth={2} />
+              {/* Video-box: shrinks to the video itself, so the watermark
+                  overlays exactly the VIDEO (not the letterbox bars). This keeps
+                  the watermark looking IDENTICAL windowed vs fullscreen instead
+                  of spreading across the whole black screen. */}
+              <div className="relative flex max-w-full">
+                <video
+                  ref={videoRef}
+                  src={streamUrl}
+                  controls
+                  crossOrigin="anonymous"
+                  playsInline
+                  // We always disable Chrome's built-in download menu — its UX is
+                  // inconsistent across browsers and the stream is inline-disposition
+                  // anyway. The "Allow download" toggle adds a dedicated button below.
+                  // With a watermark on we also hide the native fullscreen button
+                  // (controlsList + CSS) and drive fullscreen from our own button so
+                  // the overlay survives.
+                  controlsList={`nodownload${project.watermark ? ' nofullscreen' : ''}`}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className={`review-video block w-auto max-w-full ${project.watermark ? 'hide-native-fs' : ''} ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`}
+                />
+                {/* Watermark is per-project. Inside the video-box so it tracks
+                    the video in every mode. */}
+                {project.watermark && <Watermark email={viewerEmail} />}
+                {/* Custom fullscreen toggle — real fullscreen on desktop/Android,
+                    CSS pseudo-fullscreen on iOS; both keep the watermark. */}
+                {project.watermark && (
+                  <button
+                    type="button"
+                    onClick={toggleFullscreen}
+                    aria-label={fsActive ? 'יציאה ממסך מלא' : 'מסך מלא'}
+                    className="absolute top-3 left-3 z-10 rounded-lg bg-black/55 p-2 text-white/80 backdrop-blur transition hover:bg-black/75 hover:text-white"
+                  >
+                    {fsActive ? (
+                      <Minimize2 className="h-4 w-4" strokeWidth={2} />
+                    ) : (
+                      <Maximize2 className="h-4 w-4" strokeWidth={2} />
+                    )}
+                  </button>
                 )}
-              </button>
-            )}
+              </div>
+            </div>
           </div>
 
           {/* Optional toggleable affordances — both render only
