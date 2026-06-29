@@ -223,28 +223,13 @@ export function DeliveryPage() {
  *    player once it can play, so the client never lands on a
  *    half-loaded/buffering player inside the page. ─────────────────── */
 function DeliveryReady({ data }: { data: DeliveryData }) {
-  // Reveal only when the first video can play (first frame + buffer
-  // ready). Until then we show a single "preparing" loader while the
-  // <video> below preloads (it's in the DOM but visually collapsed, so
-  // preload="auto" still fetches).
-  const [ready, setReady] = useState(data.videos.length === 0)
   // Videos the browser couldn't decode (e.g. a ProRes/HEVC .mov). We
   // swap those for a clean "download to view" card instead of a black
   // box, so the client always has a way to get the file.
   const [errored, setErrored] = useState<Record<number, boolean>>({})
   const markErrored = (i: number) => {
     setErrored((prev) => (prev[i] ? prev : { ...prev, [i]: true }))
-    if (i === 0) setReady(true)
   }
-
-  // Safety net: never strand the client on the loader. If `canplay`
-  // doesn't fire within 15s (slow line, codec quirk), reveal anyway —
-  // the native player + download button still work.
-  useEffect(() => {
-    if (ready) return
-    const t = setTimeout(() => setReady(true), 15000)
-    return () => clearTimeout(t)
-  }, [ready])
 
   // "Download all" — fire every presigned download in the SAME click gesture
   // (synchronous, no setTimeout) so the browser treats them as one
@@ -264,16 +249,11 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
 
   return (
     <div className="space-y-8">
-      {!ready && (
-        <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 text-center">
-          <Loader2 className="h-7 w-7 animate-spin text-primary" />
-          <p className="text-sm text-muted-foreground">מכין את הסרטון לצפייה…</p>
-        </div>
-      )}
-
-      {/* Kept in the DOM (so the video preloads) but collapsed +
-          invisible until ready, then revealed instantly. */}
-      <div className={ready ? 'space-y-8' : 'h-0 overflow-hidden opacity-0'}>
+      {/* Show the page IMMEDIATELY — never gate it behind the video loading.
+          Each <video> below streams on its own (preload="metadata" + HTTP Range)
+          and shows its own native buffering spinner, so a heavy file no longer
+          freezes the whole page until it's fully downloaded. */}
+      <div className="space-y-8">
         <header className="text-center">
           <h1 className="font-display text-3xl font-bold tracking-tight md:text-4xl">
             {data.title || 'הסרטונים שלך'}
@@ -328,13 +308,11 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
                     src={v.streamUrl}
                     controls
                     playsInline
-                    // "metadata" (not "auto") + reveal on loadedmetadata: don't
-                    // pre-buffer the whole file before showing the page — load just
-                    // the header, reveal immediately, and stream the rest on play
-                    // (R2 presigned URLs serve HTTP Range). Heavy files no longer
-                    // stall the page until fully downloaded.
+                    // "metadata" (not "auto"): load just the header, then stream the
+                    // rest on demand over HTTP Range (R2 presigned URLs support it).
+                    // The page is no longer gated on this, so a heavy file streams
+                    // progressively with the player's own buffering spinner.
                     preload="metadata"
-                    onLoadedMetadata={i === 0 ? () => setReady(true) : undefined}
                     onError={() => markErrored(i)}
                     className="block max-h-[78vh] w-full bg-black"
                   />
