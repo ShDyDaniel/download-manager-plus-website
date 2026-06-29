@@ -1618,6 +1618,17 @@ function ReviewWorkspace({
   const playerWrapRef = useRef<HTMLDivElement>(null)
   const [isFs, setIsFs] = useState(false)
   const fsActive = isFs
+  // Element (wrapper) fullscreen is supported on desktop/Android/iPad — there we
+  // show OUR button (it fullscreens the wrapper so the watermark survives) and
+  // hide the native one. On iPhone it's unsupported, so we hide our button and
+  // keep the system's native video fullscreen button instead.
+  const supportsElementFs =
+    typeof document !== 'undefined' &&
+    Boolean(
+      document.fullscreenEnabled ||
+        (document as unknown as { webkitFullscreenEnabled?: boolean })
+          .webkitFullscreenEnabled,
+    )
   useEffect(() => {
     const onChange = () => setIsFs(Boolean(document.fullscreenElement))
     document.addEventListener('fullscreenchange', onChange)
@@ -2024,17 +2035,17 @@ function ReviewWorkspace({
                   // inline-disposition anyway). With a watermark on we also hide the
                   // native fullscreen button and drive fullscreen ourselves so the
                   // overlay survives (desktop/Android).
-                  controlsList={`nodownload${project.watermark ? ' nofullscreen' : ''}`}
+                  controlsList={`nodownload${project.watermark && supportsElementFs ? ' nofullscreen' : ''}`}
                   onContextMenu={(e) => e.preventDefault()}
-                  className={`review-video block w-auto max-w-full ${project.watermark ? 'hide-native-fs' : ''} ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`}
+                  className={`review-video block w-auto max-w-full ${project.watermark && supportsElementFs ? 'hide-native-fs' : ''} ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`}
                 />
                 {/* Watermark is per-project. Inside the video-box so it tracks the
                     video in every mode. */}
                 {project.watermark && <Watermark email={viewerEmail} />}
-                {/* Custom fullscreen toggle — real wrapper-fullscreen on
-                    desktop/Android (keeps the overlay); native video fullscreen on
-                    iOS (where an HTML overlay isn't possible). */}
-                {project.watermark && (
+                {/* Custom fullscreen toggle — only where element fullscreen works
+                    (desktop/Android/iPad), so the wrapper-fullscreen keeps the
+                    overlay. On iPhone we drop it and keep the native button. */}
+                {project.watermark && supportsElementFs && (
                   <button
                     type="button"
                     onClick={toggleFullscreen}
