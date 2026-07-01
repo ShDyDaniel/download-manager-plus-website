@@ -20,31 +20,59 @@ import { getSession } from '../lib/webSession'
  * first-launch steps per platform. The download is gated behind a
  * logged-in session.
  */
+// Last-resort download URLs, used ONLY if the live latest-release lookup
+// fails entirely (e.g. the network is down). In normal operation the page
+// ALWAYS resolves the newest published version live from appReleases/latest,
+// so these are just a safety net — not the thing users usually get.
+const FALLBACK_MAC =
+  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.7/Download.Manager.Plus-1.7.7-arm64.dmg'
+const FALLBACK_WIN =
+  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.7/Download.Manager.Plus-1.7.7-x64.exe'
+
 export default function InstallPage() {
   const location = useLocation()
   // Gate the download behind a real account — a visitor who just opens
   // /install directly (no session) gets a "please sign in" view instead of
   // the file. The download is tied to being logged in, not to knowing the URL.
   const loggedIn = Boolean(getSession())
-  const [dl, setDl] = useState<string>(
-    (location.state as { dl?: string } | null)?.dl || '',
-  )
-  const isMac = dl
-    ? /\.(pkg|dmg)(\?|#|$)/i.test(dl)
-    : /Mac/i.test(navigator.userAgent)
 
-  // Direct visit / refresh → no state. Pull the latest published release —
-  // only when logged in (no point fetching for a visitor who can't download).
+  // The chosen platform is passed from the download button. Previously the
+  // Hero passed a concrete URL (pre-fetched or a hardcoded fallback), which
+  // meant a user who clicked before the home page's fetch landed got a STALE
+  // version — the reported "sometimes downloads an old version" bug. Now the
+  // Hero passes only the platform and THIS page resolves the URL fresh, so
+  // the newest published version is served every time. Fall back to a UA
+  // sniff for a direct /install visit with no state.
+  const state = location.state as { platform?: 'mac' | 'win' } | null
+  const isMac =
+    state?.platform === 'mac'
+      ? true
+      : state?.platform === 'win'
+        ? false
+        : /Mac/i.test(navigator.userAgent)
+
+  // ALWAYS resolve the latest published release for this platform at download
+  // time — never a value pre-fetched on another page. This is what guarantees
+  // the newest version. Only when logged in (no point fetching for a visitor
+  // who can't download). If the lookup fails, use the safety-net URL.
+  const [dl, setDl] = useState<string>('')
   useEffect(() => {
-    if (!loggedIn || dl) return
+    if (!loggedIn) return
+    let active = true
     fetch('/api/paypal?action=get-latest-release')
       .then((r) => r.json())
       .then((d: { release?: { macUrl?: string; winUrl?: string } }) => {
+        if (!active) return
         const u = isMac ? d?.release?.macUrl : d?.release?.winUrl
-        if (u) setDl(u)
+        setDl(u || (isMac ? FALLBACK_MAC : FALLBACK_WIN))
       })
-      .catch(() => {})
-  }, [loggedIn, dl, isMac])
+      .catch(() => {
+        if (active) setDl(isMac ? FALLBACK_MAC : FALLBACK_WIN)
+      })
+    return () => {
+      active = false
+    }
+  }, [loggedIn, isMac])
 
   // Auto-start the download once we have the URL — ONLY for a logged-in user,
   // via navigation (not a scripted anchor click). The attachment response

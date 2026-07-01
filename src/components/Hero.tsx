@@ -28,18 +28,6 @@ import { DownloadAuthModal } from './DownloadAuthModal'
  * comes from weight + color, not from leaning glyphs.
  */
 
-// Hardcoded download URLs for the current release. Update both the
-// GitHub direct-download URLs AND the Drive fallback URLs in lockstep
-// every time a new version ships. The website does NOT auto-resolve
-// the latest release at runtime — that put the GitHub Releases API
-// in the request critical path and broke the download buttons whenever
-// the release was still in draft. Hardcoding keeps the site working
-// the moment a version is published, with no surprises.
-const DOWNLOAD_MAC_GITHUB =
-  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.7/Download.Manager.Plus-1.7.7-arm64.dmg'
-const DOWNLOAD_WIN_GITHUB =
-  'https://github.com/ShDyDaniel/download-manager-plus-releases/releases/download/1.7.7/Download.Manager.Plus-1.7.7-x64.exe'
-
 export function Hero() {
   // Live pricing for the Pro CTA's "starting from X ₪/month" line.
   // Returns null on the very-first-ever visit (no localStorage
@@ -56,46 +44,25 @@ export function Hero() {
   // already signed in, the download starts immediately; otherwise we
   // pop the auth modal and resume the download on success.
   const [authOpen, setAuthOpen] = useState(false)
-  const [pendingUrl, setPendingUrl] = useState<string | null>(null)
-
-  // Resolved download URLs. Start from the hardcoded fallbacks so the
-  // button works on first paint, then fetch the latest published release
-  // (appReleases/latest, the same doc the admin Updates tab publishes)
-  // and override — so the site always serves the newest version without
-  // a code change. If the fetch fails, the fallbacks stay.
-  const [macUrl, setMacUrl] = useState(DOWNLOAD_MAC_GITHUB)
-  const [winUrl, setWinUrl] = useState(DOWNLOAD_WIN_GITHUB)
+  const [pendingPlatform, setPendingPlatform] = useState<'mac' | 'win' | null>(
+    null,
+  )
   const navigate = useNavigate()
-  useEffect(() => {
-    let active = true
-    fetch('/api/paypal?action=get-latest-release')
-      .then((r) => r.json())
-      .then((d: { ok?: boolean; release?: { macUrl?: string; winUrl?: string } }) => {
-        if (!active || !d?.release) return
-        if (d.release.macUrl) setMacUrl(d.release.macUrl)
-        if (d.release.winUrl) setWinUrl(d.release.winUrl)
-      })
-      .catch(() => {
-        /* keep the hardcoded fallbacks */
-      })
-    return () => {
-      active = false
-    }
-  }, [])
 
   // Don't auto-download from JS — Chrome flags programmatic cross-origin
   // downloads as "Unverified download blocked". Instead send the user to the
-  // install page, where they click a REAL download link (which downloads
-  // cleanly, just like a manual click) and get the first-launch steps. URL is
-  // passed via router state so the address bar stays a clean /install.
-  const goToInstall = (url: string) => {
-    navigate('/install', { state: { dl: url } })
+  // install page, which resolves the LATEST published version for the chosen
+  // platform (appReleases/latest) at that moment and starts the download.
+  // We pass only the platform — never a pre-fetched URL — so the user always
+  // gets the newest version even if they click before any lookup finishes.
+  const goToInstall = (platform: 'mac' | 'win') => {
+    navigate('/install', { state: { platform } })
   }
-  const requestDownload = (url: string) => {
+  const requestDownload = (platform: 'mac' | 'win') => {
     if (getSession()) {
-      goToInstall(url)
+      goToInstall(platform)
     } else {
-      setPendingUrl(url)
+      setPendingPlatform(platform)
       setAuthOpen(true)
     }
   }
@@ -258,8 +225,6 @@ export function Hero() {
                 icon={
                   <Download className="h-3.5 w-3.5 md:h-[18px] md:w-[18px]" />
                 }
-                macUrl={macUrl}
-                winUrl={winUrl}
                 variant="primary"
                 onDownload={requestDownload}
               />
@@ -332,9 +297,9 @@ export function Hero() {
         onClose={() => setAuthOpen(false)}
         onAuthed={() => {
           setAuthOpen(false)
-          if (pendingUrl) {
-            goToInstall(pendingUrl)
-            setPendingUrl(null)
+          if (pendingPlatform) {
+            goToInstall(pendingPlatform)
+            setPendingPlatform(null)
           }
         }}
       />
@@ -456,20 +421,16 @@ function DownloadPicker({
   label,
   icon,
   badge,
-  macUrl,
-  winUrl,
   variant,
   onDownload,
 }: {
   label: string
   icon: React.ReactNode
   badge?: string
-  macUrl: string
-  winUrl: string
   variant: 'primary' | 'secondary'
-  /** Called with the chosen OS URL. The parent gates it behind a
-   *  website account before the download actually starts. */
-  onDownload: (url: string) => void
+  /** Called with the chosen OS. The parent gates it behind a website
+   *  account, then resolves the latest version for that platform. */
+  onDownload: (platform: 'mac' | 'win') => void
 }) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -552,7 +513,7 @@ function DownloadPicker({
               type="button"
               onClick={() => {
                 setOpen(false)
-                onDownload(macUrl)
+                onDownload('mac')
               }}
               role="menuitem"
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-fg transition-colors hover:bg-bg-elevated"
@@ -567,7 +528,7 @@ function DownloadPicker({
               type="button"
               onClick={() => {
                 setOpen(false)
-                onDownload(winUrl)
+                onDownload('win')
               }}
               role="menuitem"
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-fg transition-colors hover:bg-bg-elevated"
