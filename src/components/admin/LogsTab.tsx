@@ -185,34 +185,40 @@ export default function LogsTab({
   }
 
   // ── Audio-sync telemetry export (opt-in data from users, for engine tuning) ──
+  // The data (per-sync events + gzipped acoustic fingerprints) lives in R2, not
+  // Firestore. The server returns a MANIFEST: every object's key + a 6-hour
+  // presigned download URL. We save that manifest as JSON — hand it to Claude,
+  // which fetches every file from the links and analyzes the dataset.
   const [telDl, setTelDl] = useState(false)
+  const [telInfo, setTelInfo] = useState('')
   async function downloadSyncTelemetry() {
     setTelDl(true)
     setError('')
+    setTelInfo('')
     try {
       const r = await adminApi<{
-        events: unknown[]
+        events: { key: string; url: string; size: number }[]
+        fingerprints: { hash: string; url: string; size: number }[]
         count: number
+        fingerprintCount: number
+        truncated: boolean
+        urlTtlSeconds: number
         exportedAt: string
       }>('admin-sync-telemetry-export', {})
-      const blob = new Blob(
-        [
-          JSON.stringify(
-            { exportedAt: r.exportedAt, count: r.count, events: r.events },
-            null,
-            2,
-          ),
-        ],
-        { type: 'application/json' },
-      )
+      const blob = new Blob([JSON.stringify(r, null, 2)], {
+        type: 'application/json',
+      })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `dmplus-sync-telemetry-${new Date().toISOString().slice(0, 10)}.json`
+      a.download = `dmplus-sync-telemetry-manifest-${new Date().toISOString().slice(0, 10)}.json`
       document.body.appendChild(a)
       a.click()
       a.remove()
       URL.revokeObjectURL(url)
+      setTelInfo(
+        `${r.count} סנכרונים · ${r.fingerprintCount} טביעות אצבע${r.truncated ? ' (נחתך)' : ''} — הקישורים בתוקף ל‑6 שעות`,
+      )
     } catch (e) {
       handleErr(e)
     } finally {
@@ -269,16 +275,21 @@ export default function LogsTab({
       )}
 
       {/* Audio-sync telemetry — opt-in data uploaded by users after each sync,
-          for tuning the engine. One button exports the whole dataset as a JSON
-          file to hand off for analysis. */}
+          for tuning the engine. Stored in R2 (events + gzipped fingerprints).
+          The button downloads a MANIFEST with 6-hour presigned links to every
+          file, to hand off for analysis. */}
       <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-primary/20 bg-primary/[0.04] px-5 py-4">
         <Waves className="h-5 w-5 shrink-0 text-primary" />
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-fg">נתוני סנכרון אוטומטי</div>
           <div className="text-xs text-fg-muted">
-            נתונים אנונימיים שמשתמשים שאישרו שולחים בסוף כל סנכרון (מדדים ומבנה
-            בלבד — ללא מדיה או שמות קבצים). הורד הכל כדי לנתח ולשפר את המנוע.
+            נתונים אנונימיים שמשתמשים שאישרו שולחים בסוף כל סנכרון — כל מועמד
+            והציונים שלו, ההקשר, וטביעות האצבע האקוסטיות עצמן (ללא מדיה או שמות
+            קבצים). ההורדה היא קובץ מניפסט עם קישורי הורדה לכל הקבצים.
           </div>
+          {telInfo && (
+            <div className="mt-1 text-xs font-medium text-primary">{telInfo}</div>
+          )}
         </div>
         <button
           type="button"
@@ -291,7 +302,7 @@ export default function LogsTab({
           ) : (
             <Download className="h-3.5 w-3.5" />
           )}
-          {telDl ? 'מוריד…' : 'הורד את כל הנתונים'}
+          {telDl ? 'מוריד…' : 'הורד מניפסט נתונים'}
         </button>
       </div>
 

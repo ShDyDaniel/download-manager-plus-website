@@ -1263,9 +1263,9 @@ const BACKUP_COLLECTIONS = [
   // release notes, exempt versions). Admin-managed config; losing it
   // would break auto-update until re-entered.
   'appReleases',
-  // Opt-in audio-sync telemetry (anonymized match metrics) — used to tune the
-  // sync engine on real data; worth preserving so the dataset isn't lost.
-  'syncTelemetry',
+  // NOTE: audio-sync telemetry is NOT here — it lives in Cloudflare R2 under
+  // `sync-telemetry/` (fingerprints are heavy), not Firestore, so the Firestore
+  // backup doesn't touch it. See handleAdminSyncTelemetryExport.
 ]
 let _backupR2: S3Client | null = null
 function getBackupR2(): S3Client {
@@ -9554,11 +9554,41 @@ async function handleAdminClearClientErrors(
   return res.status(200).json({ ok: true, deleted })
 }
 
-/* ── Audio-sync telemetry (opt-in, for engine tuning) ──────────────────────
- *  Export ALL collected sync-telemetry docs in one shot so the admin can
- *  download them (one JSON file) and hand off for analysis. Read = 2FA. Clear
- *  wipes the collection = step-up. Ingest lives in api/revisions.ts.
+/* ── Audio-sync telemetry (opt-in, for engine tuning) — R2 edition ──────────
+ *  The desktop app stages a full anonymized snapshot per sync (every candidate's
+ *  metrics + run context + the raw acoustic fingerprints) and uploads it STRAIGHT
+ *  to Cloudflare R2 under `sync-telemetry/` (see api/revisions.ts sync-telemetry-
+ *  init). The admin "לוגים" tab downloads a MANIFEST: every object's key + a
+ *  short-lived presigned GET URL (option ב — lightweight, no serverless memory
+ *  limit even with heavy fingerprints; the files are fetched from R2 directly).
+ *  Manifest = 2FA; clear (delete every object) = step-up.
  * ────────────────────────────────────────────────────────────────────────── */
+const SYNC_TELE_PREFIX = 'sync-telemetry/'
+const SYNC_TELE_MAX = 20_000 // safety cap on objects manifested/deleted per call
+
+async function listSyncTelemetryObjects(): Promise<
+  { key: string; size: number }[]
+> {
+  const out: { key: string; size: number }[] = []
+  let token: string | undefined
+  do {
+    const r = await getBackupR2().send(
+      new ListObjectsV2Command({
+        Bucket: BACKUP_BUCKET,
+        Prefix: SYNC_TELE_PREFIX,
+        ContinuationToken: token,
+      }),
+    )
+    for (const o of r.Contents || []) {
+      if (!o.Key || o.Key.endsWith('/')) continue // skip folder markers
+      out.push({ key: o.Key, size: o.Size || 0 })
+      if (out.length >= SYNC_TELE_MAX) return out
+    }
+    token = r.IsTruncated ? r.NextContinuationToken : undefined
+  } while (token)
+  return out
+}
+
 async function handleAdminSyncTelemetryExport(
   req: VercelRequest,
   res: VercelResponse,
@@ -9566,18 +9596,32 @@ async function handleAdminSyncTelemetryExport(
   if (!(await verifyAdmin2FA(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  const snap = await getDb().collection('syncTelemetry').get()
-  const events = snap.docs
-    .map((d) => ({ id: d.id, ...(d.data() as Record<string, unknown>) }))
-    .sort((a, b) =>
-      String((b as { at?: string }).at || '').localeCompare(
-        String((a as { at?: string }).at || ''),
-      ),
+  const objs = await listSyncTelemetryObjects()
+  const TTL = 6 * 60 * 60 // 6h — long enough to download the whole set
+  const events: { key: string; url: string; size: number }[] = []
+  const fingerprints: { hash: string; url: string; size: number }[] = []
+  for (const o of objs) {
+    const url = await getSignedUrl(
+      getBackupR2(),
+      new GetObjectCommand({ Bucket: BACKUP_BUCKET, Key: o.key }),
+      { expiresIn: TTL },
     )
+    if (o.key.startsWith(`${SYNC_TELE_PREFIX}fingerprints/`)) {
+      const hash = o.key.split('/').pop()?.replace(/\.bin\.gz$/, '') || ''
+      fingerprints.push({ hash, url, size: o.size })
+    } else if (o.key.startsWith(`${SYNC_TELE_PREFIX}events/`)) {
+      events.push({ key: o.key, url, size: o.size })
+    }
+  }
+  events.sort((a, b) => b.key.localeCompare(a.key)) // newest date first
   return res.status(200).json({
     ok: true,
     events,
+    fingerprints,
     count: events.length,
+    fingerprintCount: fingerprints.length,
+    truncated: objs.length >= SYNC_TELE_MAX,
+    urlTtlSeconds: TTL,
     exportedAt: new Date().toISOString(),
   })
 }
@@ -9589,17 +9633,13 @@ async function handleAdminSyncTelemetryClear(
   if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  const db = getDb()
-  const snap = await db.collection('syncTelemetry').get()
+  const objs = await listSyncTelemetryObjects()
   let deleted = 0
-  const CHUNK = 400
-  for (let i = 0; i < snap.docs.length; i += CHUNK) {
-    const batch = db.batch()
-    for (const d of snap.docs.slice(i, i + CHUNK)) {
-      batch.delete(d.ref)
-      deleted += 1
-    }
-    await batch.commit()
+  for (const o of objs) {
+    await getBackupR2().send(
+      new DeleteObjectCommand({ Bucket: BACKUP_BUCKET, Key: o.key }),
+    )
+    deleted += 1
   }
   return res.status(200).json({ ok: true, deleted })
 }

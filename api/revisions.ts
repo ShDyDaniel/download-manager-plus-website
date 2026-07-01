@@ -6812,46 +6812,69 @@ async function handleVerifyLogsPassword(
   return res.status(200).json({ ok: true, valid })
 }
 
-/* ── sync-telemetry-ingest ──────────────────────────────────────────────────
- *  OPT-IN audio-sync telemetry from the desktop app. Anonymized metadata only
- *  (match metrics + structure, hashed names — NO media/audio/fingerprints/real
- *  names). One doc per sync in `syncTelemetry`. Admin exports the whole lot from
- *  the "לוגים" tab to hand off for engine tuning. Auth = the same owner token as
- *  client-log-ingest (the sync feature is Pro-gated, so callers are signed in).
+/* ── sync-telemetry-init ─────────────────────────────────────────────────────
+ *  OPT-IN audio-sync telemetry from the desktop app — R2 edition. The engine
+ *  stages a FULL anonymized snapshot per sync (every cam×rec candidate's metrics
+ *  + run context + the raw acoustic fingerprints it compared, content-addressed
+ *  by SHA-256, hashed file names — NO media, NO real names). Storage is
+ *  Cloudflare R2 under the `sync-telemetry/` prefix, NOT Firestore (fingerprints
+ *  are heavy). This endpoint just PRESIGNS direct-to-R2 PUTs and tells the client
+ *  which fingerprints already exist so unchanged files never re-upload; the
+ *  desktop then uploads every object straight to R2 (zero bytes through Vercel).
+ *  Admin downloads a manifest of it all from the "לוגים" tab for engine tuning.
+ *  Auth = the same owner token as client-log-ingest (sync is Pro-gated).
+ *
+ *  Layout:  sync-telemetry/events/<YYYY-MM-DD>/<syncId>.json
+ *           sync-telemetry/fingerprints/<sha256>.bin.gz
  * ──────────────────────────────────────────────────────────────────────────── */
-async function handleSyncTelemetryIngest(req: VercelRequest, res: VercelResponse) {
+const TELE_PREFIX = 'sync-telemetry'
+const TELE_MAX_EVENT = 20_000_000 // 20 MB — events carry every candidate score
+const TELE_MAX_FP = 64_000_000 // 64 MB per fingerprint blob (a very long take)
+const TELE_MAX_FPS = 128 // cap fingerprints presigned per sync
+async function handleSyncTelemetryInit(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   const body = (req.body || {}) as {
-    deviceId?: string
-    appVersion?: string
-    platform?: string
-    event?: unknown
+    syncId?: string
+    date?: string
+    eventSize?: number
+    fingerprints?: { hash?: string; size?: number }[]
   }
-  const event = body.event
-  if (!event || typeof event !== 'object') {
-    return res.status(200).json({ ok: true, ingested: 0 })
+  const syncId = String(body.syncId || '')
+  if (!/^[a-f0-9]{6,40}$/.test(syncId)) {
+    return res.status(400).json({ ok: false, error: 'bad syncId' })
   }
-  let json: string
-  try {
-    json = JSON.stringify(event)
-  } catch {
-    return res.status(400).json({ ok: false, error: 'bad event' })
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || ''))
+    ? String(body.date)
+    : new Date().toISOString().slice(0, 10)
+  const eventSize = Number(body.eventSize || 0)
+  if (!(eventSize > 0) || eventSize > TELE_MAX_EVENT) {
+    return res.status(413).json({ ok: false, error: 'event size' })
   }
-  if (json.length > 200_000) {
-    return res.status(413).json({ ok: false, error: 'event too large' })
+
+  const eventKey = `${TELE_PREFIX}/events/${date}/${syncId}.json`
+  const eventPut = { url: await r2PresignPut(eventKey), key: eventKey }
+
+  const fps = Array.isArray(body.fingerprints)
+    ? body.fingerprints.slice(0, TELE_MAX_FPS)
+    : []
+  const fingerprintPuts: { hash: string; url: string; key: string }[] = []
+  const skipped: string[] = []
+  for (const f of fps) {
+    const hash = String(f?.hash || '')
+    if (!/^[a-f0-9]{64}$/.test(hash)) continue
+    const size = Number(f?.size || 0)
+    if (!(size > 0) || size > TELE_MAX_FP) continue
+    const key = `${TELE_PREFIX}/fingerprints/${hash}.bin.gz`
+    // Content-addressed dedup: if the blob is already in R2, don't re-upload it.
+    if ((await r2HeadSize(key)) > 0) {
+      skipped.push(hash)
+      continue
+    }
+    fingerprintPuts.push({ hash, url: await r2PresignPut(key), key })
   }
-  await getDb()
-    .collection('syncTelemetry')
-    .add({
-      at: new Date().toISOString(),
-      email: verified.email || '?',
-      deviceId: String(body.deviceId || 'unknown').slice(0, 80),
-      appVersion: String(body.appVersion || '?').slice(0, 40),
-      platform: String(body.platform || '?').slice(0, 40),
-      event: JSON.parse(json),
-    })
-  return res.status(200).json({ ok: true, ingested: 1 })
+
+  return res.status(200).json({ ok: true, eventPut, fingerprintPuts, skipped })
 }
 
 async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
@@ -7421,8 +7444,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminUsage(req, res)
       case 'client-log-ingest':
         return await handleClientLogIngest(req, res)
-      case 'sync-telemetry-ingest':
-        return await handleSyncTelemetryIngest(req, res)
+      case 'sync-telemetry-init':
+        return await handleSyncTelemetryInit(req, res)
       case 'verify-logs-password':
         return await handleVerifyLogsPassword(req, res)
       case 'ai-chat':
