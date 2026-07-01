@@ -10,6 +10,8 @@ import {
   Trash2,
   Users,
   Hash,
+  Download,
+  Waves,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
@@ -182,6 +184,42 @@ export default function LogsTab({
     }
   }
 
+  // ── Audio-sync telemetry export (opt-in data from users, for engine tuning) ──
+  const [telDl, setTelDl] = useState(false)
+  async function downloadSyncTelemetry() {
+    setTelDl(true)
+    setError('')
+    try {
+      const r = await adminApi<{
+        events: unknown[]
+        count: number
+        exportedAt: string
+      }>('admin-sync-telemetry-export', {})
+      const blob = new Blob(
+        [
+          JSON.stringify(
+            { exportedAt: r.exportedAt, count: r.count, events: r.events },
+            null,
+            2,
+          ),
+        ],
+        { type: 'application/json' },
+      )
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `dmplus-sync-telemetry-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setTelDl(false)
+    }
+  }
+
   const visible = (errors || []).filter((e) => showResolved || !e.resolved)
 
   return (
@@ -229,6 +267,33 @@ export default function LogsTab({
           <AlertTriangle className="h-4 w-4" /> {error}
         </div>
       )}
+
+      {/* Audio-sync telemetry — opt-in data uploaded by users after each sync,
+          for tuning the engine. One button exports the whole dataset as a JSON
+          file to hand off for analysis. */}
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-primary/20 bg-primary/[0.04] px-5 py-4">
+        <Waves className="h-5 w-5 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-fg">נתוני סנכרון אוטומטי</div>
+          <div className="text-xs text-fg-muted">
+            נתונים אנונימיים שמשתמשים שאישרו שולחים בסוף כל סנכרון (מדדים ומבנה
+            בלבד — ללא מדיה או שמות קבצים). הורד הכל כדי לנתח ולשפר את המנוע.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={downloadSyncTelemetry}
+          disabled={telDl}
+          className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+        >
+          {telDl ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Download className="h-3.5 w-3.5" />
+          )}
+          {telDl ? 'מוריד…' : 'הורד את כל הנתונים'}
+        </button>
+      </div>
 
       {/* Summary + filter */}
       {errors && (

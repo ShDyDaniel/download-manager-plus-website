@@ -1263,6 +1263,9 @@ const BACKUP_COLLECTIONS = [
   // release notes, exempt versions). Admin-managed config; losing it
   // would break auto-update until re-entered.
   'appReleases',
+  // Opt-in audio-sync telemetry (anonymized match metrics) — used to tune the
+  // sync engine on real data; worth preserving so the dataset isn't lost.
+  'syncTelemetry',
 ]
 let _backupR2: S3Client | null = null
 function getBackupR2(): S3Client {
@@ -1826,6 +1829,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminDeleteClientError(req, res)
       case 'admin-clear-client-errors':
         return await handleAdminClearClientErrors(req, res)
+      case 'admin-sync-telemetry-export':
+        return await handleAdminSyncTelemetryExport(req, res)
+      case 'admin-sync-telemetry-clear':
+        return await handleAdminSyncTelemetryClear(req, res)
       case 'admin-set-terms':
         return await handleAdminSetTerms(req, res)
       case 'admin-set-privacy':
@@ -9534,6 +9541,56 @@ async function handleAdminClearClientErrors(
   }
   const db = getDb()
   const snap = await db.collection('clientErrors').get()
+  let deleted = 0
+  const CHUNK = 400
+  for (let i = 0; i < snap.docs.length; i += CHUNK) {
+    const batch = db.batch()
+    for (const d of snap.docs.slice(i, i + CHUNK)) {
+      batch.delete(d.ref)
+      deleted += 1
+    }
+    await batch.commit()
+  }
+  return res.status(200).json({ ok: true, deleted })
+}
+
+/* ── Audio-sync telemetry (opt-in, for engine tuning) ──────────────────────
+ *  Export ALL collected sync-telemetry docs in one shot so the admin can
+ *  download them (one JSON file) and hand off for analysis. Read = 2FA. Clear
+ *  wipes the collection = step-up. Ingest lives in api/revisions.ts.
+ * ────────────────────────────────────────────────────────────────────────── */
+async function handleAdminSyncTelemetryExport(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const snap = await getDb().collection('syncTelemetry').get()
+  const events = snap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as Record<string, unknown>) }))
+    .sort((a, b) =>
+      String((b as { at?: string }).at || '').localeCompare(
+        String((a as { at?: string }).at || ''),
+      ),
+    )
+  return res.status(200).json({
+    ok: true,
+    events,
+    count: events.length,
+    exportedAt: new Date().toISOString(),
+  })
+}
+
+async function handleAdminSyncTelemetryClear(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const db = getDb()
+  const snap = await db.collection('syncTelemetry').get()
   let deleted = 0
   const CHUNK = 400
   for (let i = 0; i < snap.docs.length; i += CHUNK) {

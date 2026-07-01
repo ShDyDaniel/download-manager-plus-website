@@ -6812,6 +6812,48 @@ async function handleVerifyLogsPassword(
   return res.status(200).json({ ok: true, valid })
 }
 
+/* ── sync-telemetry-ingest ──────────────────────────────────────────────────
+ *  OPT-IN audio-sync telemetry from the desktop app. Anonymized metadata only
+ *  (match metrics + structure, hashed names — NO media/audio/fingerprints/real
+ *  names). One doc per sync in `syncTelemetry`. Admin exports the whole lot from
+ *  the "לוגים" tab to hand off for engine tuning. Auth = the same owner token as
+ *  client-log-ingest (the sync feature is Pro-gated, so callers are signed in).
+ * ──────────────────────────────────────────────────────────────────────────── */
+async function handleSyncTelemetryIngest(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const body = (req.body || {}) as {
+    deviceId?: string
+    appVersion?: string
+    platform?: string
+    event?: unknown
+  }
+  const event = body.event
+  if (!event || typeof event !== 'object') {
+    return res.status(200).json({ ok: true, ingested: 0 })
+  }
+  let json: string
+  try {
+    json = JSON.stringify(event)
+  } catch {
+    return res.status(400).json({ ok: false, error: 'bad event' })
+  }
+  if (json.length > 200_000) {
+    return res.status(413).json({ ok: false, error: 'event too large' })
+  }
+  await getDb()
+    .collection('syncTelemetry')
+    .add({
+      at: new Date().toISOString(),
+      email: verified.email || '?',
+      deviceId: String(body.deviceId || 'unknown').slice(0, 80),
+      appVersion: String(body.appVersion || '?').slice(0, 40),
+      platform: String(body.platform || '?').slice(0, 40),
+      event: JSON.parse(json),
+    })
+  return res.status(200).json({ ok: true, ingested: 1 })
+}
+
 async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -7379,6 +7421,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminUsage(req, res)
       case 'client-log-ingest':
         return await handleClientLogIngest(req, res)
+      case 'sync-telemetry-ingest':
+        return await handleSyncTelemetryIngest(req, res)
       case 'verify-logs-password':
         return await handleVerifyLogsPassword(req, res)
       case 'ai-chat':
