@@ -30,6 +30,7 @@ import { DeliveryPage } from './pages/DeliveryPage'
 import { RevisionsPage } from './pages/RevisionsPage'
 import { DeliveriesPage } from './pages/DeliveriesPage'
 import { SyncLandingPage } from './pages/SyncLandingPage'
+import { CollabLandingPage } from './pages/CollabLandingPage'
 import DrivePickerPage from './pages/DrivePickerPage'
 import PartnerPage from './pages/PartnerPage'
 import DeviceCheckPage from './pages/DeviceCheckPage'
@@ -236,6 +237,10 @@ function AnimatedRoutes() {
               that routes to the home page (single download surface).
               See pages/SyncLandingPage.tsx. */}
           <Route path="/sync" element={<SyncLandingPage />} />
+          {/* Marketing landing for the client-collaboration features
+              (revision rounds + client delivery): animated review-player
+              demo + editorial sections. See pages/CollabLandingPage.tsx. */}
+          <Route path="/collab" element={<CollabLandingPage />} />
           <Route path="/account" element={<AccountPage />} />
           {/* Web /revisions workspace — full editor-side of the
               Revisions feature ported from the desktop app. Lets
