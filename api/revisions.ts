@@ -16,6 +16,8 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
+  ListMultipartUploadsCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import nodemailer from 'nodemailer'
@@ -4821,48 +4823,127 @@ const FS_WRITE_USD_PER_100K = 0.18
 
 async function fetchR2Usage() {
   try {
-    // Sum the actual stored bytes: every R2-backed, non-archived round.
-    let usedBytes = 0
+    // ── The REAL bucket ─────────────────────────────────────────────
+    // List every object actually stored in R2 and aggregate by prefix.
+    // Firestore metadata alone under-reports (backups, note images,
+    // telemetry, popups live in the same bucket) and can't see orphans
+    // (objects whose round/delivery doc is gone but the delete failed).
+    const objects: { key: string; size: number }[] = []
+    let token: string | undefined
+    do {
+      const r = await getR2().send(
+        new ListObjectsV2Command({
+          Bucket: R2_BUCKET,
+          ContinuationToken: token,
+        }),
+      )
+      for (const o of r.Contents || []) {
+        if (!o.Key) continue
+        objects.push({ key: o.Key, size: o.Size || 0 })
+      }
+      token = r.IsTruncated ? r.NextContinuationToken : undefined
+    } while (token && objects.length < 100_000)
+
+    // ── What Firestore says should be there ─────────────────────────
+    const referenced = new Set<string>()
     let roundCount = 0
     const snap = await getDb().collection('revisionProjects').get()
     for (const d of snap.docs) {
-      const r = d.data() as {
-        r2Key?: string
-        videoSizeBytes?: number
-        status?: string
-      }
-      if (r.r2Key && r.status !== 'archived') {
-        usedBytes += Number(r.videoSizeBytes) || 0
-        roundCount += 1
-      }
+      const r = d.data() as { r2Key?: string; status?: string }
+      if (!r.r2Key) continue
+      referenced.add(r.r2Key)
+      if (r.status !== 'archived') roundCount += 1
     }
-    // Client deliveries live in their own collection but share the SAME R2 quota
-    // pool, so the dashboard must count them too (it previously showed revisions
-    // only, under-reporting real storage). Each delivery doc holds videos[].
-    let deliveryBytes = 0
     let deliveryCount = 0
     const delivSnap = await getDb().collection('deliveries').get()
     for (const d of delivSnap.docs) {
-      const del = d.data() as { videos?: Array<{ sizeBytes?: number }>; status?: string }
-      if (del.status === 'deleted') continue
+      const del = d.data() as {
+        videos?: Array<{ r2Key?: string }>
+        status?: string
+      }
       for (const v of del.videos || []) {
-        deliveryBytes += Number(v.sizeBytes) || 0
-        deliveryCount += 1
+        if (!v.r2Key) continue
+        referenced.add(v.r2Key)
+        if (del.status !== 'deleted') deliveryCount += 1
       }
     }
-    usedBytes += deliveryBytes
+
+    // ── Categorize every stored object ──────────────────────────────
+    const cat = {
+      rounds: { bytes: 0, count: 0 },
+      deliveries: { bytes: 0, count: 0 },
+      notes: { bytes: 0, count: 0 },
+      backups: { bytes: 0, count: 0 },
+      telemetry: { bytes: 0, count: 0 },
+      other: { bytes: 0, count: 0 },
+      // media objects (videos/finals) that NO round/delivery doc references —
+      // these should have been deleted and are safe to purge.
+      orphans: { bytes: 0, count: 0 },
+    }
+    let usedBytes = 0
+    for (const o of objects) {
+      usedBytes += o.size
+      const isRoundMedia = /^([^/]+\/videos\/|videos\/)/.test(o.key)
+      const isFinalMedia = /^[^/]+\/finals\//.test(o.key)
+      if (isRoundMedia || isFinalMedia) {
+        if (!referenced.has(o.key)) {
+          cat.orphans.bytes += o.size
+          cat.orphans.count += 1
+        } else if (isFinalMedia) {
+          cat.deliveries.bytes += o.size
+          cat.deliveries.count += 1
+        } else {
+          cat.rounds.bytes += o.size
+          cat.rounds.count += 1
+        }
+      } else if (/^[^/]+\/notes\//.test(o.key)) {
+        cat.notes.bytes += o.size
+        cat.notes.count += 1
+      } else if (o.key.startsWith('backups/')) {
+        cat.backups.bytes += o.size
+        cat.backups.count += 1
+      } else if (o.key.startsWith('sync-telemetry/')) {
+        cat.telemetry.bytes += o.size
+        cat.telemetry.count += 1
+      } else {
+        cat.other.bytes += o.size
+        cat.other.count += 1
+      }
+    }
+
+    // ── Incomplete multipart uploads ─────────────────────────────────
+    // R2 bills their parts as storage but ListObjectsV2 does NOT show
+    // them — an aborted app upload can silently hold gigabytes forever.
+    let multipartCount = 0
+    let multipartOldest = ''
+    try {
+      const mp = await getR2().send(
+        new ListMultipartUploadsCommand({ Bucket: R2_BUCKET }),
+      )
+      for (const u of mp.Uploads || []) {
+        multipartCount += 1
+        const t = u.Initiated ? new Date(u.Initiated).toISOString() : ''
+        if (t && (!multipartOldest || t < multipartOldest)) multipartOldest = t
+      }
+    } catch {
+      /* non-fatal — panel just won't show the multipart hint */
+    }
+
     const usedGb = usedBytes / BYTES_PER_GB
     const billableGb = Math.max(0, usedGb - R2_FREE_STORAGE_GB)
     const costStorage = billableGb * R2_STORAGE_USD_PER_GB_MONTH
-    // No fixed base on R2 Paid → total is purely storage overage.
     const costTotal = costStorage
     return {
       configured: true,
       usedBytes,
       usedGb,
+      objectCount: objects.length,
       roundCount,
-      deliveryBytes,
+      deliveryBytes: cat.deliveries.bytes,
       deliveryCount,
+      breakdown: cat,
+      multipartCount,
+      multipartOldest,
       freeStorageGb: R2_FREE_STORAGE_GB,
       costStorage,
       costTotal,

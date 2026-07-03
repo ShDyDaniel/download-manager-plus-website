@@ -38,8 +38,12 @@ interface AdminUsage {
     configured: boolean
     usedBytes?: number
     usedGb?: number
+    objectCount?: number
     roundCount?: number
     deliveryCount?: number
+    breakdown?: Record<string, { bytes: number; count: number }>
+    multipartCount?: number
+    multipartOldest?: string
     freeStorageGb?: number
     costStorage?: number
     costTotal?: number
@@ -379,6 +383,12 @@ function R2Panel({ r2 }: { r2: NonNullable<AdminUsage['r2']> }) {
               pattern). Container stays RTL so "3 סבבים · 2 מסירות" reads right. */}
           <span className="tabular-nums text-fg">
             <bdi dir="ltr">{fmtGb(usedGb)} GB</bdi>
+            {r2.objectCount != null && (
+              <span className="text-fg-faint">
+                {' · '}
+                <bdi dir="ltr">{r2.objectCount}</bdi> קבצים
+              </span>
+            )}
             {r2.roundCount != null && (
               <span className="text-fg-faint">
                 {' · '}
@@ -403,6 +413,61 @@ function R2Panel({ r2 }: { r2: NonNullable<AdminUsage['r2']> }) {
             : ' · עדיין בתוך החינם'}
         </p>
       </div>
+
+      {/* What the bytes actually are — from a REAL bucket listing, so the
+          number always matches the Cloudflare dashboard. Orphans = media
+          files whose round/delivery record is gone (a delete that never
+          reached R2). */}
+      {r2.breakdown && (
+        <div className="rounded-xl border border-border bg-background p-3 text-xs">
+          {(
+            [
+              ['rounds', 'סבבי תיקונים'],
+              ['deliveries', 'מסירות ללקוח'],
+              ['notes', 'תמונות הערות'],
+              ['backups', 'גיבויים'],
+              ['telemetry', 'טלמטריית סנכרון'],
+              ['other', 'אחר'],
+            ] as const
+          ).map(([k, label]) => {
+            const b = r2.breakdown?.[k]
+            if (!b || b.count === 0) return null
+            return (
+              <div key={k} className="flex items-center justify-between py-1">
+                <span className="text-fg-muted">{label}</span>
+                <span className="tabular-nums text-fg">
+                  <bdi dir="ltr">{fmtGb(b.bytes / 1024 ** 3)} GB</bdi>
+                  <span className="text-fg-faint">
+                    {' · '}
+                    <bdi dir="ltr">{b.count}</bdi> קבצים
+                  </span>
+                </span>
+              </div>
+            )
+          })}
+          {(r2.breakdown?.orphans?.count || 0) > 0 && (
+            <div className="mt-1 flex items-center justify-between rounded-lg bg-destructive/10 px-2 py-1.5">
+              <span className="font-medium text-destructive">
+                קבצים יתומים — הרשומה שלהם נמחקה אך הקובץ נשאר
+              </span>
+              <span className="tabular-nums text-destructive">
+                <bdi dir="ltr">{fmtGb((r2.breakdown?.orphans?.bytes || 0) / 1024 ** 3)} GB</bdi>
+                <span>
+                  {' · '}
+                  <bdi dir="ltr">{r2.breakdown?.orphans?.count}</bdi> קבצים
+                </span>
+              </span>
+            </div>
+          )}
+          {(r2.multipartCount || 0) > 0 && (
+            <p className="mt-2 text-[10px] leading-relaxed text-fg-faint">
+              יש <bdi dir="ltr">{r2.multipartCount}</bdi> העלאות מקוטעות שלא
+              הושלמו — הן תופסות אחסון בחיוב אך לא נספרות למעלה. הישנה ביותר:{' '}
+              <bdi dir="ltr">{(r2.multipartOldest || '').slice(0, 10)}</bdi>
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Projected monthly cost breakdown */}
       <div className="rounded-xl border border-border bg-background p-3 text-xs">
