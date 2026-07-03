@@ -6949,7 +6949,12 @@ async function handleSyncTelemetryInit(req: VercelRequest, res: VercelResponse) 
     return res.status(413).json({ ok: false, error: 'event size' })
   }
 
-  const eventKey = `${TELE_PREFIX}/events/${date}/${syncId}.json`
+  // "marker" events ride the same pipeline as their own tiny object next to
+  // the sync's main event (e.g. <syncId>-export.json = "the user exported").
+  const marker = (req.body as { marker?: string })?.marker === 'export'
+  const eventKey = marker
+    ? `${TELE_PREFIX}/events/${date}/${syncId}-export.json`
+    : `${TELE_PREFIX}/events/${date}/${syncId}.json`
   const eventPut = { url: await r2PresignPut(eventKey), key: eventKey }
 
   const fps = Array.isArray(body.fingerprints)
