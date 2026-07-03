@@ -8595,6 +8595,7 @@ async function handleAdminGetAppConfig(
     backupIntervalDays?: number
     backupIntervalMinutes?: number
     backupNotify?: boolean
+    syncTelemetryDisabled?: boolean
   }
   // Sensitive fields (logs password + storage quotas) now live in the
   // admin-only adminConfig/global (clients can't read it). Prefer those;
@@ -8651,6 +8652,7 @@ async function handleAdminGetAppConfig(
         : 1,
     backupIntervalMinutes,
     backupNotify: d.backupNotify === true,
+    syncTelemetryDisabled: d.syncTelemetryDisabled === true,
   })
 }
 
@@ -8674,12 +8676,18 @@ async function handleAdminSetAppConfig(
     backupIntervalDays?: number
     backupIntervalMinutes?: number
     backupNotify?: boolean
+    syncTelemetryDisabled?: boolean
   }
   const patch: Record<string, unknown> = {}
   // Sensitive fields go to the admin-only adminConfig/global, NOT the
   // client-readable appConfig/global.
   const adminPatch: Record<string, unknown> = {}
   if (typeof body.betaMode === 'boolean') patch.betaMode = body.betaMode
+  // Global pause for audio-sync telemetry ingestion — when true the
+  // presign endpoint refuses, so users upload NOTHING new.
+  if (typeof body.syncTelemetryDisabled === 'boolean') {
+    patch.syncTelemetryDisabled = body.syncTelemetryDisabled
+  }
   if (body.planMode === 'hybrid' || body.planMode === 'subscription') {
     patch.planMode = body.planMode
   }

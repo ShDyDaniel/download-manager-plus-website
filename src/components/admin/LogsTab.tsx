@@ -15,6 +15,8 @@ import {
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
+import { buildZip, type ZipEntry } from '../../lib/zip'
+import { Switch } from '@/components/ui/Switch'
 
 interface ErrorRow {
   fingerprint: string
@@ -192,6 +194,28 @@ export default function LogsTab({
   const [telDl, setTelDl] = useState(false)
   const [telClr, setTelClr] = useState(false)
   const [telInfo, setTelInfo] = useState('')
+  // Global ingestion pause — null until admin-get-app-config answers.
+  const [telPaused, setTelPaused] = useState<boolean | null>(null)
+  const [telPausing, setTelPausing] = useState(false)
+  useEffect(() => {
+    adminApi<{ syncTelemetryDisabled?: boolean }>('admin-get-app-config')
+      .then((c) => setTelPaused(c.syncTelemetryDisabled === true))
+      .catch(() => setTelPaused(null))
+  }, [])
+
+  async function toggleTelemetryPaused(next: boolean) {
+    setTelPausing(true)
+    setError('')
+    try {
+      await adminApi('admin-set-app-config', { syncTelemetryDisabled: next })
+      setTelPaused(next)
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setTelPausing(false)
+    }
+  }
+
   async function downloadSyncTelemetry() {
     setTelDl(true)
     setError('')
@@ -208,19 +232,81 @@ export default function LogsTab({
         urlTtlSeconds: number
         exportedAt: string
       }>('admin-sync-telemetry-export', {})
-      const blob = new Blob([JSON.stringify(r, null, 2)], {
-        type: 'application/json',
+
+      // Pull every object straight from R2 (CORS allows GET from the
+      // site origin) and pack ONE zip: events/ + timelines/ (gunzipped
+      // back to readable .xml) + fingerprints/ (kept .bin.gz) + the
+      // manifest itself.
+      const canGunzip = typeof DecompressionStream !== 'undefined'
+      const jobs = [
+        ...r.events.map((e) => ({
+          url: e.url,
+          path: e.key.replace(/^sync-telemetry\//, ''),
+          gunzip: false,
+        })),
+        ...r.timelines.map((t) => {
+          const base = t.key
+            .replace(/^sync-telemetry\/timelines\//, '')
+            .replace(/\.gz$/, '')
+          return canGunzip
+            ? { url: t.url, path: `timelines/${base}`, gunzip: true }
+            : { url: t.url, path: `timelines/${base}.gz`, gunzip: false }
+        }),
+        ...r.fingerprints.map((f) => ({
+          url: f.url,
+          path: `fingerprints/${f.hash}.bin.gz`,
+          gunzip: false,
+        })),
+      ]
+
+      const entries: ZipEntry[] = []
+      let done = 0
+      let skipped = 0
+      const queue = [...jobs]
+      // 4 parallel fetches — fingerprint blobs can be several MB each.
+      await Promise.all(
+        Array.from({ length: 4 }, async () => {
+          for (;;) {
+            const job = queue.shift()
+            if (!job) return
+            try {
+              const resp = await fetch(job.url)
+              if (!resp.ok) throw new Error(String(resp.status))
+              let data: Uint8Array
+              if (job.gunzip && resp.body) {
+                const ds = resp.body.pipeThrough(new DecompressionStream('gzip'))
+                data = new Uint8Array(await new Response(ds).arrayBuffer())
+              } else {
+                data = new Uint8Array(await resp.arrayBuffer())
+              }
+              entries.push({ name: job.path, data })
+            } catch {
+              // Object vanished (reset mid-export) or mid-upload — skip.
+              skipped += 1
+            }
+            done += 1
+            setTelInfo(`מוריד ${done}/${jobs.length} קבצים…`)
+          }
+        }),
+      )
+      entries.sort((a, b) => a.name.localeCompare(b.name))
+      entries.push({
+        name: 'manifest.json',
+        data: new TextEncoder().encode(JSON.stringify(r, null, 2)),
       })
+
+      const blob = buildZip(entries)
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `dmplus-sync-telemetry-manifest-${new Date().toISOString().slice(0, 10)}.json`
+      a.download = `dmplus-sync-telemetry-${new Date().toISOString().slice(0, 10)}.zip`
       document.body.appendChild(a)
       a.click()
       a.remove()
       URL.revokeObjectURL(url)
       setTelInfo(
-        `${r.count} סנכרונים · ${r.fingerprintCount} טביעות אצבע · ${r.timelineCount ?? 0} קבצי טיימליין${r.truncated ? ' (נחתך)' : ''} — הקישורים בתוקף ל‑6 שעות`,
+        `${r.count} סנכרונים · ${r.fingerprintCount} טביעות אצבע · ${r.timelineCount ?? 0} קבצי טיימליין — ירדו כקובץ ZIP אחד` +
+          (skipped ? ` (${skipped} קבצים דולגו — ייתכן שהעלאה רצה ברקע)` : ''),
       )
     } catch (e) {
       handleErr(e)
@@ -308,9 +394,26 @@ export default function LogsTab({
           <div className="text-xs text-fg-muted">
             נתונים אנונימיים שמשתמשים שאישרו שולחים בסוף כל סנכרון — כל מועמד
             והציונים שלו, ההקשר, טביעות האצבע האקוסטיות, ומבנה הטיימליין של
-            הקלט והפלט (מעוקר — ללא מדיה או שמות קבצים). ההורדה היא קובץ
-            מניפסט עם קישורי הורדה לכל הקבצים.
+            הקלט והפלט (מעוקר — ללא מדיה או שמות קבצים). ההורדה היא קובץ ZIP
+            אחד עם כל הקבצים מסודרים בתיקיות.
           </div>
+          <label className="mt-2 flex w-fit cursor-pointer items-center gap-2">
+            <Switch
+              checked={telPaused === true}
+              onCheckedChange={(v) => toggleTelemetryPaused(v)}
+              disabled={telPaused === null || telPausing}
+            />
+            <span
+              className={
+                'text-xs ' +
+                (telPaused ? 'font-medium text-rose-400' : 'text-fg-muted')
+              }
+            >
+              {telPaused
+                ? 'קליטת נתונים מושבתת — משתמשים לא מעלים שום דבר חדש'
+                : 'השבתת קליטה — עצירת כל ההעלאות מהמשתמשים'}
+            </span>
+          </label>
           {telInfo && (
             <div className="mt-1 text-xs font-medium text-primary">{telInfo}</div>
           )}
@@ -326,7 +429,7 @@ export default function LogsTab({
           ) : (
             <Download className="h-3.5 w-3.5" />
           )}
-          {telDl ? 'מוריד…' : 'הורד מניפסט נתונים'}
+          {telDl ? 'מוריד…' : 'הורדת הכל (ZIP)'}
         </button>
         <button
           type="button"

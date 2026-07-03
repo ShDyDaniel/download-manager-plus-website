@@ -6915,6 +6915,21 @@ const TELE_MAX_FPS = 128 // cap fingerprints presigned per sync
 async function handleSyncTelemetryInit(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  // Admin kill-switch: when the panel pauses telemetry, refuse to
+  // presign — the desktop treats any failure here as "skip silently",
+  // so users upload nothing new until it's re-enabled.
+  try {
+    const cfg = await getDb().collection('appConfig').doc('global').get()
+    const disabled =
+      cfg.exists &&
+      (cfg.data() as { syncTelemetryDisabled?: boolean }).syncTelemetryDisabled ===
+        true
+    if (disabled) {
+      return res.status(200).json({ ok: false, error: 'telemetry-disabled' })
+    }
+  } catch {
+    /* config unreadable → fail open, telemetry is best-effort anyway */
+  }
   const body = (req.body || {}) as {
     syncId?: string
     date?: string
