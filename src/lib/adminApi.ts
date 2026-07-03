@@ -335,6 +335,7 @@ const STEPUP_ACTIONS = new Set<string>([
   'admin-restore-backup',
   'admin-delete-client-error',
   'admin-clear-client-errors',
+  'admin-sync-telemetry-clear',
   'admin-set-terms',
   'admin-set-privacy',
   'admin-set-accessibility',
