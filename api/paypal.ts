@@ -9600,6 +9600,7 @@ async function handleAdminSyncTelemetryExport(
   const TTL = 6 * 60 * 60 // 6h — long enough to download the whole set
   const events: { key: string; url: string; size: number }[] = []
   const fingerprints: { hash: string; url: string; size: number }[] = []
+  const timelines: { key: string; url: string; size: number }[] = []
   for (const o of objs) {
     const url = await getSignedUrl(
       getBackupR2(),
@@ -9611,6 +9612,8 @@ async function handleAdminSyncTelemetryExport(
       fingerprints.push({ hash, url, size: o.size })
     } else if (o.key.startsWith(`${SYNC_TELE_PREFIX}events/`)) {
       events.push({ key: o.key, url, size: o.size })
+    } else if (o.key.startsWith(`${SYNC_TELE_PREFIX}timelines/`)) {
+      timelines.push({ key: o.key, url, size: o.size })
     }
   }
   events.sort((a, b) => b.key.localeCompare(a.key)) // newest date first
@@ -9618,8 +9621,10 @@ async function handleAdminSyncTelemetryExport(
     ok: true,
     events,
     fingerprints,
+    timelines,
     count: events.length,
     fingerprintCount: fingerprints.length,
+    timelineCount: timelines.length,
     truncated: objs.length >= SYNC_TELE_MAX,
     urlTtlSeconds: TTL,
     exportedAt: new Date().toISOString(),

@@ -190,6 +190,7 @@ export default function LogsTab({
   // presigned download URL. We save that manifest as JSON — hand it to Claude,
   // which fetches every file from the links and analyzes the dataset.
   const [telDl, setTelDl] = useState(false)
+  const [telClr, setTelClr] = useState(false)
   const [telInfo, setTelInfo] = useState('')
   async function downloadSyncTelemetry() {
     setTelDl(true)
@@ -199,8 +200,10 @@ export default function LogsTab({
       const r = await adminApi<{
         events: { key: string; url: string; size: number }[]
         fingerprints: { hash: string; url: string; size: number }[]
+        timelines: { key: string; url: string; size: number }[]
         count: number
         fingerprintCount: number
+        timelineCount: number
         truncated: boolean
         urlTtlSeconds: number
         exportedAt: string
@@ -217,12 +220,32 @@ export default function LogsTab({
       a.remove()
       URL.revokeObjectURL(url)
       setTelInfo(
-        `${r.count} סנכרונים · ${r.fingerprintCount} טביעות אצבע${r.truncated ? ' (נחתך)' : ''} — הקישורים בתוקף ל‑6 שעות`,
+        `${r.count} סנכרונים · ${r.fingerprintCount} טביעות אצבע · ${r.timelineCount ?? 0} קבצי טיימליין${r.truncated ? ' (נחתך)' : ''} — הקישורים בתוקף ל‑6 שעות`,
       )
     } catch (e) {
       handleErr(e)
     } finally {
       setTelDl(false)
+    }
+  }
+
+  const clearSyncTelemetry = async () => {
+    if (
+      !window.confirm(
+        'לאפס את כל נתוני הסנכרון שנאספו? כל האירועים, טביעות האצבע וקבצי הטיימליין יימחקו לצמיתות מהאחסון.',
+      )
+    )
+      return
+    setTelClr(true)
+    setError('')
+    setTelInfo('')
+    try {
+      const r = await adminApi<{ deleted: number }>('admin-sync-telemetry-clear', {})
+      setTelInfo(`נמחקו ${r.deleted} קבצים — המערכת נקייה ומוכנה לאיסוף חדש`)
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setTelClr(false)
     }
   }
 
@@ -284,8 +307,9 @@ export default function LogsTab({
           <div className="text-sm font-semibold text-fg">נתוני סנכרון אוטומטי</div>
           <div className="text-xs text-fg-muted">
             נתונים אנונימיים שמשתמשים שאישרו שולחים בסוף כל סנכרון — כל מועמד
-            והציונים שלו, ההקשר, וטביעות האצבע האקוסטיות עצמן (ללא מדיה או שמות
-            קבצים). ההורדה היא קובץ מניפסט עם קישורי הורדה לכל הקבצים.
+            והציונים שלו, ההקשר, טביעות האצבע האקוסטיות, ומבנה הטיימליין של
+            הקלט והפלט (מעוקר — ללא מדיה או שמות קבצים). ההורדה היא קובץ
+            מניפסט עם קישורי הורדה לכל הקבצים.
           </div>
           {telInfo && (
             <div className="mt-1 text-xs font-medium text-primary">{telInfo}</div>
@@ -303,6 +327,19 @@ export default function LogsTab({
             <Download className="h-3.5 w-3.5" />
           )}
           {telDl ? 'מוריד…' : 'הורד מניפסט נתונים'}
+        </button>
+        <button
+          type="button"
+          onClick={clearSyncTelemetry}
+          disabled={telClr}
+          className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-rose-500/40 bg-rose-500/10 px-4 py-2 text-xs font-semibold text-rose-400 transition-colors hover:bg-rose-500/20 disabled:opacity-60"
+        >
+          {telClr ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
+          {telClr ? 'מוחק…' : 'איפוס כל הנתונים'}
         </button>
       </div>
 

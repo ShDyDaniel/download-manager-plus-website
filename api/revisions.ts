@@ -6839,6 +6839,7 @@ async function handleSyncTelemetryInit(req: VercelRequest, res: VercelResponse) 
     date?: string
     eventSize?: number
     fingerprints?: { hash?: string; size?: number }[]
+    timelines?: { kind?: string; size?: number }[]
   }
   const syncId = String(body.syncId || '')
   if (!/^[a-f0-9]{6,40}$/.test(syncId)) {
@@ -6874,7 +6875,23 @@ async function handleSyncTelemetryInit(req: VercelRequest, res: VercelResponse) 
     fingerprintPuts.push({ hash, url: await r2PresignPut(key), key })
   }
 
-  return res.status(200).json({ ok: true, eventPut, fingerprintPuts, skipped })
+  // Sanitized timeline xmls (input/output) — small gzips, keyed by syncId so
+  // an analysis can join event ↔ xml ↔ fingerprints.
+  const tls = Array.isArray(body.timelines) ? body.timelines.slice(0, 2) : []
+  const timelinePuts: { kind: string; url: string; key: string }[] = []
+  for (const t of tls) {
+    const kind =
+      t?.kind === 'output' ? 'output' : t?.kind === 'input' ? 'input' : null
+    if (!kind) continue
+    const size = Number(t?.size || 0)
+    if (!(size > 0) || size > 8 * 1024 * 1024) continue
+    const key = `${TELE_PREFIX}/timelines/${syncId}-${kind === 'input' ? 'in' : 'out'}.xml.gz`
+    timelinePuts.push({ kind, url: await r2PresignPut(key), key })
+  }
+
+  return res
+    .status(200)
+    .json({ ok: true, eventPut, fingerprintPuts, timelinePuts, skipped })
 }
 
 async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
