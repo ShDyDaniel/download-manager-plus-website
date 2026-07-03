@@ -2,7 +2,13 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import { getFirestore, FieldValue } from 'firebase-admin/firestore'
-import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import {
+  S3Client,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+  ListMultipartUploadsCommand,
+  AbortMultipartUploadCommand,
+} from '@aws-sdk/client-s3'
 import nodemailer from 'nodemailer'
 
 /* ── Outgoing-email counter (twin of api/paypal.ts) ─────────────────
@@ -450,6 +456,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // access purge above — this is a per-item TTL.
     const deliveryResults = await runDeliveryExpirySweep(db)
 
+    // ─── Storage janitor ──────────────────────────────────────
+    // Guarantees the bucket never accumulates garbage: aborts
+    // incomplete multipart uploads (a cancelled/crashed upload keeps
+    // billing storage invisibly) and deletes orphaned media objects
+    // whose round/delivery record is gone. 48h grace so an upload
+    // that's mid-flight right now is never touched.
+    const janitorResults = await runStorageJanitor(db)
+
     // NOTE: Firestore backups used to run here too. They've moved
     // entirely to the dedicated Cloudflare backup worker
     // (dmplus-backup-cron → admin-run-auto-backup), so the two systems
@@ -466,6 +480,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       annual: annualResults,
       purge: purgeResults,
       deliveries: deliveryResults,
+      janitor: janitorResults,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
@@ -678,6 +693,127 @@ function getR2OrNull(): S3Client | null {
 async function r2Delete(r2: S3Client, key: string): Promise<void> {
   if (!key) return
   await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }))
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Storage janitor — the bucket must NEVER hold garbage:
+ *   1. Incomplete multipart uploads (cancelled/crashed uploads) are
+ *      aborted after 48h — R2 bills their parts as storage even
+ *      though they're invisible in the object list.
+ *   2. Orphaned media (a {uid}/videos|finals object whose Firestore
+ *      round/delivery record no longer exists) is deleted after 48h.
+ *  The 48h grace protects live uploads and the moment between
+ *  "upload finished" and "doc written".
+ * ────────────────────────────────────────────────────────────── */
+const JANITOR_GRACE_MS = 48 * 60 * 60 * 1000
+
+async function runStorageJanitor(
+  db: ReturnType<typeof getFirestore>,
+): Promise<{
+  ran: boolean
+  multipartsAborted: number
+  orphansDeleted: number
+  orphanBytes: number
+  reason?: string
+}> {
+  const r2 = getR2OrNull()
+  if (!r2) {
+    return {
+      ran: false,
+      multipartsAborted: 0,
+      orphansDeleted: 0,
+      orphanBytes: 0,
+      reason: 'R2 not configured',
+    }
+  }
+  const cutoff = Date.now() - JANITOR_GRACE_MS
+
+  // 1) Abort stale incomplete multipart uploads.
+  let multipartsAborted = 0
+  try {
+    let keyMarker: string | undefined
+    let idMarker: string | undefined
+    do {
+      const r = await r2.send(
+        new ListMultipartUploadsCommand({
+          Bucket: R2_BUCKET,
+          KeyMarker: keyMarker,
+          UploadIdMarker: idMarker,
+        }),
+      )
+      for (const u of r.Uploads || []) {
+        if (!u.Key || !u.UploadId) continue
+        const t = u.Initiated ? new Date(u.Initiated).getTime() : 0
+        if (t && t > cutoff) continue // fresh — may still be uploading
+        try {
+          await r2.send(
+            new AbortMultipartUploadCommand({
+              Bucket: R2_BUCKET,
+              Key: u.Key,
+              UploadId: u.UploadId,
+            }),
+          )
+          multipartsAborted += 1
+        } catch {
+          /* keep sweeping */
+        }
+      }
+      keyMarker = r.IsTruncated ? r.NextKeyMarker : undefined
+      idMarker = r.IsTruncated ? r.NextUploadIdMarker : undefined
+    } while (keyMarker || idMarker)
+  } catch (err) {
+    console.error('[janitor] multipart sweep failed', err)
+  }
+
+  // 2) Delete orphaned media objects.
+  let orphansDeleted = 0
+  let orphanBytes = 0
+  try {
+    const referenced = new Set<string>()
+    const projSnap = await db.collection('revisionProjects').get()
+    for (const d of projSnap.docs) {
+      const k = (d.data() as { r2Key?: string }).r2Key
+      if (k) referenced.add(k)
+    }
+    const delivSnap = await db.collection('deliveries').get()
+    for (const d of delivSnap.docs) {
+      const videos = (d.data() as { videos?: Array<{ r2Key?: string }> }).videos
+      for (const v of videos || []) if (v?.r2Key) referenced.add(v.r2Key)
+    }
+
+    let token: string | undefined
+    do {
+      const r = await r2.send(
+        new ListObjectsV2Command({ Bucket: R2_BUCKET, ContinuationToken: token }),
+      )
+      for (const o of r.Contents || []) {
+        const key = o.Key || ''
+        // ONLY user media (rounds + deliveries, both key layouts). Never
+        // touch backups/, sync-telemetry/, notes or anything else here.
+        const isMedia = /^([^/]+\/(videos|finals)\/|videos\/)/.test(key)
+        if (!isMedia || referenced.has(key)) continue
+        const t = o.LastModified ? new Date(o.LastModified).getTime() : 0
+        if (t && t > cutoff) continue
+        try {
+          await r2Delete(r2, key)
+          orphansDeleted += 1
+          orphanBytes += o.Size || 0
+        } catch {
+          /* keep sweeping */
+        }
+      }
+      token = r.IsTruncated ? r.NextContinuationToken : undefined
+    } while (token)
+  } catch (err) {
+    console.error('[janitor] orphan sweep failed', err)
+  }
+
+  if (multipartsAborted || orphansDeleted) {
+    console.info(
+      `[janitor] aborted ${multipartsAborted} multipart uploads, deleted ${orphansDeleted} orphans (${orphanBytes} bytes)`,
+    )
+  }
+  return { ran: true, multipartsAborted, orphansDeleted, orphanBytes }
 }
 
 /* ──────────────────────────────────────────────────────────────

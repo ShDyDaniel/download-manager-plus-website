@@ -11,7 +11,7 @@ import {
   ShieldAlert,
   Mail,
 } from 'lucide-react'
-import { getAdminIdToken } from '../../lib/adminApi'
+import { getAdminIdToken, adminApi } from '../../lib/adminApi'
 import { cachedCall, peekCall } from '../../lib/adminCache'
 
 interface AdminUsage {
@@ -244,7 +244,7 @@ export default function DashboardTab({
             sub="שטח בשימוש + עלות חודשית צפויה"
           >
             {usage.r2?.configured ? (
-              <R2Panel r2={usage.r2} />
+              <R2Panel r2={usage.r2} onCleaned={() => load(true)} />
             ) : (
               <NotConfigured
                 error={usage.r2?.error}
@@ -366,7 +366,39 @@ function UsageBar({
   )
 }
 
-function R2Panel({ r2 }: { r2: NonNullable<AdminUsage['r2']> }) {
+function R2Panel({
+  r2,
+  onCleaned,
+}: {
+  r2: NonNullable<AdminUsage['r2']>
+  onCleaned: () => void
+}) {
+  const [cleaning, setCleaning] = useState(false)
+  const [cleanInfo, setCleanInfo] = useState('')
+  const hasGarbage =
+    (r2.breakdown?.orphans?.count || 0) > 0 || (r2.multipartCount || 0) > 0
+  async function cleanupNow() {
+    setCleaning(true)
+    setCleanInfo('')
+    try {
+      const r = await adminApi<{
+        multipartsAborted: number
+        orphansDeleted: number
+        orphanBytes: number
+      }>('admin-storage-cleanup')
+      setCleanInfo(
+        `נמחקו ${r.orphansDeleted} קבצים יתומים ובוטלו ${r.multipartsAborted} העלאות מקוטעות` +
+          (r.orphansDeleted === 0 && r.multipartsAborted === 0
+            ? ' — מה שנשאר צעיר מ-48 שעות ויטופל בניקוי הלילי'
+            : ''),
+      )
+      onCleaned()
+    } catch (e) {
+      setCleanInfo((e as Error).message || 'הניקוי נכשל')
+    } finally {
+      setCleaning(false)
+    }
+  }
   const usedGb = r2.usedGb || 0
   const freeGb = r2.freeStorageGb || 10
   const pct = Math.min(100, freeGb > 0 ? (usedGb / freeGb) * 100 : 0)
@@ -465,6 +497,19 @@ function R2Panel({ r2 }: { r2: NonNullable<AdminUsage['r2']> }) {
               הושלמו — הן תופסות אחסון בחיוב אך לא נספרות למעלה. הישנה ביותר:{' '}
               <bdi dir="ltr">{(r2.multipartOldest || '').slice(0, 10)}</bdi>
             </p>
+          )}
+          {hasGarbage && (
+            <button
+              type="button"
+              onClick={cleanupNow}
+              disabled={cleaning}
+              className="mt-2 w-full rounded-md border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-semibold text-destructive transition-colors hover:bg-destructive/20 disabled:opacity-60"
+            >
+              {cleaning ? 'מנקה…' : 'ניקוי אחסון עכשיו'}
+            </button>
+          )}
+          {cleanInfo && (
+            <p className="mt-1.5 text-[11px] font-medium text-primary">{cleanInfo}</p>
           )}
         </div>
       )}

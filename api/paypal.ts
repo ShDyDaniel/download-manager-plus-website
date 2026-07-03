@@ -13,6 +13,8 @@ import {
   ListObjectsV2Command,
   DeleteObjectCommand,
   GetObjectCommand,
+  ListMultipartUploadsCommand,
+  AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import nodemailer from 'nodemailer'
@@ -1833,6 +1835,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSyncTelemetryExport(req, res)
       case 'admin-sync-telemetry-clear':
         return await handleAdminSyncTelemetryClear(req, res)
+      case 'admin-storage-cleanup':
+        return await handleAdminStorageCleanup(req, res)
       case 'admin-set-terms':
         return await handleAdminSetTerms(req, res)
       case 'admin-set-privacy':
@@ -9637,6 +9641,98 @@ async function handleAdminSyncTelemetryExport(
     urlTtlSeconds: TTL,
     exportedAt: new Date().toISOString(),
   })
+}
+
+/* On-demand version of the cron storage janitor (see
+ * api/cron/expiry-reminders.ts runStorageJanitor): aborts incomplete
+ * multipart uploads and deletes orphaned round/delivery media, both
+ * older than 48h. The daily cron gives the automatic guarantee; this
+ * button lets the admin clean NOW after spotting garbage on the
+ * dashboard. */
+async function handleAdminStorageCleanup(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const GRACE_MS = 48 * 60 * 60 * 1000
+  const cutoff = Date.now() - GRACE_MS
+  const r2 = getBackupR2()
+
+  let multipartsAborted = 0
+  let keyMarker: string | undefined
+  let idMarker: string | undefined
+  do {
+    const r = await r2.send(
+      new ListMultipartUploadsCommand({
+        Bucket: BACKUP_BUCKET,
+        KeyMarker: keyMarker,
+        UploadIdMarker: idMarker,
+      }),
+    )
+    for (const u of r.Uploads || []) {
+      if (!u.Key || !u.UploadId) continue
+      const t = u.Initiated ? new Date(u.Initiated).getTime() : 0
+      if (t && t > cutoff) continue
+      try {
+        await r2.send(
+          new AbortMultipartUploadCommand({
+            Bucket: BACKUP_BUCKET,
+            Key: u.Key,
+            UploadId: u.UploadId,
+          }),
+        )
+        multipartsAborted += 1
+      } catch {
+        /* keep sweeping */
+      }
+    }
+    keyMarker = r.IsTruncated ? r.NextKeyMarker : undefined
+    idMarker = r.IsTruncated ? r.NextUploadIdMarker : undefined
+  } while (keyMarker || idMarker)
+
+  const referenced = new Set<string>()
+  const projSnap = await getDb().collection('revisionProjects').get()
+  for (const d of projSnap.docs) {
+    const k = (d.data() as { r2Key?: string }).r2Key
+    if (k) referenced.add(k)
+  }
+  const delivSnap = await getDb().collection('deliveries').get()
+  for (const d of delivSnap.docs) {
+    const videos = (d.data() as { videos?: Array<{ r2Key?: string }> }).videos
+    for (const v of videos || []) if (v?.r2Key) referenced.add(v.r2Key)
+  }
+
+  let orphansDeleted = 0
+  let orphanBytes = 0
+  let token: string | undefined
+  do {
+    const r = await r2.send(
+      new ListObjectsV2Command({ Bucket: BACKUP_BUCKET, ContinuationToken: token }),
+    )
+    for (const o of r.Contents || []) {
+      const key = o.Key || ''
+      const isMedia = /^([^/]+\/(videos|finals)\/|videos\/)/.test(key)
+      if (!isMedia || referenced.has(key)) continue
+      const t = o.LastModified ? new Date(o.LastModified).getTime() : 0
+      if (t && t > cutoff) continue
+      try {
+        await r2.send(
+          new DeleteObjectCommand({ Bucket: BACKUP_BUCKET, Key: key }),
+        )
+        orphansDeleted += 1
+        orphanBytes += o.Size || 0
+      } catch {
+        /* keep sweeping */
+      }
+    }
+    token = r.IsTruncated ? r.NextContinuationToken : undefined
+  } while (token)
+
+  return res
+    .status(200)
+    .json({ ok: true, multipartsAborted, orphansDeleted, orphanBytes })
 }
 
 async function handleAdminSyncTelemetryClear(
