@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
@@ -2053,6 +2053,70 @@ function SubscriptionFlow({
   // text makes the auto-renew commitment explicit.
   const [termsOpen, setTermsOpen] = useState(false)
 
+  // ── Coupon (server-validated; we only ever hold the CODE) ──
+  const [couponOpen, setCouponOpen] = useState(false)
+  const [couponInput, setCouponInput] = useState('')
+  const [couponBusy, setCouponBusy] = useState(false)
+  const [couponErr, setCouponErr] = useState<string | null>(null)
+  const [couponOk, setCouponOk] = useState<{
+    code: string
+    pct: number
+    finalPrice: number
+    saleCheaper: boolean
+  } | null>(null)
+  const couponCodeRef = useRef<string | null>(null)
+  couponCodeRef.current = couponOk && !couponOk.saleCheaper ? couponOk.code : null
+
+  const applyCoupon = useCallback(
+    async (codeRaw: string, planNow: Plan) => {
+      const code = codeRaw.trim().toUpperCase()
+      if (!code) return
+      setCouponBusy(true)
+      setCouponErr(null)
+      try {
+        const r = await fetch('/api/paypal?action=coupon-check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code, plan: planNow }),
+        })
+        const j = (await r.json()) as {
+          ok: boolean
+          valid?: boolean
+          pct?: number
+          finalPrice?: number
+          saleCheaper?: boolean
+          error?: string
+        }
+        if (!r.ok || !j.ok) {
+          setCouponErr(j.error || 'בדיקת הקופון נכשלה — נסו שוב')
+          setCouponOk(null)
+        } else if (!j.valid) {
+          setCouponErr(j.error || 'קוד לא תקין')
+          setCouponOk(null)
+        } else {
+          setCouponOk({
+            code,
+            pct: j.pct || 0,
+            finalPrice: j.finalPrice || 0,
+            saleCheaper: !!j.saleCheaper,
+          })
+        }
+      } catch {
+        setCouponErr('בדיקת הקופון נכשלה — נסו שוב')
+      } finally {
+        setCouponBusy(false)
+      }
+    },
+    [],
+  )
+
+  // Plan switch re-validates the applied coupon (a code can be valid for
+  // yearly only, and the % is applied to the OTHER plan's base price).
+  useEffect(() => {
+    if (couponOk) void applyCoupon(couponOk.code, plan)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan])
+
   // Email + checkbox readiness controls whether the PayPal Buttons
   // are usable. We don't render disabled buttons (PayPal Smart
   // Buttons don't have a disabled state) — instead we render a
@@ -2109,6 +2173,7 @@ function SubscriptionFlow({
                 // through to the normal "redeem manually in the
                 // app" flow.
                 sessionToken: purchaseContext?.sessionToken,
+                coupon: couponCodeRef.current,
               }),
             })
             const json = (await r.json()) as {
@@ -2189,6 +2254,77 @@ function SubscriptionFlow({
         />
       </label>
 
+      {/* Coupon — only the CODE travels to the server; price + validity
+          are decided there. This flow is fresh-purchase-only (renewals
+          use a separate container), so the field is always in scope. */}
+      <div>
+          {!couponOpen && !couponOk ? (
+            <button
+              type="button"
+              onClick={() => setCouponOpen(true)}
+              className="text-xs text-accent underline underline-offset-2 hover:text-accent/80"
+            >
+              יש לי קוד קופון
+            </button>
+          ) : (
+            <div className="space-y-1.5">
+              {!couponOk && (
+                <div className="flex items-center gap-2">
+                  <input
+                    value={couponInput}
+                    onChange={(e) => setCouponInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        void applyCoupon(couponInput, plan)
+                      }
+                    }}
+                    placeholder="קוד קופון"
+                    dir="ltr"
+                    className="w-40 rounded-xl border border-border bg-bg-elevated px-3 py-2 text-sm uppercase text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    disabled={couponBusy || !couponInput.trim()}
+                    onClick={() => void applyCoupon(couponInput, plan)}
+                    className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-50"
+                  >
+                    {couponBusy ? 'בודק…' : 'החלה'}
+                  </button>
+                </div>
+              )}
+              {couponOk && !couponOk.saleCheaper && (
+                <div className="flex items-center gap-2 rounded-xl border border-success/40 bg-success/10 px-3 py-2 text-xs text-success">
+                  <span>
+                    קופון {couponOk.pct}% הופעל — המחיר: {formatPrice(couponOk.finalPrice)} {sym} ל{cycleLabel}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCouponOk(null)
+                      setCouponInput('')
+                      setCouponOpen(false)
+                    }}
+                    className="mr-auto text-success/80 hover:text-success"
+                    title="הסרת הקופון"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {couponOk && couponOk.saleCheaper && (
+                <div className="rounded-xl border border-border bg-bg-elevated px-3 py-2 text-xs text-fg-secondary">
+                  המבצע הנוכחי זול יותר מהקופון — המחיר נשאר{' '}
+                  {formatPrice(eff)} {sym}. הקופון לא ינוצל.
+                </div>
+              )}
+              {couponErr && (
+                <div className="text-xs text-destructive">{couponErr}</div>
+              )}
+            </div>
+          )}
+        </div>
+
       {/* Single explicit consent checkbox. Israeli consumer-
           protection law (sec. 13ג) requires the auto-renew terms
           to be disclosed up-front; we satisfy that with the
@@ -2204,7 +2340,9 @@ function SubscriptionFlow({
           disabled={false}
         />
         <span className="text-xs text-fg-secondary leading-relaxed">
-          אני מאשר/ת חיוב אוטומטי מתחדש בסך {formatPrice(eff)} {sym} כל{' '}
+          אני מאשר/ת חיוב אוטומטי מתחדש בסך{' '}
+          {formatPrice(couponOk && !couponOk.saleCheaper ? couponOk.finalPrice : eff)}{' '}
+          {sym} כל{' '}
           {cycleLabel}, ושקראתי ואני מסכים{' '}
           <button
             type="button"

@@ -1837,6 +1837,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSyncTelemetryClear(req, res)
       case 'admin-storage-cleanup':
         return await handleAdminStorageCleanup(req, res)
+      case 'admin-list-coupons':
+        return await handleAdminListCoupons(req, res)
+      case 'admin-create-coupon':
+        return await handleAdminCreateCoupon(req, res)
+      case 'admin-set-coupon-active':
+        return await handleAdminSetCouponActive(req, res)
+      case 'admin-delete-coupon':
+        return await handleAdminDeleteCoupon(req, res)
       case 'admin-set-terms':
         return await handleAdminSetTerms(req, res)
       case 'admin-set-privacy':
@@ -1863,6 +1871,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSetPopup(req, res)
       case 'get-pricing':
         return await handleGetPricing(req, res)
+      case 'coupon-check':
+        return await handleCouponCheck(req, res)
       case 'get-terms':
         return await handleGetTerms(req, res)
       case 'get-privacy':
@@ -2292,6 +2302,7 @@ async function ensureKeyForSubscription(
   // "renew" button) have renewKeyId AND linkToUid.
   let linkToUid: string | null = null
   let renewKeyId: string | null = null
+  let pendingCoupon: { code: string; pct: number } | null = null
   try {
     const pendingDoc = await db
       .collection('pendingSubscriptions')
@@ -2301,6 +2312,8 @@ async function ensureKeyForSubscription(
       const data = pendingDoc.data() as {
         linkToUid?: string | null
         renewKeyId?: string | null
+        couponCode?: string | null
+        couponPct?: number | null
       }
       if (typeof data.linkToUid === 'string' && data.linkToUid) {
         linkToUid = data.linkToUid
@@ -2308,12 +2321,33 @@ async function ensureKeyForSubscription(
       if (typeof data.renewKeyId === 'string' && data.renewKeyId) {
         renewKeyId = data.renewKeyId
       }
+      if (typeof data.couponCode === 'string' && data.couponCode) {
+        pendingCoupon = {
+          code: data.couponCode,
+          pct: Number(data.couponPct) || 0,
+        }
+      }
     }
   } catch (err) {
     console.warn(
       '[webhook/sale-completed] pendingSubscriptions lookup failed:',
       err,
     )
+  }
+
+  // Coupon consumption — the activation is PayPal-confirmed at this
+  // point, so this is the moment one "use" is burned. Idempotent per
+  // (coupon, email): a webhook redelivery won't double-count.
+  if (pendingCoupon && !renewKeyId && buyerEmail) {
+    try {
+      await consumeCoupon(
+        pendingCoupon.code,
+        buyerEmail.trim().toLowerCase(),
+        subscriptionId,
+      )
+    } catch (err) {
+      console.warn('[webhook] coupon consume failed:', err)
+    }
   }
 
   // ── RENEWAL BRANCH: extend the existing key in-place ──
@@ -2583,6 +2617,9 @@ async function ensureKeyForSubscription(
     planDays,
     subscriptionStatus: 'active',
     subscriptionStartedAt: new Date().toISOString(),
+    ...(pendingCoupon
+      ? { couponCode: pendingCoupon.code, couponPct: pendingCoupon.pct }
+      : {}),
     // Seed billingHistory with the initial activation payment.
     // PayPal V1 Subscriptions does NOT fire PAYMENT.SALE.COMPLETED
     // for the initial activation charge (only for recurring charges
@@ -2876,6 +2913,199 @@ async function handlePaymentFailed(
  *  Client sends ONLY `plan` and `email` — never a price or plan_id.
  * ───────────────────────────────────────────────────────────── */
 
+/* ── Coupons ─────────────────────────────────────────────────────
+ *  SECURITY MODEL: the client only ever sends the coupon CODE. The
+ *  discount %, the resulting price, and the PayPal plan are all
+ *  resolved server-side, with a hard cap (COUPON_MAX_PCT) and a price
+ *  floor — so a forged request can never buy Pro at 0. Free Pro stays
+ *  where it belongs: the admin product-keys system, not the payment
+ *  path. Usage is CONSUMED only when PayPal confirms the activation
+ *  (webhook), so parallel checkouts can't overdraw maxUses, and a
+ *  per-email uses/ doc makes consumption idempotent + once-per-buyer.
+ *  Coupons never stack with a sale price: the buyer gets the cheaper
+ *  of the two. Renewals/plan-switches ignore coupons entirely (the
+ *  renewal amount-guard compares against the key's locked price).
+ * ──────────────────────────────────────────────────────────────── */
+const COUPON_MAX_PCT = 50
+
+interface CouponDoc {
+  code: string
+  pct: number
+  plans: 'monthly' | 'yearly' | 'both'
+  active: boolean
+  expiresAt: number | null
+  maxUses: number | null
+  usedCount: number
+  note?: string
+  createdAt: string
+}
+
+function normCouponCode(raw: string): string | null {
+  const c = String(raw || '')
+    .trim()
+    .toUpperCase()
+  return /^[A-Z0-9-]{3,32}$/.test(c) ? c : null
+}
+
+function couponPriceFrom(base: number, pct: number): number {
+  return Math.max(1, Math.round((base * (100 - pct)) / 100))
+}
+
+/* Per-instance guessing throttle for the public check endpoint. Serverless
+ * instances are short-lived so this is best-effort — combined with the
+ * generic error message and the 3-32-char charset it makes scanning codes
+ * impractical without ever risking a lockout for a legit buyer. */
+const couponMisses = new Map<string, { n: number; at: number }>()
+function couponThrottled(ip: string): boolean {
+  const m = couponMisses.get(ip)
+  if (!m) return false
+  if (Date.now() - m.at > 10 * 60_000) {
+    couponMisses.delete(ip)
+    return false
+  }
+  return m.n >= 15
+}
+function couponRegisterMiss(ip: string): void {
+  const m = couponMisses.get(ip)
+  if (m && Date.now() - m.at <= 10 * 60_000) m.n += 1
+  else couponMisses.set(ip, { n: 1, at: Date.now() })
+}
+
+/** Validate a coupon for a purchase. `email` empty = pre-check (no
+ *  per-buyer test yet). Returns the SERVER-side pct, never trusts input. */
+async function resolveCoupon(
+  codeRaw: string,
+  plan: 'monthly' | 'yearly',
+  email: string,
+): Promise<{ ok: true; code: string; pct: number } | { ok: false; error: string }> {
+  const code = normCouponCode(codeRaw)
+  if (!code) return { ok: false, error: 'קוד לא תקין' }
+  const snap = await getDb().collection('coupons').doc(code).get()
+  if (!snap.exists) return { ok: false, error: 'קוד לא תקין' }
+  const c = snap.data() as CouponDoc
+  if (!c.active) return { ok: false, error: 'קוד לא תקין' }
+  if (c.expiresAt && Date.now() > c.expiresAt) {
+    return { ok: false, error: 'פג תוקף הקופון' }
+  }
+  if (c.plans && c.plans !== 'both' && c.plans !== plan) {
+    return { ok: false, error: 'הקופון לא תקף לתוכנית שנבחרה' }
+  }
+  if (
+    typeof c.maxUses === 'number' &&
+    c.maxUses > 0 &&
+    (c.usedCount || 0) >= c.maxUses
+  ) {
+    return { ok: false, error: 'הקופון נוצל במלואו' }
+  }
+  // HARD server-side bounds — even a mis-written admin doc can't produce
+  // a free subscription.
+  const pct = Math.min(COUPON_MAX_PCT, Math.max(1, Math.round(c.pct || 0)))
+  if (email) {
+    const use = await snap.ref.collection('uses').doc(email).get()
+    if (use.exists) return { ok: false, error: 'הקופון כבר נוצל עם המייל הזה' }
+  }
+  return { ok: true, code, pct }
+}
+
+/** Consume one use — called ONLY from the webhook after PayPal confirmed
+ *  the activation. Idempotent per (coupon, email). */
+async function consumeCoupon(
+  code: string,
+  email: string,
+  subscriptionId: string,
+): Promise<void> {
+  const db = getDb()
+  const ref = db.collection('coupons').doc(code)
+  await db.runTransaction(async (tx) => {
+    const useRef = ref.collection('uses').doc(email)
+    const [cSnap, useSnap] = await Promise.all([tx.get(ref), tx.get(useRef)])
+    if (!cSnap.exists || useSnap.exists) return
+    tx.set(useRef, { email, subscriptionId, at: new Date().toISOString() })
+    tx.update(ref, {
+      usedCount: ((cSnap.data() as CouponDoc).usedCount || 0) + 1,
+    })
+  })
+}
+
+/** Plan for an arbitrary (interval, amount) — reuses the same PayPal plan
+ *  catalog as the regular/sale slots, so coupon prices never litter PayPal
+ *  with duplicates. */
+async function ensurePlanForAmount(
+  interval: 'monthly' | 'yearly',
+  amount: number,
+  currency: string,
+): Promise<string> {
+  const db = getDb()
+  const ref = db.collection('appConfig').doc('pricing')
+  const snap = await ref.get()
+  const existing = snap.exists
+    ? (snap.data() as unknown as Record<string, unknown>)
+    : {}
+  const catalog =
+    ((existing.paypalPlansCatalog as Record<string, CatalogEntry> | undefined) ?? {})
+  const k = catalogKey(interval, amount, currency)
+  const hit = catalog[k]
+  if (hit) {
+    try {
+      await activatePaypalPlan(hit.planId)
+      return hit.planId
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const stale = msg.includes('404') || msg.includes('RESOURCE_NOT_FOUND')
+      if (!stale) throw err
+      delete catalog[k]
+    }
+  }
+  const productId = await getOrCreateProduct()
+  const planId = await createPaypalPlan({
+    productId,
+    label: `קופון — ${interval === 'monthly' ? 'חודשי' : 'שנתי'} ${amount}`,
+    amount,
+    currency,
+    interval,
+  })
+  catalog[k] = { planId, amount, interval, currency }
+  await ref.set({ paypalPlansCatalog: catalog }, { merge: true })
+  return planId
+}
+
+/** Public: validate a code + preview the price. Never reveals WHY an
+ *  unknown code failed (anti-scanning), throttled per IP. */
+async function handleCouponCheck(req: VercelRequest, res: VercelResponse) {
+  const b = (req.body || {}) as { code?: string; plan?: string }
+  const plan: 'monthly' | 'yearly' = b.plan === 'yearly' ? 'yearly' : 'monthly'
+  const ip = String(req.headers['x-forwarded-for'] || '')
+    .split(',')[0]
+    .trim()
+  if (couponThrottled(ip)) {
+    return res
+      .status(429)
+      .json({ ok: false, error: 'יותר מדי ניסיונות — נסו שוב בעוד כמה דקות' })
+  }
+  const pricing = await loadCurrentPricingStrict()
+  if (!pricing) {
+    return res.status(503).json({ ok: false, error: 'המחיר אינו זמין כרגע' })
+  }
+  const r = await resolveCoupon(b.code || '', plan, '')
+  if (!r.ok) {
+    couponRegisterMiss(ip)
+    return res.status(200).json({ ok: true, valid: false, error: r.error })
+  }
+  const regular = pricing[plan].regular
+  const sale = pricing[plan].sale
+  const couponPrice = couponPriceFrom(regular, r.pct)
+  const saleCheaper = sale != null && sale <= couponPrice
+  return res.status(200).json({
+    ok: true,
+    valid: true,
+    pct: r.pct,
+    couponPrice,
+    finalPrice: saleCheaper ? sale : couponPrice,
+    saleCheaper,
+    currency: pricing.currency,
+  })
+}
+
 async function handleCreateSubscription(
   req: VercelRequest,
   res: VercelResponse,
@@ -2885,6 +3115,7 @@ async function handleCreateSubscription(
     email?: string
     sessionToken?: string
     renewToken?: string
+    coupon?: string
   }
   const plan = body.plan
   let email = (body.email || '').trim().toLowerCase()
@@ -2989,9 +3220,9 @@ async function handleCreateSubscription(
       .json({ ok: false, error: 'המחיר אינו זמין כרגע, נסו שוב מאוחר יותר' })
   }
   const usingSale = pricing[plan].sale != null
-  const lockedPrice = usingSale ? pricing[plan].sale! : pricing[plan].regular
+  let lockedPrice = usingSale ? pricing[plan].sale! : pricing[plan].regular
   const plans = await syncPlansForPricing(pricing)
-  const planId =
+  let planId =
     plan === 'monthly'
       ? usingSale
         ? plans.monthlySalePlanId
@@ -3003,6 +3234,26 @@ async function handleCreateSubscription(
     return res
       .status(500)
       .json({ ok: false, error: 'תצורת תוכנית לא תקינה — נסה שוב' })
+  }
+
+  // ── Coupon (server-side ONLY: the client sent just a code) ──
+  // Not on renewals: the renewal amount-guard compares against the key's
+  // locked price, and a discounted renewal would (correctly) be refused.
+  // No stacking with a sale: the buyer gets the cheaper of the two.
+  let couponApplied: { code: string; pct: number } | null = null
+  if (body.coupon && !renewKeyId) {
+    const r = await resolveCoupon(String(body.coupon), plan, email)
+    if (!r.ok) {
+      return res.status(400).json({ ok: false, error: r.error })
+    }
+    const couponPrice = couponPriceFrom(pricing[plan].regular, r.pct)
+    if (couponPrice < lockedPrice) {
+      lockedPrice = couponPrice
+      planId = await ensurePlanForAmount(plan, couponPrice, pricing.currency)
+      couponApplied = { code: r.code, pct: r.pct }
+    }
+    // else: the active sale is already cheaper — proceed without the
+    // coupon (nothing is consumed).
   }
   const subscription = await paypalCall<{
     id: string
@@ -3056,6 +3307,10 @@ async function handleCreateSubscription(
     // forward (instead of the user ending up with two keys, an
     // expired one and a fresh one).
     renewKeyId,
+    // Coupon that produced lockedPrice (null = none). Consumed by the
+    // webhook only after PayPal confirms the activation.
+    couponCode: couponApplied ? couponApplied.code : null,
+    couponPct: couponApplied ? couponApplied.pct : null,
   })
   return res.status(200).json({
     ok: true,
@@ -9641,6 +9896,114 @@ async function handleAdminSyncTelemetryExport(
     urlTtlSeconds: TTL,
     exportedAt: new Date().toISOString(),
   })
+}
+
+/* ── Admin: coupon management (step-up gated like every mutation) ── */
+async function handleAdminListCoupons(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const snap = await getDb().collection('coupons').get()
+  const coupons = snap.docs
+    .map((d) => {
+      const c = d.data() as CouponDoc
+      return {
+        code: d.id,
+        pct: c.pct,
+        plans: c.plans || 'both',
+        active: c.active !== false,
+        expiresAt: c.expiresAt || null,
+        maxUses: c.maxUses || null,
+        usedCount: c.usedCount || 0,
+        note: c.note || '',
+        createdAt: c.createdAt || '',
+      }
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  return res.status(200).json({ ok: true, coupons })
+}
+
+async function handleAdminCreateCoupon(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const b = (req.body || {}) as {
+    code?: string
+    pct?: number
+    plans?: string
+    expiresAt?: number | null
+    maxUses?: number | null
+    note?: string
+  }
+  const code = normCouponCode(String(b.code || ''))
+  if (!code) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'קוד לא תקין (3–32 תווים: A-Z, 0-9, מקף)' })
+  }
+  const pct = Math.round(Number(b.pct) || 0)
+  if (!(pct >= 1 && pct <= COUPON_MAX_PCT)) {
+    return res
+      .status(400)
+      .json({ ok: false, error: `אחוז הנחה חייב להיות בין 1 ל-${COUPON_MAX_PCT}` })
+  }
+  const plans =
+    b.plans === 'monthly' || b.plans === 'yearly' ? b.plans : 'both'
+  const doc: CouponDoc = {
+    code,
+    pct,
+    plans,
+    active: true,
+    expiresAt:
+      typeof b.expiresAt === 'number' && b.expiresAt > Date.now()
+        ? b.expiresAt
+        : null,
+    maxUses:
+      typeof b.maxUses === 'number' && b.maxUses > 0
+        ? Math.min(100000, Math.round(b.maxUses))
+        : null,
+    usedCount: 0,
+    note: String(b.note || '').slice(0, 200),
+    createdAt: new Date().toISOString(),
+  }
+  const ref = getDb().collection('coupons').doc(code)
+  if ((await ref.get()).exists) {
+    return res.status(400).json({ ok: false, error: 'קוד כזה כבר קיים' })
+  }
+  await ref.set(doc)
+  return res.status(200).json({ ok: true })
+}
+
+async function handleAdminSetCouponActive(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const b = (req.body || {}) as { code?: string; active?: boolean }
+  const code = normCouponCode(String(b.code || ''))
+  if (!code) return res.status(400).json({ ok: false, error: 'קוד לא תקין' })
+  await getDb()
+    .collection('coupons')
+    .doc(code)
+    .set({ active: b.active === true }, { merge: true })
+  return res.status(200).json({ ok: true })
+}
+
+async function handleAdminDeleteCoupon(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const b = (req.body || {}) as { code?: string }
+  const code = normCouponCode(String(b.code || ''))
+  if (!code) return res.status(400).json({ ok: false, error: 'קוד לא תקין' })
+  const ref = getDb().collection('coupons').doc(code)
+  // best-effort purge of the uses subcollection (bounded)
+  const uses = await ref.collection('uses').limit(500).get()
+  for (const d of uses.docs) await d.ref.delete()
+  await ref.delete()
+  return res.status(200).json({ ok: true })
 }
 
 /* On-demand version of the cron storage janitor (see
