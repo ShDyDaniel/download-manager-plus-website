@@ -260,7 +260,7 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
           <h1 className="font-display text-3xl font-bold tracking-tight md:text-4xl">
             {data.title || 'הסרטונים שלך'}
           </h1>
-          <p className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground">
+          <p className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground">
             <Clock className="h-3.5 w-3.5" />
             {expiryText(data.expiresAt)}
           </p>
