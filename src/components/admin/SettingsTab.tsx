@@ -196,7 +196,6 @@ export default function SettingsTab({
       <ProtectionCard onErr={handleErr} />
       <PopupCard onErr={handleErr} />
       <PasskeysCard onErr={handleErr} />
-      <PricingCard onErr={handleErr} />
       <LegalCard kind="terms" title="תנאי שימוש" onErr={handleErr} />
       <LegalCard kind="privacy" title="מדיניות פרטיות" onErr={handleErr} />
       <LegalCard kind="accessibility" title="הצהרת נגישות" onErr={handleErr} />
@@ -207,7 +206,7 @@ export default function SettingsTab({
   )
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+export function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="space-y-3 rounded-2xl border border-border bg-card p-4">
       <h3 className="text-sm font-semibold text-fg">{title}</h3>
@@ -1841,7 +1840,7 @@ const DEFAULT_PRICING: PricingDoc = {
 /* Pricing card — ported 1:1 from the desktop admin panel. Loads via
  * the public get-pricing endpoint, saves via admin-set-pricing, then
  * triggers sync-plans so PayPal Plans match the new prices. */
-function PricingCard({ onErr }: { onErr: (e: unknown) => void }) {
+export function PricingCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [draft, setDraft] = useState<PricingDoc>(DEFAULT_PRICING)
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)

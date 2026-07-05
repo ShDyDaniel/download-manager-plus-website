@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Switch } from '@/components/ui/Switch'
 import { cn } from '@/lib/cn'
+import { PricingCard } from './SettingsTab'
 
 /* Coupons tab — discount codes for the /buy checkout.
  *
@@ -26,7 +27,7 @@ interface AdminCoupon {
   createdAt: string
 }
 
-export default function CouponsTab({
+export default function PricingTab({
   onAuthExpired,
 }: {
   onAuthExpired: () => void
@@ -119,13 +120,9 @@ export default function CouponsTab({
   return (
     <div className="space-y-5">
       <header>
-        <h2 className="flex items-center gap-2 text-3xl font-bold font-display text-fg">
-          <Ticket className="h-7 w-7 text-primary" />
-          קופונים
-        </h2>
+        <h2 className="text-3xl font-bold font-display text-fg">מחירים</h2>
         <p className="mt-1 text-sm text-fg-muted">
-          קודי הנחה לעמוד הרכישה. ההנחה מוגבלת ל-50%, המחיר תמיד מחושב בשרת,
-          ולא מצטברת עם מבצע פעיל (הלקוח מקבל את הזול מביניהם).
+          מחירי המנוי וקודי ההנחה לעמוד הרכישה.
         </p>
       </header>
 
@@ -134,6 +131,21 @@ export default function CouponsTab({
           <AlertTriangle className="h-4 w-4" /> {error}
         </div>
       )}
+
+      {/* ── Subscription prices (moved from Settings) ── */}
+      <PricingCard onErr={handleErr} />
+
+      {/* ── Coupons ── */}
+      <div className="flex items-center gap-2 pt-2">
+        <Ticket className="h-6 w-6 text-primary" />
+        <div>
+          <h3 className="text-lg font-bold font-display text-fg">קופונים</h3>
+          <p className="text-xs text-fg-muted">
+            קודי הנחה לעמוד הרכישה. ההנחה מוגבלת ל-50%, המחיר תמיד מחושב
+            בשרת, ולא מצטברת עם מבצע פעיל (הלקוח מקבל את הזול מביניהם).
+          </p>
+        </div>
+      </div>
 
       {/* create */}
       <div className="space-y-3 rounded-2xl border border-border bg-card p-4">
