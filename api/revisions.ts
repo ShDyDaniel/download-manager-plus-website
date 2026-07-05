@@ -7006,6 +7006,20 @@ async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
   }
   const entries = Array.isArray(body.entries) ? body.entries.slice(0, 500) : []
   if (entries.length === 0) return res.status(200).json({ ok: true, ingested: 0 })
+  // Admin kill-switch: when error collection is turned off in the panel,
+  // silently drop everything (the desktop treats a 200 as "done" and clears
+  // its local file, so nothing accumulates or gets stored).
+  try {
+    const cfg = await getDb().collection('appConfig').doc('global').get()
+    if (
+      cfg.exists &&
+      (cfg.data() as { clientLogsDisabled?: boolean }).clientLogsDisabled === true
+    ) {
+      return res.status(200).json({ ok: true, ingested: 0, disabled: true })
+    }
+  } catch {
+    /* config unreadable → fail open (logging is best-effort anyway) */
+  }
   const deviceId = String(body.deviceId || 'unknown').slice(0, 80)
   const appVersion = String(body.appVersion || '?').slice(0, 40)
   const platform = String(body.platform || '?').slice(0, 40)

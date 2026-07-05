@@ -197,11 +197,35 @@ export default function LogsTab({
   // Global ingestion pause — null until admin-get-app-config answers.
   const [telPaused, setTelPaused] = useState<boolean | null>(null)
   const [telPausing, setTelPausing] = useState(false)
+  // Global error-log collection kill-switch (separate from telemetry).
+  const [logsOff, setLogsOff] = useState<boolean | null>(null)
+  const [logsBusy, setLogsBusy] = useState(false)
   useEffect(() => {
-    adminApi<{ syncTelemetryDisabled?: boolean }>('admin-get-app-config')
-      .then((c) => setTelPaused(c.syncTelemetryDisabled === true))
-      .catch(() => setTelPaused(null))
+    adminApi<{ syncTelemetryDisabled?: boolean; clientLogsDisabled?: boolean }>(
+      'admin-get-app-config',
+    )
+      .then((c) => {
+        setTelPaused(c.syncTelemetryDisabled === true)
+        setLogsOff(c.clientLogsDisabled === true)
+      })
+      .catch(() => {
+        setTelPaused(null)
+        setLogsOff(null)
+      })
   }, [])
+
+  async function toggleLogsOff(next: boolean) {
+    setLogsBusy(true)
+    setError('')
+    try {
+      await adminApi('admin-set-app-config', { clientLogsDisabled: next })
+      setLogsOff(next)
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setLogsBusy(false)
+    }
+  }
 
   async function toggleTelemetryPaused(next: boolean) {
     setTelPausing(true)
@@ -346,6 +370,23 @@ export default function LogsTab({
             תקלות שהתוכנה דיווחה עליהן, מקובצות לפי סוג — שורה אחת לכל תקלה עם
             מספר הפעמים והמכשירים. לחיצה פותחת את הפרטים.
           </p>
+          <label className="mt-2 flex w-fit cursor-pointer items-center gap-2">
+            <Switch
+              checked={logsOff === true}
+              onCheckedChange={(v) => toggleLogsOff(v)}
+              disabled={logsOff === null || logsBusy}
+            />
+            <span
+              className={
+                'text-xs ' +
+                (logsOff ? 'font-medium text-rose-400' : 'text-fg-muted')
+              }
+            >
+              {logsOff
+                ? 'איסוף שגיאות מושבת — לא נשלחות שגיאות מהמשתמשים'
+                : 'השבתת איסוף שגיאות — עצירת שליחת כל השגיאות מהמשתמשים'}
+            </span>
+          </label>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button
