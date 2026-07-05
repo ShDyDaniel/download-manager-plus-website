@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Loader2, AlertTriangle, Plus, Trash2, Ticket } from 'lucide-react'
+import { Loader2, AlertTriangle, Plus, Trash2, Ticket, Crown } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -131,6 +131,9 @@ export default function PricingTab({
           <AlertTriangle className="h-4 w-4" /> {error}
         </div>
       )}
+
+      {/* ── Plan mode (moved from Settings) ── */}
+      <PlanModeCard onErr={handleErr} />
 
       {/* ── Subscription prices (moved from Settings) ── */}
       <PricingCard onErr={handleErr} />
@@ -350,6 +353,114 @@ export default function PricingTab({
             ))}
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+
+/* Plan mode (hybrid vs subscription-only) — moved here from the Settings
+ * tab. Self-contained: reads app-config, writes planMode. Step-up gated
+ * server-side like every mutation. */
+function PlanModeCard({ onErr }: { onErr: (e: unknown) => void }) {
+  const [plan, setPlan] = useState<'hybrid' | 'subscription'>('hybrid')
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [optimistic, setOptimistic] = useState<'hybrid' | 'subscription' | null>(
+    null,
+  )
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await adminApi<{ planMode: 'hybrid' | 'subscription' }>(
+          'admin-get-app-config',
+        )
+        setPlan(r.planMode)
+      } catch (e) {
+        onErr(e)
+      } finally {
+        setLoading(false)
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const current = optimistic ?? plan
+  const isSub = current === 'subscription'
+
+  async function pick(mode: 'hybrid' | 'subscription') {
+    if (busy || mode === current) return
+    setBusy(true)
+    setErr('')
+    setOptimistic(mode)
+    try {
+      await adminApi('admin-set-app-config', { planMode: mode })
+      setPlan(mode)
+      setOptimistic(null)
+    } catch (e) {
+      setOptimistic(null)
+      const error = e as Error & { code?: string }
+      if (error.code === 'auth') return onErr(error)
+      setErr(error.message || 'שינוי המצב נכשל')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className={cn(
+        'flex flex-col gap-3 rounded-2xl border p-4 transition-colors',
+        isSub ? 'border-primary/30 bg-primary/[0.05]' : 'border-border bg-card',
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary shadow-md shadow-primary/40">
+          {busy ? (
+            <Loader2 className="h-5 w-5 animate-spin text-white" />
+          ) : (
+            <Crown className="h-5 w-5 text-white" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-sm font-bold text-fg">
+            תוכנית התשלום
+            <span className="rounded-full bg-primary/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
+              {loading ? 'טוען...' : busy ? 'מעדכן...' : isSub ? 'מנויים' : 'משולבת'}
+            </span>
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-fg-muted">
+            {isSub
+              ? 'מצב מנויים — רק משתמשים עם מנוי Pro יכולים להפעיל פיצ׳רים. משתמשים חינמיים יראו את התוכנה אבל לא יוכלו לעשות כלום בלי לשדרג.'
+              : 'מצב משולב — חלק מהפיצ׳רים פתוחים בחינם, חלק דורשים Pro. ברירת המחדל המקורית.'}
+          </p>
+          {err && (
+            <div className="mt-1.5 flex items-center gap-1 text-[11px] text-destructive">
+              <AlertTriangle className="h-3 w-3" />
+              {err}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {(['hybrid', 'subscription'] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => pick(m)}
+            disabled={busy || loading}
+            className={cn(
+              'rounded-xl border px-3 py-2.5 text-sm font-medium transition-all',
+              current === m
+                ? 'border-primary/40 bg-gradient-to-br from-primary/20 to-primary/10 text-fg shadow-md shadow-primary/30'
+                : 'border-border bg-card text-fg-muted hover:bg-popover',
+            )}
+          >
+            {m === 'hybrid' ? 'תוכנית משולבת' : 'תוכנית מנויים'}
+          </button>
+        ))}
       </div>
     </div>
   )

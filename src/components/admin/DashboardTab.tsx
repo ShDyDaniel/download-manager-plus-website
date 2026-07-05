@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { getAdminIdToken, adminApi } from '../../lib/adminApi'
 import { cachedCall, peekCall } from '../../lib/adminCache'
+import { ProtectionCard } from './SettingsTab'
 
 interface AdminUsage {
   firestore: {
@@ -158,6 +159,16 @@ export default function DashboardTab({
           <AlertTriangle className="h-4 w-4" /> {error}
         </div>
       )}
+
+      {/* Cost-protection: maintenance kill-switch + daily-ceiling auto-block
+          (moved here from Settings — it belongs with the live usage view). */}
+      <ProtectionCard
+        onErr={(e) => {
+          const err = e as Error & { code?: string }
+          if (err.code === 'auth') return onAuthExpired()
+          setError(err instanceof Error ? err.message : 'שגיאה')
+        }}
+      />
 
       {loading && !usage ? (
         <div className="flex items-center justify-center py-16">
