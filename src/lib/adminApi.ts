@@ -346,6 +346,7 @@ const STEPUP_ACTIONS = new Set<string>([
   'admin-set-partner-terms',
   'admin-set-feedback-resolved',
   'admin-delete-feedback',
+  'admin-reply-feedback',
 ])
 
 /** True if this action needs a step-up token (it's a mutation). */

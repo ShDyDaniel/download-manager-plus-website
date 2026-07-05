@@ -99,6 +99,13 @@ export function Footer() {
               </button>
               <span aria-hidden>·</span>
               <Link
+                to="/contact"
+                className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
+              >
+                צור קשר
+              </Link>
+              <span aria-hidden>·</span>
+              <Link
                 to="/account"
                 className="text-fg-muted underline-offset-4 transition-colors hover:text-fg hover:underline"
               >

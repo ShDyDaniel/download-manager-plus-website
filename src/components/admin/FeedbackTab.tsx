@@ -10,14 +10,23 @@ import {
   Undo2,
   ImageIcon,
   MessageSquare,
+  Mail,
+  Send,
   X,
 } from 'lucide-react'
 import { adminApi, getAdminIdToken } from '../../lib/adminApi'
 import { Portal } from '@/components/ui/Portal'
 
+interface FeedbackReply {
+  reply: string
+  at: string
+  by?: string
+}
 interface FeedbackDoc {
   id: string
-  kind: 'bug' | 'feature'
+  kind: 'bug' | 'feature' | 'contact'
+  source?: string
+  subject?: string | null
   message: string
   userEmail?: string | null
   userName?: string | null
@@ -27,6 +36,8 @@ interface FeedbackDoc {
   createdAt?: string
   telegramFileId?: string
   telegramFileIds?: string[]
+  replies?: FeedbackReply[]
+  lastRepliedAt?: string
 }
 
 export default function FeedbackTab({
@@ -78,7 +89,7 @@ export default function FeedbackTab({
 
   async function del(it: FeedbackDoc) {
     if (busyId) return
-    if (!window.confirm('למחוק את הדיווח לצמיתות?')) return
+    if (!window.confirm('למחוק את הפנייה לצמיתות?')) return
     setBusyId(it.id)
     try {
       await adminApi('admin-delete-feedback', { id: it.id })
@@ -103,8 +114,8 @@ export default function FeedbackTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-3xl font-bold font-display text-fg">דיווחים והצעות</h2>
-          <p className="mt-1 text-sm text-fg-muted">באגים ובקשות פיצ׳רים ממשתמשים.</p>
+          <h2 className="text-3xl font-bold font-display text-fg">פניות</h2>
+          <p className="mt-1 text-sm text-fg-muted">פניות מהאתר, באגים ובקשות פיצ׳רים ממשתמשים.</p>
         </div>
         <button
           type="button"
@@ -144,7 +155,7 @@ export default function FeedbackTab({
         </div>
       ) : list.length === 0 ? (
         <div className="rounded-2xl border border-border py-10 text-center text-sm text-fg-muted">
-          {view === 'open' ? 'אין דיווחים פתוחים 🎉' : 'אין דיווחים שטופלו'}
+          {view === 'open' ? 'אין פניות פתוחות 🎉' : 'אין פניות שטופלו'}
         </div>
       ) : (
         <div className="space-y-2">
@@ -155,6 +166,7 @@ export default function FeedbackTab({
               busy={busyId === it.id}
               onToggle={() => toggleResolved(it)}
               onDelete={() => del(it)}
+              onReplied={() => void load()}
               onAuthExpired={onAuthExpired}
             />
           ))}
@@ -194,17 +206,44 @@ function FeedbackRow({
   busy,
   onToggle,
   onDelete,
+  onReplied,
   onAuthExpired,
 }: {
   it: FeedbackDoc
   busy: boolean
   onToggle: () => void
   onDelete: () => void
+  onReplied: () => void
   onAuthExpired: () => void
 }) {
   const [images, setImages] = useState<string[] | null>(null)
   const [loadingImg, setLoadingImg] = useState(false)
   const [lightbox, setLightbox] = useState<string | null>(null)
+  const [replyOpen, setReplyOpen] = useState(false)
+  const [replyText, setReplyText] = useState('')
+  const [replyBusy, setReplyBusy] = useState(false)
+  const [replyErr, setReplyErr] = useState('')
+
+  async function sendReply() {
+    if (replyText.trim().length < 2) return
+    setReplyBusy(true)
+    setReplyErr('')
+    try {
+      await adminApi('admin-reply-feedback', {
+        id: it.id,
+        reply: replyText.trim(),
+      })
+      setReplyText('')
+      setReplyOpen(false)
+      onReplied()
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setReplyErr(err.message || 'שליחת התשובה נכשלה')
+    } finally {
+      setReplyBusy(false)
+    }
+  }
   const fileIds =
     it.telegramFileIds && it.telegramFileIds.length
       ? it.telegramFileIds
@@ -236,28 +275,39 @@ function FeedbackRow({
   }
 
   const isBug = it.kind === 'bug'
+  const isContact = it.kind === 'contact'
+  const kindLabel = isContact ? 'פנייה' : isBug ? 'באג' : 'הצעה'
+  const KindIcon = isContact ? Mail : isBug ? Bug : Lightbulb
+  const kindTone = isContact
+    ? 'bg-primary/10 text-primary'
+    : isBug
+      ? 'bg-destructive/10 text-destructive'
+      : 'bg-accent/10 text-accent'
+  const kindBorder = isContact
+    ? 'border-primary/30 text-primary'
+    : isBug
+      ? 'border-destructive/30 text-destructive'
+      : 'border-accent/30 text-accent'
   return (
     <div className="rounded-2xl border border-border bg-card p-4">
       <div className="flex items-start gap-3">
         <span
           className={
             'mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ' +
-            (isBug ? 'bg-destructive/10 text-destructive' : 'bg-accent/10 text-accent')
+            kindTone
           }
         >
-          {isBug ? <Bug className="h-3.5 w-3.5" /> : <Lightbulb className="h-3.5 w-3.5" />}
+          <KindIcon className="h-3.5 w-3.5" />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span
               className={
                 'rounded-full border px-1.5 py-0.5 text-[9px] font-bold ' +
-                (isBug
-                  ? 'border-destructive/30 text-destructive'
-                  : 'border-accent/30 text-accent')
+                kindBorder
               }
             >
-              {isBug ? 'באג' : 'הצעה'}
+              {kindLabel}
             </span>
             {it.userName && (
               <span className="text-xs font-medium text-fg">{it.userName}</span>
@@ -268,6 +318,9 @@ function FeedbackRow({
               </span>
             )}
           </div>
+          {it.subject && (
+            <div className="mt-1 text-xs font-semibold text-fg">{it.subject}</div>
+          )}
           <p className="mt-1.5 whitespace-pre-wrap text-sm text-fg">{it.message}</p>
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[10px] text-fg-faint">
             {it.createdAt && (
@@ -320,6 +373,81 @@ function FeedbackRow({
                   )}
                   הצג {fileIds.length} צילומי מסך
                 </button>
+              )}
+            </div>
+          )}
+
+          {/* Sent replies */}
+          {it.replies && it.replies.length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              {it.replies.map((r, i) => (
+                <div
+                  key={i}
+                  className="rounded-lg border border-success/25 bg-success/[0.06] px-3 py-2"
+                >
+                  <div className="mb-1 flex items-center gap-1.5 text-[10px] text-success">
+                    <Mail className="h-3 w-3" />
+                    נשלחה תשובה · {new Date(r.at).toLocaleString('he-IL')}
+                  </div>
+                  <p className="whitespace-pre-wrap text-xs text-fg-secondary">
+                    {r.reply}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Reply composer */}
+          {it.userEmail && (
+            <div className="mt-3">
+              {!replyOpen ? (
+                <button
+                  type="button"
+                  onClick={() => setReplyOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2.5 py-1.5 text-[11px] font-semibold text-primary transition-colors hover:bg-primary/20"
+                >
+                  <Mail className="h-3 w-3" />
+                  {it.replies && it.replies.length ? 'שליחת תשובה נוספת' : 'השב במייל'}
+                </button>
+              ) : (
+                <div className="space-y-2 rounded-lg border border-border bg-bg-elevated p-2.5">
+                  <textarea
+                    autoFocus
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    placeholder={`תשובה שתישלח למייל של ${it.userName || 'הלקוח'}…`}
+                    rows={4}
+                    className="w-full resize-y rounded-lg border border-border bg-card px-3 py-2 text-sm text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none"
+                  />
+                  {replyErr && (
+                    <div className="text-[11px] text-destructive">{replyErr}</div>
+                  )}
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReplyOpen(false)
+                        setReplyErr('')
+                      }}
+                      className="rounded-md px-2.5 py-1.5 text-[11px] text-fg-muted hover:text-fg"
+                    >
+                      ביטול
+                    </button>
+                    <button
+                      type="button"
+                      disabled={replyBusy || replyText.trim().length < 2}
+                      onClick={() => void sendReply()}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[11px] font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      {replyBusy ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Send className="h-3 w-3" />
+                      )}
+                      שליחה במייל
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
           )}

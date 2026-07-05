@@ -23,6 +23,7 @@ import {
   readStopMotion,
 } from './components/AccessibilityWidget'
 import { BuyPage } from './pages/BuyPage'
+import ContactPage from './pages/ContactPage'
 import AccountPage from './pages/AccountPage'
 import AuthActionPage from './pages/AuthActionPage'
 import { ReviewPage } from './pages/ReviewPage'
@@ -232,6 +233,7 @@ function AnimatedRoutes() {
             }
           />
           <Route path="/buy" element={<BuyPage />} />
+          <Route path="/contact" element={<ContactPage />} />
           {/* Marketing landing for the desktop "סנכרון אוטומטי" tab —
               animated demo of the audio-sync timeline + a download CTA
               that routes to the home page (single download surface).

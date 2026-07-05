@@ -1899,6 +1899,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSetFeedbackResolved(req, res)
       case 'admin-delete-feedback':
         return await handleAdminDeleteFeedback(req, res)
+      case 'admin-reply-feedback':
+        return await handleAdminReplyFeedback(req, res)
       case 'track-pageview':
         return handleTrackPageview(req, res)
       case 'admin-pageviews':
@@ -1913,6 +1915,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleGetPricing(req, res)
       case 'coupon-check':
         return await handleCouponCheck(req, res)
+      case 'submit-contact':
+        return await handleSubmitContact(req, res)
       case 'get-terms':
         return await handleGetTerms(req, res)
       case 'get-privacy':
@@ -10543,6 +10547,187 @@ async function setLegalDoc(
   }
   await getDb().collection('appConfig').doc(doc).set(payload, { merge: true })
   return res.status(200).json({ ok: true })
+}
+
+/* ── Contact form (public) ───────────────────────────────────────
+ *  A website visitor submits name + email + message. Stored in the
+ *  SAME `feedback` collection the desktop bug/feature reports use, with
+ *  kind:'contact' + source:'website', so it surfaces in the admin
+ *  "פניות" tab alongside everything else. Light per-instance IP throttle
+ *  + strict validation keeps spam down without blocking real people. */
+const contactMisses = new Map<string, { n: number; at: number }>()
+function contactThrottled(ip: string): boolean {
+  const m = contactMisses.get(ip)
+  if (!m) return false
+  if (Date.now() - m.at > 60 * 60_000) {
+    contactMisses.delete(ip)
+    return false
+  }
+  return m.n >= 8
+}
+function contactRegister(ip: string): void {
+  const m = contactMisses.get(ip)
+  if (m && Date.now() - m.at <= 60 * 60_000) m.n += 1
+  else contactMisses.set(ip, { n: 1, at: Date.now() })
+}
+
+async function handleSubmitContact(req: VercelRequest, res: VercelResponse) {
+  const b = (req.body || {}) as {
+    name?: string
+    email?: string
+    message?: string
+    subject?: string
+    hp?: string // honeypot — real users leave it empty
+  }
+  // Bots love to fill hidden fields. Pretend success, save nothing.
+  if (b.hp && String(b.hp).trim()) {
+    return res.status(200).json({ ok: true })
+  }
+  const ip = String(req.headers['x-forwarded-for'] || '')
+    .split(',')[0]
+    .trim()
+  if (contactThrottled(ip)) {
+    return res
+      .status(429)
+      .json({ ok: false, error: 'יותר מדי פניות — נסו שוב מאוחר יותר' })
+  }
+  const name = String(b.name || '').trim().slice(0, 120)
+  const email = String(b.email || '').trim().toLowerCase().slice(0, 200)
+  const subject = String(b.subject || '').trim().slice(0, 200)
+  const message = String(b.message || '').trim().slice(0, 5000)
+  if (!name || name.length < 2) {
+    return res.status(400).json({ ok: false, error: 'נא למלא שם' })
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
+  }
+  if (!message || message.length < 5) {
+    return res.status(400).json({ ok: false, error: 'נא לכתוב את הפנייה' })
+  }
+  contactRegister(ip)
+  try {
+    const ref = await getDb()
+      .collection('feedback')
+      .add({
+        kind: 'contact',
+        source: 'website',
+        subject: subject || null,
+        message,
+        userName: name,
+        userEmail: email,
+        resolved: false,
+        createdAt: new Date().toISOString(),
+      })
+    // Ping the operator so a website inquiry isn't missed.
+    await sendTelegramAlert(
+      `📨 פנייה חדשה מהאתר\nמאת: ${name} (${email})\n${subject ? subject + '\n' : ''}${message.slice(0, 300)}`,
+    ).catch(() => {})
+    return res.status(200).json({ ok: true, id: ref.id })
+  } catch (err) {
+    console.error('[submit-contact] save failed:', err)
+    return res.status(500).json({ ok: false, error: 'שמירת הפנייה נכשלה' })
+  }
+}
+
+/* Admin replies to an inquiry → emails the customer from the system
+ *  address, appends the reply to the doc, and marks it handled. */
+async function handleAdminReplyFeedback(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const adminEmail = await verifyAdminStepUp(req)
+  if (!adminEmail) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const b = (req.body || {}) as { id?: string; reply?: string }
+  const id = String(b.id || '').trim()
+  const reply = String(b.reply || '').trim().slice(0, 8000)
+  if (!id) return res.status(400).json({ ok: false, error: 'id' })
+  if (reply.length < 2) return res.status(400).json({ ok: false, error: 'התשובה ריקה' })
+  const ref = getDb().collection('feedback').doc(id)
+  const snap = await ref.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'הפנייה לא נמצאה' })
+  const fb = snap.data() as {
+    userEmail?: string
+    userName?: string
+    subject?: string
+    message?: string
+  }
+  const to = String(fb.userEmail || '').trim()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'לפנייה אין כתובת מייל תקינה להשיב אליה' })
+  }
+  try {
+    await sendContactReplyEmail({
+      to,
+      name: fb.userName || '',
+      originalSubject: fb.subject || '',
+      originalMessage: fb.message || '',
+      reply,
+    })
+  } catch (err) {
+    console.error('[admin-reply-feedback] email failed:', err)
+    return res.status(502).json({ ok: false, error: 'שליחת המייל נכשלה' })
+  }
+  const entry = { reply, at: new Date().toISOString(), by: adminEmail }
+  await ref.set(
+    {
+      resolved: true,
+      replies: FieldValue.arrayUnion(entry),
+      lastRepliedAt: entry.at,
+    },
+    { merge: true },
+  )
+  return res.status(200).json({ ok: true })
+}
+
+async function sendContactReplyEmail(args: {
+  to: string
+  name: string
+  originalSubject: string
+  originalMessage: string
+  reply: string
+}): Promise<void> {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const transporter = makeCountedTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  const esc = (t: string) =>
+    t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const replyHtml = esc(args.reply).replace(/\n/g, '<br>')
+  const origHtml = esc(args.originalMessage).replace(/\n/g, '<br>')
+  const html = renderEmail({
+    heading: 'תשובה לפנייה שלך',
+    contentHtml: `
+      <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
+        ${args.name ? esc(args.name) + ', ' : ''}תודה שפנית אלינו. הנה התשובה שלנו:
+      </p>
+      <div style="background:#16110D;border-right:3px solid #D4A574;border-radius:8px;padding:16px 18px;margin:0 0 24px;font-size:14px;line-height:1.8;color:#F5EFE6;">
+        ${replyHtml}
+      </div>
+      ${
+        args.originalMessage
+          ? `<div style="font-size:12px;color:#8B8170;border-top:1px solid rgba(139,129,112,0.25);padding-top:14px;">
+               <div style="margin-bottom:6px;">הפנייה המקורית שלך${args.originalSubject ? ' — ' + esc(args.originalSubject) : ''}:</div>
+               <div style="color:#9A8F7A;line-height:1.7;">${origHtml}</div>
+             </div>`
+          : ''
+      }
+      <p style="margin:24px 0 0;font-size:12px;color:#8B8170;">
+        אפשר להשיב ישירות למייל הזה אם יש עוד שאלה.
+      </p>
+    `,
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: args.to,
+    replyTo: user,
+    subject: `תשובה לפנייתך — ניהול הורדות פלוס${args.originalSubject ? ' · ' + args.originalSubject : ''}`,
+    html,
+  })
 }
 
 async function handleAdminListFeedback(

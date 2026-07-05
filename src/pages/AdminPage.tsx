@@ -96,7 +96,7 @@ const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
   { key: 'receipts', label: 'קבלות', icon: Receipt },
   { key: 'referrals', label: 'שותפים', icon: Share2 },
   { key: 'updates', label: 'עדכונים', icon: DownloadCloud },
-  { key: 'feedback', label: 'דיווחים והצעות', icon: MessageSquare },
+  { key: 'feedback', label: 'פניות', icon: MessageSquare },
   { key: 'backup', label: 'גיבוי', icon: DatabaseBackup },
   { key: 'logs', label: 'לוגים', icon: ScrollText },
   { key: 'prices', label: 'מחירים', icon: Ticket },
