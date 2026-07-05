@@ -12,6 +12,7 @@ import {
   DownloadCloud,
   DatabaseBackup,
   ScrollText,
+  Ticket,
   MessageSquare,
   Coins,
   Receipt,
@@ -57,6 +58,7 @@ import ReceiptsTab from '../components/admin/ReceiptsTab'
 import BackupTab from '../components/admin/BackupTab'
 import LogsTab from '../components/admin/LogsTab'
 import SettingsTab from '../components/admin/SettingsTab'
+import CouponsTab from '../components/admin/CouponsTab'
 
 /**
  * Website admin panel (/admin) — the web twin of the desktop
@@ -80,6 +82,7 @@ type AdminTabKey =
   | 'receipts'
   | 'backup'
   | 'logs'
+  | 'coupons'
   | 'settings'
 
 const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
@@ -96,6 +99,7 @@ const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
   { key: 'feedback', label: 'דיווחים והצעות', icon: MessageSquare },
   { key: 'backup', label: 'גיבוי', icon: DatabaseBackup },
   { key: 'logs', label: 'לוגים', icon: ScrollText },
+  { key: 'coupons', label: 'קופונים', icon: Ticket },
   { key: 'settings', label: 'הגדרות', icon: SettingsIcon },
 ]
 
@@ -583,6 +587,8 @@ function AdminShell({
             <BackupTab onAuthExpired={onAuthExpired} />
           ) : tab === 'logs' ? (
             <LogsTab onAuthExpired={onAuthExpired} />
+          ) : tab === 'coupons' ? (
+            <CouponsTab onAuthExpired={onAuthExpired} />
           ) : tab === 'settings' ? (
             <SettingsTab onAuthExpired={onAuthExpired} />
           ) : (

@@ -2061,7 +2061,9 @@ function SubscriptionFlow({
   const [couponOk, setCouponOk] = useState<{
     code: string
     pct: number
+    duration: 'forever' | 'first'
     finalPrice: number
+    recurringPrice: number | null
     saleCheaper: boolean
   } | null>(null)
   const couponCodeRef = useRef<string | null>(null)
@@ -2083,7 +2085,9 @@ function SubscriptionFlow({
           ok: boolean
           valid?: boolean
           pct?: number
+          duration?: 'forever' | 'first'
           finalPrice?: number
+          recurringPrice?: number
           saleCheaper?: boolean
           error?: string
         }
@@ -2097,7 +2101,9 @@ function SubscriptionFlow({
           setCouponOk({
             code,
             pct: j.pct || 0,
+            duration: j.duration === 'first' ? 'first' : 'forever',
             finalPrice: j.finalPrice || 0,
+            recurringPrice: j.recurringPrice ?? null,
             saleCheaper: !!j.saleCheaper,
           })
         }
@@ -2296,7 +2302,10 @@ function SubscriptionFlow({
               {couponOk && !couponOk.saleCheaper && (
                 <div className="flex items-center gap-2 rounded-xl border border-success/40 bg-success/10 px-3 py-2 text-xs text-success">
                   <span>
-                    קופון {couponOk.pct}% הופעל — המחיר: {formatPrice(couponOk.finalPrice)} {sym} ל{cycleLabel}
+                    קופון {couponOk.pct}% הופעל —{' '}
+                    {couponOk.duration === 'first'
+                      ? `${formatPrice(couponOk.finalPrice)} ${sym} ל${cycleLabel} הראשון, אחר כך ${formatPrice(couponOk.recurringPrice ?? eff)} ${sym} ל${cycleLabel}`
+                      : `${formatPrice(couponOk.finalPrice)} ${sym} ל${cycleLabel}`}
                   </span>
                   <button
                     type="button"
@@ -2341,9 +2350,19 @@ function SubscriptionFlow({
         />
         <span className="text-xs text-fg-secondary leading-relaxed">
           אני מאשר/ת חיוב אוטומטי מתחדש בסך{' '}
-          {formatPrice(couponOk && !couponOk.saleCheaper ? couponOk.finalPrice : eff)}{' '}
+          {formatPrice(
+            couponOk && !couponOk.saleCheaper
+              ? couponOk.duration === 'first'
+                ? couponOk.recurringPrice ?? eff
+                : couponOk.finalPrice
+              : eff,
+          )}{' '}
           {sym} כל{' '}
-          {cycleLabel}, ושקראתי ואני מסכים{' '}
+          {cycleLabel}
+          {couponOk && !couponOk.saleCheaper && couponOk.duration === 'first'
+            ? ` (${formatPrice(couponOk.finalPrice)} ${sym} ל${cycleLabel} הראשון)`
+            : ''}
+          , ושקראתי ואני מסכים{' '}
           <button
             type="button"
             onClick={(e) => {

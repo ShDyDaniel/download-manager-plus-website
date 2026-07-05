@@ -354,11 +354,61 @@ async function createPaypalPlan(args: {
   amount: number
   currency: string
   interval: 'monthly' | 'yearly'
+  /** When set, `amount` becomes the RECURRING price and this is the
+   *  one-cycle introductory (paid-trial) price — a "first period only"
+   *  coupon. The buyer pays introAmount for cycle 1, then `amount`
+   *  every cycle after. */
+  introAmount?: number
 }): Promise<string> {
   const frequency =
     args.interval === 'monthly'
       ? { interval_unit: 'MONTH', interval_count: 1 }
       : { interval_unit: 'YEAR', interval_count: 1 }
+  // Intro plans get TWO cycles: a paid TRIAL cycle (1×, discounted)
+  // then the standard REGULAR cycle (∞, full price). Plain plans keep
+  // the single REGULAR cycle.
+  const billing_cycles =
+    args.introAmount != null
+      ? [
+          {
+            frequency,
+            tenure_type: 'TRIAL',
+            sequence: 1,
+            total_cycles: 1,
+            pricing_scheme: {
+              fixed_price: {
+                value: args.introAmount.toFixed(2),
+                currency_code: args.currency,
+              },
+            },
+          },
+          {
+            frequency,
+            tenure_type: 'REGULAR',
+            sequence: 2,
+            total_cycles: 0,
+            pricing_scheme: {
+              fixed_price: {
+                value: args.amount.toFixed(2),
+                currency_code: args.currency,
+              },
+            },
+          },
+        ]
+      : [
+          {
+            frequency,
+            tenure_type: 'REGULAR',
+            sequence: 1,
+            total_cycles: 0,
+            pricing_scheme: {
+              fixed_price: {
+                value: args.amount.toFixed(2),
+                currency_code: args.currency,
+              },
+            },
+          },
+        ]
   const created = await paypalCall<{ id: string; status?: string }>(
     'POST',
     '/v1/billing/plans',
@@ -372,17 +422,7 @@ async function createPaypalPlan(args: {
       // account settings) — and then calling /activate on an
       // already-ACTIVE plan returns 422 ("semantically incorrect").
       status: 'ACTIVE',
-      billing_cycles: [
-        {
-          frequency,
-          tenure_type: 'REGULAR',
-          sequence: 1,
-          total_cycles: 0,
-          pricing_scheme: {
-            fixed_price: { value: args.amount.toFixed(2), currency_code: args.currency },
-          },
-        },
-      ],
+      billing_cycles,
       payment_preferences: {
         auto_bill_outstanding: true,
         payment_failure_threshold: 1,
@@ -2267,6 +2307,8 @@ async function ensureKeyForSubscription(
   const plan = await paypalCall<{
     id: string
     billing_cycles: Array<{
+      tenure_type?: string
+      sequence?: number
       frequency: { interval_unit: string; interval_count: number }
       pricing_scheme: {
         fixed_price: { value: string; currency_code: string }
@@ -2274,8 +2316,21 @@ async function ensureKeyForSubscription(
     }>
   }>('GET', `/v1/billing/plans/${sub.plan_id}`)
   const cycle = plan.billing_cycles[0]
+  // The RECURRING cycle (tenure REGULAR) carries the price PayPal will
+  // charge on every renewal. For an intro/"first period" plan that's the
+  // 2nd cycle at full price; for a normal plan it IS cycle[0]. The key's
+  // subscriptionPrice must be this recurring price so the renewal amount-
+  // guard passes when PayPal bills full price after the intro period.
+  const recurringCycle =
+    plan.billing_cycles.find((c) => c.tenure_type === 'REGULAR') || cycle
   const planDays = cycle.frequency.interval_unit === 'YEAR' ? 365 : 30
-  const planPrice = parseFloat(cycle.pricing_scheme.fixed_price.value)
+  // Price CHARGED NOW (the initial activation) = the first cycle's price
+  // (intro price for a "first" coupon). Seeds billingHistory truthfully.
+  const initialChargePrice = parseFloat(cycle.pricing_scheme.fixed_price.value)
+  // Price that RECURS (drives subscriptionPrice + the renewal guard).
+  const planPrice = parseFloat(
+    recurringCycle.pricing_scheme.fixed_price.value,
+  )
   const planCurrency = cycle.pricing_scheme.fixed_price.currency_code
   const buyerEmail = sub.subscriber.email_address
   // Full name for the casual-transaction ledger / receipts (PayPal
@@ -2632,7 +2687,7 @@ async function ensureKeyForSubscription(
     // distinguishable in audits.
     billingHistory: [{
       eventId: `initial-${subscriptionId}`,
-      amount: planPrice,
+      amount: initialChargePrice,
       currency: planCurrency,
       at: new Date().toISOString(),
     }],
@@ -2932,6 +2987,9 @@ interface CouponDoc {
   code: string
   pct: number
   plans: 'monthly' | 'yearly' | 'both'
+  /** 'forever' = every charge discounted; 'first' = only the first
+   *  month/year, then the standard price recurs. */
+  duration: 'forever' | 'first'
   active: boolean
   expiresAt: number | null
   maxUses: number | null
@@ -2977,7 +3035,10 @@ async function resolveCoupon(
   codeRaw: string,
   plan: 'monthly' | 'yearly',
   email: string,
-): Promise<{ ok: true; code: string; pct: number } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; code: string; pct: number; duration: 'forever' | 'first' }
+  | { ok: false; error: string }
+> {
   const code = normCouponCode(codeRaw)
   if (!code) return { ok: false, error: 'קוד לא תקין' }
   const snap = await getDb().collection('coupons').doc(code).get()
@@ -3000,11 +3061,12 @@ async function resolveCoupon(
   // HARD server-side bounds — even a mis-written admin doc can't produce
   // a free subscription.
   const pct = Math.min(COUPON_MAX_PCT, Math.max(1, Math.round(c.pct || 0)))
+  const duration = c.duration === 'first' ? 'first' : 'forever'
   if (email) {
     const use = await snap.ref.collection('uses').doc(email).get()
     if (use.exists) return { ok: false, error: 'הקופון כבר נוצל עם המייל הזה' }
   }
-  return { ok: true, code, pct }
+  return { ok: true, code, pct, duration }
 }
 
 /** Consume one use — called ONLY from the webhook after PayPal confirmed
@@ -3069,6 +3131,51 @@ async function ensurePlanForAmount(
   return planId
 }
 
+/** Plan for a "first period only" coupon: intro price for one cycle,
+ *  then `recurring` forever. Keyed in the catalog by BOTH prices so an
+ *  intro plan never collides with a plain plan at the same recurring
+ *  price. */
+async function ensureIntroPlan(
+  interval: 'monthly' | 'yearly',
+  introAmount: number,
+  recurringAmount: number,
+  currency: string,
+): Promise<string> {
+  const db = getDb()
+  const ref = db.collection('appConfig').doc('pricing')
+  const snap = await ref.get()
+  const existing = snap.exists
+    ? (snap.data() as unknown as Record<string, unknown>)
+    : {}
+  const catalog =
+    ((existing.paypalPlansCatalog as Record<string, CatalogEntry> | undefined) ?? {})
+  const k = `${interval}:${recurringAmount.toFixed(2)}:intro${introAmount.toFixed(2)}:${currency}`
+  const hit = catalog[k]
+  if (hit) {
+    try {
+      await activatePaypalPlan(hit.planId)
+      return hit.planId
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const stale = msg.includes('404') || msg.includes('RESOURCE_NOT_FOUND')
+      if (!stale) throw err
+      delete catalog[k]
+    }
+  }
+  const productId = await getOrCreateProduct()
+  const planId = await createPaypalPlan({
+    productId,
+    label: `קופון היכרות — ${interval === 'monthly' ? 'חודשי' : 'שנתי'} ${introAmount}→${recurringAmount}`,
+    amount: recurringAmount,
+    introAmount,
+    currency,
+    interval,
+  })
+  catalog[k] = { planId, amount: recurringAmount, interval, currency }
+  await ref.set({ paypalPlansCatalog: catalog }, { merge: true })
+  return planId
+}
+
 /** Public: validate a code + preview the price. Never reveals WHY an
  *  unknown code failed (anti-scanning), throttled per IP. */
 async function handleCouponCheck(req: VercelRequest, res: VercelResponse) {
@@ -3093,12 +3200,31 @@ async function handleCouponCheck(req: VercelRequest, res: VercelResponse) {
   }
   const regular = pricing[plan].regular
   const sale = pricing[plan].sale
+  const effective = sale != null ? sale : regular
+  if (r.duration === 'first') {
+    // First period discounted off the CURRENT effective price; then the
+    // effective price recurs. Always a strict win — no sale-vs-coupon race.
+    const introPrice = couponPriceFrom(effective, r.pct)
+    return res.status(200).json({
+      ok: true,
+      valid: true,
+      pct: r.pct,
+      duration: 'first',
+      introPrice,
+      recurringPrice: effective,
+      finalPrice: introPrice,
+      saleCheaper: false,
+      currency: pricing.currency,
+    })
+  }
+  // 'forever': discount off regular; buyer gets the cheaper of coupon/sale.
   const couponPrice = couponPriceFrom(regular, r.pct)
   const saleCheaper = sale != null && sale <= couponPrice
   return res.status(200).json({
     ok: true,
     valid: true,
     pct: r.pct,
+    duration: 'forever',
     couponPrice,
     finalPrice: saleCheaper ? sale : couponPrice,
     saleCheaper,
@@ -3246,14 +3372,27 @@ async function handleCreateSubscription(
     if (!r.ok) {
       return res.status(400).json({ ok: false, error: r.error })
     }
-    const couponPrice = couponPriceFrom(pricing[plan].regular, r.pct)
-    if (couponPrice < lockedPrice) {
-      lockedPrice = couponPrice
-      planId = await ensurePlanForAmount(plan, couponPrice, pricing.currency)
-      couponApplied = { code: r.code, pct: r.pct }
+    if (r.duration === 'first') {
+      // First period discounted off the current effective price; the
+      // effective price recurs. Two-cycle PayPal plan.
+      const effective = usingSale ? pricing[plan].sale! : pricing[plan].regular
+      const introPrice = couponPriceFrom(effective, r.pct)
+      if (introPrice < effective) {
+        planId = await ensureIntroPlan(plan, introPrice, effective, pricing.currency)
+        lockedPrice = introPrice // first charge; recurring stays `effective`
+        couponApplied = { code: r.code, pct: r.pct }
+      }
+    } else {
+      // 'forever': discount off regular, no stacking with sale.
+      const couponPrice = couponPriceFrom(pricing[plan].regular, r.pct)
+      if (couponPrice < lockedPrice) {
+        lockedPrice = couponPrice
+        planId = await ensurePlanForAmount(plan, couponPrice, pricing.currency)
+        couponApplied = { code: r.code, pct: r.pct }
+      }
+      // else: the active sale is already cheaper — proceed without the
+      // coupon (nothing consumed).
     }
-    // else: the active sale is already cheaper — proceed without the
-    // coupon (nothing is consumed).
   }
   const subscription = await paypalCall<{
     id: string
@@ -9911,6 +10050,7 @@ async function handleAdminListCoupons(req: VercelRequest, res: VercelResponse) {
         code: d.id,
         pct: c.pct,
         plans: c.plans || 'both',
+        duration: c.duration === 'first' ? 'first' : 'forever',
         active: c.active !== false,
         expiresAt: c.expiresAt || null,
         maxUses: c.maxUses || null,
@@ -9931,6 +10071,7 @@ async function handleAdminCreateCoupon(req: VercelRequest, res: VercelResponse) 
     code?: string
     pct?: number
     plans?: string
+    duration?: string
     expiresAt?: number | null
     maxUses?: number | null
     note?: string
@@ -9949,10 +10090,12 @@ async function handleAdminCreateCoupon(req: VercelRequest, res: VercelResponse) 
   }
   const plans =
     b.plans === 'monthly' || b.plans === 'yearly' ? b.plans : 'both'
+  const duration = b.duration === 'first' ? 'first' : 'forever'
   const doc: CouponDoc = {
     code,
     pct,
     plans,
+    duration,
     active: true,
     expiresAt:
       typeof b.expiresAt === 'number' && b.expiresAt > Date.now()
