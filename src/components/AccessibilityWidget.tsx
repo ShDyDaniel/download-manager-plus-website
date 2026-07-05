@@ -158,13 +158,14 @@ export function AccessibilityWidget() {
 
   return (
     <>
-      {/* Floating trigger — bottom-start (right in RTL). */}
+      {/* Floating trigger — bottom-LEFT on mobile (out of the way of the
+          right-aligned footer), bottom-right on desktop. */}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-label="תפריט נגישות"
         aria-expanded={open}
-        className="fixed bottom-4 right-4 z-[300] flex h-12 w-12 items-center justify-center rounded-full bg-primary text-bg shadow-lg shadow-black/40 outline-offset-2 transition-colors hover:bg-primary-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+        className="fixed bottom-4 left-4 z-[300] flex h-12 w-12 items-center justify-center rounded-full bg-primary text-bg shadow-lg shadow-black/40 outline-offset-2 transition-colors hover:bg-primary-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent md:left-auto md:right-4"
       >
         <Accessibility className="h-6 w-6" strokeWidth={2} />
         {anyActive && (
@@ -186,7 +187,7 @@ export function AccessibilityWidget() {
             aria-modal="true"
             aria-label="התאמות נגישות"
             dir="rtl"
-            className="fixed bottom-20 right-4 z-[300] flex max-h-[80vh] w-[min(92vw,340px)] flex-col overflow-hidden rounded-2xl border border-border bg-bg-elevated shadow-xl"
+            className="fixed bottom-20 left-4 z-[300] flex max-h-[80vh] w-[min(92vw,340px)] flex-col overflow-hidden rounded-2xl border border-border bg-bg-elevated shadow-xl md:left-auto md:right-4"
           >
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
               <div className="flex items-center gap-2">

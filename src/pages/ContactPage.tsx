@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Loader2, CheckCircle2, Mail, ArrowRight } from 'lucide-react'
+import { Loader2, CheckCircle2, Mail } from 'lucide-react'
 import { Footer } from '../components/Footer'
 
 /* צור קשר — public contact form. Posts to /api/paypal?action=submit-contact,
@@ -55,15 +55,7 @@ export default function ContactPage() {
 
   return (
     <div className="flex min-h-dvh flex-col">
-      <main className="mx-auto w-full max-w-xl flex-1 px-6 pb-16 pt-20">
-        <Link
-          to="/"
-          className="mb-8 inline-flex items-center gap-1.5 text-sm text-fg-muted transition-colors hover:text-fg"
-        >
-          <ArrowRight className="h-4 w-4" />
-          חזרה לדף הבית
-        </Link>
-
+      <main className="mx-auto w-full max-w-xl flex-1 px-6 pb-16 pt-28">
         <header className="mb-8">
           <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
             <Mail className="h-6 w-6 text-primary" />

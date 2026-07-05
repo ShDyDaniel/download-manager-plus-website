@@ -158,7 +158,10 @@ body {
       transparent 60%
     );
   background-attachment: fixed;
-  min-height: 100vh;
+  /* dvh (dynamic viewport height) tracks the mobile toolbar so the body
+   * is never taller than the visible viewport — kills the phantom scroll
+   * space below the footer on iOS Safari that 100vh caused. */
+  min-height: 100dvh;
 }
 
 html {
