@@ -2761,7 +2761,18 @@ async function ensureKeyForSubscription(
       to: buyerEmail,
       key,
       planLabel: planDays === 30 ? 'חודש' : 'שנה',
-      price: planPrice,
+      price: planPrice, // recurring
+      firstChargePrice: initialChargePrice, // what was billed now
+      coupon: pendingCoupon
+        ? {
+            code: pendingCoupon.code,
+            pct: pendingCoupon.pct,
+            // A two-cycle (intro) plan means it was a "first period" coupon;
+            // otherwise the discount is forever.
+            duration:
+              initialChargePrice < planPrice ? 'first' : 'forever',
+          }
+        : null,
       currency: planCurrency,
       nextBillingAt: initialExpiresAt,
       subscriptionId,
@@ -5003,7 +5014,14 @@ async function sendSubscriptionWelcomeEmail(args: {
   to: string
   key: string
   planLabel: string
+  /** The RECURRING price — what auto-renews every cycle. */
   price: number
+  /** What was actually charged NOW. Differs from `price` only for a
+   *  "first period only" coupon (intro price < recurring). Omit/equal
+   *  for everything else. */
+  firstChargePrice?: number
+  /** Applied coupon, if any — surfaced in the receipt block. */
+  coupon?: { code: string; pct: number; duration: 'forever' | 'first' } | null
   currency: string
   nextBillingAt: Date
   subscriptionId: string
@@ -5023,6 +5041,14 @@ async function sendSubscriptionWelcomeEmail(args: {
     year: 'numeric',
     timeZone: 'Asia/Jerusalem',
   })
+  const couponCode = args.coupon
+    ? args.coupon.code.replace(/[<>&]/g, '')
+    : ''
+  const isFirstPeriodCoupon = !!args.coupon && args.coupon.duration === 'first'
+  // Did the buyer actually pay LESS now than the recurring price?
+  const firstIsDiscounted =
+    typeof args.firstChargePrice === 'number' &&
+    args.firstChargePrice < args.price
   const html = renderEmail({
     heading: 'ברוך הבא ל-Pro 🎉',
     contentHtml: `
@@ -5035,7 +5061,19 @@ async function sendSubscriptionWelcomeEmail(args: {
       </div>
       <h3 style="font-size:14px;margin:24px 0 8px;color:#F5EFE6;font-weight:600;">פרטי המנוי</h3>
       <div style="font-size:13px;line-height:1.9;color:#C9BFA8;">
-        <div>• תוכנית: ${args.planLabel} (${args.price} ${symbol})</div>
+        <div>• תוכנית: ${args.planLabel}</div>
+        ${
+          args.coupon && firstIsDiscounted
+            ? `<div>• שולם עכשיו: <strong>${args.firstChargePrice} ${symbol}</strong> (קופון ${couponCode} — ${args.coupon.pct}% הנחה)</div>`
+            : args.coupon
+              ? `<div>• מחיר: ${args.price} ${symbol} (קופון ${couponCode} — ${args.coupon.pct}% הנחה)</div>`
+              : `<div>• מחיר: ${args.price} ${symbol}</div>`
+        }
+        ${
+          isFirstPeriodCoupon
+            ? `<div style="color:#D4A574;">• מהחיוב הבא ואילך: <strong>${args.price} ${symbol}</strong> ל${args.planLabel} (המחיר המלא)</div>`
+            : ``
+        }
         <div>• חיוב הבא: ${nextDate}</div>
         <div>• מתחדש אוטומטית עד שתבטל</div>
         <div>• ניהול / ביטול: <a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/account</a></div>
