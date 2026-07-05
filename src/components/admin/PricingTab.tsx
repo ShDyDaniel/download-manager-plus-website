@@ -144,7 +144,7 @@ export default function PricingTab({
         <div>
           <h3 className="text-lg font-bold font-display text-fg">קופונים</h3>
           <p className="text-xs text-fg-muted">
-            קודי הנחה לעמוד הרכישה. ההנחה מוגבלת ל-50%, המחיר תמיד מחושב
+            קודי הנחה לעמוד הרכישה. המחיר תמיד מחושב
             בשרת, ולא מצטברת עם מבצע פעיל (הלקוח מקבל את הזול מביניהם).
           </p>
         </div>
@@ -165,11 +165,11 @@ export default function PricingTab({
             />
           </label>
           <label className="text-xs text-fg-secondary">
-            אחוז הנחה (עד 50)
+            אחוז הנחה (עד 99)
             <Input
               type="number"
               min={1}
-              max={50}
+              max={99}
               value={pct}
               onChange={(e) => setPct(e.target.value)}
               dir="ltr"

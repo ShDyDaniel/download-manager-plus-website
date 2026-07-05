@@ -2996,7 +2996,11 @@ async function handlePaymentFailed(
  *  of the two. Renewals/plan-switches ignore coupons entirely (the
  *  renewal amount-guard compares against the key's locked price).
  * ──────────────────────────────────────────────────────────────── */
-const COUPON_MAX_PCT = 50
+// Discount cap. Kept just under 100 so a coupon can never reach a FREE
+// subscription — even at the cap, couponPriceFrom()'s Math.max(1, …) floor
+// guarantees at least 1 unit is charged. Free Pro belongs to the admin
+// product-keys system, never the payment path.
+const COUPON_MAX_PCT = 99
 
 interface CouponDoc {
   code: string
