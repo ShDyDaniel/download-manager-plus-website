@@ -12,7 +12,11 @@ import {
   Key as KeyIcon,
   AlertTriangle,
   Trash2,
+  X,
+  Film,
 } from 'lucide-react'
+import { motion } from 'framer-motion'
+import { Portal } from '@/components/ui/Portal'
 import { adminApi } from '../../lib/adminApi'
 import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
 import { KeyDetailsModal } from './KeyDetailsModal'
@@ -115,6 +119,39 @@ function relTime(iso?: string): string {
   return new Date(iso).toLocaleDateString('he-IL')
 }
 
+const GB = 1024 * 1024 * 1024
+
+/** Bytes → compact human size (MB/GB), Hebrew-friendly. */
+function fmtBytes(bytes: number): string {
+  const b = Number(bytes) || 0
+  if (b <= 0) return '0'
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`
+  if (b < GB) return `${(b / (1024 * 1024)).toFixed(1)} MB`
+  return `${(b / GB).toFixed(2)} GB`
+}
+
+/** GB with at most one decimal, trimming a trailing ".0". */
+function fmtGb(bytes: number): string {
+  const g = (Number(bytes) || 0) / GB
+  return (g >= 10 ? g.toFixed(0) : g.toFixed(1)).replace(/\.0$/, '')
+}
+
+interface UserUsage {
+  usedBytes: number
+  count: number
+}
+interface StorageQuota {
+  proBytes: number
+  trialBytes: number
+}
+interface StorageObject {
+  key: string
+  name: string
+  folder: string
+  size: number
+  lastModified: number
+}
+
 export default function UsersTab({
   onAuthExpired,
 }: {
@@ -135,6 +172,33 @@ export default function UsersTab({
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [keyModal, setKeyModal] = useState<KeySummary | null>(null)
+  // Per-user R2 storage: usage map (one full-bucket scan) + the pro/trial
+  // quota so each row can render "used / allocated". Loaded lazily after
+  // the user list so it never blocks the first paint.
+  const [usageByUid, setUsageByUid] = useState<Record<string, UserUsage> | null>(
+    null,
+  )
+  const [quota, setQuota] = useState<StorageQuota | null>(null)
+  const [storageModal, setStorageModal] = useState<{
+    uid: string
+    email: string
+    name?: string
+  } | null>(null)
+
+  async function loadStorage() {
+    try {
+      const r = await adminApi<{
+        usageByUid: Record<string, UserUsage>
+        proBytes: number
+        trialBytes: number
+      }>('admin-users-storage', {})
+      setUsageByUid(r.usageByUid || {})
+      setQuota({ proBytes: r.proBytes, trialBytes: r.trialBytes })
+    } catch {
+      // Non-fatal: the row just shows "—" for storage. Auth errors are
+      // already surfaced by the main list load.
+    }
+  }
 
   // force = bypass the session cache (refresh button + after a mutation).
   // A plain mount uses the cache, so bouncing back to this tab within a
@@ -160,6 +224,7 @@ export default function UsersTab({
 
   useEffect(() => {
     void load()
+    void loadStorage()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -193,7 +258,10 @@ export default function UsersTab({
         </div>
         <button
           type="button"
-          onClick={() => load(true)}
+          onClick={() => {
+            void load(true)
+            void loadStorage()
+          }}
           disabled={refreshing}
           className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-60"
         >
@@ -248,9 +316,14 @@ export default function UsersTab({
               key={u.uid}
               user={u}
               redeemedKey={keysByUid[u.uid] ?? null}
+              usage={usageByUid ? usageByUid[u.uid] ?? { usedBytes: 0, count: 0 } : null}
+              quota={quota}
               onChange={() => load(true)}
               onAuthExpired={onAuthExpired}
               onShowKey={(k) => setKeyModal(k)}
+              onOpenStorage={(uid, email, name) =>
+                setStorageModal({ uid, email, name })
+              }
             />
           ))
         )}
@@ -258,6 +331,16 @@ export default function UsersTab({
 
       {keyModal && (
         <KeyDetailsModal keyDoc={keyModal} onClose={() => setKeyModal(null)} />
+      )}
+      {storageModal && (
+        <UserStorageModal
+          uid={storageModal.uid}
+          email={storageModal.email}
+          name={storageModal.name}
+          onClose={() => setStorageModal(null)}
+          onAuthExpired={onAuthExpired}
+          onChanged={() => void loadStorage()}
+        />
       )}
     </div>
   )
@@ -297,15 +380,21 @@ function Stat({
 function UserRow({
   user,
   redeemedKey,
+  usage,
+  quota,
   onChange,
   onAuthExpired,
   onShowKey,
+  onOpenStorage,
 }: {
   user: UserDoc
   redeemedKey: KeySummary | null
+  usage: UserUsage | null
+  quota: StorageQuota | null
   onChange: () => void | Promise<void>
   onAuthExpired: () => void
   onShowKey: (k: KeySummary) => void
+  onOpenStorage: (uid: string, email: string, name?: string) => void
 }) {
   const [busy, setBusy] = useState<
     null | 'block' | 'device' | 'role' | 'plan' | 'storage' | 'delete'
@@ -359,6 +448,18 @@ function UserRow({
   const isDrive = user.storageBackend === 'drive'
   const onTrial = isTrialActive(user)
   const isPro = user.subscription === 'pro' || isKeyActive(redeemedKey)
+  // Allocated bytes mirror the server rule (storageQuotaForUser): an
+  // active trial that isn't also Pro gets the small trial quota; everyone
+  // else gets the full Pro quota.
+  const limitBytes = quota
+    ? onTrial && !isPro
+      ? quota.trialBytes
+      : quota.proBytes
+    : 0
+  const usedBytes = usage?.usedBytes ?? 0
+  const usePct =
+    limitBytes > 0 ? Math.min(100, (usedBytes / limitBytes) * 100) : 0
+  const storageOver = limitBytes > 0 && usedBytes > limitBytes
   const blocked = user.blocked === true
   const initial = (user.name || user.email || '?').charAt(0).toUpperCase()
   const platform =
@@ -445,6 +546,54 @@ function UserRow({
               </>
             )}
           </div>
+
+          {/* Storage: used / allocated. Click to inspect + delete files. */}
+          <button
+            type="button"
+            onClick={() => onOpenStorage(user.uid, user.email, user.name)}
+            title="הצג וקבצי אחסון — לחץ לצפייה ומחיקה"
+            className="mt-1 flex w-full max-w-[260px] items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-2.5 py-1.5 text-right transition-colors hover:border-primary/50 hover:bg-popover"
+          >
+            <HardDrive
+              className={
+                'h-3.5 w-3.5 shrink-0 ' +
+                (storageOver ? 'text-destructive' : 'text-fg-muted')
+              }
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline justify-between gap-2">
+                <span
+                  className={
+                    'text-[11px] font-medium tabular-nums ' +
+                    (storageOver ? 'text-destructive' : 'text-fg')
+                  }
+                  dir="ltr"
+                >
+                  {usage === null || quota === null
+                    ? '—'
+                    : `${fmtGb(usedBytes)} / ${fmtGb(limitBytes)} GB`}
+                </span>
+                {usage && usage.count > 0 && (
+                  <span className="text-[10px] text-fg-faint">
+                    {usage.count} קבצים
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 h-1 overflow-hidden rounded-full bg-border">
+                <div
+                  className={
+                    'h-full rounded-full ' +
+                    (storageOver
+                      ? 'bg-destructive'
+                      : usePct > 80
+                        ? 'bg-amber-400'
+                        : 'bg-primary')
+                  }
+                  style={{ width: `${usage && quota ? usePct : 0}%` }}
+                />
+              </div>
+            </div>
+          </button>
 
           {!isAdmin && (
             <div className="flex flex-wrap items-center gap-1 pt-1">
@@ -721,6 +870,251 @@ function IconBtn({
     >
       {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : children}
     </button>
+  )
+}
+
+/** Folder key → Hebrew label + tone for the file-type chip. */
+function folderLabel(folder: string): { label: string; cls: string } {
+  switch (folder) {
+    case 'videos':
+      return { label: 'סבב תיקונים', cls: 'border-sky-400/30 bg-sky-400/10 text-sky-400' }
+    case 'finals':
+      return { label: 'מסירה', cls: 'border-primary/30 bg-primary/10 text-primary' }
+    case 'notes':
+      return { label: 'הערה', cls: 'border-accent/30 bg-accent/10 text-accent' }
+    default:
+      return { label: folder || 'אחר', cls: 'border-border bg-bg-elevated text-fg-muted' }
+  }
+}
+
+/**
+ * Per-user storage inspector. Lists every object under the user's R2
+ * prefix (name, type, size, upload time) and lets the admin delete any
+ * one of them — the delete is step-up (biometric) gated and also
+ * reconciles the referencing Firestore doc on the server.
+ */
+function UserStorageModal({
+  uid,
+  email,
+  name,
+  onClose,
+  onAuthExpired,
+  onChanged,
+}: {
+  uid: string
+  email: string
+  name?: string
+  onClose: () => void
+  onAuthExpired: () => void
+  onChanged: () => void
+}) {
+  const [items, setItems] = useState<StorageObject[] | null>(null)
+  const [error, setError] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
+
+  async function load() {
+    setError('')
+    try {
+      const r = await adminApi<{ items: StorageObject[] }>(
+        'admin-list-user-storage',
+        { uid },
+      )
+      setItems(r.items || [])
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setError(err.message || 'טעינת הקבצים נכשלה')
+      setItems([])
+    }
+  }
+
+  useEffect(() => {
+    void load()
+    const onEsc = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onEsc)
+    return () => window.removeEventListener('keydown', onEsc)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid])
+
+  async function del(key: string) {
+    if (deleting) return
+    setDeleting(key)
+    setError('')
+    try {
+      await adminApi('admin-delete-user-object', { uid, key })
+      setItems((prev) => (prev ? prev.filter((i) => i.key !== key) : prev))
+      setPendingDelete(null)
+      onChanged()
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setError(err.message || 'המחיקה נכשלה')
+    } finally {
+      setDeleting(null)
+    }
+  }
+
+  const totalBytes = (items || []).reduce((s, i) => s + (i.size || 0), 0)
+
+  return (
+    <Portal>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 px-4 backdrop-blur-md"
+        onClick={(e) => e.target === e.currentTarget && onClose()}
+      >
+        <motion.div
+          initial={{ opacity: 0, scale: 0.97, y: 8 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+          dir="rtl"
+        >
+          <header className="flex items-start justify-between gap-3 border-b border-border p-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <HardDrive className="h-4 w-4 text-primary" />
+                <h3 className="text-base font-semibold text-fg">אחסון המשתמש</h3>
+              </div>
+              <div className="mt-0.5 truncate text-xs text-fg-muted">
+                {name ? `${name} · ` : ''}
+                <span dir="ltr">{email}</span>
+              </div>
+              {items !== null && (
+                <div className="mt-1 text-[11px] text-fg-faint">
+                  {items.length} קבצים · סה״כ{' '}
+                  <span dir="ltr" className="tabular-nums">
+                    {fmtBytes(totalBytes)}
+                  </span>
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md p-1 text-fg-muted transition-colors hover:bg-popover hover:text-fg"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </header>
+
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            {error && (
+              <div className="mb-2 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                <AlertTriangle className="h-4 w-4 shrink-0" /> {error}
+              </div>
+            )}
+            {items === null ? (
+              <div className="flex items-center justify-center gap-2 py-10 text-sm text-fg-muted">
+                <Loader2 className="h-4 w-4 animate-spin" /> טוען קבצים…
+              </div>
+            ) : items.length === 0 ? (
+              <div className="py-10 text-center text-sm text-fg-muted">
+                אין קבצים באחסון של המשתמש הזה
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {items.map((it) => {
+                  const fl = folderLabel(it.folder)
+                  const isConfirming = pendingDelete === it.key
+                  const isDeleting = deleting === it.key
+                  return (
+                    <div
+                      key={it.key}
+                      className="rounded-xl border border-border bg-bg-elevated/40 p-2.5"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-popover text-fg-muted">
+                          <Film className="h-4 w-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div
+                            className="truncate text-[13px] font-medium text-fg"
+                            title={it.name}
+                            dir="ltr"
+                          >
+                            {it.name}
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-fg-faint">
+                            <span
+                              className={
+                                'rounded border px-1 py-px text-[9px] ' + fl.cls
+                              }
+                            >
+                              {fl.label}
+                            </span>
+                            <span dir="ltr" className="tabular-nums">
+                              {fmtBytes(it.size)}
+                            </span>
+                            {it.lastModified > 0 && (
+                              <>
+                                <span>·</span>
+                                <span dir="ltr">
+                                  {new Date(it.lastModified).toLocaleString(
+                                    'he-IL',
+                                    {
+                                      dateStyle: 'short',
+                                      timeStyle: 'short',
+                                    },
+                                  )}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        {!isConfirming && (
+                          <button
+                            type="button"
+                            onClick={() => setPendingDelete(it.key)}
+                            disabled={!!deleting}
+                            title="מחק מהאחסון"
+                            className="shrink-0 rounded-md border border-border p-1.5 text-fg-muted transition-colors hover:border-destructive/40 hover:text-destructive disabled:opacity-40"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      {isConfirming && (
+                        <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-2.5 py-1.5">
+                          <span className="text-[11px] text-destructive">
+                            למחוק לצמיתות מהאחסון?
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setPendingDelete(null)}
+                              disabled={isDeleting}
+                              className="rounded-md border border-border px-2 py-1 text-[11px] text-fg-muted hover:text-fg disabled:opacity-40"
+                            >
+                              ביטול
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => del(it.key)}
+                              disabled={isDeleting}
+                              className="flex items-center gap-1 rounded-md bg-destructive px-2.5 py-1 text-[11px] font-medium text-white hover:bg-destructive/90 disabled:opacity-60"
+                            >
+                              {isDeleting ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-3 w-3" />
+                              )}
+                              מחק
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </motion.div>
+      </motion.div>
+    </Portal>
   )
 }
 

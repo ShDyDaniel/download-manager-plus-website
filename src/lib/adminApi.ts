@@ -337,6 +337,7 @@ const STEPUP_ACTIONS = new Set<string>([
   'admin-clear-client-errors',
   'admin-sync-telemetry-clear',
   'admin-storage-cleanup',
+  'admin-delete-user-object',
   'admin-create-coupon',
   'admin-set-coupon-active',
   'admin-delete-coupon',

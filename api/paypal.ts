@@ -1877,6 +1877,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSyncTelemetryClear(req, res)
       case 'admin-storage-cleanup':
         return await handleAdminStorageCleanup(req, res)
+      case 'admin-users-storage':
+        return await handleAdminUsersStorage(req, res)
+      case 'admin-list-user-storage':
+        return await handleAdminListUserStorage(req, res)
+      case 'admin-delete-user-object':
+        return await handleAdminDeleteUserObject(req, res)
       case 'admin-list-coupons':
         return await handleAdminListCoupons(req, res)
       case 'admin-create-coupon':
@@ -10291,6 +10297,232 @@ async function handleAdminStorageCleanup(
   return res
     .status(200)
     .json({ ok: true, multipartsAborted, orphansDeleted, orphanBytes })
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Per-user storage manager (admin Users tab)
+//
+// Three actions:
+//   admin-users-storage      — one full-bucket scan; used bytes+count per
+//                              user (keyed by the first path segment = uid)
+//                              plus the pro/trial quota so the client can
+//                              show "used / allocated" next to every user.
+//   admin-list-user-storage  — list every object under a single user's
+//                              {uid}/ prefix: name, folder, size, time.
+//   admin-delete-user-object — delete one object from R2 (step-up gated)
+//                              AND reconcile the referencing Firestore doc
+//                              so quota + the app stay consistent.
+// ─────────────────────────────────────────────────────────────────────
+
+const STORAGE_GB_PP = 1024 * 1024 * 1024
+
+/** Pro / trial storage allotment in bytes (admin-config override → default). */
+async function getProTrialQuotaBytes(): Promise<{
+  proBytes: number
+  trialBytes: number
+}> {
+  let proGb = 100
+  let trialGb = 1.5
+  try {
+    const [adminSnap, legacySnap] = await Promise.all([
+      getDb().collection('adminConfig').doc('global').get(),
+      getDb().collection('appConfig').doc('global').get(),
+    ])
+    const ad = (adminSnap.exists ? adminSnap.data() : {}) as {
+      proStorageGb?: number
+      trialStorageGb?: number
+    }
+    const lg = (legacySnap.exists ? legacySnap.data() : {}) as {
+      proStorageGb?: number
+      trialStorageGb?: number
+    }
+    const p = ad.proStorageGb ?? lg.proStorageGb
+    const t = ad.trialStorageGb ?? lg.trialStorageGb
+    if (typeof p === 'number' && p > 0) proGb = p
+    if (typeof t === 'number' && t > 0) trialGb = t
+  } catch {
+    /* defaults */
+  }
+  return {
+    proBytes: Math.round(proGb * STORAGE_GB_PP),
+    trialBytes: Math.round(trialGb * STORAGE_GB_PP),
+  }
+}
+
+/** The uid that "owns" an R2 key. Current layout is `{uid}/...`; the
+ *  legacy `videos/{uid}/` and `notes/{uid}/` shapes keep the uid in the
+ *  SECOND segment. Returns '' for anything unrecognizable. */
+function uidFromStorageKey(key: string): string {
+  const parts = (key || '').split('/')
+  if (parts.length < 2) return ''
+  if ((parts[0] === 'videos' || parts[0] === 'notes') && parts[1]) {
+    return parts[1]
+  }
+  return parts[0] || ''
+}
+
+/** Strip the `{ts}-{rand}-` prefix our key builders prepend, leaving the
+ *  original (sanitized) file name the user uploaded. */
+function humanNameFromStorageKey(key: string): string {
+  const base = (key || '').split('/').pop() || key || ''
+  return base.replace(/^\d{10,}-[0-9a-f]{8,}-?/i, '') || base
+}
+
+async function handleAdminUsersStorage(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const r2 = getBackupR2()
+  const usageByUid: Record<string, { usedBytes: number; count: number }> = {}
+  let scanned = 0
+  let token: string | undefined
+  do {
+    const r = await r2.send(
+      new ListObjectsV2Command({
+        Bucket: BACKUP_BUCKET,
+        ContinuationToken: token,
+      }),
+    )
+    for (const o of r.Contents || []) {
+      const key = o.Key || ''
+      const uid = uidFromStorageKey(key)
+      if (!uid) continue
+      // Backups + telemetry live under their own top-level prefixes and
+      // aren't user media — skip them so they don't inflate a "user".
+      if (uid === 'backups' || uid === 'sync-telemetry') continue
+      const cur = usageByUid[uid] || { usedBytes: 0, count: 0 }
+      cur.usedBytes += o.Size || 0
+      cur.count += 1
+      usageByUid[uid] = cur
+      scanned += 1
+    }
+    token = r.IsTruncated ? r.NextContinuationToken : undefined
+  } while (token && scanned < 200_000)
+
+  const { proBytes, trialBytes } = await getProTrialQuotaBytes()
+  return res
+    .status(200)
+    .json({ ok: true, usageByUid, proBytes, trialBytes })
+}
+
+async function handleAdminListUserStorage(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const uid = String((req.body as { uid?: string })?.uid || '').trim()
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid required' })
+
+  const r2 = getBackupR2()
+  const items: Array<{
+    key: string
+    name: string
+    folder: string
+    size: number
+    lastModified: number
+  }> = []
+  let usedBytes = 0
+  let token: string | undefined
+  do {
+    const r = await r2.send(
+      new ListObjectsV2Command({
+        Bucket: BACKUP_BUCKET,
+        Prefix: `${uid}/`,
+        ContinuationToken: token,
+      }),
+    )
+    for (const o of r.Contents || []) {
+      const key = o.Key || ''
+      if (!key) continue
+      const size = o.Size || 0
+      usedBytes += size
+      items.push({
+        key,
+        name: humanNameFromStorageKey(key),
+        folder: key.split('/')[1] || '',
+        size,
+        lastModified: o.LastModified
+          ? new Date(o.LastModified).getTime()
+          : 0,
+      })
+    }
+    token = r.IsTruncated ? r.NextContinuationToken : undefined
+  } while (token && items.length < 10_000)
+
+  items.sort((a, b) => b.lastModified - a.lastModified)
+  return res
+    .status(200)
+    .json({ ok: true, items, usedBytes, count: items.length })
+}
+
+async function handleAdminDeleteUserObject(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { uid?: string; key?: string }
+  const uid = String(body.uid || '').trim()
+  const key = String(body.key || '').trim()
+  if (!uid || !key) {
+    return res.status(400).json({ ok: false, error: 'uid + key required' })
+  }
+  // Never let an admin delete outside the named user's own prefix.
+  if (uidFromStorageKey(key) !== uid) {
+    return res.status(400).json({ ok: false, error: 'key does not belong to user' })
+  }
+
+  // 1) Remove the object from R2.
+  try {
+    await getBackupR2().send(
+      new DeleteObjectCommand({ Bucket: BACKUP_BUCKET, Key: key }),
+    )
+  } catch (e) {
+    console.error('[admin-delete-user-object] r2 delete failed:', key, e)
+    return res.status(502).json({ ok: false, error: 'storage delete failed' })
+  }
+
+  // 2) Reconcile Firestore so the app + quota don't reference a gone file.
+  const db = getDb()
+  try {
+    // Revision round video → archive the round.
+    const projSnap = await db
+      .collection('revisionProjects')
+      .where('r2Key', '==', key)
+      .limit(5)
+      .get()
+    for (const d of projSnap.docs) {
+      await d.ref
+        .update({ status: 'archived', driveDeleted: true, updatedAt: Date.now() })
+        .catch(() => undefined)
+    }
+    // Delivery final video → drop that video from the delivery's array.
+    const delivSnap = await db
+      .collection('deliveries')
+      .where('ownerUid', '==', uid)
+      .get()
+    for (const d of delivSnap.docs) {
+      const data = d.data() as { videos?: Array<{ r2Key?: string }> }
+      if (!Array.isArray(data.videos)) continue
+      const next = data.videos.filter((v) => v?.r2Key !== key)
+      if (next.length !== data.videos.length) {
+        await d.ref
+          .update({ videos: next, updatedAt: Date.now() })
+          .catch(() => undefined)
+      }
+    }
+  } catch (e) {
+    // The bytes are already freed in R2; a metadata hiccup is non-fatal.
+    console.warn('[admin-delete-user-object] firestore reconcile warn:', e)
+  }
+
+  return res.status(200).json({ ok: true })
 }
 
 async function handleAdminSyncTelemetryClear(
