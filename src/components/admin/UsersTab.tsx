@@ -143,13 +143,18 @@ interface UserUsage {
 interface StorageQuota {
   proBytes: number
   trialBytes: number
+  betaMode: boolean
 }
 interface StorageObject {
-  key: string
+  id: string
+  kind: 'round' | 'delivery' | 'other'
   name: string
-  folder: string
   size: number
   lastModified: number
+  count: number
+  folder?: string
+  roundId?: string
+  key?: string
 }
 
 export default function UsersTab({
@@ -191,9 +196,14 @@ export default function UsersTab({
         usageByUid: Record<string, UserUsage>
         proBytes: number
         trialBytes: number
+        betaMode?: boolean
       }>('admin-users-storage', {})
       setUsageByUid(r.usageByUid || {})
-      setQuota({ proBytes: r.proBytes, trialBytes: r.trialBytes })
+      setQuota({
+        proBytes: r.proBytes,
+        trialBytes: r.trialBytes,
+        betaMode: r.betaMode === true,
+      })
     } catch {
       // Non-fatal: the row just shows "—" for storage. Auth errors are
       // already surfaced by the main list load.
@@ -448,13 +458,19 @@ function UserRow({
   const isDrive = user.storageBackend === 'drive'
   const onTrial = isTrialActive(user)
   const isPro = user.subscription === 'pro' || isKeyActive(redeemedKey)
-  // Allocated bytes mirror the server rule (storageQuotaForUser): an
-  // active trial that isn't also Pro gets the small trial quota; everyone
-  // else gets the full Pro quota.
+  // Allocated bytes reflect the account's CURRENT state:
+  //   Pro            → full pro quota
+  //   active trial   → trial quota
+  //   free + beta ON → pro quota (beta grants everyone)
+  //   free + beta OFF→ 0 (no paid storage)
   const limitBytes = quota
-    ? onTrial && !isPro
-      ? quota.trialBytes
-      : quota.proBytes
+    ? isPro
+      ? quota.proBytes
+      : onTrial
+        ? quota.trialBytes
+        : quota.betaMode
+          ? quota.proBytes
+          : 0
     : 0
   const usedBytes = usage?.usedBytes ?? 0
   const usePct =
@@ -873,18 +889,18 @@ function IconBtn({
   )
 }
 
-/** Folder key → Hebrew label + tone for the file-type chip. */
-function folderLabel(folder: string): { label: string; cls: string } {
-  switch (folder) {
-    case 'videos':
-      return { label: 'סבב תיקונים', cls: 'border-sky-400/30 bg-sky-400/10 text-sky-400' }
-    case 'finals':
-      return { label: 'מסירה', cls: 'border-primary/30 bg-primary/10 text-primary' }
-    case 'notes':
-      return { label: 'הערה', cls: 'border-accent/30 bg-accent/10 text-accent' }
-    default:
-      return { label: folder || 'אחר', cls: 'border-border bg-bg-elevated text-fg-muted' }
-  }
+/** Storage item → Hebrew type label + tone for the chip. */
+function itemLabel(it: StorageObject): { label: string; cls: string } {
+  if (it.kind === 'round')
+    return {
+      label: 'סבב תיקונים',
+      cls: 'border-sky-400/30 bg-sky-400/10 text-sky-400',
+    }
+  if (it.kind === 'delivery')
+    return { label: 'מסירה', cls: 'border-primary/30 bg-primary/10 text-primary' }
+  if (it.folder === 'notes')
+    return { label: 'הערה', cls: 'border-accent/30 bg-accent/10 text-accent' }
+  return { label: 'אחר', cls: 'border-border bg-bg-elevated text-fg-muted' }
 }
 
 /**
@@ -937,13 +953,16 @@ function UserStorageModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid])
 
-  async function del(key: string) {
+  async function del(it: StorageObject) {
     if (deleting) return
-    setDeleting(key)
+    setDeleting(it.id)
     setError('')
     try {
-      await adminApi('admin-delete-user-object', { uid, key })
-      setItems((prev) => (prev ? prev.filter((i) => i.key !== key) : prev))
+      await adminApi(
+        'admin-delete-user-object',
+        it.roundId ? { uid, roundId: it.roundId } : { uid, key: it.key },
+      )
+      setItems((prev) => (prev ? prev.filter((i) => i.id !== it.id) : prev))
       setPendingDelete(null)
       onChanged()
     } catch (e) {
@@ -1017,12 +1036,12 @@ function UserStorageModal({
             ) : (
               <div className="space-y-1.5">
                 {items.map((it) => {
-                  const fl = folderLabel(it.folder)
-                  const isConfirming = pendingDelete === it.key
-                  const isDeleting = deleting === it.key
+                  const fl = itemLabel(it)
+                  const isConfirming = pendingDelete === it.id
+                  const isDeleting = deleting === it.id
                   return (
                     <div
-                      key={it.key}
+                      key={it.id}
                       className="rounded-xl border border-border bg-bg-elevated/40 p-2.5"
                     >
                       <div className="flex items-center gap-2.5">
@@ -1048,6 +1067,12 @@ function UserStorageModal({
                             <span dir="ltr" className="tabular-nums">
                               {fmtBytes(it.size)}
                             </span>
+                            {it.kind === 'round' && it.count > 1 && (
+                              <>
+                                <span>·</span>
+                                <span>כולל {it.count} קבצים</span>
+                              </>
+                            )}
                             {it.lastModified > 0 && (
                               <>
                                 <span>·</span>
@@ -1067,7 +1092,7 @@ function UserStorageModal({
                         {!isConfirming && (
                           <button
                             type="button"
-                            onClick={() => setPendingDelete(it.key)}
+                            onClick={() => setPendingDelete(it.id)}
                             disabled={!!deleting}
                             title="מחק מהאחסון"
                             className="shrink-0 rounded-md border border-border p-1.5 text-fg-muted transition-colors hover:border-destructive/40 hover:text-destructive disabled:opacity-40"
@@ -1079,7 +1104,9 @@ function UserStorageModal({
                       {isConfirming && (
                         <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-2.5 py-1.5">
                           <span className="text-[11px] text-destructive">
-                            למחוק לצמיתות מהאחסון?
+                            {it.kind === 'round' && it.count > 1
+                              ? `למחוק את הסבב וכל ${it.count} הקבצים שבו?`
+                              : 'למחוק לצמיתות מהאחסון?'}
                           </span>
                           <div className="flex items-center gap-1.5">
                             <button
@@ -1092,7 +1119,7 @@ function UserStorageModal({
                             </button>
                             <button
                               type="button"
-                              onClick={() => del(it.key)}
+                              onClick={() => del(it)}
                               disabled={isDeleting}
                               className="flex items-center gap-1 rounded-md bg-destructive px-2.5 py-1 text-[11px] font-medium text-white hover:bg-destructive/90 disabled:opacity-60"
                             >

@@ -10403,9 +10403,31 @@ async function handleAdminUsersStorage(
   } while (token && scanned < 200_000)
 
   const { proBytes, trialBytes } = await getProTrialQuotaBytes()
+  // Beta mode grants free users the full quota; when it's OFF a free
+  // (non-trial, non-Pro) account is allotted 0. The client decides each
+  // user's limit from its own plan state + this flag.
+  let betaMode = false
+  try {
+    const cfg = await getDb().collection('appConfig').doc('global').get()
+    betaMode = (cfg.exists ? cfg.data() : {})?.betaMode === true
+  } catch {
+    /* default false */
+  }
   return res
     .status(200)
-    .json({ ok: true, usageByUid, proBytes, trialBytes })
+    .json({ ok: true, usageByUid, proBytes, trialBytes, betaMode })
+}
+
+interface UserStorageItem {
+  id: string
+  kind: 'round' | 'delivery' | 'other'
+  name: string
+  size: number
+  lastModified: number
+  count: number
+  folder?: string
+  roundId?: string
+  key?: string
 }
 
 async function handleAdminListUserStorage(
@@ -10418,15 +10440,12 @@ async function handleAdminListUserStorage(
   const uid = String((req.body as { uid?: string })?.uid || '').trim()
   if (!uid) return res.status(400).json({ ok: false, error: 'uid required' })
 
+  // 1) Ground truth: every real object under the user's prefix.
   const r2 = getBackupR2()
-  const items: Array<{
-    key: string
-    name: string
-    folder: string
-    size: number
-    lastModified: number
-  }> = []
-  let usedBytes = 0
+  const objMap = new Map<
+    string,
+    { size: number; lastModified: number; folder: string }
+  >()
   let token: string | undefined
   do {
     const r = await r2.send(
@@ -10439,22 +10458,129 @@ async function handleAdminListUserStorage(
     for (const o of r.Contents || []) {
       const key = o.Key || ''
       if (!key) continue
-      const size = o.Size || 0
-      usedBytes += size
-      items.push({
-        key,
-        name: humanNameFromStorageKey(key),
+      objMap.set(key, {
+        size: o.Size || 0,
+        lastModified: o.LastModified ? new Date(o.LastModified).getTime() : 0,
         folder: key.split('/')[1] || '',
-        size,
-        lastModified: o.LastModified
-          ? new Date(o.LastModified).getTime()
-          : 0,
       })
     }
     token = r.IsTruncated ? r.NextContinuationToken : undefined
-  } while (token && items.length < 10_000)
+  } while (token && objMap.size < 10_000)
+
+  const db = getDb()
+  const items: UserStorageItem[] = []
+  const consumed = new Set<string>()
+
+  // 2) Revision rounds — one item per round, folding in the round's own
+  //    note media (reviewer screenshots + voice recordings) so a round
+  //    reads as a single file, not a scatter of loose attachments.
+  try {
+    const roundsSnap = await db
+      .collection('revisionProjects')
+      .where('ownerUid', '==', uid)
+      .limit(1000)
+      .get()
+    for (const d of roundsSnap.docs) {
+      const r = d.data() as { r2Key?: string; status?: string }
+      const noteKeys: string[] = []
+      try {
+        const notesSnap = await d.ref.collection('notes').get()
+        for (const n of notesSnap.docs) {
+          const nd = n.data() as {
+            screenshotR2Key?: string
+            audioR2Key?: string
+          }
+          if (nd.screenshotR2Key) noteKeys.push(nd.screenshotR2Key)
+          if (nd.audioR2Key) noteKeys.push(nd.audioR2Key)
+        }
+      } catch {
+        /* no notes */
+      }
+      const videoPresent = r.r2Key && objMap.has(r.r2Key)
+      const presentNotes = noteKeys.filter((k) => objMap.has(k))
+      if (!videoPresent && presentNotes.length === 0) continue
+
+      let size = 0
+      let lastModified = 0
+      let count = 0
+      let name = ''
+      if (videoPresent && r.r2Key) {
+        const info = objMap.get(r.r2Key)!
+        size += info.size
+        lastModified = Math.max(lastModified, info.lastModified)
+        count += 1
+        name = humanNameFromStorageKey(r.r2Key)
+        consumed.add(r.r2Key)
+      }
+      for (const k of presentNotes) {
+        const info = objMap.get(k)!
+        size += info.size
+        lastModified = Math.max(lastModified, info.lastModified)
+        count += 1
+        consumed.add(k)
+      }
+      items.push({
+        id: `round:${d.id}`,
+        kind: 'round',
+        roundId: d.id,
+        name: name || 'סבב תיקונים',
+        size,
+        lastModified,
+        count,
+      })
+    }
+  } catch (e) {
+    console.warn('[admin-list-user-storage] rounds read warn:', e)
+  }
+
+  // 3) Deliveries — one item per final video (each is a standalone file).
+  try {
+    const delivSnap = await db
+      .collection('deliveries')
+      .where('ownerUid', '==', uid)
+      .get()
+    for (const d of delivSnap.docs) {
+      const del = d.data() as {
+        videos?: Array<{ r2Key?: string; name?: string }>
+        status?: string
+      }
+      if (del.status === 'deleted') continue
+      for (const v of del.videos || []) {
+        if (!v.r2Key || !objMap.has(v.r2Key) || consumed.has(v.r2Key)) continue
+        const info = objMap.get(v.r2Key)!
+        items.push({
+          id: `key:${v.r2Key}`,
+          kind: 'delivery',
+          key: v.r2Key,
+          name: v.name || humanNameFromStorageKey(v.r2Key),
+          size: info.size,
+          lastModified: info.lastModified,
+          count: 1,
+        })
+        consumed.add(v.r2Key)
+      }
+    }
+  } catch (e) {
+    console.warn('[admin-list-user-storage] deliveries read warn:', e)
+  }
+
+  // 4) Anything left in R2 that no doc references → loose object.
+  for (const [key, info] of objMap) {
+    if (consumed.has(key)) continue
+    items.push({
+      id: `key:${key}`,
+      kind: 'other',
+      key,
+      name: humanNameFromStorageKey(key),
+      folder: info.folder,
+      size: info.size,
+      lastModified: info.lastModified,
+      count: 1,
+    })
+  }
 
   items.sort((a, b) => b.lastModified - a.lastModified)
+  const usedBytes = items.reduce((s, i) => s + i.size, 0)
   return res
     .status(200)
     .json({ ok: true, items, usedBytes, count: items.length })
@@ -10467,31 +10593,75 @@ async function handleAdminDeleteUserObject(
   if (!(await verifyAdminStepUp(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  const body = (req.body || {}) as { uid?: string; key?: string }
+  const body = (req.body || {}) as {
+    uid?: string
+    key?: string
+    roundId?: string
+  }
   const uid = String(body.uid || '').trim()
   const key = String(body.key || '').trim()
-  if (!uid || !key) {
-    return res.status(400).json({ ok: false, error: 'uid + key required' })
-  }
-  // Never let an admin delete outside the named user's own prefix.
-  if (uidFromStorageKey(key) !== uid) {
-    return res.status(400).json({ ok: false, error: 'key does not belong to user' })
+  const roundId = String(body.roundId || '').trim()
+  if (!uid || (!key && !roundId)) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'uid + (key or roundId) required' })
   }
 
-  // 1) Remove the object from R2.
+  const r2 = getBackupR2()
+  const db = getDb()
+  const delFromR2 = async (k: string) => {
+    if (!k || uidFromStorageKey(k) !== uid) return
+    await r2
+      .send(new DeleteObjectCommand({ Bucket: BACKUP_BUCKET, Key: k }))
+      .catch((e) =>
+        console.warn('[admin-delete-user-object] r2 delete warn:', k, e),
+      )
+  }
+
+  // ── Whole revision round: video + all its note media, then archive. ──
+  if (roundId) {
+    const ref = db.collection('revisionProjects').doc(roundId)
+    const snap = await ref.get()
+    const r = (snap.exists ? snap.data() : {}) as {
+      ownerUid?: string
+      r2Key?: string
+    }
+    if (snap.exists && r.ownerUid && r.ownerUid !== uid) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'round does not belong to user' })
+    }
+    if (r.r2Key) await delFromR2(r.r2Key)
+    try {
+      const notesSnap = await ref.collection('notes').get()
+      for (const n of notesSnap.docs) {
+        const nd = n.data() as { screenshotR2Key?: string; audioR2Key?: string }
+        if (nd.screenshotR2Key) await delFromR2(nd.screenshotR2Key)
+        if (nd.audioR2Key) await delFromR2(nd.audioR2Key)
+      }
+    } catch {
+      /* no notes */
+    }
+    await ref
+      .update({ status: 'archived', driveDeleted: true, updatedAt: Date.now() })
+      .catch(() => undefined)
+    return res.status(200).json({ ok: true })
+  }
+
+  // ── Single object (delivery video or loose file). ──
+  if (uidFromStorageKey(key) !== uid) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'key does not belong to user' })
+  }
   try {
-    await getBackupR2().send(
-      new DeleteObjectCommand({ Bucket: BACKUP_BUCKET, Key: key }),
-    )
+    await r2.send(new DeleteObjectCommand({ Bucket: BACKUP_BUCKET, Key: key }))
   } catch (e) {
     console.error('[admin-delete-user-object] r2 delete failed:', key, e)
     return res.status(502).json({ ok: false, error: 'storage delete failed' })
   }
-
-  // 2) Reconcile Firestore so the app + quota don't reference a gone file.
-  const db = getDb()
   try {
-    // Revision round video → archive the round.
+    // Revision round video (unlikely via this path, but keep consistent).
     const projSnap = await db
       .collection('revisionProjects')
       .where('r2Key', '==', key)
@@ -10518,7 +10688,6 @@ async function handleAdminDeleteUserObject(
       }
     }
   } catch (e) {
-    // The bytes are already freed in R2; a metadata hiccup is non-fatal.
     console.warn('[admin-delete-user-object] firestore reconcile warn:', e)
   }
 
