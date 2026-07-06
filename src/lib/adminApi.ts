@@ -318,6 +318,8 @@ const STEPUP_ACTIONS = new Set<string>([
   'admin-set-user-storage',
   'admin-set-user-subscription',
   'admin-cancel-subscription',
+  'admin-refund-subscription',
+  'admin-link-subscription',
   'admin-clear-user-device',
   'admin-delete-user',
   'admin-approve-trial',

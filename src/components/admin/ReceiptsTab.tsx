@@ -15,6 +15,7 @@ import {
   CreditCard,
   Ban,
   User,
+  Coins,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 
@@ -1371,9 +1372,19 @@ function ActiveSubscriptions({
   const [subs, setSubs] = useState<AdminSubscription[] | null>(null)
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
-  const [confirmId, setConfirmId] = useState<string | null>(null)
+  // Which action panel is open on which subscription.
+  const [panel, setPanel] = useState<{
+    id: string
+    kind: 'cancel' | 'refund' | 'link'
+  } | null>(null)
   const [reason, setReason] = useState('')
+  const [refundAmount, setRefundAmount] = useState('')
+  const [linkEmail, setLinkEmail] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
+  // Per-card success/info note after refund / link (card stays).
+  const [notice, setNotice] = useState<{ id: string; text: string } | null>(
+    null,
+  )
 
   async function load() {
     setError('')
@@ -1398,6 +1409,21 @@ function ActiveSubscriptions({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  function openPanel(sub: AdminSubscription, kind: 'cancel' | 'refund' | 'link') {
+    setReason('')
+    setRefundAmount('')
+    setLinkEmail('')
+    setError('')
+    setNotice(null)
+    setPanel({ id: sub.subscriptionId, kind })
+  }
+  function closePanel() {
+    setPanel(null)
+    setReason('')
+    setRefundAmount('')
+    setLinkEmail('')
+  }
+
   async function cancel(sub: AdminSubscription) {
     if (busy) return
     setBusy(sub.subscriptionId)
@@ -1410,12 +1436,78 @@ function ActiveSubscriptions({
       setSubs((prev) =>
         prev ? prev.filter((s) => s.subscriptionId !== sub.subscriptionId) : prev,
       )
-      setConfirmId(null)
-      setReason('')
+      closePanel()
     } catch (e) {
       const err = e as Error & { code?: string }
       if (err.code === 'auth') return onAuthExpired()
       setError(err.message || 'עצירת המנוי נכשלה')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function refund(sub: AdminSubscription) {
+    if (busy) return
+    setBusy(sub.subscriptionId)
+    setError('')
+    try {
+      const amt = refundAmount.trim()
+      const r = await adminApi<{
+        refunded?: { value: string; currency: string }
+      }>('admin-refund-subscription', {
+        subscriptionId: sub.subscriptionId,
+        amount: amt ? Number(amt) : undefined,
+      })
+      const info = r.refunded
+      setNotice({
+        id: sub.subscriptionId,
+        text: info
+          ? `הוחזרו ${currencySymbol(info.currency)}${info.value} ללקוח.`
+          : 'ההחזר בוצע.',
+      })
+      closePanel()
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setError(err.message || 'ההחזר נכשל')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function link(sub: AdminSubscription) {
+    if (busy) return
+    const email = linkEmail.trim().toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError('כתובת מייל לא תקינה')
+      return
+    }
+    setBusy(sub.subscriptionId)
+    setError('')
+    try {
+      await adminApi('admin-link-subscription', {
+        subscriptionId: sub.subscriptionId,
+        email,
+      })
+      // Reflect the new owner on the card.
+      setSubs((prev) =>
+        prev
+          ? prev.map((s) =>
+              s.subscriptionId === sub.subscriptionId
+                ? { ...s, redeemedByEmail: email }
+                : s,
+            )
+          : prev,
+      )
+      setNotice({
+        id: sub.subscriptionId,
+        text: `המנוי קושר לחשבון ${email}. חיובים עתידיים יזוכו לחשבון הזה.`,
+      })
+      closePanel()
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setError(err.message || 'הקישור נכשל')
     } finally {
       setBusy(null)
     }
@@ -1459,8 +1551,11 @@ function ActiveSubscriptions({
         <div className="space-y-2">
           {subs.map((s) => {
             const email = s.redeemedByEmail || s.buyerEmail || '—'
-            const isConfirming = confirmId === s.subscriptionId
+            const openKind =
+              panel?.id === s.subscriptionId ? panel.kind : null
             const isBusy = busy === s.subscriptionId
+            const cardNotice =
+              notice?.id === s.subscriptionId ? notice.text : null
             const price =
               s.subscriptionPrice != null
                 ? `${currencySymbol(s.subscriptionCurrency)}${s.subscriptionPrice}`
@@ -1506,29 +1601,49 @@ function ActiveSubscriptions({
                       <span dir="ltr">{s.subscriptionId}</span>
                     </div>
                   </div>
-                  {!isConfirming && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setReason('')
-                        setError('')
-                        setConfirmId(s.subscriptionId)
-                      }}
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-                    >
-                      <Ban className="h-3.5 w-3.5" />
-                      עצור חידוש
-                    </button>
+                  {!openKind && (
+                    <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => openPanel(s, 'link')}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+                      >
+                        <User className="h-3.5 w-3.5" />
+                        קשר לחשבון
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openPanel(s, 'refund')}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 px-3 py-1.5 text-xs text-amber-500 transition-colors hover:bg-amber-400/10"
+                      >
+                        <Coins className="h-3.5 w-3.5" />
+                        החזר כספי
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openPanel(s, 'cancel')}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
+                      >
+                        <Ban className="h-3.5 w-3.5" />
+                        עצור חידוש
+                      </button>
+                    </div>
                   )}
                 </div>
 
-                {isConfirming && (
+                {cardNotice && !openKind && (
+                  <div className="mt-2 flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-[11px] text-success">
+                    <Check className="h-3.5 w-3.5 shrink-0" /> {cardNotice}
+                  </div>
+                )}
+
+                {/* Cancel (stop renewal) */}
+                {openKind === 'cancel' && (
                   <div className="mt-2 space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-2.5">
                     <div className="text-[11px] text-destructive">
                       עצירת החידוש דרך PayPal — לא יבוצעו חיובים נוספים. המשתמש
-                      נשאר Pro עד{' '}
-                      <bdi>{subDate(s.expiresAt)}</bdi>. (החזר כספי, אם צריך,
-                      מתבצע בנפרד ב-PayPal.)
+                      נשאר Pro עד <bdi>{subDate(s.expiresAt)}</bdi>, ותישלח לו
+                      הודעת אישור במייל.
                     </div>
                     <input
                       type="text"
@@ -1540,10 +1655,7 @@ function ActiveSubscriptions({
                     <div className="flex items-center justify-end gap-1.5">
                       <button
                         type="button"
-                        onClick={() => {
-                          setConfirmId(null)
-                          setReason('')
-                        }}
+                        onClick={closePanel}
                         disabled={isBusy}
                         className="rounded-md border border-border px-3 py-1.5 text-[11px] text-fg-muted hover:text-fg disabled:opacity-40"
                       >
@@ -1561,6 +1673,95 @@ function ActiveSubscriptions({
                           <Ban className="h-3.5 w-3.5" />
                         )}
                         עצור חידוש
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Refund */}
+                {openKind === 'refund' && (
+                  <div className="mt-2 space-y-2 rounded-xl border border-amber-400/30 bg-amber-400/5 p-2.5">
+                    <div className="text-[11px] text-amber-600">
+                      החזר כספי דרך PayPal על החיוב האחרון. השאירו ריק להחזר
+                      מלא, או הזינו סכום להחזר חלקי{' '}
+                      {s.subscriptionCurrency
+                        ? `(${currencySymbol(s.subscriptionCurrency)})`
+                        : ''}
+                      .
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={refundAmount}
+                      onChange={(e) => setRefundAmount(e.target.value)}
+                      placeholder="סכום (רשות) — ריק = החזר מלא"
+                      dir="ltr"
+                      className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-right text-xs text-fg outline-none focus:border-amber-400"
+                    />
+                    <div className="flex items-center justify-end gap-1.5">
+                      <button
+                        type="button"
+                        onClick={closePanel}
+                        disabled={isBusy}
+                        className="rounded-md border border-border px-3 py-1.5 text-[11px] text-fg-muted hover:text-fg disabled:opacity-40"
+                      >
+                        ביטול
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void refund(s)}
+                        disabled={isBusy}
+                        className="flex items-center gap-1.5 rounded-md bg-amber-500 px-3 py-1.5 text-[11px] font-medium text-white hover:bg-amber-500/90 disabled:opacity-60"
+                      >
+                        {isBusy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Coins className="h-3.5 w-3.5" />
+                        )}
+                        בצע החזר
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Link to account */}
+                {openKind === 'link' && (
+                  <div className="mt-2 space-y-2 rounded-xl border border-primary/30 bg-primary/5 p-2.5">
+                    <div className="text-[11px] text-fg-muted">
+                      קישור המנוי לחשבון לפי כתובת מייל. החשבון יקבל Pro, וכל
+                      חיוב עתידי מהמנוי הזה יזוכה אליו. (מבטל קישור של מפתח קודם
+                      שהיה משויך לאותו חשבון.)
+                    </div>
+                    <input
+                      type="email"
+                      value={linkEmail}
+                      onChange={(e) => setLinkEmail(e.target.value)}
+                      placeholder="המייל של החשבון לקישור"
+                      dir="ltr"
+                      className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-right text-xs text-fg outline-none focus:border-primary"
+                    />
+                    <div className="flex items-center justify-end gap-1.5">
+                      <button
+                        type="button"
+                        onClick={closePanel}
+                        disabled={isBusy}
+                        className="rounded-md border border-border px-3 py-1.5 text-[11px] text-fg-muted hover:text-fg disabled:opacity-40"
+                      >
+                        ביטול
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void link(s)}
+                        disabled={isBusy}
+                        className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[11px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+                      >
+                        {isBusy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <User className="h-3.5 w-3.5" />
+                        )}
+                        קשר לחשבון
                       </button>
                     </div>
                   </div>

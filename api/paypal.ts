@@ -1823,6 +1823,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminListSubscriptions(req, res)
       case 'admin-cancel-subscription':
         return await handleAdminCancelSubscription(req, res)
+      case 'admin-refund-subscription':
+        return await handleAdminRefundSubscription(req, res)
+      case 'admin-link-subscription':
+        return await handleAdminLinkSubscription(req, res)
       case 'admin-create-key':
         return await handleAdminCreateKey(req, res)
       case 'admin-delete-key':
@@ -5349,7 +5353,7 @@ async function sendCancellationEmail(args: {
   to: string
   validUntil: Date | null
   reason?: string | null
-  cancelledFrom: 'account' | 'paypal-direct'
+  cancelledFrom: 'account' | 'paypal-direct' | 'admin'
 }): Promise<void> {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
@@ -5369,7 +5373,9 @@ async function sendCancellationEmail(args: {
   const sourceLine =
     args.cancelledFrom === 'account'
       ? 'הביטול בוצע מתוך דף החשבון באתר.'
-      : 'הביטול בוצע ישירות מתוך חשבון PayPal שלך.'
+      : args.cancelledFrom === 'admin'
+        ? 'הביטול בוצע על ידי צוות התמיכה של ניהול הורדות פלוס.'
+        : 'הביטול בוצע ישירות מתוך חשבון PayPal שלך.'
   const html = renderEmail({
     heading: 'המנוי שלך בוטל',
     contentHtml: `
@@ -9024,10 +9030,208 @@ async function handleAdminCancelSubscription(
     subscriptionCancelledAt: new Date().toISOString(),
     subscriptionCancelReason: reason,
   })
-  // No customer email here on purpose — an admin cancelling for a support
-  // case handles the communication directly. (The CANCELLED webhook also
-  // skips the email once subscriptionCancelledAt is set.)
+  // Confirm to the customer that their subscription really was stopped.
+  const recipient = key.buyerEmail || key.redeemedByEmail
+  if (recipient) {
+    void sendCancellationEmail({
+      to: recipient,
+      validUntil: key.expiresAt ? new Date(key.expiresAt) : null,
+      reason,
+      cancelledFrom: 'admin',
+    }).catch((err) =>
+      console.error('[admin-cancel-subscription] email failed:', err),
+    )
+  }
   return res.status(200).json({ ok: true, alreadyCancelled: false })
+}
+
+// ── Admin refund ─────────────────────────────────────────────────────
+// Refunds the most recent completed charge on a subscription (full by
+// default, or a specified partial amount). Uses PayPal's subscription
+// transactions endpoint to find the capture id, then refunds it.
+async function handleAdminRefundSubscription(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const admin = await verifyAdminStepUp(req)
+  if (!admin) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as {
+    subscriptionId?: string
+    amount?: number | string
+    note?: string
+  }
+  const subscriptionId = String(body.subscriptionId || '').trim()
+  if (!subscriptionId) {
+    return res.status(400).json({ ok: false, error: 'subscriptionId required' })
+  }
+
+  // Find the latest COMPLETED transaction to refund.
+  const end = new Date()
+  const start = new Date(end.getTime() - 730 * 24 * 60 * 60 * 1000)
+  let latest: {
+    id: string
+    value: string
+    currency: string
+    time: string
+  } | null = null
+  try {
+    const payload = await paypalCall<PaypalTransactionPayload>(
+      'GET',
+      `/v1/billing/subscriptions/${encodeURIComponent(
+        subscriptionId,
+      )}/transactions?start_time=${encodeURIComponent(
+        start.toISOString(),
+      )}&end_time=${encodeURIComponent(end.toISOString())}`,
+    )
+    for (const t of payload.transactions ?? []) {
+      if ((t.status || '').toUpperCase() !== 'COMPLETED') continue
+      const g = t.amount_with_breakdown?.gross_amount
+      if (!t.id || !g?.value) continue
+      if (!latest || String(t.time || '') > latest.time) {
+        latest = {
+          id: t.id,
+          value: g.value,
+          currency: g.currency_code || 'ILS',
+          time: String(t.time || ''),
+        }
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'שגיאה'
+    return res
+      .status(502)
+      .json({ ok: false, error: `שליפת העסקאות מ-PayPal נכשלה: ${message}` })
+  }
+  if (!latest) {
+    return res
+      .status(404)
+      .json({ ok: false, error: 'לא נמצאה עסקה שניתן להחזיר עליה כסף' })
+  }
+
+  // Optional partial amount; default = full refund of the last charge.
+  let refundBody: unknown = undefined
+  const reqAmount =
+    typeof body.amount === 'number'
+      ? body.amount
+      : body.amount != null && String(body.amount).trim() !== ''
+        ? Number(body.amount)
+        : NaN
+  if (Number.isFinite(reqAmount) && reqAmount > 0) {
+    if (reqAmount > Number(latest.value) + 0.001) {
+      return res.status(400).json({
+        ok: false,
+        error: `הסכום גדול מהחיוב האחרון (${latest.value} ${latest.currency})`,
+      })
+    }
+    refundBody = {
+      amount: { value: reqAmount.toFixed(2), currency_code: latest.currency },
+      note_to_payer: (body.note || 'Refund issued by support').slice(0, 250),
+    }
+  } else if (body.note) {
+    refundBody = { note_to_payer: String(body.note).slice(0, 250) }
+  }
+
+  try {
+    await paypalCall(
+      'POST',
+      `/v2/payments/captures/${encodeURIComponent(latest.id)}/refund`,
+      refundBody,
+    )
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'שגיאה'
+    return res
+      .status(502)
+      .json({ ok: false, error: `החזר דרך PayPal נכשל: ${message}` })
+  }
+
+  const refundedValue =
+    Number.isFinite(reqAmount) && reqAmount > 0
+      ? reqAmount.toFixed(2)
+      : latest.value
+  return res.status(200).json({
+    ok: true,
+    refunded: { value: refundedValue, currency: latest.currency },
+  })
+}
+
+// ── Admin link subscription → account ────────────────────────────────
+// Re-binds a subscription's product key to a chosen account so the user
+// gets (and keeps) Pro — including on future renewals — even if the
+// original redemption never happened / went to the wrong account.
+async function handleAdminLinkSubscription(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const admin = await verifyAdminStepUp(req)
+  if (!admin) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { subscriptionId?: string; email?: string }
+  const subscriptionId = String(body.subscriptionId || '').trim()
+  const email = String(body.email || '').trim().toLowerCase()
+  if (!subscriptionId || !email) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'subscriptionId + email required' })
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
+  }
+
+  // Resolve the target account.
+  let targetUid: string
+  try {
+    const { getAuth } = await import('firebase-admin/auth')
+    const rec = await getAuth(getFirebase()).getUserByEmail(email)
+    targetUid = rec.uid
+  } catch (err) {
+    if ((err as { code?: string }).code === 'auth/user-not-found') {
+      return res
+        .status(404)
+        .json({ ok: false, error: 'משתמש עם המייל הזה לא קיים' })
+    }
+    console.error('[admin-link-subscription] getUserByEmail failed:', err)
+    return res.status(500).json({ ok: false, error: 'lookup failed' })
+  }
+
+  const db = getDb()
+  const snap = await db
+    .collection('productKeys')
+    .where('subscriptionId', '==', subscriptionId)
+    .limit(1)
+    .get()
+  if (snap.empty) {
+    return res.status(404).json({ ok: false, error: 'מנוי לא נמצא' })
+  }
+  const keyDoc = snap.docs[0]
+
+  // Account-lock: unlink any OTHER keys currently bound to this account so
+  // the linked subscription becomes their single active key (mirrors
+  // /api/keys/redeem + admin-grant-pro).
+  const priorSnap = await db
+    .collection('productKeys')
+    .where('redeemedBy', '==', targetUid)
+    .get()
+  const replacedAt = new Date().toISOString()
+  for (const d of priorSnap.docs) {
+    if (d.id === keyDoc.id) continue
+    await d.ref
+      .update({ redeemedBy: null, redeemedByEmail: null, replacedAt })
+      .catch(() => undefined)
+  }
+
+  const cur = keyDoc.data() as KeyDoc & { redeemedAt?: string }
+  await keyDoc.ref.update({
+    redeemedBy: targetUid,
+    redeemedByEmail: email,
+    buyerEmail: cur.buyerEmail || email,
+    redeemedAt: cur.redeemedAt || new Date().toISOString(),
+    linkedByAdmin: admin,
+    linkedAt: new Date().toISOString(),
+  })
+  return res.status(200).json({ ok: true, uid: targetUid })
 }
 
 async function handleAdminCreateKey(req: VercelRequest, res: VercelResponse) {
