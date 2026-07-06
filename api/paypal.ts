@@ -9146,12 +9146,59 @@ async function handleAdminRefundSubscription(
       .json({ ok: false, error: `החזר דרך PayPal נכשל: ${message}` })
   }
 
+  // A refund always also STOPS the subscription — no point refunding a
+  // charge and then letting it bill again. Best-effort: the refund
+  // already succeeded, so a cancel hiccup must not fail the request.
+  try {
+    const db = getDb()
+    const snap = await db
+      .collection('productKeys')
+      .where('subscriptionId', '==', subscriptionId)
+      .limit(1)
+      .get()
+    if (!snap.empty) {
+      const keyDoc = snap.docs[0]
+      const key = keyDoc.data() as KeyDoc
+      if (
+        key.subscriptionStatus !== 'cancelled' &&
+        key.subscriptionStatus !== 'expired'
+      ) {
+        await paypalCall(
+          'POST',
+          `/v1/billing/subscriptions/${subscriptionId}/cancel`,
+          { reason: 'Refund issued by support' },
+        ).catch((e) =>
+          console.warn('[admin-refund] auto-cancel warn:', e),
+        )
+        await keyDoc.ref.update({
+          subscriptionStatus: 'cancelled',
+          subscriptionCancelledAt: new Date().toISOString(),
+          subscriptionCancelReason: `Refunded by admin (${admin})`,
+        })
+        const recipient = key.buyerEmail || key.redeemedByEmail
+        if (recipient) {
+          void sendCancellationEmail({
+            to: recipient,
+            validUntil: key.expiresAt ? new Date(key.expiresAt) : null,
+            reason: 'Refund issued by support',
+            cancelledFrom: 'admin',
+          }).catch((e) =>
+            console.error('[admin-refund] email failed:', e),
+          )
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[admin-refund] reconcile warn:', e)
+  }
+
   const refundedValue =
     Number.isFinite(reqAmount) && reqAmount > 0
       ? reqAmount.toFixed(2)
       : latest.value
   return res.status(200).json({
     ok: true,
+    cancelled: true,
     refunded: { value: refundedValue, currency: latest.currency },
   })
 }

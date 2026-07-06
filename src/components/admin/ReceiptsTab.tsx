@@ -1381,10 +1381,29 @@ function ActiveSubscriptions({
   const [refundAmount, setRefundAmount] = useState('')
   const [linkEmail, setLinkEmail] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
-  // Per-card success/info note after refund / link (card stays).
+  // Per-card success/info note after link (card stays).
   const [notice, setNotice] = useState<{ id: string; text: string } | null>(
     null,
   )
+  // Top-of-list flash (refund removes the card, so its note goes here).
+  const [flash, setFlash] = useState('')
+  // Existing accounts, for the "link to account" picker.
+  const [users, setUsers] = useState<{ email: string; name?: string }[]>([])
+
+  async function loadUsers() {
+    try {
+      const r = await adminApi<{
+        users: { email?: string; name?: string }[]
+      }>('admin-list-users')
+      setUsers(
+        (r.users || [])
+          .filter((u) => u.email)
+          .map((u) => ({ email: u.email as string, name: u.name })),
+      )
+    } catch {
+      /* picker is optional — free-text email still works */
+    }
+  }
 
   async function load() {
     setError('')
@@ -1406,6 +1425,7 @@ function ActiveSubscriptions({
 
   useEffect(() => {
     void load()
+    void loadUsers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -1459,12 +1479,16 @@ function ActiveSubscriptions({
         amount: amt ? Number(amt) : undefined,
       })
       const info = r.refunded
-      setNotice({
-        id: sub.subscriptionId,
-        text: info
-          ? `הוחזרו ${currencySymbol(info.currency)}${info.value} ללקוח.`
-          : 'ההחזר בוצע.',
-      })
+      // A refund also stops the subscription server-side, so it's no
+      // longer "active" → drop it from the list and flash at the top.
+      setSubs((prev) =>
+        prev ? prev.filter((s) => s.subscriptionId !== sub.subscriptionId) : prev,
+      )
+      setFlash(
+        info
+          ? `הוחזרו ${currencySymbol(info.currency)}${info.value} ללקוח והחידוש נעצר.`
+          : 'ההחזר בוצע והחידוש נעצר.',
+      )
       closePanel()
     } catch (e) {
       const err = e as Error & { code?: string }
@@ -1538,6 +1562,29 @@ function ActiveSubscriptions({
           <AlertTriangle className="h-4 w-4" /> {error}
         </div>
       )}
+      {flash && (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-sm text-success">
+          <span className="flex items-center gap-2">
+            <Check className="h-4 w-4" /> {flash}
+          </span>
+          <button
+            type="button"
+            onClick={() => setFlash('')}
+            className="text-success/70 hover:text-success"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Existing accounts, referenced by the "link to account" input. */}
+      <datalist id="admin-sub-user-emails">
+        {users.map((u) => (
+          <option key={u.email} value={u.email}>
+            {u.name || u.email}
+          </option>
+        ))}
+      </datalist>
 
       {subs === null ? (
         <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-10 text-sm text-fg-muted">
@@ -1687,7 +1734,8 @@ function ActiveSubscriptions({
                       {s.subscriptionCurrency
                         ? `(${currencySymbol(s.subscriptionCurrency)})`
                         : ''}
-                      .
+                      . <strong>ההחזר גם עוצר את החידוש</strong> ושולח ללקוח
+                      מייל אישור.
                     </div>
                     <input
                       type="number"
@@ -1735,9 +1783,10 @@ function ActiveSubscriptions({
                     </div>
                     <input
                       type="email"
+                      list="admin-sub-user-emails"
                       value={linkEmail}
                       onChange={(e) => setLinkEmail(e.target.value)}
-                      placeholder="המייל של החשבון לקישור"
+                      placeholder="בחר או הקלד מייל של חשבון קיים"
                       dir="ltr"
                       className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-right text-xs text-fg outline-none focus:border-primary"
                     />
