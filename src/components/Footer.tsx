@@ -118,11 +118,11 @@ export function Footer() {
                   side of the Hebrew text. Visual right→left:
                   "© 2026 · כל הזכויות שמורות". */}
               <span dir="rtl" className="inline-flex items-center gap-x-1.5">
+                כל הזכויות שמורות
+                <span aria-hidden>·</span>
                 <span dir="ltr" className="tabular">
                   © {year}
                 </span>
-                <span aria-hidden>·</span>
-                כל הזכויות שמורות
               </span>
             </div>
           </div>
