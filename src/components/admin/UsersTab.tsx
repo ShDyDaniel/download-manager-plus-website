@@ -154,6 +154,7 @@ interface StorageObject {
   count: number
   folder?: string
   roundId?: string
+  deliveryId?: string
   key?: string
 }
 
@@ -563,12 +564,53 @@ function UserRow({
             )}
           </div>
 
+          {!isAdmin && (
+            <div className="flex flex-wrap items-center gap-1 pt-1">
+              <span className="text-[10px] text-fg-faint">שנה תוכנית:</span>
+              <PlanChip
+                label="חינם"
+                active={!isPro && !onTrial}
+                disabled={!!busy}
+                onClick={() =>
+                  run('plan', 'admin-set-user-subscription', {
+                    uid: user.uid,
+                    subscription: 'free',
+                  })
+                }
+              />
+              <PlanChip
+                label="ניסיון"
+                active={onTrial}
+                disabled={!!busy}
+                onClick={() =>
+                  run('plan', 'admin-approve-trial', {
+                    uid: user.uid,
+                    demoteFirst: isPro,
+                  })
+                }
+              />
+              <PlanChip
+                label="Pro"
+                active={isPro}
+                disabled={!!busy}
+                onClick={() =>
+                  run('plan', 'admin-set-user-subscription', {
+                    uid: user.uid,
+                    subscription: 'pro',
+                  })
+                }
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="flex w-full flex-col gap-2 border-t border-border/60 pt-2 sm:w-[220px] sm:shrink-0 sm:border-0 sm:pt-0">
           {/* Storage: used / allocated. Click to inspect + delete files. */}
           <button
             type="button"
             onClick={() => onOpenStorage(user.uid, user.email, user.name)}
-            title="הצג וקבצי אחסון — לחץ לצפייה ומחיקה"
-            className="mt-1 flex w-full max-w-[260px] items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-2.5 py-1.5 text-right transition-colors hover:border-primary/50 hover:bg-popover"
+            title="הצג קבצי אחסון — לחץ לצפייה ומחיקה"
+            className="flex w-full items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-2.5 py-1.5 text-right transition-colors hover:border-primary/50 hover:bg-popover"
           >
             <HardDrive
               className={
@@ -611,50 +653,10 @@ function UserRow({
             </div>
           </button>
 
-          {!isAdmin && (
-            <div className="flex flex-wrap items-center gap-1 pt-1">
-              <span className="text-[10px] text-fg-faint">שנה תוכנית:</span>
-              <PlanChip
-                label="חינם"
-                active={!isPro && !onTrial}
-                disabled={!!busy}
-                onClick={() =>
-                  run('plan', 'admin-set-user-subscription', {
-                    uid: user.uid,
-                    subscription: 'free',
-                  })
-                }
-              />
-              <PlanChip
-                label="ניסיון"
-                active={onTrial}
-                disabled={!!busy}
-                onClick={() =>
-                  run('plan', 'admin-approve-trial', {
-                    uid: user.uid,
-                    demoteFirst: isPro,
-                  })
-                }
-              />
-              <PlanChip
-                label="Pro"
-                active={isPro}
-                disabled={!!busy}
-                onClick={() =>
-                  run('plan', 'admin-set-user-subscription', {
-                    uid: user.uid,
-                    subscription: 'pro',
-                  })
-                }
-              />
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[10px] text-fg-faint" dir="ltr">
+              {user.uid.slice(0, 10)}…
             </div>
-          )}
-        </div>
-
-        <div className="flex w-full flex-row-reverse items-center justify-between gap-2 border-t border-border/60 pt-2 sm:w-auto sm:shrink-0 sm:flex-col sm:items-end sm:border-0 sm:pt-0">
-          <div className="text-[10px] text-fg-faint" dir="ltr">
-            {user.uid.slice(0, 10)}…
-          </div>
           <div className="flex flex-wrap items-center gap-1">
             <IconBtn
               title={blocked ? 'בטל חסימה' : 'חסום משתמש'}
@@ -729,6 +731,7 @@ function UserRow({
                 <Trash2 className="h-3.5 w-3.5 text-destructive" />
               </IconBtn>
             )}
+          </div>
           </div>
         </div>
       </div>
@@ -953,15 +956,18 @@ function UserStorageModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid])
 
-  async function del(it: StorageObject) {
+  async function del(it: StorageObject, purge: boolean) {
     if (deleting) return
     setDeleting(it.id)
     setError('')
     try {
-      await adminApi(
-        'admin-delete-user-object',
-        it.roundId ? { uid, roundId: it.roundId } : { uid, key: it.key },
-      )
+      const payload: Record<string, unknown> = { uid, purge }
+      if (it.roundId) payload.roundId = it.roundId
+      else if (it.deliveryId) {
+        payload.deliveryId = it.deliveryId
+        payload.key = it.key
+      } else payload.key = it.key
+      await adminApi('admin-delete-user-object', payload)
       setItems((prev) => (prev ? prev.filter((i) => i.id !== it.id) : prev))
       setPendingDelete(null)
       onChanged()
@@ -1101,38 +1107,86 @@ function UserStorageModal({
                           </button>
                         )}
                       </div>
-                      {isConfirming && (
-                        <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-2.5 py-1.5">
-                          <span className="text-[11px] text-destructive">
-                            {it.kind === 'round' && it.count > 1
-                              ? `למחוק את הסבב וכל ${it.count} הקבצים שבו?`
-                              : 'למחוק לצמיתות מהאחסון?'}
-                          </span>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => setPendingDelete(null)}
-                              disabled={isDeleting}
-                              className="rounded-md border border-border px-2 py-1 text-[11px] text-fg-muted hover:text-fg disabled:opacity-40"
-                            >
-                              ביטול
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => del(it)}
-                              disabled={isDeleting}
-                              className="flex items-center gap-1 rounded-md bg-destructive px-2.5 py-1 text-[11px] font-medium text-white hover:bg-destructive/90 disabled:opacity-60"
-                            >
-                              {isDeleting ? (
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                              ) : (
-                                <Trash2 className="h-3 w-3" />
-                              )}
-                              מחק
-                            </button>
+                      {isConfirming &&
+                        (it.kind === 'round' || it.kind === 'delivery' ? (
+                          // Rounds + deliveries have a backing record in the
+                          // app → offer both "free storage only" and "remove
+                          // from the app entirely".
+                          <div className="mt-2 space-y-2 rounded-lg border border-destructive/30 bg-destructive/5 p-2.5">
+                            <div className="text-[11px] text-destructive">
+                              {it.kind === 'round' && it.count > 1
+                                ? `מחיקת הסבב וכל ${it.count} הקבצים שבו:`
+                                : it.kind === 'delivery'
+                                  ? 'מחיקת המסירה:'
+                                  : 'מחיקה:'}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => del(it, false)}
+                                disabled={isDeleting}
+                                title="משחרר את הנפח מהאחסון; הרשומה נשארת (מסומנת כמאורכבת)"
+                                className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-[11px] text-fg-muted transition-colors hover:text-fg disabled:opacity-40"
+                              >
+                                {isDeleting ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : null}
+                                מחק מהאחסון בלבד
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => del(it, true)}
+                                disabled={isDeleting}
+                                title="מוחק לגמרי — גם מהתוכנה של המשתמש, בלי להשאיר רשומה ריקה"
+                                className="flex items-center gap-1 rounded-md bg-destructive px-2.5 py-1 text-[11px] font-medium text-white hover:bg-destructive/90 disabled:opacity-60"
+                              >
+                                {isDeleting ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-3 w-3" />
+                                )}
+                                מחק מהמערכת לגמרי
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPendingDelete(null)}
+                                disabled={isDeleting}
+                                className="rounded-md px-2 py-1 text-[11px] text-fg-muted hover:text-fg disabled:opacity-40"
+                              >
+                                ביטול
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        ) : (
+                          <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-2.5 py-1.5">
+                            <span className="text-[11px] text-destructive">
+                              למחוק לצמיתות מהאחסון?
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setPendingDelete(null)}
+                                disabled={isDeleting}
+                                className="rounded-md border border-border px-2 py-1 text-[11px] text-fg-muted hover:text-fg disabled:opacity-40"
+                              >
+                                ביטול
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => del(it, false)}
+                                disabled={isDeleting}
+                                className="flex items-center gap-1 rounded-md bg-destructive px-2.5 py-1 text-[11px] font-medium text-white hover:bg-destructive/90 disabled:opacity-60"
+                              >
+                                {isDeleting ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-3 w-3" />
+                                )}
+                                מחק
+                              </button>
+                            </div>
+                          </div>
+                        ))}
                     </div>
                   )
                 })}

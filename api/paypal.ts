@@ -10427,6 +10427,7 @@ interface UserStorageItem {
   count: number
   folder?: string
   roundId?: string
+  deliveryId?: string
   key?: string
 }
 
@@ -10552,6 +10553,7 @@ async function handleAdminListUserStorage(
           id: `key:${v.r2Key}`,
           kind: 'delivery',
           key: v.r2Key,
+          deliveryId: d.id,
           name: v.name || humanNameFromStorageKey(v.r2Key),
           size: info.size,
           lastModified: info.lastModified,
@@ -10597,14 +10599,20 @@ async function handleAdminDeleteUserObject(
     uid?: string
     key?: string
     roundId?: string
+    deliveryId?: string
+    /** true → also remove the Firestore doc so it disappears from the
+     *  user's app (not just freed from storage / archived). */
+    purge?: boolean
   }
   const uid = String(body.uid || '').trim()
   const key = String(body.key || '').trim()
   const roundId = String(body.roundId || '').trim()
-  if (!uid || (!key && !roundId)) {
+  const deliveryId = String(body.deliveryId || '').trim()
+  const purge = body.purge === true
+  if (!uid || (!key && !roundId && !deliveryId)) {
     return res
       .status(400)
-      .json({ ok: false, error: 'uid + (key or roundId) required' })
+      .json({ ok: false, error: 'uid + (key / roundId / deliveryId) required' })
   }
 
   const r2 = getBackupR2()
@@ -10618,7 +10626,9 @@ async function handleAdminDeleteUserObject(
       )
   }
 
-  // ── Whole revision round: video + all its note media, then archive. ──
+  // ── Whole revision round: video + all its note media. ──
+  //    purge → delete the round doc (+ notes) so it's gone from the app.
+  //    else  → free storage but archive the round (keeps the record).
   if (roundId) {
     const ref = db.collection('revisionProjects').doc(roundId)
     const snap = await ref.get()
@@ -10638,17 +10648,53 @@ async function handleAdminDeleteUserObject(
         const nd = n.data() as { screenshotR2Key?: string; audioR2Key?: string }
         if (nd.screenshotR2Key) await delFromR2(nd.screenshotR2Key)
         if (nd.audioR2Key) await delFromR2(nd.audioR2Key)
+        if (purge) await n.ref.delete().catch(() => undefined)
       }
     } catch {
       /* no notes */
     }
-    await ref
-      .update({ status: 'archived', driveDeleted: true, updatedAt: Date.now() })
-      .catch(() => undefined)
+    if (purge) {
+      await ref.delete().catch(() => undefined)
+    } else {
+      await ref
+        .update({
+          status: 'archived',
+          driveDeleted: true,
+          updatedAt: Date.now(),
+        })
+        .catch(() => undefined)
+    }
     return res.status(200).json({ ok: true })
   }
 
-  // ── Single object (delivery video or loose file). ──
+  // ── Delivery. purge → delete the whole delivery doc + every video's
+  //    bytes (gone from the user's app). else → drop just this one video. ──
+  if (deliveryId) {
+    const ref = db.collection('deliveries').doc(deliveryId)
+    const snap = await ref.get()
+    const del = (snap.exists ? snap.data() : {}) as {
+      ownerUid?: string
+      videos?: Array<{ r2Key?: string }>
+    }
+    if (snap.exists && del.ownerUid && del.ownerUid !== uid) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'delivery does not belong to user' })
+    }
+    if (purge) {
+      for (const v of del.videos || []) if (v?.r2Key) await delFromR2(v.r2Key)
+      await ref.delete().catch(() => undefined)
+    } else {
+      if (key) await delFromR2(key)
+      const next = (del.videos || []).filter((v) => v?.r2Key !== key)
+      await ref
+        .update({ videos: next, updatedAt: Date.now() })
+        .catch(() => undefined)
+    }
+    return res.status(200).json({ ok: true })
+  }
+
+  // ── Loose object (no owning doc). ──
   if (uidFromStorageKey(key) !== uid) {
     return res
       .status(400)
@@ -10660,37 +10706,6 @@ async function handleAdminDeleteUserObject(
     console.error('[admin-delete-user-object] r2 delete failed:', key, e)
     return res.status(502).json({ ok: false, error: 'storage delete failed' })
   }
-  try {
-    // Revision round video (unlikely via this path, but keep consistent).
-    const projSnap = await db
-      .collection('revisionProjects')
-      .where('r2Key', '==', key)
-      .limit(5)
-      .get()
-    for (const d of projSnap.docs) {
-      await d.ref
-        .update({ status: 'archived', driveDeleted: true, updatedAt: Date.now() })
-        .catch(() => undefined)
-    }
-    // Delivery final video → drop that video from the delivery's array.
-    const delivSnap = await db
-      .collection('deliveries')
-      .where('ownerUid', '==', uid)
-      .get()
-    for (const d of delivSnap.docs) {
-      const data = d.data() as { videos?: Array<{ r2Key?: string }> }
-      if (!Array.isArray(data.videos)) continue
-      const next = data.videos.filter((v) => v?.r2Key !== key)
-      if (next.length !== data.videos.length) {
-        await d.ref
-          .update({ videos: next, updatedAt: Date.now() })
-          .catch(() => undefined)
-      }
-    }
-  } catch (e) {
-    console.warn('[admin-delete-user-object] firestore reconcile warn:', e)
-  }
-
   return res.status(200).json({ ok: true })
 }
 
