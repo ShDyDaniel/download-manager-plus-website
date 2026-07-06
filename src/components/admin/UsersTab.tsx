@@ -604,13 +604,17 @@ function UserRow({
           )}
         </div>
 
-        <div className="flex w-full flex-col gap-2 border-t border-border/60 pt-2 sm:w-[220px] sm:shrink-0 sm:border-0 sm:pt-0">
-          {/* Storage: used / allocated. Click to inspect + delete files. */}
+        <div className="flex w-full flex-col gap-1.5 border-t border-border/60 pt-2 sm:w-[220px] sm:shrink-0 sm:border-0 sm:pt-0">
+          {/* Account id — top of the column. */}
+          <div className="text-[10px] text-fg-faint" dir="ltr">
+            {user.uid.slice(0, 10)}…
+          </div>
+          {/* Storage: used / allocated — borderless. Click to inspect. */}
           <button
             type="button"
             onClick={() => onOpenStorage(user.uid, user.email, user.name)}
             title="הצג קבצי אחסון — לחץ לצפייה ומחיקה"
-            className="flex w-full items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-2.5 py-1.5 text-right transition-colors hover:border-primary/50 hover:bg-popover"
+            className="flex w-full items-center gap-2 rounded-md py-0.5 text-right transition-opacity hover:opacity-80"
           >
             <HardDrive
               className={
@@ -653,10 +657,6 @@ function UserRow({
             </div>
           </button>
 
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-[10px] text-fg-faint" dir="ltr">
-              {user.uid.slice(0, 10)}…
-            </div>
           <div className="flex flex-wrap items-center gap-1">
             <IconBtn
               title={blocked ? 'בטל חסימה' : 'חסום משתמש'}
@@ -731,7 +731,6 @@ function UserRow({
                 <Trash2 className="h-3.5 w-3.5 text-destructive" />
               </IconBtn>
             )}
-          </div>
           </div>
         </div>
       </div>
