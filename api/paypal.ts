@@ -1819,6 +1819,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleDeviceCheckReport(req, res)
       case 'admin-list-keys':
         return await handleAdminListKeys(req, res)
+      case 'admin-list-subscriptions':
+        return await handleAdminListSubscriptions(req, res)
+      case 'admin-cancel-subscription':
+        return await handleAdminCancelSubscription(req, res)
       case 'admin-create-key':
         return await handleAdminCreateKey(req, res)
       case 'admin-delete-key':
@@ -8909,6 +8913,121 @@ async function handleAdminListKeys(req: VercelRequest, res: VercelResponse) {
     id: d.id,
   }))
   return res.status(200).json({ ok: true, keys })
+}
+
+// ── Active subscriptions (admin "עסקאות וקבלות" tab) ──────────────────
+// Lists every productKey with a live PayPal subscription + the account
+// it's linked to, so the admin can stop auto-renewal for a user who was
+// charged but didn't receive what they paid for.
+async function handleAdminListSubscriptions(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const snap = await getDb()
+    .collection('productKeys')
+    .where('subscriptionStatus', '==', 'active')
+    .get()
+  const subs = snap.docs
+    .map((d) => {
+      const k = d.data() as KeyDoc & { subscriptionCancelReason?: string }
+      return {
+        id: d.id,
+        key: k.key || '',
+        subscriptionId: k.subscriptionId || '',
+        subscriptionStatus: k.subscriptionStatus || '',
+        subscriptionPrice: k.subscriptionPrice ?? null,
+        subscriptionCurrency: k.subscriptionCurrency ?? null,
+        subscriptionPlanDays: k.subscriptionPlanDays ?? k.planDays ?? null,
+        subscriptionStartedAt: k.subscriptionStartedAt ?? null,
+        expiresAt: k.expiresAt ?? null,
+        redeemedBy: k.redeemedBy ?? null,
+        redeemedByEmail: k.redeemedByEmail ?? null,
+        buyerEmail: k.buyerEmail ?? null,
+        paymentFailedAt: k.paymentFailedAt ?? null,
+      }
+    })
+    .filter((s) => s.subscriptionId)
+  // Most recently started first.
+  subs.sort((a, b) =>
+    String(b.subscriptionStartedAt || '').localeCompare(
+      String(a.subscriptionStartedAt || ''),
+    ),
+  )
+  return res.status(200).json({ ok: true, subscriptions: subs })
+}
+
+// Admin-initiated cancellation: stops PayPal auto-renewal. The user keeps
+// access until the current period's expiresAt (no future charges), matching
+// the self-service /account cancel. Step-up gated (it touches billing).
+async function handleAdminCancelSubscription(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const admin = await verifyAdminStepUp(req)
+  if (!admin) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { subscriptionId?: string; reason?: string }
+  const subscriptionId = String(body.subscriptionId || '').trim()
+  if (!subscriptionId) {
+    return res.status(400).json({ ok: false, error: 'subscriptionId required' })
+  }
+  const reason =
+    (body.reason || '').slice(0, MAX_REASON_LENGTH).trim() ||
+    `Cancelled by admin (${admin}) via panel`
+
+  const db = getDb()
+  const snap = await db
+    .collection('productKeys')
+    .where('subscriptionId', '==', subscriptionId)
+    .limit(1)
+    .get()
+  if (snap.empty) {
+    return res.status(404).json({ ok: false, error: 'מנוי לא נמצא' })
+  }
+  const keyDoc = snap.docs[0]
+  const key = keyDoc.data() as KeyDoc
+  if (
+    key.subscriptionStatus === 'cancelled' ||
+    key.subscriptionStatus === 'expired'
+  ) {
+    return res.status(200).json({ ok: true, alreadyCancelled: true })
+  }
+
+  try {
+    await paypalCall(
+      'POST',
+      `/v1/billing/subscriptions/${subscriptionId}/cancel`,
+      { reason },
+    )
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
+    // Already-cancelled on PayPal's side → reconcile our record and succeed.
+    if (message.includes('SUBSCRIPTION_STATUS_INVALID')) {
+      await keyDoc.ref.update({
+        subscriptionStatus: 'cancelled',
+        subscriptionCancelledAt: new Date().toISOString(),
+        subscriptionCancelReason: reason,
+      })
+      return res.status(200).json({ ok: true, alreadyCancelled: true })
+    }
+    return res
+      .status(502)
+      .json({ ok: false, error: `ביטול דרך PayPal נכשל: ${message}` })
+  }
+
+  await keyDoc.ref.update({
+    subscriptionStatus: 'cancelled',
+    subscriptionCancelledAt: new Date().toISOString(),
+    subscriptionCancelReason: reason,
+  })
+  // No customer email here on purpose — an admin cancelling for a support
+  // case handles the communication directly. (The CANCELLED webhook also
+  // skips the email once subscriptionCancelledAt is set.)
+  return res.status(200).json({ ok: true, alreadyCancelled: false })
 }
 
 async function handleAdminCreateKey(req: VercelRequest, res: VercelResponse) {

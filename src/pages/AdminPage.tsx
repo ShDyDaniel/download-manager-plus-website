@@ -93,7 +93,7 @@ const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
   { key: 'data', label: 'נתוני שימוש', icon: BarChart3 },
   { key: 'dashboard', label: 'דשבורד', icon: Activity },
   { key: 'revenue', label: 'הכנסות', icon: Coins },
-  { key: 'receipts', label: 'קבלות', icon: Receipt },
+  { key: 'receipts', label: 'עסקאות וקבלות', icon: Receipt },
   { key: 'referrals', label: 'שותפים', icon: Share2 },
   { key: 'updates', label: 'עדכונים', icon: DownloadCloud },
   { key: 'feedback', label: 'פניות', icon: MessageSquare },

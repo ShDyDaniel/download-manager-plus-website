@@ -12,6 +12,9 @@ import {
   Building2,
   Save,
   Eraser,
+  CreditCard,
+  Ban,
+  User,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 
@@ -135,7 +138,9 @@ export default function ReceiptsTab({
 }: {
   onAuthExpired: () => void
 }) {
-  const [subTab, setSubTab] = useState<'receipts' | 'casual'>('receipts')
+  const [subTab, setSubTab] = useState<'receipts' | 'casual' | 'subs'>(
+    'receipts',
+  )
 
   // ── Settings (master switch + VAT rate) ──────────────────────
   const [sumitEnabled, setSumitEnabled] = useState<boolean | null>(null)
@@ -533,9 +538,11 @@ export default function ReceiptsTab({
     <div className="space-y-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-3xl font-bold font-display text-fg">קבלות</h2>
+          <h2 className="text-3xl font-bold font-display text-fg">
+            עסקאות וקבלות
+          </h2>
           <p className="mt-1 text-sm text-fg-muted">
-            ניהול הפקת הקבלות האוטומטית ודוח עסקת אקראי לדיווח למע"מ.
+            ניהול הפקת הקבלות האוטומטית, דוח עסקת אקראי למע"מ, ומנויים פעילים.
           </p>
         </div>
       </header>
@@ -610,6 +617,19 @@ export default function ReceiptsTab({
           <FileText className="h-4 w-4" />
           עסקת אקראי
         </button>
+        <button
+          type="button"
+          onClick={() => setSubTab('subs')}
+          className={
+            'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ' +
+            (subTab === 'subs'
+              ? 'bg-primary text-primary-foreground'
+              : 'text-fg-muted hover:text-fg')
+          }
+        >
+          <CreditCard className="h-4 w-4" />
+          מנויים פעילים
+        </button>
       </div>
 
       {error && (
@@ -618,7 +638,9 @@ export default function ReceiptsTab({
         </div>
       )}
 
-      {subTab === 'receipts' ? (
+      {subTab === 'subs' ? (
+        <ActiveSubscriptions onAuthExpired={onAuthExpired} />
+      ) : subTab === 'receipts' ? (
         <ReceiptsList rows={rows} loading={loading} onReload={load} />
       ) : (
         <CasualReport
@@ -1296,6 +1318,258 @@ function SignaturePad({
           נקה חתימה
         </button>
       </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Active subscriptions — list live PayPal subscriptions + the account
+// each is linked to, and let the admin STOP auto-renewal for a user who
+// was charged but didn't get what they paid for. Stopping keeps the
+// current paid period; it just prevents the next charge.
+// ─────────────────────────────────────────────────────────────────────
+
+interface AdminSubscription {
+  id: string
+  key: string
+  subscriptionId: string
+  subscriptionPrice: number | null
+  subscriptionCurrency: string | null
+  subscriptionPlanDays: number | null
+  subscriptionStartedAt: string | null
+  expiresAt: string | null
+  redeemedByEmail: string | null
+  buyerEmail: string | null
+  paymentFailedAt: string | null
+}
+
+function currencySymbol(c: string | null): string {
+  const up = (c || '').toUpperCase()
+  if (up === 'USD') return '$'
+  if (up === 'EUR') return '€'
+  if (up === 'ILS' || up === 'NIS') return '₪'
+  return c ? c + ' ' : ''
+}
+function intervalLabel(days: number | null): string {
+  if (days === 30) return 'חודשי'
+  if (days === 365) return 'שנתי'
+  if (days && days > 0) return `כל ${days} ימים`
+  return 'מנוי'
+}
+function subDate(iso: string | null): string {
+  if (!iso) return '—'
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return '—'
+  return new Date(iso).toLocaleDateString('he-IL')
+}
+
+function ActiveSubscriptions({
+  onAuthExpired,
+}: {
+  onAuthExpired: () => void
+}) {
+  const [subs, setSubs] = useState<AdminSubscription[] | null>(null)
+  const [error, setError] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
+  const [confirmId, setConfirmId] = useState<string | null>(null)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState<string | null>(null)
+
+  async function load() {
+    setError('')
+    setRefreshing(true)
+    try {
+      const r = await adminApi<{ subscriptions: AdminSubscription[] }>(
+        'admin-list-subscriptions',
+      )
+      setSubs(Array.isArray(r.subscriptions) ? r.subscriptions : [])
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setError(err.message || 'טעינת המנויים נכשלה')
+      setSubs([])
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  useEffect(() => {
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function cancel(sub: AdminSubscription) {
+    if (busy) return
+    setBusy(sub.subscriptionId)
+    setError('')
+    try {
+      await adminApi('admin-cancel-subscription', {
+        subscriptionId: sub.subscriptionId,
+        reason: reason.trim() || undefined,
+      })
+      setSubs((prev) =>
+        prev ? prev.filter((s) => s.subscriptionId !== sub.subscriptionId) : prev,
+      )
+      setConfirmId(null)
+      setReason('')
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setError(err.message || 'עצירת המנוי נכשלה')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-fg-muted">
+          מנויים פעילים והחשבון שמקושר אליהם. אפשר לעצור חידוש — המשתמש
+          נשאר עם הגישה עד סוף התקופה ששולמה, ולא יחויב שוב.
+        </p>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={refreshing}
+          className="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-60"
+        >
+          <RefreshCw
+            className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`}
+          />
+          רענן
+        </button>
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <AlertTriangle className="h-4 w-4" /> {error}
+        </div>
+      )}
+
+      {subs === null ? (
+        <div className="flex items-center justify-center gap-2 rounded-2xl border border-border py-10 text-sm text-fg-muted">
+          <Loader2 className="h-4 w-4 animate-spin" /> טוען מנויים…
+        </div>
+      ) : subs.length === 0 ? (
+        <div className="rounded-2xl border border-border py-10 text-center text-sm text-fg-muted">
+          אין מנויים פעילים כרגע
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {subs.map((s) => {
+            const email = s.redeemedByEmail || s.buyerEmail || '—'
+            const isConfirming = confirmId === s.subscriptionId
+            const isBusy = busy === s.subscriptionId
+            const price =
+              s.subscriptionPrice != null
+                ? `${currencySymbol(s.subscriptionCurrency)}${s.subscriptionPrice}`
+                : null
+            return (
+              <div
+                key={s.subscriptionId}
+                className="rounded-2xl border border-border bg-card p-3"
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex items-center gap-1.5 text-sm font-medium text-fg">
+                      <User className="h-3.5 w-3.5 shrink-0 text-fg-muted" />
+                      <span className="truncate" dir="ltr">
+                        {email}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-fg-muted">
+                      <span className="inline-flex items-center gap-1 rounded border border-success/30 bg-success/10 px-1.5 py-0.5 text-success">
+                        <CreditCard className="h-3 w-3" /> פעיל
+                      </span>
+                      <span>{intervalLabel(s.subscriptionPlanDays)}</span>
+                      {price && (
+                        <>
+                          <span>·</span>
+                          <span dir="ltr" className="tabular-nums">
+                            {price}
+                          </span>
+                        </>
+                      )}
+                      {s.paymentFailedAt && (
+                        <>
+                          <span>·</span>
+                          <span className="text-amber-500">חיוב נכשל</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-fg-faint">
+                      <span>נפתח {subDate(s.subscriptionStartedAt)}</span>
+                      <span>·</span>
+                      <span>מתחדש/מסתיים {subDate(s.expiresAt)}</span>
+                      <span>·</span>
+                      <span dir="ltr">{s.subscriptionId}</span>
+                    </div>
+                  </div>
+                  {!isConfirming && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReason('')
+                        setError('')
+                        setConfirmId(s.subscriptionId)
+                      }}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
+                    >
+                      <Ban className="h-3.5 w-3.5" />
+                      עצור חידוש
+                    </button>
+                  )}
+                </div>
+
+                {isConfirming && (
+                  <div className="mt-2 space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-2.5">
+                    <div className="text-[11px] text-destructive">
+                      עצירת החידוש דרך PayPal — לא יבוצעו חיובים נוספים. המשתמש
+                      נשאר Pro עד{' '}
+                      <bdi>{subDate(s.expiresAt)}</bdi>. (החזר כספי, אם צריך,
+                      מתבצע בנפרד ב-PayPal.)
+                    </div>
+                    <input
+                      type="text"
+                      value={reason}
+                      onChange={(e) => setReason(e.target.value)}
+                      placeholder="סיבה (רשות) — לתיעוד פנימי"
+                      className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-fg outline-none focus:border-destructive"
+                    />
+                    <div className="flex items-center justify-end gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmId(null)
+                          setReason('')
+                        }}
+                        disabled={isBusy}
+                        className="rounded-md border border-border px-3 py-1.5 text-[11px] text-fg-muted hover:text-fg disabled:opacity-40"
+                      >
+                        ביטול
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void cancel(s)}
+                        disabled={isBusy}
+                        className="flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-[11px] font-medium text-white hover:bg-destructive/90 disabled:opacity-60"
+                      >
+                        {isBusy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Ban className="h-3.5 w-3.5" />
+                        )}
+                        עצור חידוש
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
