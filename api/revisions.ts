@@ -7502,6 +7502,7 @@ const MODEL_ASSETS: Array<{ id: string; key: string }> = [
   { id: 'eres2net', key: 'asset-03.dat' },
   { id: 'yamnet', key: 'asset-04.dat' },
   { id: 'segmenter', key: 'asset-05.dat' },
+  { id: 'whisper-ct2', key: 'asset-06.dat' },
 ]
 
 // action=transcription-models → presigned GET urls for the model assets.
