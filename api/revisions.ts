@@ -7530,13 +7530,32 @@ async function handleTranscriptionModels(req: VercelRequest, res: VercelResponse
 async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  const body = (req.body || {}) as { srt?: string }
+  const body = (req.body || {}) as {
+    srt?: string
+    meta?: {
+      maxWords?: number
+      seconds?: number
+      speakers?: number
+      device?: string
+      version?: string
+    }
+  }
   const srt = String(body.srt || '')
   if (!srt.trim() || srt.length > 2_000_000) {
     return res.status(400).json({ ok: false, error: 'bad-srt' })
   }
   try {
-    const key = `srt/${Date.now().toString(36)}-${crypto.randomBytes(8).toString('hex')}.srt`
+    // שם-הקובץ מקודד מטא-דאטה (לניתוח + ארגון דאטת-האימון), הכל מנוקה:
+    //   mw{מילים-מקס}-t{שניות}s-spk{דוברים}-{מכשיר}-v{גרסה}-{אקראי}.srt
+    const m = body.meta || {}
+    const tok = (v: unknown, fb: string) =>
+      String(v ?? fb)
+        .replace(/[^\w.]+/g, '')
+        .slice(0, 16) || fb
+    const key =
+      `srt/mw${tok(m.maxWords, 'x')}-t${tok(m.seconds, 'x')}s` +
+      `-spk${tok(m.speakers, 'x')}-${tok(m.device, 'x')}-v${tok(m.version, 'x')}` +
+      `-${crypto.randomBytes(6).toString('hex')}.srt`
     await getModelsR2().send(
       new PutObjectCommand({
         Bucket: MODELS_BUCKET,
