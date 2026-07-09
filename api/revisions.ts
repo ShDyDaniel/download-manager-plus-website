@@ -7460,6 +7460,98 @@ async function readVercelInvocations(): Promise<{
  *  Dispatcher
  * ────────────────────────────────────────────────────────────── */
 
+// ─────────────────────────────────────────────────────────────────────
+//  Transcription models bucket ("models") — a SEPARATE R2 client + creds,
+//  isolated from the per-user file bucket above. Serves the encrypted
+//  model assets to the desktop app (presigned GET), and ingests anonymized
+//  SRT training files (beta model-improvement). Creds: MODELS_R2_* env.
+// ─────────────────────────────────────────────────────────────────────
+const MODELS_BUCKET = process.env.MODELS_R2_BUCKET || 'models'
+let _modelsR2: S3Client | null = null
+function getModelsR2(): S3Client {
+  if (_modelsR2) return _modelsR2
+  const accountId = process.env.R2_ACCOUNT_ID
+  const accessKeyId = process.env.MODELS_R2_ACCESS_KEY
+  const secretAccessKey = process.env.MODELS_R2_SECRET_KEY
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    throw new Error('MODELS_R2_* env vars missing (MODELS_R2_ACCESS_KEY / MODELS_R2_SECRET_KEY)')
+  }
+  _modelsR2 = new S3Client({
+    region: 'auto',
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId, secretAccessKey },
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
+  })
+  return _modelsR2
+}
+async function modelsPresignGet(key: string, ttl = 60 * 60): Promise<string> {
+  return getSignedUrl(
+    getModelsR2(),
+    new GetObjectCommand({ Bucket: MODELS_BUCKET, Key: key }),
+    { expiresIn: ttl },
+  )
+}
+
+// The desktop asks for the model assets it needs; server returns short-
+// lived presigned download URLs. The asset→local-path mapping + the
+// decryption key live in the app (not here).
+const MODEL_ASSETS: Array<{ id: string; key: string }> = [
+  { id: 'whisper-mlx', key: 'asset-01.dat' },
+  { id: 'aligner', key: 'asset-02.dat' },
+  { id: 'eres2net', key: 'asset-03.dat' },
+  { id: 'yamnet', key: 'asset-04.dat' },
+  { id: 'segmenter', key: 'asset-05.dat' },
+]
+
+// action=transcription-models → presigned GET urls for the model assets.
+async function handleTranscriptionModels(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requirePro(res, verified))) return
+  try {
+    const assets = await Promise.all(
+      MODEL_ASSETS.map(async (a) => ({
+        id: a.id,
+        key: a.key,
+        url: await modelsPresignGet(a.key, 60 * 60),
+      })),
+    )
+    return res.status(200).json({ ok: true, assets })
+  } catch (e) {
+    console.error('[transcription-models]', e)
+    return res.status(500).json({ ok: false, error: 'presign-failed' })
+  }
+}
+
+// action=srt-collect  Body: { idToken|sessionToken, srt }
+// Stores an anonymized SRT into models/srt/<random>.srt for continued
+// model training (beta). No uid, no identifying data in key or content.
+async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const body = (req.body || {}) as { srt?: string }
+  const srt = String(body.srt || '')
+  if (!srt.trim() || srt.length > 2_000_000) {
+    return res.status(400).json({ ok: false, error: 'bad-srt' })
+  }
+  try {
+    const key = `srt/${Date.now().toString(36)}-${crypto.randomBytes(8).toString('hex')}.srt`
+    await getModelsR2().send(
+      new PutObjectCommand({
+        Bucket: MODELS_BUCKET,
+        Key: key,
+        Body: srt,
+        ContentType: 'application/x-subrip',
+      }),
+    )
+    return res.status(200).json({ ok: true })
+  } catch (e) {
+    console.error('[srt-collect]', e)
+    return res.status(500).json({ ok: false, error: 'store-failed' })
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   recordVercelInvocation()
   const action = String(req.query.action || '').trim()
@@ -7506,6 +7598,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleR2UploadComplete(req, res)
       case 'r2-upload-abort':
         return await handleR2UploadAbort(req, res)
+      case 'transcription-models':
+        return await handleTranscriptionModels(req, res)
+      case 'srt-collect':
+        return await handleSrtCollect(req, res)
       case 'drive-import-init':
         return await handleDriveImportInit(req, res)
       case 'drive-import-auth':
