@@ -6747,15 +6747,16 @@ function verifyUnsubscribeToken(uid: string, token: string): boolean {
  *  "ניוזלטר" tab so the operator can see who's subscribed, copy the
  *  addresses, or export them.
  *
- *  Same full step-up gate as the broadcast itself: exposing the raw
- *  opted-in email list is as sensitive as mailing it.
+ *  Gated by the regular 2FA admin session (verifyAdmin2FA) — same as
+ *  the Users tab, which already exposes every user's email. Reads run
+ *  on tab mount, so step-up here would loop the biometric prompt; the
+ *  sensitive WRITE (mass-mailing) keeps its full step-up gate.
  * ───────────────────────────────────────────────────────────── */
 async function handleAdminListMarketingRecipients(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  const adminEmail = await verifyAdminStepUp(req)
-  if (!adminEmail) {
+  if (!(await verifyAdmin2FA(req))) {
     return res.status(403).json({ ok: false, error: 'admin only' })
   }
 
