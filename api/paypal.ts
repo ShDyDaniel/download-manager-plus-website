@@ -1305,6 +1305,9 @@ const BACKUP_COLLECTIONS = [
   // release notes, exempt versions). Admin-managed config; losing it
   // would break auto-update until re-entered.
   'appReleases',
+  // Saved newsletter drafts (subject + heading + HTML body). Hand-written
+  // admin content, not derivable from anything else.
+  'newsletterPresets',
   // NOTE: audio-sync telemetry is NOT here — it lives in Cloudflare R2 under
   // `sync-telemetry/` (fingerprints are heavy), not Firestore, so the Firestore
   // backup doesn't touch it. See handleAdminSyncTelemetryExport.
@@ -1727,6 +1730,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSendMarketingEmail(req, res)
       case 'admin-list-marketing-recipients':
         return await handleAdminListMarketingRecipients(req, res)
+      case 'admin-newsletter-presets-list':
+        return await handleAdminNewsletterPresetsList(req, res)
+      case 'admin-newsletter-preset-save':
+        return await handleAdminNewsletterPresetSave(req, res)
+      case 'admin-newsletter-preset-delete':
+        return await handleAdminNewsletterPresetDelete(req, res)
       case 'unsubscribe':
         return await handleUnsubscribe(req, res)
       case 'update-marketing-opt-in':
@@ -6788,6 +6797,89 @@ async function handleAdminListMarketingRecipients(
     count: recipients.length,
     recipients,
   })
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Admin: newsletter presets — reusable saved drafts (subject +
+ *  heading + HTML body) so the operator doesn't rewrite a broadcast
+ *  from scratch every time. Stored in `newsletterPresets`; gated by
+ *  the regular 2FA session (content, not a mutation that sends mail;
+ *  list runs on tab mount so step-up would loop the prompt).
+ * ───────────────────────────────────────────────────────────── */
+interface NewsletterPresetDoc {
+  name: string
+  subject: string
+  heading: string
+  contentHtml: string
+  updatedAt: string
+}
+
+async function handleAdminNewsletterPresetsList(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+  const snap = await getDb().collection('newsletterPresets').get()
+  const presets = snap.docs
+    .map((d) => {
+      const p = d.data() as Partial<NewsletterPresetDoc>
+      return {
+        id: d.id,
+        name: p.name || '(ללא שם)',
+        subject: p.subject || '',
+        heading: p.heading || '',
+        contentHtml: p.contentHtml || '',
+        updatedAt: p.updatedAt || '',
+      }
+    })
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  return res.status(200).json({ ok: true, presets })
+}
+
+async function handleAdminNewsletterPresetSave(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+  const b = (req.body || {}) as {
+    id?: string
+    name?: string
+    subject?: string
+    heading?: string
+    contentHtml?: string
+  }
+  const name = String(b.name || '').trim().slice(0, 80)
+  if (!name) {
+    return res.status(400).json({ ok: false, error: 'יש לתת שם לפריסט' })
+  }
+  const doc: NewsletterPresetDoc = {
+    name,
+    subject: String(b.subject || '').slice(0, 200),
+    heading: String(b.heading || '').slice(0, 200),
+    contentHtml: String(b.contentHtml || '').slice(0, 20000),
+    updatedAt: new Date().toISOString(),
+  }
+  const col = getDb().collection('newsletterPresets')
+  const ref = b.id ? col.doc(String(b.id)) : col.doc()
+  await ref.set(doc, { merge: true })
+  return res.status(200).json({ ok: true, id: ref.id })
+}
+
+async function handleAdminNewsletterPresetDelete(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+  const id = String((req.body as { id?: string })?.id || '').trim()
+  if (!id) return res.status(400).json({ ok: false, error: 'חסר מזהה' })
+  await getDb().collection('newsletterPresets').doc(id).delete()
+  return res.status(200).json({ ok: true })
 }
 
 async function handleAdminSendMarketingEmail(
