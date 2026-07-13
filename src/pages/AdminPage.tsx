@@ -16,6 +16,7 @@ import {
   MessageSquare,
   Coins,
   Receipt,
+  Mail,
   Settings as SettingsIcon,
   LogOut,
   ShieldCheck,
@@ -58,6 +59,7 @@ import ReceiptsTab from '../components/admin/ReceiptsTab'
 import BackupTab from '../components/admin/BackupTab'
 import LogsTab from '../components/admin/LogsTab'
 import SettingsTab from '../components/admin/SettingsTab'
+import NewsletterTab from '../components/admin/NewsletterTab'
 import PricingTab from '../components/admin/PricingTab'
 
 /**
@@ -83,6 +85,7 @@ type AdminTabKey =
   | 'backup'
   | 'logs'
   | 'prices'
+  | 'newsletter'
   | 'settings'
 
 const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
@@ -100,6 +103,7 @@ const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
   { key: 'backup', label: 'גיבוי', icon: DatabaseBackup },
   { key: 'logs', label: 'לוגים', icon: ScrollText },
   { key: 'prices', label: 'מחירים', icon: Ticket },
+  { key: 'newsletter', label: 'ניוזלטר', icon: Mail },
   { key: 'settings', label: 'הגדרות', icon: SettingsIcon },
 ]
 
@@ -589,6 +593,8 @@ function AdminShell({
             <LogsTab onAuthExpired={onAuthExpired} />
           ) : tab === 'prices' ? (
             <PricingTab onAuthExpired={onAuthExpired} />
+          ) : tab === 'newsletter' ? (
+            <NewsletterTab onAuthExpired={onAuthExpired} />
           ) : tab === 'settings' ? (
             <SettingsTab onAuthExpired={onAuthExpired} />
           ) : (

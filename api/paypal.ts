@@ -1725,6 +1725,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminMarkCasualReported(req, res)
       case 'admin-send-marketing-email':
         return await handleAdminSendMarketingEmail(req, res)
+      case 'admin-list-marketing-recipients':
+        return await handleAdminListMarketingRecipients(req, res)
       case 'unsubscribe':
         return await handleUnsubscribe(req, res)
       case 'update-marketing-opt-in':
@@ -6737,6 +6739,54 @@ function verifyUnsubscribeToken(uid: string, token: string): boolean {
   } catch {
     return false
   }
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Admin: list every user currently on the newsletter (marketing)
+ *  list — the actual email addresses, not just a count. Powers the
+ *  "ניוזלטר" tab so the operator can see who's subscribed, copy the
+ *  addresses, or export them.
+ *
+ *  Same full step-up gate as the broadcast itself: exposing the raw
+ *  opted-in email list is as sensitive as mailing it.
+ * ───────────────────────────────────────────────────────────── */
+async function handleAdminListMarketingRecipients(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const adminEmail = await verifyAdminStepUp(req)
+  if (!adminEmail) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+
+  const db = getDb()
+  const snap = await db
+    .collection('users')
+    .where('marketingOptIn', '==', true)
+    .get()
+
+  const recipients: Array<{
+    uid: string
+    email: string
+    optInAt: string | null
+  }> = []
+  for (const d of snap.docs) {
+    const data = d.data() as { email?: string; marketingOptInAt?: unknown }
+    const e = typeof data.email === 'string' ? data.email.trim().toLowerCase() : ''
+    if (!e) continue
+    const optInAt =
+      typeof data.marketingOptInAt === 'string' ? data.marketingOptInAt : null
+    recipients.push({ uid: d.id, email: e, optInAt })
+  }
+
+  // Newest opt-ins first; entries without a timestamp sink to the bottom.
+  recipients.sort((a, b) => (b.optInAt ?? '').localeCompare(a.optInAt ?? ''))
+
+  return res.status(200).json({
+    ok: true,
+    count: recipients.length,
+    recipients,
+  })
 }
 
 async function handleAdminSendMarketingEmail(

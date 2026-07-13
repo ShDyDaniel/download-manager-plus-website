@@ -2053,55 +2053,6 @@ function EmailToolsCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [sending, setSending] = useState(false)
   const [msg, setMsg] = useState('')
 
-  // Marketing broadcast state
-  const [bcSubject, setBcSubject] = useState('')
-  const [bcHeading, setBcHeading] = useState('')
-  const [bcContent, setBcContent] = useState('')
-  const [bcBusy, setBcBusy] = useState(false)
-  const [bcResult, setBcResult] = useState<{
-    kind: 'idle' | 'dry' | 'done' | 'error'
-    text: string
-  }>({ kind: 'idle', text: '' })
-
-  async function sendBroadcast(dryRun: boolean) {
-    if (bcBusy) return
-    setBcResult({ kind: 'idle', text: '' })
-    if (!bcSubject.trim() || !bcHeading.trim() || !bcContent.trim()) {
-      setBcResult({ kind: 'error', text: 'יש למלא subject + heading + תוכן HTML' })
-      return
-    }
-    setBcBusy(true)
-    try {
-      const j = await adminApi<{
-        recipientCount?: number
-        sent?: number
-        failed?: number
-      }>('admin-send-marketing-email', {
-        subject: bcSubject.trim(),
-        heading: bcHeading.trim(),
-        contentHtml: bcContent.trim(),
-        dryRun,
-      })
-      if (dryRun) {
-        setBcResult({
-          kind: 'dry',
-          text: `יש ${j.recipientCount ?? 0} משתמשים ברשימת התפוצה כרגע. לחץ "שלח לכולם" כדי לשלוח להם.`,
-        })
-      } else {
-        setBcResult({
-          kind: 'done',
-          text: `הסתיים: ${j.sent ?? 0}/${j.recipientCount ?? 0} נשלחו, ${j.failed ?? 0} נכשלו.`,
-        })
-      }
-    } catch (e) {
-      const err = e as Error & { code?: string }
-      if (err.code === 'auth') return onErr(err)
-      setBcResult({ kind: 'error', text: err.message || 'שליחה נכשלה' })
-    } finally {
-      setBcBusy(false)
-    }
-  }
-
   async function sendTest() {
     if (!target.trim()) return
     setSending(true)
@@ -2149,86 +2100,9 @@ function EmailToolsCard({ onErr }: { onErr: (e: unknown) => void }) {
         </button>
       </div>
       {msg && <div className="text-xs text-success">{msg}</div>}
-
-      {/* ── Marketing broadcast ─────────────────────────────────── */}
-      <div className="mt-2 space-y-2.5 rounded-xl border border-border bg-background/40 p-3">
-        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <Send className="h-3.5 w-3.5 text-accent" />
-          שליחת מייל שיווקי
-        </div>
-        <p className="text-[11px] leading-relaxed text-muted-foreground">
-          נשלח רק למשתמשים שהסכימו לקבל תוכן שיווקי בהרשמה. כל מייל כולל אוטומטית
-          קישור "להסרה מרשימת הדיוור" בתחתית.
-        </p>
-        <Input
-          value={bcSubject}
-          onChange={(e) => setBcSubject(e.target.value)}
-          placeholder="נושא (Subject) — לדוגמה: 50% הנחה לסוף שבוע"
-          disabled={bcBusy}
-        />
-        <Input
-          value={bcHeading}
-          onChange={(e) => setBcHeading(e.target.value)}
-          placeholder="כותרת ראשית במייל (Heading)"
-          disabled={bcBusy}
-        />
-        <textarea
-          value={bcContent}
-          onChange={(e) => setBcContent(e.target.value)}
-          placeholder='<p style="font-size:14px;line-height:1.7;color:#d1d5db;">תוכן ההודעה כאן...</p>'
-          rows={5}
-          disabled={bcBusy}
-          dir="ltr"
-          className="block w-full rounded-lg border border-border bg-input/60 px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/40 focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-        />
-        {bcResult.kind !== 'idle' && (
-          <div
-            className={
-              bcResult.kind === 'error'
-                ? 'rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive'
-                : bcResult.kind === 'dry'
-                  ? 'rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-accent'
-                  : 'rounded-md border border-success/40 bg-success/10 px-3 py-2 text-xs text-success'
-            }
-          >
-            {bcResult.text}
-          </div>
-        )}
-        <div className="flex gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={bcBusy}
-            onClick={() => void sendBroadcast(true)}
-            className="flex-1"
-          >
-            {bcBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            כמה משתמשים יש ברשימה?
-          </Button>
-          <Button
-            variant="gradient"
-            size="sm"
-            disabled={bcBusy}
-            onClick={() => {
-              if (
-                window.confirm(
-                  'לשלוח את המייל לכל המשתמשים ברשימת התפוצה? אי אפשר לבטל אחרי שליחה.',
-                )
-              ) {
-                void sendBroadcast(false)
-              }
-            }}
-            className="flex-1"
-          >
-            {bcBusy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Send className="h-3.5 w-3.5" />
-            )}
-            שלח לכולם
-          </Button>
-        </div>
-      </div>
+      <p className="text-[11px] leading-relaxed text-fg-muted">
+        שליחת מייל שיווקי לרשימת התפוצה + צפייה ברשומים עברו לטאב "ניוזלטר".
+      </p>
     </Card>
   )
 }
