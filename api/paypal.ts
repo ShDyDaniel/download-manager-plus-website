@@ -6761,25 +6761,52 @@ function verifyUnsubscribeToken(uid: string, token: string): boolean {
  *  on tab mount, so step-up here would loop the biometric prompt; the
  *  sensitive WRITE (mass-mailing) keeps its full step-up gate.
  * ───────────────────────────────────────────────────────────── */
-async function handleAdminListMarketingRecipients(
-  req: VercelRequest,
-  res: VercelResponse,
-) {
-  if (!(await verifyAdmin2FA(req))) {
-    return res.status(403).json({ ok: false, error: 'admin only' })
-  }
+/** Marketing audience segment. 'free' = opted-in users WITHOUT an active
+ *  Pro entitlement (this deliberately includes users on an active 7-day
+ *  trial — they're not paying Pro). 'pro' = active Pro entitlement. */
+type MarketingAudience = 'all' | 'free' | 'pro'
+function normAudience(v: unknown): MarketingAudience {
+  return v === 'free' || v === 'pro' ? v : 'all'
+}
 
-  const db = getDb()
+/** Set of uids that currently hold an active Pro entitlement — a redeemed
+ *  key whose expiry (with grace) is still valid. Same definition the rest
+ *  of the system uses (isProEntitlementActive), so segments stay honest. */
+async function proUidSet(
+  db: ReturnType<typeof getDb>,
+): Promise<Set<string>> {
+  const keysSnap = await db.collection('productKeys').get()
+  const pro = new Set<string>()
+  for (const k of keysSnap.docs) {
+    const d = k.data() as {
+      redeemedBy?: string | null
+      expiresAt?: string | null
+      subscriptionStatus?: string | null
+    }
+    if (
+      d.redeemedBy &&
+      isProEntitlementActive({
+        expiresAt: d.expiresAt,
+        subscriptionStatus: d.subscriptionStatus,
+      })
+    ) {
+      pro.add(d.redeemedBy)
+    }
+  }
+  return pro
+}
+
+/** All opted-in recipients, filtered to the requested audience. */
+async function marketingRecipients(
+  db: ReturnType<typeof getDb>,
+  audience: MarketingAudience,
+): Promise<Array<{ uid: string; email: string; optInAt: string | null }>> {
   const snap = await db
     .collection('users')
     .where('marketingOptIn', '==', true)
     .get()
-
-  const recipients: Array<{
-    uid: string
-    email: string
-    optInAt: string | null
-  }> = []
+  let recipients: Array<{ uid: string; email: string; optInAt: string | null }> =
+    []
   for (const d of snap.docs) {
     const data = d.data() as { email?: string; marketingOptInAt?: unknown }
     const e = typeof data.email === 'string' ? data.email.trim().toLowerCase() : ''
@@ -6788,10 +6815,26 @@ async function handleAdminListMarketingRecipients(
       typeof data.marketingOptInAt === 'string' ? data.marketingOptInAt : null
     recipients.push({ uid: d.id, email: e, optInAt })
   }
-
+  if (audience !== 'all') {
+    const pro = await proUidSet(db)
+    recipients = recipients.filter((r) =>
+      audience === 'pro' ? pro.has(r.uid) : !pro.has(r.uid),
+    )
+  }
   // Newest opt-ins first; entries without a timestamp sink to the bottom.
   recipients.sort((a, b) => (b.optInAt ?? '').localeCompare(a.optInAt ?? ''))
+  return recipients
+}
 
+async function handleAdminListMarketingRecipients(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'admin only' })
+  }
+  const audience = normAudience((req.body as { audience?: string })?.audience)
+  const recipients = await marketingRecipients(getDb(), audience)
   return res.status(200).json({
     ok: true,
     count: recipients.length,
@@ -6811,6 +6854,10 @@ interface NewsletterPresetDoc {
   subject: string
   heading: string
   contentHtml: string
+  // JSON-serialised block list — lets the visual builder reconstruct the
+  // editor exactly. contentHtml is the rendered output (source of truth
+  // for the actual send); blocksJson is the editable representation.
+  blocksJson: string
   updatedAt: string
 }
 
@@ -6831,6 +6878,7 @@ async function handleAdminNewsletterPresetsList(
         subject: p.subject || '',
         heading: p.heading || '',
         contentHtml: p.contentHtml || '',
+        blocksJson: p.blocksJson || '',
         updatedAt: p.updatedAt || '',
       }
     })
@@ -6851,6 +6899,7 @@ async function handleAdminNewsletterPresetSave(
     subject?: string
     heading?: string
     contentHtml?: string
+    blocksJson?: string
   }
   const name = String(b.name || '').trim().slice(0, 80)
   if (!name) {
@@ -6861,6 +6910,7 @@ async function handleAdminNewsletterPresetSave(
     subject: String(b.subject || '').slice(0, 200),
     heading: String(b.heading || '').slice(0, 200),
     contentHtml: String(b.contentHtml || '').slice(0, 20000),
+    blocksJson: String(b.blocksJson || '').slice(0, 30000),
     updatedAt: new Date().toISOString(),
   }
   const col = getDb().collection('newsletterPresets')
@@ -6898,11 +6948,13 @@ async function handleAdminSendMarketingEmail(
     heading?: string
     contentHtml?: string
     dryRun?: boolean
+    audience?: string
   }
   const subject = (body.subject || '').trim().slice(0, 200)
   const heading = (body.heading || '').trim().slice(0, 100)
   const contentHtml = (body.contentHtml || '').trim()
   const dryRun = body.dryRun === true
+  const audience = normAudience(body.audience)
   if (!subject || !heading || !contentHtml) {
     return res
       .status(400)
@@ -6910,17 +6962,7 @@ async function handleAdminSendMarketingEmail(
   }
 
   const db = getDb()
-  const snap = await db
-    .collection('users')
-    .where('marketingOptIn', '==', true)
-    .get()
-  const recipients: Array<{ uid: string; email: string }> = []
-  for (const d of snap.docs) {
-    const data = d.data() as { email?: string }
-    const e = typeof data.email === 'string' ? data.email.trim().toLowerCase() : ''
-    if (!e) continue
-    recipients.push({ uid: d.id, email: e })
-  }
+  const recipients = await marketingRecipients(db, audience)
 
   if (dryRun) {
     return res.status(200).json({ ok: true, recipientCount: recipients.length })
