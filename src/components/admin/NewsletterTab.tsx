@@ -485,13 +485,12 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
   function onPreviewLoad(e: React.SyntheticEvent<HTMLIFrameElement>) {
     const doc = e.currentTarget.contentDocument
     if (!doc) return
-    const measure = () =>
-      setPreviewH(
-        Math.max(
-          160,
-          doc.documentElement?.scrollHeight || doc.body?.scrollHeight || 420,
-        ),
-      )
+    // מודדים לפי גובה ה-body בפועל (מתכווץ לתוכן), לא documentElement —
+    // האחרון נצמד לגובה ה-iframe וגורם ללולאה שלא מתכווצת.
+    const measure = () => {
+      const h = doc.body?.scrollHeight || 200
+      setPreviewH(Math.max(160, h + 2))
+    }
     measure()
     previewRoRef.current?.disconnect()
     try {
