@@ -29,6 +29,8 @@ import {
   Underline,
   Link as LinkIcon,
   Unlink,
+  Monitor,
+  Smartphone,
   X,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
@@ -478,6 +480,7 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
     text: string
   }>({ kind: 'idle', text: '' })
   const [showPreview, setShowPreview] = useState(true)
+  const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop')
   // גובה התצוגה-המקדימה מותאם אוטומטית לגובה התוכן (בלי גלילה).
   const [previewH, setPreviewH] = useState(420)
   const previewRoRef = useRef<ResizeObserver | null>(null)
@@ -792,17 +795,50 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
       {/* ── תצוגה מקדימה חיה ── */}
       {showPreview && (
         <div className="overflow-hidden rounded-xl border border-border">
-          <div className="border-b border-border bg-background/40 px-3 py-1.5 text-[11px] text-fg-muted">
-            תצוגה מקדימה — בדיוק כמו שהמייל ייראה אצל הנמען
+          <div className="flex items-center gap-2 border-b border-border bg-background/40 px-3 py-1.5 text-[11px] text-fg-muted">
+            <span>תצוגה מקדימה — בדיוק כמו שהמייל ייראה אצל הנמען</span>
+            <div className="ms-auto flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+              <button
+                type="button"
+                title="תצוגת מחשב"
+                onClick={() => setDevice('desktop')}
+                className={
+                  'rounded-md p-1 transition-colors ' +
+                  (device === 'desktop' ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:text-fg')
+                }
+              >
+                <Monitor className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                title="תצוגת טלפון"
+                onClick={() => setDevice('mobile')}
+                className={
+                  'rounded-md p-1 transition-colors ' +
+                  (device === 'mobile' ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:text-fg')
+                }
+              >
+                <Smartphone className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
-          <iframe
-            title="תצוגה מקדימה של המייל"
-            srcDoc={renderEmailPreview(heading, contentHtml)}
-            onLoad={onPreviewLoad}
-            style={{ height: previewH }}
-            className="block w-full bg-[#16110D]"
-            sandbox="allow-same-origin"
-          />
+          <div className={device === 'mobile' ? 'flex justify-center bg-[#0d0805] p-4' : ''}>
+            <iframe
+              title="תצוגה מקדימה של המייל"
+              srcDoc={renderEmailPreview(heading, contentHtml)}
+              onLoad={onPreviewLoad}
+              style={{
+                height: previewH,
+                width: device === 'mobile' ? 390 : '100%',
+                maxWidth: '100%',
+              }}
+              className={
+                'block bg-[#16110D] ' +
+                (device === 'mobile' ? 'rounded-2xl border border-border shadow-lg' : '')
+              }
+              sandbox="allow-same-origin"
+            />
+          </div>
         </div>
       )}
 
