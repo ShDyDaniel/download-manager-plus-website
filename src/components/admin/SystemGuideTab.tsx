@@ -64,12 +64,20 @@ function PathRow({ os, value }: { os: string; value: string }) {
   )
 }
 
+// Full absolute base paths — every component path below is spelled out in
+// full so support can paste it straight into Finder/Explorer.
+const MAC_BASE = '/Applications/Download Manager Plus.app/Contents/Resources/'
+const WIN_BASE =
+  'C:\\Users\\<user>\\AppData\\Local\\Programs\\download-manager-plus\\resources\\'
+const MAC_DATA = '/Users/<user>/Library/Application Support/Download Manager Plus/'
+const WIN_DATA = 'C:\\Users\\<user>\\AppData\\Roaming\\Download Manager Plus\\'
+
 interface Component {
   n: number
   name: string
   role: string
-  mac: string
-  win: string
+  mac: string[]
+  win: string[]
   download?: string
   builtin?: boolean
 }
@@ -79,72 +87,80 @@ const COMPONENTS: Component[] = [
     n: 1,
     name: 'מנוע הורדות (yt-dlp)',
     role: 'מוריד סרטונים מ-YouTube, TikTok, Instagram ועוד. הבסיס של טאב "הורדת קבצים".',
-    mac: 'vendor/ytdlp/darwin/yt-dlp',
-    win: 'vendor/ytdlp/win32/yt-dlp.exe',
+    mac: [`${MAC_BASE}vendor/ytdlp/darwin/yt-dlp`],
+    win: [`${WIN_BASE}vendor\\ytdlp\\win32\\yt-dlp.exe`],
     download: 'https://github.com/yt-dlp/yt-dlp/releases/latest',
   },
   {
     n: 2,
     name: 'מקודד וידאו (ffmpeg)',
     role: 'המרות וידאו, כיווץ, מיזוג וידאו+אודיו בהורדות, המרת פורמטים.',
-    mac: 'vendor/ffmpeg/darwin/arm64/ffmpeg',
-    win: 'vendor/ffmpeg/win32/x64/ffmpeg.exe',
+    mac: [`${MAC_BASE}vendor/ffmpeg/darwin/arm64/ffmpeg`],
+    win: [`${WIN_BASE}vendor\\ffmpeg\\win32\\x64\\ffmpeg.exe`],
     download: 'https://ffmpeg.org/download.html',
   },
   {
     n: 3,
     name: 'בודק וידאו (ffprobe)',
     role: 'קריאת אורך, רזולוציה, קצב פריימים ואיכות. מגיע יחד עם ffmpeg.',
-    mac: 'vendor/ffmpeg/darwin/arm64/ffprobe',
-    win: 'vendor/ffmpeg/win32/x64/ffprobe.exe',
+    mac: [`${MAC_BASE}vendor/ffmpeg/darwin/arm64/ffprobe`],
+    win: [`${WIN_BASE}vendor\\ffmpeg\\win32\\x64\\ffprobe.exe`],
     download: 'מגיע באותה חבילה של ffmpeg (סעיף 2)',
   },
   {
     n: 4,
     name: 'מחלץ ארכיונים (7-Zip)',
     role: 'חילוץ ZIP · RAR · 7z · TAR שיורדים או מנותבים בתוכנה.',
-    mac: 'vendor/7zip/darwin/7zz',
-    win: 'vendor/7zip/win32/7z.exe  +  vendor/7zip/win32/7z.dll',
+    mac: [`${MAC_BASE}vendor/7zip/darwin/7zz`],
+    win: [`${WIN_BASE}vendor\\7zip\\win32\\7z.exe`, `${WIN_BASE}vendor\\7zip\\win32\\7z.dll`],
     download: 'https://www.7-zip.org/download.html',
   },
   {
     n: 5,
     name: 'מנוע סנכרון אודיו (resampler + ספריות שמע)',
     role: 'ליבת "סנכרון אוטומטי". קריטי: הבינארי חייב את ספריות-השמע שלידו — בלעדיהן הסנכרון נכשל בשקט (תוצאה שגויה במקום שגיאה).',
-    mac: 'python/bin/resample_swr  +  python/Frameworks/libswresample.6.dylib  +  python/Frameworks/libavutil.60.dylib',
-    win: 'python/bin/resample_swr.exe  +  python/bin/swresample-7.dll  +  python/bin/avutil-61.dll',
+    mac: [
+      `${MAC_BASE}python/bin/resample_swr`,
+      `${MAC_BASE}python/Frameworks/libswresample.6.dylib`,
+      `${MAC_BASE}python/Frameworks/libavutil.60.dylib`,
+    ],
+    win: [
+      `${WIN_BASE}python\\bin\\resample_swr.exe`,
+      `${WIN_BASE}python\\bin\\swresample-7.dll`,
+      `${WIN_BASE}python\\bin\\avutil-61.dll`,
+    ],
     builtin: true,
   },
   {
     n: 6,
     name: 'קובצי מנוע הסנכרון (Python)',
-    role: 'לוגיקת טעינה → סנכרון → ייצוא של הטיימליין.',
-    mac: 'python/sync_stdio.py · engine_faithful.py · resampler.py · fcpxml_in.py · fingerprint_reference.py · export_resolve.py',
-    win: 'python/ (זהה למק)',
+    role: 'לוגיקת טעינה → סנכרון → ייצוא. קבצים: sync_stdio.py · engine_faithful.py · resampler.py · fcpxml_in.py · fingerprint_reference.py · export_resolve.py',
+    mac: [`${MAC_BASE}python/`],
+    win: [`${WIN_BASE}python\\`],
     builtin: true,
   },
   {
     n: 7,
     name: 'מנוע זיהוי אודיו (AI)',
-    role: 'סקריפט זיהוי מוזיקה/אפקטים למצב ה-AI בסיווג אודיו.',
-    mac: 'audio_classify.py  (ישירות תחת תיקיית הבסיס)',
-    win: 'audio_classify.py  (ישירות תחת תיקיית הבסיס)',
+    role: 'סקריפט זיהוי מוזיקה/אפקטים למצב ה-AI בסיווג אודיו (ישירות תחת תיקיית הבסיס).',
+    mac: [`${MAC_BASE}audio_classify.py`],
+    win: [`${WIN_BASE}audio_classify.py`],
     builtin: true,
   },
   {
     n: 8,
     name: 'פייטון 3.12 (מובנה)',
     role: 'מנוע ה-Python שמריץ סנכרון, תמלול ומצב AI. מובנה — אין התקנה אצל המשתמש.',
-    mac: 'python-runtime/python/bin/python3.12',
-    win: 'python-runtime/python/python.exe',
+    mac: [`${MAC_BASE}python-runtime/python/bin/python3.12`],
+    win: [`${WIN_BASE}python-runtime\\python\\python.exe`],
     download: 'https://github.com/astral-sh/python-build-standalone/releases (3.12.10 · תג 20250409)',
   },
   {
     n: 9,
     name: 'numpy (מובנה)',
     role: 'ספריית החישובים של מנוע הסנכרון. מותקנת מראש בפייטון המובנה.',
-    mac: 'python-runtime/python/lib/python3.12/site-packages/numpy/',
-    win: 'python-runtime/python/Lib/site-packages/numpy/',
+    mac: [`${MAC_BASE}python-runtime/python/lib/python3.12/site-packages/numpy/`],
+    win: [`${WIN_BASE}python-runtime\\python\\Lib\\site-packages\\numpy\\`],
     builtin: true,
   },
 ]
@@ -157,17 +173,17 @@ interface TranscriptRow {
 const TRANSCRIBE: TranscriptRow[] = [
   {
     what: 'מודל הפילוח (כתוביות) + תיקונים + דאטת-אימון',
-    mac: '~/.dmp/transcribe/  (model/, corrections.jsonl, train.jsonl)',
+    mac: '/Users/<user>/.dmp/transcribe/',
     win: 'C:\\Users\\<user>\\.dmp\\transcribe\\',
   },
   {
     what: 'מודל Whisper ל-MLX (Mac בלבד — GPU של אפל)',
-    mac: '~/.dmp/ivrit-mlx/',
+    mac: '/Users/<user>/.dmp/ivrit-mlx/',
     win: '— (Windows משתמש ב-faster-whisper תחת מטמון HF)',
   },
   {
     what: 'מטמון מודלים שירדו (Hugging Face)',
-    mac: '~/.cache/huggingface/hub/',
+    mac: '/Users/<user>/.cache/huggingface/hub/',
     win: 'C:\\Users\\<user>\\.cache\\huggingface\\hub\\',
   },
 ]
@@ -180,23 +196,23 @@ interface WorkFolder {
 const WORK_FOLDERS: WorkFolder[] = [
   {
     what: 'נתונים + הגדרות (config.json) + מטמון + לוגים',
-    mac: '~/Library/Application Support/Download Manager Plus/',
-    win: '%APPDATA%\\Download Manager Plus\\',
+    mac: MAC_DATA,
+    win: WIN_DATA,
   },
   {
     what: 'לוג אבחון סנכרון',
-    mac: '…/Download Manager Plus/sync-debug.log',
-    win: '…\\Download Manager Plus\\sync-debug.log',
+    mac: `${MAC_DATA}sync-debug.log`,
+    win: `${WIN_DATA}sync-debug.log`,
   },
   {
     what: 'לוגים (תמלול / זמן-עבודה)',
-    mac: '…/Download Manager Plus/logs/transcribe|timetrack/',
-    win: '…\\Download Manager Plus\\logs\\transcribe|timetrack\\',
+    mac: `${MAC_DATA}logs/transcribe/  ·  ${MAC_DATA}logs/timetrack/`,
+    win: `${WIN_DATA}logs\\transcribe\\  ·  ${WIN_DATA}logs\\timetrack\\`,
   },
   {
     what: 'מטמון סנכרון (טביעות + אודיו)',
-    mac: '…/Download Manager Plus/sync-fpcache/ · sync-audcache/',
-    win: '…\\Download Manager Plus\\sync-fpcache\\ · sync-audcache\\',
+    mac: `${MAC_DATA}sync-fpcache/  ·  ${MAC_DATA}sync-audcache/`,
+    win: `${WIN_DATA}sync-fpcache\\  ·  ${WIN_DATA}sync-audcache\\`,
   },
 ]
 
@@ -282,9 +298,12 @@ export default function SystemGuideTab() {
 
       {/* base locations */}
       <Card title="מיקומי הבסיס (תיקיית Resources)">
-        <p className="text-[11px] text-fg-muted">כל הנתיבים ברכיבים למטה הם יחסית לתיקייה הזו.</p>
-        <PathRow os="Mac" value="/Applications/Download Manager Plus.app/Contents/Resources/" />
-        <PathRow os="Windows" value="C:\\Users\\<user>\\AppData\\Local\\Programs\\download-manager-plus\\resources\\" />
+        <p className="text-[11px] text-fg-muted">
+          תיקיית-האם של הרכיבים. הנתיבים בכל רכיב למטה כבר <b>מלאים</b> (מוכנים להדבקה ב-Finder/Explorer).
+          החליפו <code dir="ltr" className="font-mono">{'<user>'}</code> בשם המשתמש של הלקוח.
+        </p>
+        <PathRow os="Mac" value={MAC_BASE} />
+        <PathRow os="Windows" value={WIN_BASE} />
       </Card>
 
       {/* components */}
@@ -305,8 +324,12 @@ export default function SystemGuideTab() {
               </div>
               <p className="mt-1.5 text-xs leading-relaxed text-fg-muted">{c.role}</p>
               <div className="mt-2">
-                <PathRow os="Mac" value={c.mac} />
-                <PathRow os="Windows" value={c.win} />
+                {c.mac.map((p, i) => (
+                  <PathRow key={`m${i}`} os={i === 0 ? 'Mac' : ''} value={p} />
+                ))}
+                {c.win.map((p, i) => (
+                  <PathRow key={`w${i}`} os={i === 0 ? 'Windows' : ''} value={p} />
+                ))}
               </div>
               <div className="mt-1.5 text-[11px] text-fg-muted">
                 {c.download ? (
