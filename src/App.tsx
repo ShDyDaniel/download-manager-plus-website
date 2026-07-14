@@ -35,6 +35,7 @@ import { CollabLandingPage } from './pages/CollabLandingPage'
 import DrivePickerPage from './pages/DrivePickerPage'
 import PartnerPage from './pages/PartnerPage'
 import DeviceCheckPage from './pages/DeviceCheckPage'
+import SystemCheckPage from './pages/SystemCheckPage'
 import TrialActivatePage from './pages/TrialActivatePage'
 import InstallPage from './pages/InstallPage'
 // Lazy — AdminPage pulls in Firebase Auth (signInWithEmailAndPassword).
@@ -62,6 +63,7 @@ function isChromelessRoute(pathname: string): boolean {
     pathname.startsWith('/drive-picker') ||
     pathname.startsWith('/partner') ||
     pathname.startsWith('/device-check') ||
+    pathname.startsWith('/system-check') ||
     pathname.startsWith('/trial') ||
     pathname.startsWith('/install') ||
     pathname.startsWith('/mac-setup') ||
@@ -193,6 +195,7 @@ function AnimatedRoutes() {
         {/* Support device-check landing — opens the desktop app to
             report its device signature (or shows a backup code). */}
         <Route path="/device-check/:code" element={<DeviceCheckPage />} />
+        <Route path="/system-check/:code" element={<SystemCheckPage />} />
         {/* Trial activation — opened from the desktop user menu; the app
             passes the ID token + device id on the fragment. */}
         <Route path="/trial" element={<TrialActivatePage />} />

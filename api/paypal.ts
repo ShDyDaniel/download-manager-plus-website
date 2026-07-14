@@ -1822,6 +1822,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminRevokeTrial(req, res)
       case 'admin-reset-trial':
         return await handleAdminResetTrial(req, res)
+      case 'admin-syscheck-create':
+        return await handleAdminSyscheckCreate(req, res)
+      case 'admin-syscheck-get':
+        return await handleAdminSyscheckGet(req, res)
+      case 'syscheck-report':
+        return await handleSyscheckReport(req, res)
       case 'admin-device-check-create':
         return await handleAdminDeviceCheckCreate(req, res)
       case 'admin-device-check-get':
@@ -8962,6 +8968,86 @@ function genDeviceCheckCode(): string {
   let s = ''
   for (let i = 0; i < 10; i++) s += alphabet[bytes[i] % alphabet.length]
   return `${s.slice(0, 5)}-${s.slice(5)}`
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Remote SYSTEM CHECK (support). Same rails as device-check: admin
+ *  mints a one-time code + link (https://dmplus.net/system-check/<code>),
+ *  sends it to the user. The link opens the desktop app (dmplus://
+ *  system-check?code=…), which runs a full component diagnostic and
+ *  POSTs the results back (syscheck-report, public, code-gated). Admin
+ *  polls admin-syscheck-get and sees exactly what works / what doesn't.
+ * ────────────────────────────────────────────────────────────── */
+async function handleAdminSyscheckCreate(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const adminEmail = await verifyAdminStepUp(req)
+  if (!adminEmail) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const code = genDeviceCheckCode()
+  const now = new Date()
+  // 24h window — support may email the user and wait for them to act.
+  const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+  await getDb()
+    .collection('systemChecks')
+    .doc(code)
+    .set({
+      code,
+      createdAt: now.toISOString(),
+      createdBy: adminEmail,
+      expiresAt: expiresAt.toISOString(),
+      status: 'pending',
+    })
+  return res.status(200).json({
+    ok: true,
+    code,
+    url: `https://dmplus.net/system-check/${code}`,
+    expiresAt: expiresAt.toISOString(),
+  })
+}
+
+async function handleAdminSyscheckGet(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { code?: string }
+  const code = String(body.code || (req.query.code as string) || '')
+    .trim()
+    .toUpperCase()
+  if (!code) return res.status(400).json({ ok: false, error: 'code' })
+  const snap = await getDb().collection('systemChecks').doc(code).get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'not-found' })
+  return res.status(200).json({ ok: true, check: { id: snap.id, ...snap.data() } })
+}
+
+/** PUBLIC — the desktop app posts its diagnostic here. Gated only by a
+ *  valid, unexpired, admin-issued code (single-purpose, 24h TTL). Stores
+ *  the results + machine meta for the admin to read; returns nothing
+ *  sensitive. */
+async function handleSyscheckReport(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    code?: string
+    results?: unknown
+    meta?: unknown
+  }
+  const code = String(body.code || '').trim().toUpperCase()
+  if (!code) return res.status(400).json({ ok: false, error: 'קוד חסר' })
+  const ref = getDb().collection('systemChecks').doc(code)
+  const snap = await ref.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'קוד לא קיים' })
+  const data = snap.data() as { expiresAt?: string }
+  if (data.expiresAt && Date.parse(data.expiresAt) < Date.now()) {
+    return res.status(410).json({ ok: false, error: 'הקוד פג תוקף' })
+  }
+  // Cap the stored payload defensively (results is a small array).
+  const results = Array.isArray(body.results) ? body.results.slice(0, 60) : []
+  const meta =
+    body.meta && typeof body.meta === 'object' ? body.meta : {}
+  await ref.set(
+    { status: 'done', reportedAt: new Date().toISOString(), results, meta },
+    { merge: true },
+  )
+  return res.status(200).json({ ok: true })
 }
 
 async function handleAdminDeviceCheckCreate(

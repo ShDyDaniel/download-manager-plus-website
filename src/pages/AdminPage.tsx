@@ -600,7 +600,7 @@ function AdminShell({
           ) : tab === 'newsletter' ? (
             <NewsletterTab onAuthExpired={onAuthExpired} />
           ) : tab === 'guide' ? (
-            <SystemGuideTab />
+            <SystemGuideTab onAuthExpired={onAuthExpired} />
           ) : tab === 'settings' ? (
             <SettingsTab onAuthExpired={onAuthExpired} />
           ) : (

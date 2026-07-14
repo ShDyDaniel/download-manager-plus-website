@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   LifeBuoy,
   Copy,
@@ -8,7 +8,14 @@ import {
   AlertTriangle,
   Terminal as TerminalIcon,
   Wrench,
+  Radar,
+  Loader2,
+  X,
+  RefreshCw,
+  ShieldAlert,
 } from 'lucide-react'
+import { adminApi } from '../../lib/adminApi'
+import { Button } from '@/components/ui/Button'
 import { Card } from './SettingsTab'
 
 /**
@@ -270,7 +277,219 @@ $j.settings | Add-Member onboardingTourStep -1 -Force
 $j.settings | Add-Member onboardingTourId "" -Force
 $j | ConvertTo-Json -Depth 30 | Set-Content $p`
 
-export default function SystemGuideTab() {
+/* ── בדיקת מערכת מרחוק ── */
+interface CheckResult {
+  id: string
+  label: string
+  ok: boolean
+  detail?: string
+}
+interface CheckDoc {
+  status: 'pending' | 'done'
+  results?: CheckResult[]
+  meta?: Record<string, unknown>
+  reportedAt?: string
+}
+
+function RemoteCheckCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [link, setLink] = useState<{ code: string; url: string } | null>(null)
+  const [doc, setDoc] = useState<CheckDoc | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [err, setErr] = useState('')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const stopPoll = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+  useEffect(() => stopPoll, [])
+
+  const poll = useCallback(
+    async (code: string) => {
+      try {
+        const j = await adminApi<{ check?: CheckDoc }>('admin-syscheck-get', { code })
+        if (j.check) {
+          setDoc(j.check)
+          if (j.check.status === 'done') stopPoll()
+        }
+      } catch (e) {
+        const er = e as Error & { code?: string }
+        if (er.code === 'auth') {
+          stopPoll()
+          onAuthExpired?.()
+        }
+      }
+    },
+    [onAuthExpired],
+  )
+
+  async function createLink() {
+    setBusy(true)
+    setErr('')
+    setDoc(null)
+    stopPoll()
+    try {
+      const j = await adminApi<{ code: string; url: string }>('admin-syscheck-create', {})
+      setLink({ code: j.code, url: j.url })
+      pollRef.current = setInterval(() => void poll(j.code), 4000)
+    } catch (e) {
+      const er = e as Error & { code?: string }
+      if (er.code === 'auth') return onAuthExpired?.()
+      setErr(er.message || 'יצירת הקישור נכשלה')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function copy(text: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const results = doc?.results ?? []
+  const failed = results.filter((r) => !r.ok)
+
+  return (
+    <Card title="בדיקת מערכת מרחוק (תמיכה)">
+      <p className="text-[11px] leading-relaxed text-fg-muted">
+        צור קישור ושלח ללקוח. בלחיצה — התוכנה נפתחת אצלו, מריצה בדיקה מלאה של כל
+        הרכיבים (הוא רק מאשר), והתוצאה חוזרת לכאן: בדיוק מה עובד ומה לא.
+      </p>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="gradient" size="sm" onClick={() => void createLink()} disabled={busy}>
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Radar className="h-3.5 w-3.5" />}
+          צור קישור בדיקה
+        </Button>
+        {link && (
+          <span className="text-[11px] text-fg-muted">תקף 24 שעות · קוד חד-פעמי</span>
+        )}
+      </div>
+
+      {err && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {err}
+        </div>
+      )}
+
+      {link && (
+        <div className="space-y-2 rounded-xl border border-border bg-background/40 p-3">
+          <div className="flex items-center gap-2">
+            <code dir="ltr" className="min-w-0 flex-1 truncate rounded bg-background/60 px-2 py-1.5 font-mono text-xs text-fg">
+              {link.url}
+            </code>
+            <button
+              type="button"
+              onClick={() => void copy(link.url)}
+              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-fg-muted hover:text-fg"
+            >
+              {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
+              העתק קישור
+            </button>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-fg-muted">
+            קוד ידני:{' '}
+            <code dir="ltr" className="rounded bg-background/60 px-1.5 py-0.5 font-mono tracking-widest text-fg">
+              {link.code}
+            </code>
+          </div>
+
+          {(!doc || doc.status === 'pending') && (
+            <div className="flex items-center gap-2 text-xs text-accent">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ממתין שהלקוח יריץ את הבדיקה…
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* results */}
+      {doc?.status === 'done' && (
+        <div className="space-y-2">
+          <div
+            className={
+              'flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium ' +
+              (failed.length === 0
+                ? 'border border-success/40 bg-success/10 text-success'
+                : 'border border-destructive/40 bg-destructive/10 text-destructive')
+            }
+          >
+            {failed.length === 0 ? (
+              <>
+                <Check className="h-4 w-4" /> הכול תקין — {results.length} רכיבים עברו
+              </>
+            ) : (
+              <>
+                <ShieldAlert className="h-4 w-4" /> {failed.length} רכיבים נכשלו מתוך {results.length}
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => link && void poll(link.code)}
+              className="ms-auto inline-flex items-center gap-1 text-[11px] font-normal opacity-70 hover:opacity-100"
+              title="רענן"
+            >
+              <RefreshCw className="h-3 w-3" /> רענן
+            </button>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-border">
+            {results.map((r) => (
+              <div
+                key={r.id}
+                className="flex items-start gap-2 border-b border-border/50 px-3 py-2 last:border-0"
+              >
+                {r.ok ? (
+                  <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                ) : (
+                  <X className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-fg">{r.label}</div>
+                  {r.detail && (
+                    <code dir="ltr" className="mt-0.5 block truncate font-mono text-[11px] text-fg-muted" title={r.detail}>
+                      {r.detail}
+                    </code>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {doc.meta && Object.keys(doc.meta).length > 0 && (
+            <div className="rounded-xl border border-border bg-background/40 p-3">
+              <div className="mb-1 text-[11px] font-medium text-fg-muted">פרטי מכונה</div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                {Object.entries(doc.meta).map(([k, v]) => (
+                  <div key={k} className="flex justify-between gap-2 text-[11px]">
+                    <span className="text-fg-muted">{k}</span>
+                    <span dir="ltr" className="truncate font-mono text-fg" title={String(v)}>
+                      {String(v)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+export default function SystemGuideTab({
+  onAuthExpired,
+}: {
+  onAuthExpired?: () => void
+}) {
   return (
     <div className="space-y-5">
       <header>
@@ -279,9 +498,11 @@ export default function SystemGuideTab() {
           מדריך מערכת
         </h2>
         <p className="mt-1 text-sm text-fg-muted">
-          כל רכיב שהתוכנה משתמשת בו, איפה הוא יושב (Mac + Windows), פתרון תקלות, ואיפוס להפעלה-ראשונה.
+          בדיקת-מערכת מרחוק, כל רכיב ואיפה הוא יושב (Mac + Windows), פתרון תקלות, ואיפוס להפעלה-ראשונה.
         </p>
       </header>
+
+      <RemoteCheckCard onAuthExpired={onAuthExpired} />
 
       {/* intro note */}
       <div className="flex items-start gap-2 rounded-xl border border-accent/30 bg-accent/[0.06] px-3 py-2.5 text-sm text-fg">
