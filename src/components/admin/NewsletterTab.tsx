@@ -23,6 +23,9 @@ import {
   AlignRight,
   AlignCenter,
   AlignLeft,
+  Bold,
+  Italic,
+  Underline,
   X,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
@@ -49,10 +52,26 @@ type Audience = 'all' | 'free' | 'pro' | 'one'
 
 /* ── מודל הבלוקים ── */
 type Align = 'right' | 'center' | 'left'
+/** שדות עיצוב-טקסט משותפים (פונט/גודל/הדגשה/צבע). */
+interface TextStyleFields {
+  fontFamily?: string
+  fontSize?: number
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  color?: string
+}
 type Block =
-  | { id: string; type: 'paragraph'; text: string; align?: Align }
-  | { id: string; type: 'heading'; text: string; align?: Align }
-  | { id: string; type: 'button'; text: string; href: string; align?: Align }
+  | ({ id: string; type: 'paragraph'; text: string; align?: Align } & TextStyleFields)
+  | ({ id: string; type: 'heading'; text: string; align?: Align } & TextStyleFields)
+  | ({
+      id: string
+      type: 'button'
+      text: string
+      href: string
+      align?: Align
+      variant?: string
+    } & TextStyleFields)
   | { id: string; type: 'image'; driveLink: string; alt: string; align?: Align }
   | { id: string; type: 'divider' }
   | { id: string; type: 'raw'; html: string; align?: Align }
@@ -277,6 +296,62 @@ function driveImgSrc(link: string): string | null {
   return id ? `https://drive.google.com/thumbnail?id=${id}&sz=w1000` : null
 }
 
+/** משפחות פונט בטוחות-מייל (כולן תומכות עברית פרט ל-Georgia/Courier). */
+const FONTS: { key: string; label: string; stack: string }[] = [
+  {
+    key: 'brand',
+    label: 'מותג (Rubik)',
+    stack:
+      "'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif",
+  },
+  { key: 'arial', label: 'Arial', stack: 'Arial, Helvetica, sans-serif' },
+  { key: 'verdana', label: 'Verdana', stack: 'Verdana, Geneva, sans-serif' },
+  { key: 'tahoma', label: 'Tahoma', stack: 'Tahoma, Geneva, sans-serif' },
+  { key: 'georgia', label: 'Georgia', stack: 'Georgia, serif' },
+  { key: 'times', label: 'Times', stack: "'Times New Roman', Times, serif" },
+  { key: 'courier', label: 'Courier', stack: "'Courier New', Courier, monospace" },
+]
+function fontStack(key?: string): string {
+  return FONTS.find((f) => f.key === key)?.stack ?? FONTS[0].stack
+}
+const FONT_SIZES = [12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 40]
+
+/** סגנונות כפתור לבחירה. */
+const BUTTON_VARIANTS: {
+  key: string
+  label: string
+  bg: string
+  textColor: string
+  border?: string
+  radius: number
+  padding: string
+}[] = [
+  { key: 'copper', label: 'נחושת', bg: '#D4A574', textColor: '#16110D', radius: 8, padding: '12px 28px' },
+  { key: 'pill', label: 'גלולה', bg: '#D4A574', textColor: '#16110D', radius: 999, padding: '12px 32px' },
+  { key: 'outline', label: 'מתאר', bg: 'transparent', textColor: '#D4A574', border: '1px solid #D4A574', radius: 8, padding: '11px 27px' },
+  { key: 'soft', label: 'רך', bg: 'rgba(212,165,116,0.15)', textColor: '#E8C9A0', radius: 8, padding: '12px 28px' },
+  { key: 'dark', label: 'כהה', bg: '#16110D', textColor: '#F5EFE6', border: '1px solid rgba(245,239,230,0.18)', radius: 8, padding: '12px 28px' },
+  { key: 'light', label: 'בהיר', bg: '#F5EFE6', textColor: '#16110D', radius: 8, padding: '12px 28px' },
+]
+function buttonVariant(key?: string) {
+  return BUTTON_VARIANTS.find((v) => v.key === key) ?? BUTTON_VARIANTS[0]
+}
+
+/** בונה מחרוזת-CSS לעיצוב טקסט מתוך שדות הבלוק, עם ברירות-מחדל. */
+function textCss(
+  b: TextStyleFields,
+  def: { size: number; color: string; weight?: number },
+): string {
+  return [
+    `font-family:${fontStack(b.fontFamily)}`,
+    `font-size:${b.fontSize || def.size}px`,
+    `font-weight:${b.bold ? 700 : def.weight ?? 400}`,
+    b.italic ? 'font-style:italic' : 'font-style:normal',
+    `text-decoration:${b.underline ? 'underline' : 'none'}`,
+    `color:${b.color || def.color}`,
+  ].join(';')
+}
+
 /** עוטף תוכן ב-div עם יישור אופקי (ברירת-מחדל: ימין, מתאים ל-RTL). */
 function wrapAlign(inner: string, align?: Align): string {
   return `<div style="text-align:${align || 'right'};">${inner}</div>`
@@ -286,22 +361,30 @@ function blockToHtml(b: Block): string {
   switch (b.type) {
     case 'paragraph':
       return wrapAlign(
-        `<p style="font-size:15px;line-height:1.8;color:#D8CFC2;margin:0 0 18px;">${esc(
-          b.text,
-        ).replace(/\n/g, '<br/>')}</p>`,
+        `<p style="${textCss(b, {
+          size: 15,
+          color: '#D8CFC2',
+        })};line-height:1.8;margin:0 0 18px;">${esc(b.text).replace(
+          /\n/g,
+          '<br/>',
+        )}</p>`,
         b.align,
       )
     case 'heading':
       return wrapAlign(
-        `<h2 style="font-size:19px;color:#F5EFE6;font-weight:500;margin:26px 0 12px;">${esc(
-          b.text,
-        )}</h2>`,
+        `<h2 style="${textCss(b, {
+          size: 19,
+          color: '#F5EFE6',
+          weight: 500,
+        })};margin:26px 0 12px;">${esc(b.text)}</h2>`,
         b.align,
       )
     case 'button': {
       const href = esc(b.href || '#')
+      const v = buttonVariant(b.variant)
+      const labelCss = textCss(b, { size: 15, color: v.textColor, weight: 500 })
       return wrapAlign(
-        `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="display:inline-block;margin:8px 0 22px;"><tr><td style="border-radius:8px;background:#D4A574;"><a href="${href}" style="display:inline-block;padding:12px 28px;font-size:15px;font-weight:500;color:#16110D;text-decoration:none;">${esc(
+        `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="display:inline-block;margin:8px 0 22px;"><tr><td style="border-radius:${v.radius}px;background:${v.bg};${v.border ? `border:${v.border};` : ''}"><a href="${href}" style="display:inline-block;padding:${v.padding};${labelCss};">${esc(
           b.text || 'לחצו כאן',
         )}</a></td></tr></table>`,
         b.align,
@@ -421,7 +504,7 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
         : type === 'heading'
           ? { id, type, text: '' }
           : type === 'button'
-            ? { id, type, text: 'לחצו כאן', href: 'https://dmplus.net' }
+            ? { id, type, text: 'לחצו כאן', href: 'https://dmplus.net', variant: 'copper' }
             : type === 'image'
               ? { id, type, driveLink: '', alt: '' }
               : type === 'raw'
@@ -878,46 +961,90 @@ function BlockEditor({
       </div>
 
       {block.type === 'paragraph' && (
-        <textarea
-          value={block.text}
-          onChange={(e) => onChange({ text: e.target.value })}
-          placeholder="כתוב כאן את הטקסט של הפסקה…"
-          rows={3}
-          disabled={disabled}
-          className="block w-full resize-y rounded-lg border border-border bg-input/60 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-        />
+        <div className="space-y-2">
+          <textarea
+            value={block.text}
+            onChange={(e) => onChange({ text: e.target.value })}
+            placeholder="כתוב כאן את הטקסט של הפסקה…"
+            rows={3}
+            disabled={disabled}
+            className="block w-full resize-y rounded-lg border border-border bg-input/60 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+          />
+          <TextStyleBar style={block} defColor="#D8CFC2" disabled={disabled} onChange={onChange} />
+        </div>
       )}
 
       {block.type === 'heading' && (
-        <Input
-          value={block.text}
-          onChange={(e) => onChange({ text: e.target.value })}
-          placeholder="טקסט הכותרת"
-          disabled={disabled}
-        />
+        <div className="space-y-2">
+          <Input
+            value={block.text}
+            onChange={(e) => onChange({ text: e.target.value })}
+            placeholder="טקסט הכותרת"
+            disabled={disabled}
+          />
+          <TextStyleBar style={block} defColor="#F5EFE6" disabled={disabled} onChange={onChange} />
+        </div>
       )}
 
       {block.type === 'button' && (
-        <div className="grid gap-2 sm:grid-cols-2">
-          <label className="space-y-1">
-            <span className="text-[11px] text-fg-muted">טקסט הכפתור</span>
-            <Input
-              value={block.text}
-              onChange={(e) => onChange({ text: e.target.value })}
-              placeholder="לחצו כאן"
-              disabled={disabled}
-            />
-          </label>
-          <label className="space-y-1">
-            <span className="text-[11px] text-fg-muted">קישור (לאן מוביל)</span>
-            <Input
-              value={block.href}
-              onChange={(e) => onChange({ href: e.target.value })}
-              placeholder="https://dmplus.net"
-              dir="ltr"
-              disabled={disabled}
-            />
-          </label>
+        <div className="space-y-2">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="space-y-1">
+              <span className="text-[11px] text-fg-muted">טקסט הכפתור</span>
+              <Input
+                value={block.text}
+                onChange={(e) => onChange({ text: e.target.value })}
+                placeholder="לחצו כאן"
+                disabled={disabled}
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-[11px] text-fg-muted">קישור (לאן מוביל)</span>
+              <Input
+                value={block.href}
+                onChange={(e) => onChange({ href: e.target.value })}
+                placeholder="https://dmplus.net"
+                dir="ltr"
+                disabled={disabled}
+              />
+            </label>
+          </div>
+          {/* סגנון הכפתור */}
+          <div className="space-y-1">
+            <span className="text-[11px] text-fg-muted">סגנון הכפתור</span>
+            <div className="flex flex-wrap gap-1.5">
+              {BUTTON_VARIANTS.map((v) => {
+                const active = (block.variant || 'copper') === v.key
+                return (
+                  <button
+                    key={v.key}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => onChange({ variant: v.key })}
+                    title={v.label}
+                    style={{
+                      background: v.bg,
+                      color: v.textColor,
+                      border: v.border || '1px solid transparent',
+                      borderRadius: v.key === 'pill' ? 999 : 6,
+                    }}
+                    className={
+                      'px-3 py-1 text-[11px] font-medium transition-transform disabled:opacity-50 ' +
+                      (active ? 'ring-2 ring-accent ring-offset-1 ring-offset-card' : 'hover:scale-[1.03]')
+                    }
+                  >
+                    {v.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <TextStyleBar
+            style={block}
+            defColor={buttonVariant(block.variant).textColor}
+            disabled={disabled}
+            onChange={onChange}
+          />
         </div>
       )}
 
@@ -973,6 +1100,110 @@ function BlockEditor({
           disabled={disabled}
           className="block w-full resize-y rounded-lg border border-border bg-input/60 px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
         />
+      )}
+    </div>
+  )
+}
+
+/* ── סרגל עיצוב-טקסט: פונט, גודל, מודגש/נטוי/קו-תחתי, צבע ── */
+function TextStyleBar({
+  style,
+  defColor,
+  disabled,
+  onChange,
+}: {
+  style: TextStyleFields
+  defColor: string
+  disabled: boolean
+  onChange: (patch: Partial<Block>) => void
+}) {
+  const selCls =
+    'rounded-lg border border-border bg-input/60 px-2 py-1 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60'
+  const toggleCls = (on?: boolean) =>
+    'rounded-md p-1.5 transition-colors disabled:opacity-40 ' +
+    (on ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:text-fg')
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <select
+        value={style.fontFamily || 'brand'}
+        onChange={(e) => onChange({ fontFamily: e.target.value })}
+        disabled={disabled}
+        className={selCls}
+        title="פונט"
+      >
+        {FONTS.map((f) => (
+          <option key={f.key} value={f.key}>
+            {f.label}
+          </option>
+        ))}
+      </select>
+      <select
+        value={String(style.fontSize || '')}
+        onChange={(e) =>
+          onChange({ fontSize: e.target.value ? Number(e.target.value) : undefined })
+        }
+        disabled={disabled}
+        className={selCls}
+        title="גודל טקסט"
+      >
+        <option value="">גודל</option>
+        {FONT_SIZES.map((s) => (
+          <option key={s} value={s}>
+            {s}px
+          </option>
+        ))}
+      </select>
+      <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+        <button
+          type="button"
+          disabled={disabled}
+          title="מודגש"
+          onClick={() => onChange({ bold: !style.bold })}
+          className={toggleCls(style.bold)}
+        >
+          <Bold className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          title="נטוי"
+          onClick={() => onChange({ italic: !style.italic })}
+          className={toggleCls(style.italic)}
+        >
+          <Italic className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          title="קו תחתי"
+          onClick={() => onChange({ underline: !style.underline })}
+          className={toggleCls(style.underline)}
+        >
+          <Underline className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <label
+        className="flex items-center gap-1 rounded-lg border border-border px-1.5 py-1 text-xs text-fg-muted"
+        title="צבע הטקסט"
+      >
+        <input
+          type="color"
+          value={style.color || defColor}
+          onChange={(e) => onChange({ color: e.target.value })}
+          disabled={disabled}
+          className="h-4 w-5 cursor-pointer rounded border-0 bg-transparent p-0"
+        />
+        צבע
+      </label>
+      {style.color && (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange({ color: undefined })}
+          className="text-[11px] text-fg-muted underline-offset-2 hover:underline"
+        >
+          איפוס צבע
+        </button>
       )}
     </div>
   )
