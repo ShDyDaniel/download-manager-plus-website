@@ -476,6 +476,30 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
     text: string
   }>({ kind: 'idle', text: '' })
   const [showPreview, setShowPreview] = useState(true)
+  // גובה התצוגה-המקדימה מותאם אוטומטית לגובה התוכן (בלי גלילה).
+  const [previewH, setPreviewH] = useState(420)
+  const previewRoRef = useRef<ResizeObserver | null>(null)
+  useEffect(() => () => previewRoRef.current?.disconnect(), [])
+  function onPreviewLoad(e: React.SyntheticEvent<HTMLIFrameElement>) {
+    const doc = e.currentTarget.contentDocument
+    if (!doc) return
+    const measure = () =>
+      setPreviewH(
+        Math.max(
+          160,
+          doc.documentElement?.scrollHeight || doc.body?.scrollHeight || 420,
+        ),
+      )
+    measure()
+    previewRoRef.current?.disconnect()
+    try {
+      const ro = new ResizeObserver(measure)
+      if (doc.body) ro.observe(doc.body)
+      previewRoRef.current = ro
+    } catch {
+      /* ResizeObserver unavailable */
+    }
+  }
 
   const idc = useRef(0)
   const newId = () => `b${idc.current++}_${Date.now().toString(36)}`
@@ -773,8 +797,10 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
           <iframe
             title="תצוגה מקדימה של המייל"
             srcDoc={renderEmailPreview(heading, contentHtml)}
-            className="block h-[440px] w-full bg-[#16110D]"
-            sandbox=""
+            onLoad={onPreviewLoad}
+            style={{ height: previewH }}
+            className="block w-full bg-[#16110D]"
+            sandbox="allow-same-origin"
           />
         </div>
       )}
