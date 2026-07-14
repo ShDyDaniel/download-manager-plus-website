@@ -6949,12 +6949,14 @@ async function handleAdminSendMarketingEmail(
     contentHtml?: string
     dryRun?: boolean
     audience?: string
+    testEmail?: string
   }
   const subject = (body.subject || '').trim().slice(0, 200)
   const heading = (body.heading || '').trim().slice(0, 100)
   const contentHtml = (body.contentHtml || '').trim()
   const dryRun = body.dryRun === true
   const audience = normAudience(body.audience)
+  const testEmail = (body.testEmail || '').trim()
   if (!subject || !heading || !contentHtml) {
     return res
       .status(400)
@@ -6962,7 +6964,24 @@ async function handleAdminSendMarketingEmail(
   }
 
   const db = getDb()
-  const recipients = await marketingRecipients(db, audience)
+  // מצב "מייל ספציפי": שליחה חד-פעמית לכתובת אחת (בדיקה / הודעה נקודתית),
+  // עוקף את רשימת התפוצה ואת פילוח הקהל. מנסים לאתר את ה-uid לפי המייל כדי
+  // שקישור ההסרה בפוטר יעבוד; אם לא נמצא — עדיין נשלח (טוקן לא-מזיק).
+  let recipients: Array<{ uid: string; email: string; optInAt: string | null }>
+  if (testEmail) {
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(testEmail)) {
+      return res.status(400).json({ ok: false, error: 'כתובת מייל לא תקינה' })
+    }
+    const uSnap = await db
+      .collection('users')
+      .where('email', '==', testEmail)
+      .limit(1)
+      .get()
+    const uid = uSnap.empty ? '' : uSnap.docs[0].id
+    recipients = [{ uid, email: testEmail, optInAt: null }]
+  } else {
+    recipients = await marketingRecipients(db, audience)
+  }
 
   if (dryRun) {
     return res.status(200).json({ ok: true, recipientCount: recipients.length })

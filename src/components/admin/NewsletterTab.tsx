@@ -20,6 +20,9 @@ import {
   ChevronUp,
   ChevronDown,
   Trash2,
+  AlignRight,
+  AlignCenter,
+  AlignLeft,
   X,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
@@ -42,16 +45,17 @@ interface Recipient {
   optInAt: string | null
 }
 
-type Audience = 'all' | 'free' | 'pro'
+type Audience = 'all' | 'free' | 'pro' | 'one'
 
 /* ── מודל הבלוקים ── */
+type Align = 'right' | 'center' | 'left'
 type Block =
-  | { id: string; type: 'paragraph'; text: string }
-  | { id: string; type: 'heading'; text: string }
-  | { id: string; type: 'button'; text: string; href: string }
-  | { id: string; type: 'image'; driveLink: string; alt: string }
+  | { id: string; type: 'paragraph'; text: string; align?: Align }
+  | { id: string; type: 'heading'; text: string; align?: Align }
+  | { id: string; type: 'button'; text: string; href: string; align?: Align }
+  | { id: string; type: 'image'; driveLink: string; alt: string; align?: Align }
   | { id: string; type: 'divider' }
-  | { id: string; type: 'raw'; html: string }
+  | { id: string; type: 'raw'; html: string; align?: Align }
 
 interface Preset {
   id: string
@@ -273,33 +277,50 @@ function driveImgSrc(link: string): string | null {
   return id ? `https://drive.google.com/thumbnail?id=${id}&sz=w1000` : null
 }
 
+/** עוטף תוכן ב-div עם יישור אופקי (ברירת-מחדל: ימין, מתאים ל-RTL). */
+function wrapAlign(inner: string, align?: Align): string {
+  return `<div style="text-align:${align || 'right'};">${inner}</div>`
+}
+
 function blockToHtml(b: Block): string {
   switch (b.type) {
     case 'paragraph':
-      return `<p style="font-size:15px;line-height:1.8;color:#D8CFC2;margin:0 0 18px;">${esc(
-        b.text,
-      ).replace(/\n/g, '<br/>')}</p>`
+      return wrapAlign(
+        `<p style="font-size:15px;line-height:1.8;color:#D8CFC2;margin:0 0 18px;">${esc(
+          b.text,
+        ).replace(/\n/g, '<br/>')}</p>`,
+        b.align,
+      )
     case 'heading':
-      return `<h2 style="font-size:19px;color:#F5EFE6;font-weight:500;margin:26px 0 12px;">${esc(
-        b.text,
-      )}</h2>`
+      return wrapAlign(
+        `<h2 style="font-size:19px;color:#F5EFE6;font-weight:500;margin:26px 0 12px;">${esc(
+          b.text,
+        )}</h2>`,
+        b.align,
+      )
     case 'button': {
       const href = esc(b.href || '#')
-      return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 22px;"><tr><td style="border-radius:8px;background:#D4A574;"><a href="${href}" style="display:inline-block;padding:12px 28px;font-size:15px;font-weight:500;color:#16110D;text-decoration:none;">${esc(
-        b.text || 'לחצו כאן',
-      )}</a></td></tr></table>`
+      return wrapAlign(
+        `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="display:inline-block;margin:8px 0 22px;"><tr><td style="border-radius:8px;background:#D4A574;"><a href="${href}" style="display:inline-block;padding:12px 28px;font-size:15px;font-weight:500;color:#16110D;text-decoration:none;">${esc(
+          b.text || 'לחצו כאן',
+        )}</a></td></tr></table>`,
+        b.align,
+      )
     }
     case 'image': {
       const src = driveImgSrc(b.driveLink)
       if (!src) return ''
-      return `<img src="${src}" alt="${esc(
-        b.alt,
-      )}" width="468" style="display:block;width:100%;max-width:468px;height:auto;border-radius:8px;margin:8px 0 20px;"/>`
+      return wrapAlign(
+        `<img src="${src}" alt="${esc(
+          b.alt,
+        )}" width="468" style="display:inline-block;width:100%;max-width:468px;height:auto;border-radius:8px;margin:8px 0 20px;"/>`,
+        b.align,
+      )
     }
     case 'divider':
       return `<hr style="border:0;border-top:1px solid rgba(245,239,230,0.10);margin:24px 0;"/>`
     case 'raw':
-      return b.html
+      return wrapAlign(b.html, b.align)
   }
 }
 
@@ -350,6 +371,7 @@ const AUDIENCES: { key: Audience; label: string; hint: string }[] = [
   { key: 'all', label: 'כולם', hint: 'כל רשימת התפוצה' },
   { key: 'free', label: 'משתמשי חינם', hint: 'כולל ניסיון פעיל' },
   { key: 'pro', label: 'משתמשי פרו', hint: 'מנוי פעיל בלבד' },
+  { key: 'one', label: 'מייל ספציפי', hint: 'שליחה לכתובת אחת' },
 ]
 
 /* ── מלחין ההודעה: בנאי בלוקים + תצוגה מקדימה + פריסטים + קהל ── */
@@ -358,6 +380,7 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [heading, setHeading] = useState('')
   const [blocks, setBlocks] = useState<Block[]>([])
   const [audience, setAudience] = useState<Audience>('all')
+  const [oneEmail, setOneEmail] = useState('')
   const [bcBusy, setBcBusy] = useState(false)
   const [bcResult, setBcResult] = useState<{
     kind: 'idle' | 'dry' | 'done' | 'error'
@@ -502,6 +525,11 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
       })
       return
     }
+    const isOne = audience === 'one'
+    if (isOne && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(oneEmail.trim())) {
+      setBcResult({ kind: 'error', text: 'הזן כתובת מייל תקינה לשליחה ספציפית.' })
+      return
+    }
     setBcBusy(true)
     try {
       const j = await adminApi<{
@@ -513,18 +541,23 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
         heading: heading.trim(),
         contentHtml: contentHtml.trim(),
         audience,
+        testEmail: isOne ? oneEmail.trim() : undefined,
         dryRun,
       })
       const audLabel = AUDIENCES.find((a) => a.key === audience)?.label ?? ''
       if (dryRun) {
         setBcResult({
           kind: 'dry',
-          text: `יש ${j.recipientCount ?? 0} נמענים בקהל "${audLabel}". לחץ "שלח" כדי לשלוח אליהם.`,
+          text: isOne
+            ? `ישלח לכתובת ${oneEmail.trim()}. לחץ "שלח" לביצוע.`
+            : `יש ${j.recipientCount ?? 0} נמענים בקהל "${audLabel}". לחץ "שלח" כדי לשלוח אליהם.`,
         })
       } else {
         setBcResult({
           kind: 'done',
-          text: `הסתיים (${audLabel}): ${j.sent ?? 0}/${j.recipientCount ?? 0} נשלחו, ${j.failed ?? 0} נכשלו.`,
+          text: isOne
+            ? `נשלח ל-${oneEmail.trim()} (${j.sent ?? 0} נשלחו, ${j.failed ?? 0} נכשלו).`
+            : `הסתיים (${audLabel}): ${j.sent ?? 0}/${j.recipientCount ?? 0} נשלחו, ${j.failed ?? 0} נכשלו.`,
         })
       }
     } catch (e) {
@@ -703,6 +736,16 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
             </button>
           ))}
         </div>
+        {audience === 'one' && (
+          <Input
+            value={oneEmail}
+            onChange={(e) => setOneEmail(e.target.value)}
+            placeholder="כתובת המייל לשליחה"
+            dir="ltr"
+            disabled={bcBusy}
+            className="mt-1.5"
+          />
+        )}
       </div>
 
       {bcResult.kind !== 'idle' && (
@@ -736,11 +779,11 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
           disabled={bcBusy}
           onClick={() => {
             const audLabel = AUDIENCES.find((a) => a.key === audience)?.label ?? ''
-            if (
-              window.confirm(
-                `לשלוח את המייל לקהל "${audLabel}"? אי אפשר לבטל אחרי שליחה.`,
-              )
-            ) {
+            const msg =
+              audience === 'one'
+                ? `לשלוח את המייל ל-${oneEmail.trim() || '(ריק)'}?`
+                : `לשלוח את המייל לקהל "${audLabel}"? אי אפשר לבטל אחרי שליחה.`
+            if (window.confirm(msg)) {
               void sendBroadcast(false)
             }
           }}
@@ -793,6 +836,34 @@ function BlockEditor({
         <span className="rounded-md bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
           {LABELS[block.type]}
         </span>
+        {block.type !== 'divider' && (
+          <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+            {([
+              ['right', AlignRight, 'יישור לימין'],
+              ['center', AlignCenter, 'מרכוז'],
+              ['left', AlignLeft, 'יישור לשמאל'],
+            ] as const).map(([val, Icon, title]) => {
+              const active = (block.align || 'right') === val
+              return (
+                <button
+                  key={val}
+                  type="button"
+                  disabled={disabled}
+                  title={title}
+                  onClick={() => onChange({ align: val })}
+                  className={
+                    'rounded-md p-1 transition-colors disabled:opacity-40 ' +
+                    (active
+                      ? 'bg-accent/15 text-accent'
+                      : 'text-fg-muted hover:text-fg')
+                  }
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                </button>
+              )
+            })}
+          </div>
+        )}
         <div className="ms-auto flex items-center gap-0.5">
           <IconBtn disabled={disabled || first} onClick={() => onMove(-1)} title="למעלה">
             <ChevronUp className="h-3.5 w-3.5" />
