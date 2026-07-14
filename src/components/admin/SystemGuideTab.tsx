@@ -13,6 +13,8 @@ import {
   X,
   RefreshCw,
   ShieldAlert,
+  FileText,
+  Download,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 import { Button } from '@/components/ui/Button'
@@ -288,6 +290,7 @@ interface CheckDoc {
   status: 'pending' | 'done'
   results?: CheckResult[]
   meta?: Record<string, unknown>
+  logs?: Record<string, string>
   reportedAt?: string
 }
 
@@ -479,9 +482,67 @@ function RemoteCheckCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
               </div>
             </div>
           )}
+
+          {doc.logs && Object.keys(doc.logs).length > 0 && (
+            <LogViewer logs={doc.logs} />
+          )}
         </div>
       )}
     </Card>
+  )
+}
+
+/** Pro-only log tails (sync / transcription / time-track). Collapsible +
+ *  downloadable so the admin can inspect what actually failed on the machine. */
+function LogViewer({ logs }: { logs: Record<string, string> }) {
+  const names = Object.keys(logs)
+  const [active, setActive] = useState(names[0] || '')
+  const text = logs[active] || ''
+  const download = () => {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = active
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+  return (
+    <div className="rounded-xl border border-border bg-background/40 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-fg-muted">
+          <FileText className="h-3.5 w-3.5" />
+          לוגים (Pro)
+        </div>
+        <button
+          onClick={download}
+          className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-accent hover:bg-accent/10"
+        >
+          <Download className="h-3 w-3" />
+          הורדה
+        </button>
+      </div>
+      <div className="mb-2 flex flex-wrap gap-1">
+        {names.map((n) => (
+          <button
+            key={n}
+            onClick={() => setActive(n)}
+            className={`rounded-md px-2 py-1 font-mono text-[11px] transition-colors ${
+              n === active
+                ? 'bg-accent/15 text-accent'
+                : 'text-fg-muted hover:bg-background'
+            }`}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+      <pre
+        dir="ltr"
+        className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background p-2 font-mono text-[10px] leading-relaxed text-fg-muted"
+      >
+        {text || '(ריק)'}
+      </pre>
+    </div>
   )
 }
 

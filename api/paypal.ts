@@ -9029,6 +9029,7 @@ async function handleSyscheckReport(req: VercelRequest, res: VercelResponse) {
     code?: string
     results?: unknown
     meta?: unknown
+    logs?: unknown
   }
   const code = String(body.code || '').trim().toUpperCase()
   if (!code) return res.status(400).json({ ok: false, error: 'קוד חסר' })
@@ -9043,8 +9044,22 @@ async function handleSyscheckReport(req: VercelRequest, res: VercelResponse) {
   const results = Array.isArray(body.results) ? body.results.slice(0, 60) : []
   const meta =
     body.meta && typeof body.meta === 'object' ? body.meta : {}
+  // Log tails (Pro-only). Cap each entry so one huge log can't blow the
+  // 1MB Firestore document limit.
+  const logs: Record<string, string> = {}
+  if (body.logs && typeof body.logs === 'object') {
+    for (const [k, v] of Object.entries(body.logs as Record<string, unknown>)) {
+      if (typeof v === 'string' && v) logs[k] = v.slice(-40000)
+    }
+  }
   await ref.set(
-    { status: 'done', reportedAt: new Date().toISOString(), results, meta },
+    {
+      status: 'done',
+      reportedAt: new Date().toISOString(),
+      results,
+      meta,
+      logs,
+    },
     { merge: true },
   )
   return res.status(200).json({ ok: true })
