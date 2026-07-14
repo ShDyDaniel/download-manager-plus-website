@@ -66,8 +66,9 @@ interface TextStyleFields {
 }
 type Block =
   // פסקה = עורך טקסט-עשיר; ה-html מכיל עיצוב פנימי (מודגש/פונט/צבע/קישור),
-  // ו-align הוא היישור של כל הפסקה (כולל justify — מילוי שורות).
-  | { id: string; type: 'paragraph'; html: string; align?: Align }
+  // align = היישור של כל הפסקה (כולל justify — מילוי שורות), ו-padR/padL
+  // הם מרווחי-הקצה (px) מכל צד — בעיקר כדי לרסן את המילוי-שורה.
+  | { id: string; type: 'paragraph'; html: string; align?: Align; padR?: number; padL?: number }
   | ({ id: string; type: 'heading'; text: string; align?: Align } & TextStyleFields)
   | ({
       id: string
@@ -372,9 +373,10 @@ function blockToHtml(b: Block): string {
       // text-align-last כדי שגם השורה האחרונה/הבודדת תימתח מקצה לקצה.
       const al = b.align || 'right'
       const lastRule = al === 'justify' ? 'text-align-last:justify;' : ''
+      const padRule = `padding-right:${b.padR || 0}px;padding-left:${b.padL || 0}px;`
       return `<div style="font-size:15px;line-height:1.8;color:#D8CFC2;font-family:${fontStack(
         'rubik',
-      )};direction:rtl;text-align:${al};${lastRule}margin:0 0 18px;">${b.html}</div>`
+      )};direction:rtl;text-align:${al};${lastRule}${padRule}margin:0 0 18px;">${b.html}</div>`
     }
     case 'heading':
       return wrapAlign(
@@ -1006,9 +1008,12 @@ function BlockEditor({
         <RichTextEditor
           html={block.html}
           align={block.align}
+          padR={block.padR}
+          padL={block.padL}
           disabled={disabled}
           onChange={(html) => onChange({ html })}
           onAlign={(a) => onChange({ align: a })}
+          onPad={(patch) => onChange(patch)}
         />
       )}
 
@@ -1162,15 +1167,21 @@ function ensureFontsLoaded() {
 function RichTextEditor({
   html,
   align,
+  padR,
+  padL,
   disabled,
   onChange,
   onAlign,
+  onPad,
 }: {
   html: string
   align?: Align
+  padR?: number
+  padL?: number
   disabled: boolean
   onChange: (html: string) => void
   onAlign: (a: Align) => void
+  onPad: (patch: { padR?: number; padL?: number }) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   // איתחול חד-פעמי (הרכיב ממופתח לפי מזהה-הבלוק, אז טעינת פריסט = mount חדש).
@@ -1336,12 +1347,48 @@ function RichTextEditor({
         style={{
           textAlign: align || 'right',
           textAlignLast: align === 'justify' ? 'justify' : 'auto',
+          paddingRight: `${(padR || 0) + 12}px`,
+          paddingLeft: `${(padL || 0) + 12}px`,
         }}
         data-ph="כתוב כאן… סמן טקסט כדי לעצב רק אותו"
         onInput={emit}
         onBlur={emit}
-        className="nl-rte min-h-[90px] rounded-lg border border-border bg-input/60 px-3 py-2 text-sm leading-relaxed text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="nl-rte min-h-[90px] rounded-lg border border-border bg-input/60 py-2 text-sm leading-relaxed text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
       />
+      {align === 'justify' && (
+        <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-background/40 px-3 py-2">
+          <label className="space-y-1">
+            <span className="flex justify-between text-[11px] text-fg-muted">
+              <span>מרווח ימין</span>
+              <span className="tabular-nums">{padR || 0}px</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={200}
+              value={padR || 0}
+              disabled={disabled}
+              onChange={(e) => onPad({ padR: Number(e.target.value) })}
+              className="w-full accent-accent"
+            />
+          </label>
+          <label className="space-y-1">
+            <span className="flex justify-between text-[11px] text-fg-muted">
+              <span>מרווח שמאל</span>
+              <span className="tabular-nums">{padL || 0}px</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={200}
+              value={padL || 0}
+              disabled={disabled}
+              onChange={(e) => onPad({ padL: Number(e.target.value) })}
+              className="w-full accent-accent"
+            />
+          </label>
+        </div>
+      )}
     </div>
   )
 }
