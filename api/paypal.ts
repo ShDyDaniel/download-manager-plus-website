@@ -9006,6 +9006,82 @@ async function handleAdminSyscheckCreate(
   })
 }
 
+// ── System-check log files: stored in Cloudflare R2 (NOT Firestore/DB) and
+// purged after 1 hour. The Firestore doc keeps only the small results+meta
+// and the list of R2 keys.
+const SYSCHECK_LOG_PREFIX = 'syscheck-logs/'
+const SYSCHECK_LOG_TTL_MS = 60 * 60 * 1000 // 1 hour
+
+/** Delete any syscheck log objects older than 1 hour. Best-effort, called
+ *  opportunistically on every report/get so logs never linger past the TTL
+ *  even without a dedicated cron. */
+async function purgeStaleSyscheckLogs(): Promise<void> {
+  try {
+    const r2 = getBackupR2()
+    const cutoff = Date.now() - SYSCHECK_LOG_TTL_MS
+    let token: string | undefined
+    do {
+      const list = await r2.send(
+        new ListObjectsV2Command({
+          Bucket: BACKUP_BUCKET,
+          Prefix: SYSCHECK_LOG_PREFIX,
+          ContinuationToken: token,
+        }),
+      )
+      for (const o of list.Contents || []) {
+        if (o.Key && o.LastModified && o.LastModified.getTime() < cutoff) {
+          await r2
+            .send(new DeleteObjectCommand({ Bucket: BACKUP_BUCKET, Key: o.Key }))
+            .catch(() => {})
+        }
+      }
+      token = list.IsTruncated ? list.NextContinuationToken : undefined
+    } while (token)
+  } catch {
+    /* R2 unavailable — ignore, logs will be purged on a later call */
+  }
+}
+
+/** Upload one log tail to R2 and return its key. */
+async function putSyscheckLog(
+  code: string,
+  name: string,
+  content: string,
+): Promise<string> {
+  const safe = name.replace(/[^a-zA-Z0-9._-]/g, '_')
+  const key = `${SYSCHECK_LOG_PREFIX}${code}/${safe}`
+  await getBackupR2().send(
+    new PutObjectCommand({
+      Bucket: BACKUP_BUCKET,
+      Key: key,
+      Body: content,
+      ContentType: 'text/plain; charset=utf-8',
+    }),
+  )
+  return key
+}
+
+/** Fetch the stored log tails from R2 (returns {} if already purged). */
+async function getSyscheckLogs(
+  logKeys: Record<string, string>,
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {}
+  const r2 = getBackupR2()
+  for (const [name, key] of Object.entries(logKeys)) {
+    try {
+      const obj = await r2.send(
+        new GetObjectCommand({ Bucket: BACKUP_BUCKET, Key: key }),
+      )
+      out[name] = await (
+        obj.Body as { transformToString: () => Promise<string> }
+      ).transformToString()
+    } catch {
+      /* purged or missing — skip */
+    }
+  }
+  return out
+}
+
 async function handleAdminSyscheckGet(req: VercelRequest, res: VercelResponse) {
   if (!(await verifyAdmin2FA(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
@@ -9017,7 +9093,16 @@ async function handleAdminSyscheckGet(req: VercelRequest, res: VercelResponse) {
   if (!code) return res.status(400).json({ ok: false, error: 'code' })
   const snap = await getDb().collection('systemChecks').doc(code).get()
   if (!snap.exists) return res.status(404).json({ ok: false, error: 'not-found' })
-  return res.status(200).json({ ok: true, check: { id: snap.id, ...snap.data() } })
+  const data = snap.data() as { logKeys?: Record<string, string> }
+  // Log files live in R2, not the DB — fetch them on demand for viewing.
+  const logs =
+    data.logKeys && Object.keys(data.logKeys).length
+      ? await getSyscheckLogs(data.logKeys)
+      : {}
+  void purgeStaleSyscheckLogs()
+  return res
+    .status(200)
+    .json({ ok: true, check: { id: snap.id, ...snap.data(), logs } })
 }
 
 /** PUBLIC — the desktop app posts its diagnostic here. Gated only by a
@@ -9036,32 +9121,44 @@ async function handleSyscheckReport(req: VercelRequest, res: VercelResponse) {
   const ref = getDb().collection('systemChecks').doc(code)
   const snap = await ref.get()
   if (!snap.exists) return res.status(404).json({ ok: false, error: 'קוד לא קיים' })
-  const data = snap.data() as { expiresAt?: string }
+  const data = snap.data() as { expiresAt?: string; status?: string; used?: boolean }
   if (data.expiresAt && Date.parse(data.expiresAt) < Date.now()) {
     return res.status(410).json({ ok: false, error: 'הקוד פג תוקף' })
+  }
+  // Single-use: once a check has been reported the link is dead.
+  if (data.used || data.status === 'done') {
+    return res.status(409).json({ ok: false, error: 'הקוד כבר נוצל — בקש קישור חדש' })
   }
   // Cap the stored payload defensively (results is a small array).
   const results = Array.isArray(body.results) ? body.results.slice(0, 60) : []
   const meta =
     body.meta && typeof body.meta === 'object' ? body.meta : {}
-  // Log tails (Pro-only). Cap each entry so one huge log can't blow the
-  // 1MB Firestore document limit.
-  const logs: Record<string, string> = {}
+  // Log files → Cloudflare R2 (NOT the DB). Cap each tail, store only the
+  // R2 keys in Firestore. R2 objects are purged after 1 hour.
+  const logKeys: Record<string, string> = {}
   if (body.logs && typeof body.logs === 'object') {
-    for (const [k, v] of Object.entries(body.logs as Record<string, unknown>)) {
-      if (typeof v === 'string' && v) logs[k] = v.slice(-40000)
+    for (const [name, v] of Object.entries(body.logs as Record<string, unknown>)) {
+      if (typeof v !== 'string' || !v) continue
+      try {
+        logKeys[name] = await putSyscheckLog(code, name, v.slice(-40000))
+      } catch {
+        /* R2 upload failed — skip this log, keep the rest of the report */
+      }
     }
   }
   await ref.set(
     {
       status: 'done',
+      used: true,
       reportedAt: new Date().toISOString(),
       results,
       meta,
-      logs,
+      logKeys,
     },
     { merge: true },
   )
+  // Opportunistic cleanup of any logs older than the 1-hour TTL.
+  void purgeStaleSyscheckLogs()
   return res.status(200).json({ ok: true })
 }
 
