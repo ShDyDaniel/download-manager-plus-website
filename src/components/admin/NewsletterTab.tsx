@@ -23,6 +23,7 @@ import {
   AlignRight,
   AlignCenter,
   AlignLeft,
+  AlignJustify,
   Bold,
   Italic,
   Underline,
@@ -62,7 +63,8 @@ interface TextStyleFields {
   color?: string
 }
 type Block =
-  | ({ id: string; type: 'paragraph'; text: string; align?: Align } & TextStyleFields)
+  // פסקה = עורך טקסט-עשיר; ה-html מכיל את העיצוב הפנימי (מודגש/פונט/צבע/יישור).
+  | { id: string; type: 'paragraph'; html: string }
   | ({ id: string; type: 'heading'; text: string; align?: Align } & TextStyleFields)
   | ({
       id: string
@@ -296,24 +298,26 @@ function driveImgSrc(link: string): string | null {
   return id ? `https://drive.google.com/thumbnail?id=${id}&sz=w1000` : null
 }
 
-/** משפחות פונט בטוחות-מייל (כולן תומכות עברית פרט ל-Georgia/Courier). */
-const FONTS: { key: string; label: string; stack: string }[] = [
-  {
-    key: 'brand',
-    label: 'מותג (Rubik)',
-    stack:
-      "'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif",
-  },
-  { key: 'arial', label: 'Arial', stack: 'Arial, Helvetica, sans-serif' },
-  { key: 'verdana', label: 'Verdana', stack: 'Verdana, Geneva, sans-serif' },
-  { key: 'tahoma', label: 'Tahoma', stack: 'Tahoma, Geneva, sans-serif' },
-  { key: 'georgia', label: 'Georgia', stack: 'Georgia, serif' },
-  { key: 'times', label: 'Times', stack: "'Times New Roman', Times, serif" },
-  { key: 'courier', label: 'Courier', stack: "'Courier New', Courier, monospace" },
+/** פונטים יפים מ-Google Fonts, כולם תומכי-עברית. name = שם המשפחה
+ *  (ל-execCommand בעורך העשיר), stack = מחרוזת ה-font-family לסגנון. */
+const FONTS: { key: string; label: string; name: string; stack: string }[] = [
+  { key: 'rubik', label: 'Rubik', name: 'Rubik', stack: "'Rubik', sans-serif" },
+  { key: 'assistant', label: 'Assistant', name: 'Assistant', stack: "'Assistant', sans-serif" },
+  { key: 'heebo', label: 'Heebo', name: 'Heebo', stack: "'Heebo', sans-serif" },
+  { key: 'varela', label: 'Varela Round', name: 'Varela Round', stack: "'Varela Round', sans-serif" },
+  { key: 'secular', label: 'Secular One', name: 'Secular One', stack: "'Secular One', sans-serif" },
+  { key: 'frank', label: 'Frank Ruhl Libre', name: 'Frank Ruhl Libre', stack: "'Frank Ruhl Libre', serif" },
+  { key: 'suez', label: 'Suez One', name: 'Suez One', stack: "'Suez One', serif" },
+  { key: 'bellefair', label: 'Bellefair', name: 'Bellefair', stack: "'Bellefair', serif" },
+  { key: 'miriam', label: 'Miriam Libre', name: 'Miriam Libre', stack: "'Miriam Libre', sans-serif" },
+  { key: 'alef', label: 'Alef', name: 'Alef', stack: "'Alef', sans-serif" },
 ]
 function fontStack(key?: string): string {
   return FONTS.find((f) => f.key === key)?.stack ?? FONTS[0].stack
 }
+/** קישור Google Fonts הטוען את כל המשפחות — לתצוגה המקדימה ולמייל הנשלח. */
+const FONT_CSS_HREF =
+  'https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&family=Assistant:wght@400;600;700&family=Heebo:wght@400;700&family=Varela+Round&family=Secular+One&family=Frank+Ruhl+Libre:wght@400;500;700&family=Suez+One&family=Bellefair&family=Miriam+Libre:wght@400;700&family=Alef:wght@400;700&display=swap'
 const FONT_SIZES = [12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 40]
 
 /** סגנונות כפתור לבחירה. */
@@ -360,16 +364,11 @@ function wrapAlign(inner: string, align?: Align): string {
 function blockToHtml(b: Block): string {
   switch (b.type) {
     case 'paragraph':
-      return wrapAlign(
-        `<p style="${textCss(b, {
-          size: 15,
-          color: '#D8CFC2',
-        })};line-height:1.8;margin:0 0 18px;">${esc(b.text).replace(
-          /\n/g,
-          '<br/>',
-        )}</p>`,
-        b.align,
-      )
+      // ה-html כבר כולל את העיצוב הפנימי; עוטפים במיכל עם ברירות-מחדל
+      // של גודל/צבע/פונט/כיוון כדי שטקסט לא-מעוצב ייראה נכון.
+      return `<div style="font-size:15px;line-height:1.8;color:#D8CFC2;font-family:${fontStack(
+        'rubik',
+      )};direction:rtl;text-align:right;margin:0 0 18px;">${b.html}</div>`
     case 'heading':
       return wrapAlign(
         `<h2 style="${textCss(b, {
@@ -420,7 +419,7 @@ function renderEmailPreview(heading: string, contentHtml: string): string {
     </p>`
   return `<!doctype html>
 <html dir="rtl" lang="he"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&display=swap" rel="stylesheet"/></head>
+<link href="${FONT_CSS_HREF}" rel="stylesheet"/></head>
 <body style="margin:0;padding:0;background:#16110D;font-family:'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;color:#F5EFE6;direction:rtl;-webkit-font-smoothing:antialiased;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#16110D;padding:40px 16px;"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
@@ -500,7 +499,7 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
     const id = newId()
     const b: Block =
       type === 'paragraph'
-        ? { id, type, text: '' }
+        ? { id, type, html: '' }
         : type === 'heading'
           ? { id, type, text: '' }
           : type === 'button'
@@ -544,8 +543,18 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
     try {
       const parsed = p.blocksJson ? (JSON.parse(p.blocksJson) as Block[]) : []
       if (Array.isArray(parsed) && parsed.length) {
-        // מזהים חדשים כדי למנוע התנגשות מפתחות ב-React.
-        setBlocks(parsed.map((b) => ({ ...b, id: newId() })))
+        // מזהים חדשים כדי למנוע התנגשות מפתחות ב-React. פסקאות ישנות
+        // (מבנה text) מומרות ל-html של העורך העשיר.
+        setBlocks(
+          parsed.map((b) => {
+            const withId = { ...b, id: newId() } as Block & { text?: string }
+            if (withId.type === 'paragraph' && withId.html === undefined) {
+              const legacy = (withId as { text?: string }).text || ''
+              return { id: withId.id, type: 'paragraph', html: esc(legacy).replace(/\n/g, '<br/>') }
+            }
+            return withId as Block
+          }),
+        )
         return
       }
     } catch {
@@ -919,7 +928,7 @@ function BlockEditor({
         <span className="rounded-md bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
           {LABELS[block.type]}
         </span>
-        {block.type !== 'divider' && (
+        {block.type !== 'divider' && block.type !== 'paragraph' && (
           <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
             {([
               ['right', AlignRight, 'יישור לימין'],
@@ -961,17 +970,11 @@ function BlockEditor({
       </div>
 
       {block.type === 'paragraph' && (
-        <div className="space-y-2">
-          <textarea
-            value={block.text}
-            onChange={(e) => onChange({ text: e.target.value })}
-            placeholder="כתוב כאן את הטקסט של הפסקה…"
-            rows={3}
-            disabled={disabled}
-            className="block w-full resize-y rounded-lg border border-border bg-input/60 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-          />
-          <TextStyleBar style={block} defColor="#D8CFC2" disabled={disabled} onChange={onChange} />
-        </div>
+        <RichTextEditor
+          html={block.html}
+          disabled={disabled}
+          onChange={(html) => onChange({ html })}
+        />
       )}
 
       {block.type === 'heading' && (
@@ -1101,6 +1104,156 @@ function BlockEditor({
           className="block w-full resize-y rounded-lg border border-border bg-input/60 px-3 py-2 font-mono text-xs text-foreground placeholder:text-muted-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
         />
       )}
+    </div>
+  )
+}
+
+/** מוודא שפונטי-Google ותבנית ה-placeholder של העורך טעונים במסמך (פעם אחת). */
+let fontsInjected = false
+function ensureFontsLoaded() {
+  if (fontsInjected || typeof document === 'undefined') return
+  fontsInjected = true
+  const link = document.createElement('link')
+  link.rel = 'stylesheet'
+  link.href = FONT_CSS_HREF
+  document.head.appendChild(link)
+  const style = document.createElement('style')
+  style.textContent =
+    '.nl-rte:empty:before{content:attr(data-ph);color:#8B8170;pointer-events:none;}'
+  document.head.appendChild(style)
+}
+
+/* ── עורך טקסט עשיר (contentEditable): מעצב טקסט מסומן בלבד ── */
+function RichTextEditor({
+  html,
+  disabled,
+  onChange,
+}: {
+  html: string
+  disabled: boolean
+  onChange: (html: string) => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  // איתחול חד-פעמי (הרכיב ממופתח לפי מזהה-הבלוק, אז טעינת פריסט = mount חדש).
+  useEffect(() => {
+    ensureFontsLoaded()
+    if (ref.current && ref.current.innerHTML !== html) ref.current.innerHTML = html
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const emit = () => onChange(ref.current?.innerHTML || '')
+  const cmd = (c: string, v?: string) => {
+    ref.current?.focus()
+    try {
+      document.execCommand('styleWithCSS', false, 'true')
+    } catch {
+      /* ignore */
+    }
+    document.execCommand(c, false, v)
+    emit()
+  }
+  const setSize = (px: string) => {
+    if (!px) return
+    ref.current?.focus()
+    document.execCommand('fontSize', false, '7')
+    ref.current?.querySelectorAll('font[size="7"]').forEach((el) => {
+      const span = document.createElement('span')
+      span.style.fontSize = `${px}px`
+      while (el.firstChild) span.appendChild(el.firstChild)
+      el.replaceWith(span)
+    })
+    emit()
+  }
+
+  const selCls =
+    'rounded-lg border border-border bg-input/60 px-2 py-1 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60'
+  const tbtn =
+    'rounded-md p-1.5 text-fg-muted transition-colors hover:text-fg disabled:opacity-40'
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <select
+          defaultValue=""
+          onChange={(e) => {
+            const f = FONTS.find((x) => x.key === e.target.value)
+            if (f) cmd('fontName', f.name)
+            e.target.value = ''
+          }}
+          disabled={disabled}
+          className={selCls}
+          title="פונט לטקסט המסומן"
+        >
+          <option value="">פונט</option>
+          {FONTS.map((f) => (
+            <option key={f.key} value={f.key}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+        <select
+          defaultValue=""
+          onChange={(e) => {
+            setSize(e.target.value)
+            e.target.value = ''
+          }}
+          disabled={disabled}
+          className={selCls}
+          title="גודל לטקסט המסומן"
+        >
+          <option value="">גודל</option>
+          {FONT_SIZES.map((s) => (
+            <option key={s} value={s}>
+              {s}px
+            </option>
+          ))}
+        </select>
+        <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+          <button type="button" disabled={disabled} title="מודגש" onClick={() => cmd('bold')} className={tbtn}>
+            <Bold className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" disabled={disabled} title="נטוי" onClick={() => cmd('italic')} className={tbtn}>
+            <Italic className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" disabled={disabled} title="קו תחתי" onClick={() => cmd('underline')} className={tbtn}>
+            <Underline className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+          <button type="button" disabled={disabled} title="יישור לימין" onClick={() => cmd('justifyRight')} className={tbtn}>
+            <AlignRight className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" disabled={disabled} title="מרכוז" onClick={() => cmd('justifyCenter')} className={tbtn}>
+            <AlignCenter className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" disabled={disabled} title="יישור לשמאל" onClick={() => cmd('justifyLeft')} className={tbtn}>
+            <AlignLeft className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" disabled={disabled} title="יישור לשני הצדדים" onClick={() => cmd('justifyFull')} className={tbtn}>
+            <AlignJustify className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <label className="flex items-center gap-1 rounded-lg border border-border px-1.5 py-1 text-xs text-fg-muted" title="צבע לטקסט המסומן">
+          <input
+            type="color"
+            defaultValue="#D8CFC2"
+            onChange={(e) => cmd('foreColor', e.target.value)}
+            disabled={disabled}
+            className="h-4 w-5 cursor-pointer rounded border-0 bg-transparent p-0"
+          />
+          צבע
+        </label>
+      </div>
+      <div
+        ref={ref}
+        contentEditable={!disabled}
+        suppressContentEditableWarning
+        dir="rtl"
+        data-ph="כתוב כאן… סמן טקסט כדי לעצב רק אותו"
+        onInput={emit}
+        onBlur={emit}
+        className="nl-rte min-h-[90px] rounded-lg border border-border bg-input/60 px-3 py-2 text-sm leading-relaxed text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      />
     </div>
   )
 }

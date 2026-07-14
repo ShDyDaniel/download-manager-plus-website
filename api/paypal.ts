@@ -6173,7 +6173,11 @@ async function handleAdminMigrateEmailVerified(
  *  variable content (heading text + body HTML) and gets the
  *  consistent dark frame for free.
  * ───────────────────────────────────────────────────────────── */
-function renderEmail(args: { heading: string; contentHtml: string }): string {
+function renderEmail(args: {
+  heading: string
+  contentHtml: string
+  extraHead?: string
+}): string {
   // Brand palette mirroring src/index.css — warm espresso bg, copper
   // accent, cream foreground. Replaces the earlier "generic dark +
   // bright yellow" Material-look that didn't match the desktop app
@@ -6188,6 +6192,7 @@ function renderEmail(args: { heading: string; contentHtml: string }): string {
   <meta name="color-scheme" content="only dark"/>
   <meta name="supported-color-schemes" content="only dark"/>
   <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&display=swap" rel="stylesheet"/>
+  ${args.extraHead ?? ''}
 </head>
 <body style="margin:0;padding:0;background:#16110D;font-family:'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;color:#F5EFE6;direction:rtl;-webkit-font-smoothing:antialiased;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#16110D;padding:48px 20px;">
@@ -7013,6 +7018,10 @@ async function handleAdminSendMarketingEmail(
     const html = renderEmail({
       heading,
       contentHtml: `${contentHtml}\n${footerHtml}`,
+      // טוען את הפונטים היפים שנבחרו בבנאי הניוזלטר (Gmail/Apple Mail
+      // מכבדים <link> לפונטים; לקוחות שלא — נופלים חזרה יפה ל-sans-serif).
+      extraHead:
+        '<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&family=Assistant:wght@400;600;700&family=Heebo:wght@400;700&family=Varela+Round&family=Secular+One&family=Frank+Ruhl+Libre:wght@400;500;700&family=Suez+One&family=Bellefair&family=Miriam+Libre:wght@400;700&family=Alef:wght@400;700&display=swap" rel="stylesheet"/>',
     })
     try {
       await transporter.sendMail({
