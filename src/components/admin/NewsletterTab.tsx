@@ -366,12 +366,16 @@ function wrapAlign(inner: string, align?: Align): string {
 
 function blockToHtml(b: Block): string {
   switch (b.type) {
-    case 'paragraph':
+    case 'paragraph': {
       // ה-html כבר כולל את העיצוב הפנימי; עוטפים במיכל עם ברירות-מחדל
-      // של גודל/צבע/פונט/כיוון + היישור של כל הפסקה (כולל justify).
+      // של גודל/צבע/פונט/כיוון + היישור של כל הפסקה. ב-justify מוסיפים
+      // text-align-last כדי שגם השורה האחרונה/הבודדת תימתח מקצה לקצה.
+      const al = b.align || 'right'
+      const lastRule = al === 'justify' ? 'text-align-last:justify;' : ''
       return `<div style="font-size:15px;line-height:1.8;color:#D8CFC2;font-family:${fontStack(
         'rubik',
-      )};direction:rtl;text-align:${b.align || 'right'};margin:0 0 18px;">${b.html}</div>`
+      )};direction:rtl;text-align:${al};${lastRule}margin:0 0 18px;">${b.html}</div>`
+    }
     case 'heading':
       return wrapAlign(
         `<h2 style="${textCss(b, {
@@ -1303,7 +1307,10 @@ function RichTextEditor({
         contentEditable={!disabled}
         suppressContentEditableWarning
         dir="rtl"
-        style={{ textAlign: align || 'right' }}
+        style={{
+          textAlign: align || 'right',
+          textAlignLast: align === 'justify' ? 'justify' : 'auto',
+        }}
         data-ph="כתוב כאן… סמן טקסט כדי לעצב רק אותו"
         onInput={emit}
         onBlur={emit}
