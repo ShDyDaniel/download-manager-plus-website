@@ -27,6 +27,8 @@ import {
   Bold,
   Italic,
   Underline,
+  Link as LinkIcon,
+  Unlink,
   X,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
@@ -52,7 +54,7 @@ interface Recipient {
 type Audience = 'all' | 'free' | 'pro' | 'one'
 
 /* ── מודל הבלוקים ── */
-type Align = 'right' | 'center' | 'left'
+type Align = 'right' | 'center' | 'left' | 'justify'
 /** שדות עיצוב-טקסט משותפים (פונט/גודל/הדגשה/צבע). */
 interface TextStyleFields {
   fontFamily?: string
@@ -63,8 +65,9 @@ interface TextStyleFields {
   color?: string
 }
 type Block =
-  // פסקה = עורך טקסט-עשיר; ה-html מכיל את העיצוב הפנימי (מודגש/פונט/צבע/יישור).
-  | { id: string; type: 'paragraph'; html: string }
+  // פסקה = עורך טקסט-עשיר; ה-html מכיל עיצוב פנימי (מודגש/פונט/צבע/קישור),
+  // ו-align הוא היישור של כל הפסקה (כולל justify — מילוי שורות).
+  | { id: string; type: 'paragraph'; html: string; align?: Align }
   | ({ id: string; type: 'heading'; text: string; align?: Align } & TextStyleFields)
   | ({
       id: string
@@ -365,10 +368,10 @@ function blockToHtml(b: Block): string {
   switch (b.type) {
     case 'paragraph':
       // ה-html כבר כולל את העיצוב הפנימי; עוטפים במיכל עם ברירות-מחדל
-      // של גודל/צבע/פונט/כיוון כדי שטקסט לא-מעוצב ייראה נכון.
+      // של גודל/צבע/פונט/כיוון + היישור של כל הפסקה (כולל justify).
       return `<div style="font-size:15px;line-height:1.8;color:#D8CFC2;font-family:${fontStack(
         'rubik',
-      )};direction:rtl;text-align:right;margin:0 0 18px;">${b.html}</div>`
+      )};direction:rtl;text-align:${b.align || 'right'};margin:0 0 18px;">${b.html}</div>`
     case 'heading':
       return wrapAlign(
         `<h2 style="${textCss(b, {
@@ -972,8 +975,10 @@ function BlockEditor({
       {block.type === 'paragraph' && (
         <RichTextEditor
           html={block.html}
+          align={block.align}
           disabled={disabled}
           onChange={(html) => onChange({ html })}
+          onAlign={(a) => onChange({ align: a })}
         />
       )}
 
@@ -1126,12 +1131,16 @@ function ensureFontsLoaded() {
 /* ── עורך טקסט עשיר (contentEditable): מעצב טקסט מסומן בלבד ── */
 function RichTextEditor({
   html,
+  align,
   disabled,
   onChange,
+  onAlign,
 }: {
   html: string
+  align?: Align
   disabled: boolean
   onChange: (html: string) => void
+  onAlign: (a: Align) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   // איתחול חד-פעמי (הרכיב ממופתח לפי מזהה-הבלוק, אז טעינת פריסט = mount חדש).
@@ -1164,6 +1173,30 @@ function RichTextEditor({
     })
     emit()
   }
+  const addLink = () => {
+    const sel = window.getSelection()
+    if (!sel || sel.isCollapsed) {
+      window.alert('קודם סמן את הטקסט שעליו יהיה הקישור, ואז לחץ.')
+      return
+    }
+    let url = window.prompt('כתובת הקישור:', 'https://')
+    if (!url) return
+    url = url.trim()
+    if (!/^https?:\/\//i.test(url) && !url.startsWith('mailto:')) url = `https://${url}`
+    ref.current?.focus()
+    document.execCommand('createLink', false, url)
+    // מעצב את הקישורים החדשים בצבע-המותג + פתיחה בטאב חדש.
+    ref.current?.querySelectorAll('a:not([data-styled])').forEach((a) => {
+      const el = a as HTMLAnchorElement
+      el.setAttribute('data-styled', '1')
+      el.style.color = '#D4A574'
+      el.style.textDecoration = 'underline'
+      el.setAttribute('target', '_blank')
+      el.setAttribute('rel', 'noopener')
+    })
+    emit()
+  }
+  const removeLink = () => cmd('unlink')
 
   const selCls =
     'rounded-lg border border-border bg-input/60 px-2 py-1 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60'
@@ -1219,18 +1252,39 @@ function RichTextEditor({
             <Underline className="h-3.5 w-3.5" />
           </button>
         </div>
+        {/* יישור כל הפסקה (כולל justify — מילוי שורות). */}
         <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
-          <button type="button" disabled={disabled} title="יישור לימין" onClick={() => cmd('justifyRight')} className={tbtn}>
-            <AlignRight className="h-3.5 w-3.5" />
+          {([
+            ['right', AlignRight, 'יישור לימין'],
+            ['center', AlignCenter, 'מרכוז'],
+            ['left', AlignLeft, 'יישור לשמאל'],
+            ['justify', AlignJustify, 'יישור לשני הצדדים'],
+          ] as const).map(([val, Icon, title]) => {
+            const on = (align || 'right') === val
+            return (
+              <button
+                key={val}
+                type="button"
+                disabled={disabled}
+                title={title}
+                onClick={() => onAlign(val)}
+                className={
+                  'rounded-md p-1.5 transition-colors disabled:opacity-40 ' +
+                  (on ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:text-fg')
+                }
+              >
+                <Icon className="h-3.5 w-3.5" />
+              </button>
+            )
+          })}
+        </div>
+        {/* קישור על הטקסט המסומן */}
+        <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+          <button type="button" disabled={disabled} title="הוספת קישור לטקסט המסומן" onClick={addLink} className={tbtn}>
+            <LinkIcon className="h-3.5 w-3.5" />
           </button>
-          <button type="button" disabled={disabled} title="מרכוז" onClick={() => cmd('justifyCenter')} className={tbtn}>
-            <AlignCenter className="h-3.5 w-3.5" />
-          </button>
-          <button type="button" disabled={disabled} title="יישור לשמאל" onClick={() => cmd('justifyLeft')} className={tbtn}>
-            <AlignLeft className="h-3.5 w-3.5" />
-          </button>
-          <button type="button" disabled={disabled} title="יישור לשני הצדדים" onClick={() => cmd('justifyFull')} className={tbtn}>
-            <AlignJustify className="h-3.5 w-3.5" />
+          <button type="button" disabled={disabled} title="הסרת קישור" onClick={removeLink} className={tbtn}>
+            <Unlink className="h-3.5 w-3.5" />
           </button>
         </div>
         <label className="flex items-center gap-1 rounded-lg border border-border px-1.5 py-1 text-xs text-fg-muted" title="צבע לטקסט המסומן">
@@ -1249,6 +1303,7 @@ function RichTextEditor({
         contentEditable={!disabled}
         suppressContentEditableWarning
         dir="rtl"
+        style={{ textAlign: align || 'right' }}
         data-ph="כתוב כאן… סמן טקסט כדי לעצב רק אותו"
         onInput={emit}
         onBlur={emit}
