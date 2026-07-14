@@ -32,6 +32,10 @@ type DriveFile = {
   mimeType: string
   /** Bytes, as a string (Drive API returns strings to support >2^53). */
   size?: string
+  /** Drive's MD5 of the file content — lets the client verify the
+   *  download bit-for-bit (catches size-preserving corruption from a
+   *  bad range-resume). Absent for Google-native docs (no binary blob). */
+  md5Checksum?: string
 }
 
 type TreeNode = {
@@ -39,6 +43,8 @@ type TreeNode = {
   name: string
   mimeType: string
   size: number
+  /** Content MD5 (binary files only) — for post-download verification. */
+  md5?: string
   /** Present only when this node is a folder. */
   children?: TreeNode[]
 }
@@ -78,7 +84,7 @@ function apiKey(): string {
 }
 
 async function fetchFileMeta(id: string): Promise<DriveFile | null> {
-  const url = `${DRIVE_API}/${encodeURIComponent(id)}?fields=id,name,mimeType,size&supportsAllDrives=true&key=${apiKey()}`
+  const url = `${DRIVE_API}/${encodeURIComponent(id)}?fields=id,name,mimeType,size,md5Checksum&supportsAllDrives=true&key=${apiKey()}`
   const r = await fetch(url)
   if (r.status === 404 || r.status === 403) return null
   if (!r.ok) {
@@ -95,7 +101,7 @@ async function listChildren(folderId: string): Promise<DriveFile[]> {
   do {
     const params = new URLSearchParams({
       q: `'${folderId}' in parents and trashed = false`,
-      fields: 'nextPageToken,files(id,name,mimeType,size)',
+      fields: 'nextPageToken,files(id,name,mimeType,size,md5Checksum)',
       pageSize: '1000',
       supportsAllDrives: 'true',
       includeItemsFromAllDrives: 'true',
@@ -135,6 +141,7 @@ async function buildTree(
         name: file.name,
         mimeType: file.mimeType,
         size,
+        ...(file.md5Checksum ? { md5: file.md5Checksum } : {}),
       }
     }
     // Folder.
@@ -205,6 +212,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           name: meta.name,
           mimeType: meta.mimeType,
           size: meta.size ? Number(meta.size) : 0,
+          ...(meta.md5Checksum ? { md5: meta.md5Checksum } : {}),
         },
       })
     }
@@ -229,6 +237,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           name: meta.name,
           mimeType: meta.mimeType,
           size: meta.size ? Number(meta.size) : 0,
+          ...(meta.md5Checksum ? { md5: meta.md5Checksum } : {}),
         },
       })
     }
