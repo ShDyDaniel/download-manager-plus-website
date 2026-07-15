@@ -8357,46 +8357,17 @@ function hashGateKey(key: string): string {
     .digest('hex')
 }
 
-async function getGateKeyHash(): Promise<string | null> {
-  // Retry a transient Firestore read a couple of times — a single hiccup
-  // shouldn't lock the admin out with a blank "blocked" screen.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const snap = await getDb().collection('adminSecurity').doc('config').get()
-      if (!snap.exists) return null
-      const h = (snap.data() as { gateKeyHash?: unknown }).gateKeyHash
-      return typeof h === 'string' && h.length > 0 ? h : null
-    } catch {
-      if (attempt < 2) {
-        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)))
-        continue
-      }
-    }
-  }
-  // Fail CLOSED on persistent read error — but distinguish from "no key set":
-  // return a sentinel so isAdminGateOpen treats it as blocked.
-  return '__read_error__'
+/** The secret-key "gate" was removed — /admin is now protected solely by
+ *  Firebase auth + email 2FA + passkey step-up. Kept as an always-open
+ *  no-op so the many call sites keep compiling; `gateKey` is ignored. */
+async function isAdminGateOpen(_providedKey?: string): Promise<boolean> {
+  return true
 }
 
-async function isAdminGateOpen(providedKey?: string): Promise<boolean> {
-  const stored = await getGateKeyHash()
-  if (stored === '__read_error__') return false
-  if (!stored) return true // no key configured → open (bootstrap)
-  const key = (providedKey || '').trim()
-  if (!key) return false
-  const a = Buffer.from(hashGateKey(key), 'utf8')
-  const b = Buffer.from(stored, 'utf8')
-  if (a.length !== b.length) return false
-  return crypto.timingSafeEqual(a, b)
-}
-
-/** Public probe — the /admin page renders nothing unless this says
- *  the gate is open for the supplied key. Reveals only a boolean. */
-async function handleAdminGateCheck(req: VercelRequest, res: VercelResponse) {
-  const body = (req.body || {}) as { gateKey?: string }
-  return res
-    .status(200)
-    .json({ ok: true, open: await isAdminGateOpen(body.gateKey) })
+/** Public probe — always open now (gate removed). Kept so the client's
+ *  legacy call, if any lingers, still resolves cleanly. */
+async function handleAdminGateCheck(_req: VercelRequest, res: VercelResponse) {
+  return res.status(200).json({ ok: true, open: true })
 }
 
 /** Whether a gate key is currently configured. Admin-only. */

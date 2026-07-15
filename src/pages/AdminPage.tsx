@@ -21,11 +21,6 @@ import {
   Settings as SettingsIcon,
   LogOut,
   ShieldCheck,
-  KeyRound,
-  Copy,
-  Check,
-  X,
-  Loader2,
   type LucideIcon,
 } from 'lucide-react'
 import { getClientAuth } from '../lib/firebaseClient'
@@ -33,16 +28,11 @@ import { AuthButton, AuthError, AuthHeader, AuthInput } from '../components/auth
 import {
   adminSignIn,
   adminSignOut,
-  captureGateKeyFromUrl,
-  checkAdminGate,
   clearAdminToken,
   consumeWebauthnCeremonyReload,
-  generateGateKey,
   getAdminEmail,
-  getGateStatus,
   getStoredAdminToken,
   requestAdminCode,
-  setGateKey,
   verifyAdminCode,
   tryPasskeyLogin,
 } from '../lib/adminApi'
@@ -111,7 +101,7 @@ const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
   { key: 'settings', label: 'הגדרות', icon: SettingsIcon },
 ]
 
-type Phase = 'checking' | 'blocked' | 'loading' | 'login' | 'code' | 'ready'
+type Phase = 'loading' | 'login' | 'code' | 'ready'
 
 // One-shot guard: true exactly once per real page load (a browser
 // refresh re-evaluates the module, so it resets to true). Used to force
@@ -120,30 +110,21 @@ type Phase = 'checking' | 'blocked' | 'loading' | 'login' | 'code' | 'ready'
 let adminFreshPageLoad = true
 
 export default function AdminPage() {
-  const [phase, setPhase] = useState<Phase>('checking')
+  const [phase, setPhase] = useState<Phase>('loading')
   const [tab, setTab] = useState<AdminTabKey>('overview')
   // When we land on the code step WITHOUT having just sent a code
   // (a page refresh while signed-in, or an expired 2FA token), the
   // code screen must request one itself. After the login step it must
   // NOT — login already sent it (that was the double-email bug).
 
-  // STEP 0 — secret-key gate. Before anything else (even before showing
-  // a login form), ask the server whether this device's secret access
-  // key opens the gate. If not, the page renders nothing at all — no
-  // hint that an admin panel exists here. Only if open do we proceed.
+  // Auth bootstrap. The secret-key "gate" was removed — /admin is
+  // protected by Firebase auth + email 2FA + passkey step-up. Go straight
+  // to resolving the auth state → login.
   useEffect(() => {
     let cancelled = false
     let unsub: (() => void) | null = null
-    // Capture a secret key handed in via the link (…/admin#k=…) before
-    // probing the gate.
-    captureGateKeyFromUrl()
     void (async () => {
-      const open = await checkAdminGate()
       if (cancelled) return
-      if (!open) {
-        setPhase('blocked')
-        return
-      }
       // Refresh / fresh page load == full logout. We deliberately do
       // NOT restore an admin session across a reload: sign out of
       // Firebase AND drop the 2FA + step-up tokens, exactly like
@@ -190,12 +171,6 @@ export default function AdminPage() {
       if (unsub) unsub()
     }
   }, [])
-
-  // IP not allowed (or still probing) → render nothing. A bare dark
-  // screen, indistinguishable from an empty/non-existent page.
-  if (phase === 'checking' || phase === 'blocked') {
-    return <div className="min-h-dvh bg-bg" />
-  }
 
   if (phase === 'loading') {
     return (
@@ -482,7 +457,6 @@ function AdminShell({
   onLogout: () => void
   onAuthExpired: () => void
 }) {
-  const [gateModal, setGateModal] = useState(false)
   return (
     <div className="min-h-dvh bg-bg" dir="rtl">
       <div className="flex min-h-dvh flex-col md:flex-row">
@@ -538,14 +512,6 @@ function AdminShell({
           </nav>
 
           <div className="mt-5 hidden flex-col gap-2 md:flex">
-            <button
-              type="button"
-              onClick={() => setGateModal(true)}
-              className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover"
-            >
-              <KeyRound className="h-3.5 w-3.5" />
-              מפתח גישה לדף
-            </button>
             <button
               type="button"
               onClick={onLogout}
@@ -608,165 +574,6 @@ function AdminShell({
           )}
           </div>
         </main>
-      </div>
-      {gateModal && <GateKeyModal onClose={() => setGateModal(false)} />}
-    </div>
-  )
-}
-
-/* ── Secret-access-key management ──────────────────────────────── */
-function GateKeyModal({ onClose }: { onClose: () => void }) {
-  const [hasKey, setHasKey] = useState<boolean | null>(null)
-  const [newLink, setNewLink] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        setHasKey(await getGateStatus())
-      } catch {
-        setHasKey(null)
-      }
-    })()
-  }, [])
-
-  async function rotate() {
-    if (busy) return
-    setBusy(true)
-    setError(null)
-    try {
-      const key = generateGateKey()
-      await setGateKey(key)
-      setNewLink(`${window.location.origin}/admin#k=${key}`)
-      setHasKey(true)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'הפעולה נכשלה')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function clearKey() {
-    if (busy) return
-    if (!window.confirm('לבטל את מפתח הגישה? הדף יהפוך נגיש ללא קישור מיוחד.'))
-      return
-    setBusy(true)
-    setError(null)
-    try {
-      await setGateKey('')
-      setHasKey(false)
-      setNewLink(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'הפעולה נכשלה')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div
-      dir="rtl"
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div className="relative w-full max-w-md rounded-xl border border-border bg-bg-elevated p-6">
-        <button
-          onClick={onClose}
-          className="absolute left-4 top-4 rounded-md p-1 text-fg-muted hover:text-fg"
-        >
-          <X className="h-4 w-4" />
-        </button>
-        <div className="mb-4 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/15">
-            <KeyRound className="h-5 w-5 text-primary" />
-          </div>
-          <h2 className="text-base font-bold text-fg">מפתח גישה לדף הניהול</h2>
-        </div>
-
-        <p className="mb-4 text-xs leading-relaxed text-fg-muted">
-          מפתח סודי שמסתיר את הדף לחלוטין. מי שאין לו את הקישור עם המפתח —
-          רואה דף ריק. בשרת נשמר רק טביעת-אצבע מוצפנת של המפתח, לא המפתח
-          עצמו. שמור את הקישור החדש (סימנייה) בכל מכשיר שתרצה לגשת ממנו.
-        </p>
-
-        <div className="mb-4 rounded-lg border border-border bg-white/[0.02] px-3 py-2 text-sm">
-          <span className="text-fg-muted">מצב נוכחי: </span>
-          <span className="font-medium text-fg">
-            {hasKey === null
-              ? '—'
-              : hasKey
-                ? 'מוגדר מפתח — הדף מוסתר'
-                : 'אין מפתח — הדף נגיש (מומלץ להגדיר)'}
-          </span>
-        </div>
-
-        {newLink && (
-          <div className="mb-4 rounded-lg border border-success/30 bg-success/5 p-3">
-            <div className="mb-1.5 text-xs text-success">
-              הקישור החדש שלך — שמור אותו עכשיו:
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                readOnly
-                value={newLink}
-                dir="ltr"
-                onFocus={(e) => e.currentTarget.select()}
-                className="flex-1 truncate rounded-md border border-border bg-transparent px-2 py-1.5 text-xs text-fg"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  void navigator.clipboard.writeText(newLink)
-                  setCopied(true)
-                  setTimeout(() => setCopied(false), 1500)
-                }}
-                className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-bg"
-              >
-                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                {copied ? 'הועתק' : 'העתק'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <div className="mb-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {error}
-          </div>
-        )}
-
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={rotate}
-            disabled={busy}
-            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-50"
-          >
-            {busy ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <KeyRound className="h-4 w-4" />
-            )}
-            {hasKey ? 'הפק מפתח חדש' : 'הפק מפתח'}
-          </button>
-          {hasKey && (
-            <button
-              type="button"
-              onClick={clearKey}
-              disabled={busy}
-              className="rounded-lg border border-destructive/30 px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
-            >
-              בטל מפתח
-            </button>
-          )}
-        </div>
-        {hasKey && !newLink && (
-          <p className="mt-3 text-[11px] text-fg-faint">
-            הפקת מפתח חדש תבטל את הקישורים הישנים.
-          </p>
-        )}
       </div>
     </div>
   )
