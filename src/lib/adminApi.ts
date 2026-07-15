@@ -86,19 +86,39 @@ export function captureGateKeyFromUrl(): void {
   }
 }
 
-/** Public probe — is the gate open for the key we hold? */
+/** Public probe — is the gate open for the key we hold?
+ *
+ *  A DEFINITIVE `{open:false}` (the server answered, key doesn't match) returns
+ *  immediately. But a NETWORK error or a 5xx is transient — retrying instead of
+ *  failing closed prevents the "blank background, no login" flake on a flaky
+ *  connection (common on mobile / cellular). Only after a few failed attempts
+ *  do we give up and stay closed. */
 export async function checkAdminGate(): Promise<boolean> {
-  try {
-    const r = await fetch('/api/paypal?action=admin-gate-check', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ gateKey: getGateKey() }),
-    })
-    const j = (await r.json()) as { open?: boolean }
-    return Boolean(j.open)
-  } catch {
-    return false
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await fetch('/api/paypal?action=admin-gate-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gateKey: getGateKey() }),
+      })
+      // Transient server error → retry rather than lock out.
+      if (r.status >= 500 && attempt < 2) {
+        await sleep(400 * (attempt + 1))
+        continue
+      }
+      const j = (await r.json().catch(() => ({}))) as { open?: boolean }
+      return Boolean(j.open)
+    } catch {
+      // Network error — retry with backoff before failing closed.
+      if (attempt < 2) {
+        await sleep(400 * (attempt + 1))
+        continue
+      }
+      return false
+    }
   }
+  return false
 }
 
 /** Generate a fresh high-entropy key (~150 bits, URL-safe). */

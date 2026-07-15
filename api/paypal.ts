@@ -8358,16 +8358,24 @@ function hashGateKey(key: string): string {
 }
 
 async function getGateKeyHash(): Promise<string | null> {
-  try {
-    const snap = await getDb().collection('adminSecurity').doc('config').get()
-    if (!snap.exists) return null
-    const h = (snap.data() as { gateKeyHash?: unknown }).gateKeyHash
-    return typeof h === 'string' && h.length > 0 ? h : null
-  } catch {
-    // Fail CLOSED on read error — but distinguish from "no key set":
-    // return a sentinel so isAdminGateOpen treats it as blocked.
-    return '__read_error__'
+  // Retry a transient Firestore read a couple of times — a single hiccup
+  // shouldn't lock the admin out with a blank "blocked" screen.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const snap = await getDb().collection('adminSecurity').doc('config').get()
+      if (!snap.exists) return null
+      const h = (snap.data() as { gateKeyHash?: unknown }).gateKeyHash
+      return typeof h === 'string' && h.length > 0 ? h : null
+    } catch {
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)))
+        continue
+      }
+    }
   }
+  // Fail CLOSED on persistent read error — but distinguish from "no key set":
+  // return a sentinel so isAdminGateOpen treats it as blocked.
+  return '__read_error__'
 }
 
 async function isAdminGateOpen(providedKey?: string): Promise<boolean> {
