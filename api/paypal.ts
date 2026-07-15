@@ -1796,12 +1796,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminStepUpOptions(req, res)
       case 'admin-stepup-verify':
         return await handleAdminStepUpVerify(req, res)
-      case 'admin-gate-check':
-        return await handleAdminGateCheck(req, res)
-      case 'admin-gate-status':
-        return await handleAdminGateStatus(req, res)
-      case 'admin-set-gate-key':
-        return await handleAdminSetGateKey(req, res)
       case 'admin-list-users':
         return await handleAdminListUsers(req, res)
       case 'admin-set-user-blocked':
@@ -8332,77 +8326,11 @@ function hasFreshStepUp(req: VercelRequest, email: string): boolean {
   return !!claims && claims.email.toLowerCase() === email.toLowerCase()
 }
 
-/* ──────────────────────────────────────────────────────────────
- *  Admin secret access key — the location-independent gate that
- *  replaced the IP allowlist (consumer IPs are dynamic, so an IP
- *  allowlist couldn't work for mobile/home).
- *
- *  - A high-entropy key is generated in the browser and handed to the
- *    operator as a link `…/admin#k=<key>`. The fragment never reaches
- *    the server (no logs / no Referer).
- *  - The server stores ONLY the key's HMAC hash (adminSecurity/config
- *    .gateKeyHash) — never the plaintext. A leaked DB reveals nothing.
- *  - Every web-admin call carries the key; isAdminGateOpen() compares
- *    its hash. Wrong/absent key → the whole surface is dark.
- *  - NO key set ⇒ gate OPEN (so the operator can log in once and set
- *    a key). The login still requires password + email code, so this
- *    bootstrap window is auth-protected, not a breach. Set a key to
- *    make the page vanish for anyone who doesn't hold the link.
- * ────────────────────────────────────────────────────────────── */
-
-function hashGateKey(key: string): string {
-  return crypto
-    .createHmac('sha256', tokenSecret())
-    .update(key)
-    .digest('hex')
-}
-
 /** The secret-key "gate" was removed — /admin is now protected solely by
  *  Firebase auth + email 2FA + passkey step-up. Kept as an always-open
  *  no-op so the many call sites keep compiling; `gateKey` is ignored. */
 async function isAdminGateOpen(_providedKey?: string): Promise<boolean> {
   return true
-}
-
-/** Public probe — always open now (gate removed). Kept so the client's
- *  legacy call, if any lingers, still resolves cleanly. */
-async function handleAdminGateCheck(_req: VercelRequest, res: VercelResponse) {
-  return res.status(200).json({ ok: true, open: true })
-}
-
-/** Whether a gate key is currently configured. Admin-only. */
-async function handleAdminGateStatus(req: VercelRequest, res: VercelResponse) {
-  if (!(await verifyAdmin2FA(req))) {
-    return res.status(403).json({ ok: false, error: 'forbidden' })
-  }
-  const h = await getGateKeyHash()
-  return res
-    .status(200)
-    .json({ ok: true, hasKey: !!h && h !== '__read_error__' })
-}
-
-/** Set/rotate (or clear) the gate key. Stores only the hash. Admin-
- *  only. Passing an empty newKey clears the gate (page becomes
- *  open again). */
-async function handleAdminSetGateKey(req: VercelRequest, res: VercelResponse) {
-  if (!(await verifyAdminStepUp(req))) {
-    return res.status(403).json({ ok: false, error: 'forbidden' })
-  }
-  const body = (req.body || {}) as { newKey?: string }
-  const newKey = (body.newKey || '').trim()
-  const ref = getDb().collection('adminSecurity').doc('config')
-  if (!newKey) {
-    await ref.set({ gateKeyHash: null, updatedAt: Date.now() }, { merge: true })
-    return res.status(200).json({ ok: true, hasKey: false })
-  }
-  if (newKey.length < 16) {
-    return res.status(400).json({ ok: false, error: 'מפתח קצר מדי' })
-  }
-  await ref.set(
-    { gateKeyHash: hashGateKey(newKey), updatedAt: Date.now() },
-    { merge: true },
-  )
-  return res.status(200).json({ ok: true, hasKey: true })
 }
 
 /* ──────────────────────────────────────────────────────────────
