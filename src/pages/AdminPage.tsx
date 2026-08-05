@@ -530,13 +530,18 @@ function AdminShell({
         {/* Content — centered comfortable-width column (like the desktop
             app), not stretched to the full width of the window. */}
         <main className="min-w-0 flex-1 p-5 md:p-8 md:pt-10">
-          {/* Receipts has wide multi-column tables (the עסקת-אקראי VAT
-              report), so it gets a roomier column; every other tab
-              keeps the comfortable reading width. */}
+          {/* Receipts and transcription have wide multi-column tables (the
+              עסקת-אקראי VAT report; the collected-files table with eleven
+              columns), so they get a roomier column; every other tab keeps
+              the comfortable reading width. */}
           <div
             className={
               'mx-auto w-full ' +
-              (tab === 'receipts' ? 'max-w-5xl' : 'max-w-3xl')
+              (tab === 'receipts'
+                ? 'max-w-5xl'
+                : tab === 'transcription'
+                  ? 'max-w-7xl'
+                  : 'max-w-3xl')
             }
           >
           {tab === 'overview' ? (

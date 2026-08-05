@@ -517,7 +517,7 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
       {!!shown.length && (
         <div className="overflow-x-auto rounded-xl border border-border">
           <table className="w-full text-right text-sm">
-            <thead className="bg-secondary/50 text-xs text-muted-foreground">
+            <thead className="bg-secondary/50 text-[11px] text-muted-foreground">
               <tr>
                 {[
                   'תאריך',
@@ -526,7 +526,7 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
                   'זמן תמלול',
                   'מילים',
                   'כתוביות',
-                  'מקס׳ מילים',
+                  'מקס׳',
                   'מודל',
                   'דוברים',
                   'מכשיר',
@@ -534,7 +534,7 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
                   '',
                 ].map(
                   (h) => (
-                    <th key={h} className="whitespace-nowrap px-3 py-2 font-medium">
+                    <th key={h} className="whitespace-nowrap px-2 py-2 font-medium">
                       {h}
                     </th>
                   ),
@@ -544,10 +544,10 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
             <tbody>
               {shown.map((x) => (
                 <tr key={x.key} className="border-t border-border">
-                  <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">
+                  <td className="whitespace-nowrap px-2 py-2 text-xs text-muted-foreground">
                     {x.at ? new Date(x.at).toLocaleString('he-IL') : '—'}
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="px-2 py-2">
                     {x.rating === 'good' ? (
                       <ThumbsUp className="h-3.5 w-3.5 text-success" />
                     ) : x.rating === 'bad' ? (
@@ -557,33 +557,33 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
                     )}
                   </td>
                   {/* אורך הכתוביות עצמן — נגזר מחותמת-הסיום בקובץ. */}
-                  <td className="whitespace-nowrap px-3 py-2 text-xs">
+                  <td className="whitespace-nowrap px-2 py-2 text-xs">
                     {x.duration ? fmtDur(Number(x.duration)) : '—'}
                   </td>
                   {/* כמה זמן לקח לתמלל — מדד ביצועים, לא אורך תוכן. */}
-                  <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">
+                  <td className="whitespace-nowrap px-2 py-2 text-xs text-muted-foreground">
                     {x.seconds && x.seconds !== 'x' ? fmtDur(Number(x.seconds)) : '—'}
                   </td>
-                  <td className="px-3 py-2 text-xs">{x.words || '—'}</td>
-                  <td className="px-3 py-2 text-xs">{x.cues || '—'}</td>
+                  <td className="px-2 py-2 text-xs">{x.words || '—'}</td>
+                  <td className="px-2 py-2 text-xs">{x.cues || '—'}</td>
                   {/* ההגדרה שאיתה רץ התמלול — לא מדידה, ולכן בעמודה נפרדת. */}
-                  <td className="px-3 py-2 text-xs text-muted-foreground">
+                  <td className="px-2 py-2 text-xs text-muted-foreground">
                     {x.maxWords || '—'}
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-xs">
+                  <td className="whitespace-nowrap px-2 py-2 text-xs">
                     {QUALITY[x.quality] || '—'}
                   </td>
                   {/* דובר אחד בלי זיהוי-דוברים אינו נתון אלא ברירת-מחדל,
                       ולכן מוצג רק כשהזיהוי היה דלוק. בקבצים שנאספו לפני
                       שהדגל נשמר, מוצג רק כשיש יותר מדובר אחד. */}
-                  <td className="px-3 py-2 text-xs">
+                  <td className="px-2 py-2 text-xs">
                     {x.diarize === '1' || (!x.diarize && Number(x.speakers) > 1)
                       ? x.speakers
                       : '—'}
                   </td>
-                  <td className="px-3 py-2 text-xs">{x.device || '—'}</td>
-                  <td className="whitespace-nowrap px-3 py-2 text-xs">{x.version || '—'}</td>
-                  <td className="whitespace-nowrap px-3 py-2">
+                  <td className="px-2 py-2 text-xs">{x.device || '—'}</td>
+                  <td className="whitespace-nowrap px-2 py-2 text-xs">{x.version || '—'}</td>
+                  <td className="whitespace-nowrap px-2 py-2">
                     <div className="flex items-center justify-end gap-3">
                       <button
                         onClick={async () => {
