@@ -36,6 +36,21 @@ import { getFirestore } from 'firebase-admin/firestore'
 
 const RELEASE_LATEST = 'latest'
 const RELEASE_DRAFT = 'draft'
+/**
+ * מזהה של רשומת-היסטוריה. כל פרסום נשמר כמסמך נפרד באותו אוסף, ולכן
+ * הוא נכנס לגיבוי הקיים בלי שינוי — ראה BACKUP_COLLECTIONS.
+ *
+ * הקידומת מבדילה בין רשומות-היסטוריה לבין שני המסמכים החיים
+ * (`latest`, `draft`), וקוד שקורא אותם לפי מזהה אינו מושפע.
+ */
+const HISTORY_PREFIX = 'h_'
+
+/** מזהה ייחודי ומיון-לפי-זמן: h_<חותמת>_<גרסה>. */
+function historyId(version: string, at: string): string {
+  const stamp = at.replace(/[^0-9]/g, '').slice(0, 14)
+  const v = version.replace(/[^\w.]/g, '').slice(0, 20) || 'x'
+  return `${HISTORY_PREFIX}${stamp}_${v}`
+}
 
 interface ReleaseDoc {
   version: string
@@ -250,6 +265,27 @@ function cleanDraft(input: unknown): ReleaseDoc {
   return out
 }
 
+/**
+ * שומר עותק של גרסה שפורסמה. נכשל בשקט *בכוונה*: אם הארכוב נכשל
+ * אין סיבה להפיל את הפרסום עצמו — הגרסה החיה חשובה יותר מהעותק.
+ */
+async function archive(
+  db: FirebaseFirestore.Firestore,
+  release: ReleaseDoc,
+  by: string,
+  restoredFrom?: string,
+): Promise<void> {
+  try {
+    const at = release.publishedAt || new Date().toISOString()
+    await db
+      .collection('appReleases')
+      .doc(historyId(release.version, at))
+      .set({ ...release, archivedAt: at, archivedBy: by, restoredFrom: restoredFrom || null })
+  } catch (e) {
+    console.error('archive release failed', e)
+  }
+}
+
 export default async function handler(
   req: VercelRequest,
   res: VercelResponse,
@@ -263,14 +299,31 @@ export default async function handler(
     adminToken?: string
     gateKey?: string
     stepUpToken?: string
-    action?: 'load' | 'save' | 'delete' | 'publish' | 'save-latest'
+    action?:
+      | 'load'
+      | 'save'
+      | 'delete'
+      | 'publish'
+      | 'save-latest'
+      | 'history'
+      | 'restore'
     release?: unknown
     publish?: boolean
+    /** ל-restore: מזהה רשומת-ההיסטוריה. */
+    id?: string
   }
   const action = body.action
   if (
     !action ||
-    !['load', 'save', 'delete', 'publish', 'save-latest'].includes(action)
+    ![
+      'load',
+      'save',
+      'delete',
+      'publish',
+      'save-latest',
+      'history',
+      'restore',
+    ].includes(action)
   ) {
     return res.status(400).json({ ok: false, error: 'פעולה לא חוקית' })
   }
@@ -287,7 +340,7 @@ export default async function handler(
   // Every MUTATION (everything except 'load') additionally requires a
   // fresh step-up token — a live passkey assertion minted in the last
   // 2 minutes for the same admin. Reading the draft doesn't.
-  if (action !== 'load') {
+  if (action !== 'load' && action !== 'history') {
     const stepUp = verifyStepUpToken((body.stepUpToken || '').trim())
     if (!stepUp || stepUp.email.toLowerCase() !== gate.email.toLowerCase()) {
       return res
@@ -301,6 +354,37 @@ export default async function handler(
     const db = getFirestore(app)
     const draftRef = db.collection('appReleases').doc(RELEASE_DRAFT)
     const latestRef = db.collection('appReleases').doc(RELEASE_LATEST)
+
+    if (action === 'history') {
+      const snap = await db.collection('appReleases').get()
+      const items = snap.docs
+        .filter((d) => d.id.startsWith(HISTORY_PREFIX))
+        .map((d) => ({ id: d.id, ...(d.data() as ReleaseDoc & { archivedAt?: string }) }))
+        .sort((a, b) => (b.archivedAt || '').localeCompare(a.archivedAt || ''))
+      return res.status(200).json({ ok: true, items })
+    }
+
+    if (action === 'restore') {
+      const id = String(body.id || '')
+      if (!id.startsWith(HISTORY_PREFIX)) {
+        return res.status(400).json({ ok: false, error: 'מזהה לא חוקי' })
+      }
+      const snap = await db.collection('appReleases').doc(id).get()
+      if (!snap.exists) {
+        return res.status(404).json({ ok: false, error: 'הגרסה לא נמצאה' })
+      }
+      const src = snap.data() as ReleaseDoc
+      // שחזור = פרסום מחדש של אותו תוכן, עם חותמת-זמן חדשה. הרשומה
+      // המקורית נשארת בהיסטוריה כמות שהיא.
+      const restored: ReleaseDoc = {
+        ...cleanDraft(src),
+        draft: false,
+        publishedAt: new Date().toISOString(),
+      }
+      await latestRef.set(restored)
+      await archive(db, restored, gate.email, id)
+      return res.status(200).json({ ok: true, release: restored })
+    }
 
     if (action === 'load') {
       const [snap, latestSnap] = await Promise.all([
@@ -349,6 +433,9 @@ export default async function handler(
       else if (typeof r.publishedAt === 'string')
         finalDoc.publishedAt = r.publishedAt
       await latestRef.set(finalDoc)
+      // כל פרסום נשמר גם כרשומת-היסטוריה. בלי זה כל עדכון דורס את
+      // קודמו ואין דרך לחזור אחורה.
+      if (publish) await archive(db, finalDoc, gate.email)
       return res.status(200).json({ ok: true, release: finalDoc })
     }
 
@@ -368,6 +455,7 @@ export default async function handler(
       publishedAt: new Date().toISOString(),
     }
     await latestRef.set(published)
+    await archive(db, published, gate.email)
     await draftRef.delete().catch(() => undefined)
     return res.status(200).json({ ok: true, release: published })
   } catch (err) {

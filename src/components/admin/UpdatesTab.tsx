@@ -12,6 +12,8 @@ import {
   Save,
   CheckCircle,
   Plus,
+  ChevronDown,
+  RotateCcw,
 } from 'lucide-react'
 import {
   getAdminIdToken,
@@ -37,6 +39,14 @@ interface ReleaseDoc {
   publishedAt?: string
   mandatory?: boolean
   mandatoryExemptVersions?: string[]
+}
+
+/** רשומת-היסטוריה: הגרסה כפי שפורסמה, עם מי פרסם ומתי. */
+interface HistoryItem extends ReleaseDoc {
+  id: string
+  archivedAt?: string
+  archivedBy?: string
+  restoredFrom?: string | null
 }
 
 const FALLBACK: ReleaseDoc = {
@@ -67,10 +77,20 @@ export default function UpdatesTab({
   const [success, setSuccess] = useState('')
   const [error, setError] = useState('')
   const [preview, setPreview] = useState<ReleaseDoc | null>(null)
+  /** היסטוריית הפרסומים — כל פרסום נשמר, ואפשר לחזור לכל אחד. */
+  const [history, setHistory] = useState<HistoryItem[] | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   async function call(
-    action: 'load' | 'save' | 'delete' | 'publish' | 'save-latest',
-    payload?: { release?: ReleaseDoc; publish?: boolean },
+    action:
+      | 'load'
+      | 'save'
+      | 'delete'
+      | 'publish'
+      | 'save-latest'
+      | 'history'
+      | 'restore',
+    payload?: { release?: ReleaseDoc; publish?: boolean; id?: string },
   ) {
     const idToken = await getAdminIdToken()
     const adminToken = getStoredAdminToken()
@@ -85,7 +105,7 @@ export default function UpdatesTab({
     // release drives every user's auto-updater, so it gets the same
     // per-action biometric gate as the rest of the panel.
     let stepUpToken: string | undefined
-    if (action !== 'load') {
+    if (action !== 'load' && action !== 'history') {
       try {
         stepUpToken = await getStepUpToken()
       } catch (e) {
@@ -119,10 +139,47 @@ export default function UpdatesTab({
       draft?: ReleaseDoc | null
       latest?: ReleaseDoc | null
       release?: ReleaseDoc
+      items?: HistoryItem[]
       error?: string
     }
     if (!j.ok) throw new Error(j.error || 'הפעולה נכשלה')
     return j
+  }
+
+  async function loadHistory() {
+    try {
+      const j = await call('history')
+      setHistory(j.items || [])
+    } catch (e) {
+      const err = e as Error
+      if (err.message !== 'auth') setError(err.message || 'טעינת ההיסטוריה נכשלה')
+      setHistory([])
+    }
+  }
+
+  /** פרסום מחדש של גרסה מההיסטוריה. הנוכחית כבר שמורה שם, ולכן
+   *  שום דבר לא נמחק — רק מוסיפים רשומה חדשה. */
+  async function restore(h: HistoryItem) {
+    if (
+      !confirm(
+        `לפרסם מחדש את גרסה ${h.version}?\nהיא תוצג לכל המשתמשים כעדכון הזמין.`,
+      )
+    )
+      return
+    setBusy(true)
+    setError('')
+    setSuccess('')
+    try {
+      const j = await call('restore', { id: h.id })
+      if (j.release) setRelease(j.release)
+      setSuccess(`גרסה ${h.version} פורסמה מחדש`)
+      await loadHistory()
+    } catch (e) {
+      const err = e as Error
+      if (err.message !== 'auth') setError(err.message || 'השחזור נכשל')
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function load() {
@@ -577,6 +634,105 @@ export default function UpdatesTab({
           </Button>
         </Card>
       )}
+
+      {/* היסטוריית פרסומים — כל פרסום נשמר, ואפשר להחזיר כל אחד מהם
+          לאוויר. נטענת רק בפתיחה, כי היא לא נדרשת לרוב הביקורים. */}
+      <Card className="space-y-3">
+        <button
+          type="button"
+          onClick={async () => {
+            const next = !historyOpen
+            setHistoryOpen(next)
+            if (next && history === null) await loadHistory()
+          }}
+          className="flex w-full items-center justify-between text-right"
+        >
+          <span className="text-sm font-semibold text-foreground">
+            היסטוריית פרסומים
+            {history ? (
+              <span className="mr-2 text-xs font-normal text-muted-foreground">
+                ({history.length})
+              </span>
+            ) : null}
+          </span>
+          <ChevronDown
+            className={cn(
+              'h-4 w-4 text-muted-foreground transition-transform',
+              historyOpen && 'rotate-180',
+            )}
+          />
+        </button>
+
+        {historyOpen && (
+          <>
+            <p className="text-xs text-muted-foreground">
+              כל פרסום נשמר כאן. שחזור מפרסם את אותו תוכן מחדש עם חותמת-זמן
+              חדשה, ואינו מוחק דבר מההיסטוריה.
+            </p>
+            {history === null ? (
+              <Loader2 className="mx-auto h-4 w-4 animate-spin text-muted-foreground" />
+            ) : history.length === 0 ? (
+              <p className="py-2 text-xs italic text-muted-foreground">
+                עדיין אין פרסומים שמורים. הפרסום הבא יישמר כאן.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {history.map((h) => (
+                  <div
+                    key={h.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-foreground">
+                        {h.version}
+                        {h.mandatory ? (
+                          <span className="mr-2 rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] text-destructive">
+                            חובה
+                          </span>
+                        ) : null}
+                        {h.restoredFrom ? (
+                          <span className="mr-2 rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            שוחזר
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {h.archivedAt
+                          ? new Date(h.archivedAt).toLocaleString('he-IL')
+                          : '—'}
+                        {h.archivedBy ? ` · ${h.archivedBy}` : ''}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setPreview(h)}
+                      >
+                        תצוגה מקדימה
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={busy || h.version === release.version}
+                        onClick={() => restore(h)}
+                        title={
+                          h.version === release.version
+                            ? 'זו הגרסה שמפורסמת כרגע'
+                            : 'פרסום מחדש של הגרסה הזאת'
+                        }
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        שחזור
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </Card>
 
       <PreviewModal release={preview} onClose={() => setPreview(null)} />
     </div>
