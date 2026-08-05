@@ -548,6 +548,23 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
   const [edit, setEdit] = useState<Pack | null>(null)
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
+  /** שגיאה של החלון עצמו. הודעת-השגיאה של הטאב מוצגת מאחורי החלון
+      ולכן אינה נראית — כשל שמירה היה נראה כמו "כלום לא קרה". */
+  const [modalError, setModalError] = useState('')
+
+  /** הוספת מונח (או כמה, מופרדים בפסיק) לראש הרשימה. */
+  function addTerms() {
+    if (!edit) return
+    const fresh = draft
+      .split(',')
+      .map((t) => t.replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+    if (!fresh.length) return
+    // לראש ולא לסוף: רשימה ארוכה גלולה, ומונח שנוסף בתחתיתה יוצא מחוץ
+    // לתיבה — כלומר ההוספה נראית כאילו לא קרתה.
+    setEdit({ ...edit, terms: Array.from(new Set([...fresh, ...edit.terms])) })
+    setDraft('')
+  }
 
   const load = useCallback(async () => {
     try {
@@ -565,12 +582,15 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
 
   async function save(p: Pack) {
     setSaving(true)
+    setModalError('')
     try {
       await api('glossary-pack-save', p as unknown as Record<string, unknown>)
       setEdit(null)
       await load()
     } catch (e) {
-      onError(e)
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') onError(e)
+      else setModalError(err.message || 'השמירה נכשלה')
     } finally {
       setSaving(false)
     }
@@ -589,9 +609,11 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
   return (
     <div className="space-y-3">
       <button
-        onClick={() =>
+        onClick={() => {
+          setModalError('')
+          setDraft('')
           setEdit({ id: '', name: '', description: '', terms: [] })
-        }
+        }}
         className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
       >
         <Plus className="h-3.5 w-3.5" />
@@ -637,7 +659,11 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
                 )}
               </div>
               <button
-                onClick={() => setEdit({ ...p })}
+                onClick={() => {
+                  setModalError('')
+                  setDraft('')
+                  setEdit({ ...p })
+                }}
                 className="mt-3 text-sm text-primary hover:underline"
               >
                 עריכה
@@ -690,9 +716,14 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
                 </label>
 
                 <div>
-                  <span className="text-xs text-muted-foreground">
-                    מונחים — עדיפו צירופים על מילים בודדות
-                  </span>
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-xs text-muted-foreground">
+                      מונחים — עדיפו צירופים על מילים בודדות
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {edit.terms.length}
+                    </span>
+                  </div>
                   <div className="mt-1 flex gap-2">
                     <input
                       value={draft}
@@ -700,20 +731,22 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
                       onKeyDown={(e) => {
                         if (e.key !== 'Enter') return
                         e.preventDefault()
-                        const fresh = draft
-                          .split(',')
-                          .map((t) => t.trim())
-                          .filter(Boolean)
-                        if (!fresh.length) return
-                        setEdit({
-                          ...edit,
-                          terms: Array.from(new Set([...edit.terms, ...fresh])),
-                        })
-                        setDraft('')
+                        addTerms()
                       }}
-                      placeholder="מונח, ואז Enter"
+                      placeholder="מונח (או כמה, מופרדים בפסיק)"
                       className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm"
                     />
+                    {/* כפתור מפורש ולא רק Enter: בלעדיו אין שום חיווי
+                        שההקלדה נקלטה, ומקלדת שלא שולחת Enter משאירה את
+                        השדה חסר-שימוש. */}
+                    <button
+                      type="button"
+                      onClick={addTerms}
+                      disabled={!draft.trim()}
+                      className="shrink-0 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                    >
+                      הוספה
+                    </button>
                   </div>
                   <div className="mt-2 flex max-h-48 flex-wrap gap-1.5 overflow-y-auto">
                     {edit.terms.map((t) => (
@@ -740,6 +773,12 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
                   </div>
                 </div>
               </div>
+
+              {modalError && (
+                <p className="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">
+                  {modalError}
+                </p>
+              )}
 
               <div className="mt-5 flex justify-end gap-2">
                 <button
