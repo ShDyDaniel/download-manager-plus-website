@@ -7826,7 +7826,17 @@ async function handleSrtBulk(req: VercelRequest, res: VercelResponse) {
 async function handleGlossaryPacks(req: VercelRequest, res: VercelResponse) {
   // ציבורי בכוונה: אין כאן מידע משתמש, וזה מאפשר גם לדף באתר להציג
   // תצוגה מקדימה בלי התחברות.
-  res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=3600')
+  //
+  // `fresh=1` עוקף את המטמון. בלעדיו פאנל-הניהול קורא את אותה כתובת
+  // שנשמרה ב-CDN, ולכן מונח שנמחק המשיך להופיע אחרי השמירה — נראה
+  // כאילו המחיקה לא עבדה. שעה של מטמון גם עיכבה עדכון אצל המשתמשים,
+  // ולכן ירדה לחמש דקות עם הגשה-מהמטמון-בזמן-רענון.
+  res.setHeader(
+    'Cache-Control',
+    req.query.fresh
+      ? 'no-store'
+      : 'public, max-age=60, s-maxage=300, stale-while-revalidate=600',
+  )
   const all = await readPacks()
   const id = String(req.query.id || '').trim()
   if (id) {

@@ -568,7 +568,11 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch('/api/revisions?action=glossary-packs')
+      // fresh=1 + no-store: בלעדיהם הפאנל קורא את התשובה השמורה ב-CDN,
+      // ומונח שנמחק ממשיך להופיע — כלומר "המחיקה לא עבדה".
+      const r = await fetch('/api/revisions?action=glossary-packs&fresh=1', {
+        cache: 'no-store',
+      })
       const j = (await r.json()) as { packs?: Pack[] }
       setPacks(j.packs ?? [])
     } catch (e) {
