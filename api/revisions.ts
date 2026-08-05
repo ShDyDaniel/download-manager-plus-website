@@ -7649,6 +7649,56 @@ async function requireGlossaryAdmin(req: VercelRequest): Promise<boolean> {
   return !!email && SERVER_ADMIN_EMAILS.has(email)
 }
 
+/**
+ * אימות דו-שלבי לפעולות *משנות* בטאב התמלול — אותו מנגנון step-up של
+ * שאר פאנל-הניהול (api/paypal.ts).
+ *
+ * הרציונל זהה: התחברות בלבד אינה מספיקה, כי מפגש חטוף (מחשב פתוח,
+ * טוקן גנוב) מספיק כדי למחוק קטגוריה או קובץ. לכן כל פעולה משנה
+ * דורשת אסימון טרי בן שתי דקות שנוצר מחתימת Passkey — כלומר הוכחה
+ * שהאדם עצמו נמצא כאן *עכשיו*.
+ *
+ * הקריאה היא בכוונה לא-מחייבת בקריאות (list/get): שם אין נזק, ודרישת
+ * ביומטריה על כל רענון הייתה גורמת לאדמין לעקוף את המערכת.
+ */
+interface StepUpClaims {
+  email?: string
+  use?: string
+  exp?: number
+}
+
+function verifyAdminStepUp(token: string): StepUpClaims | null {
+  try {
+    const parts = String(token || '').split('.')
+    if (parts.length !== 3) return null
+    const [h, pl, sig] = parts
+    const secret = process.env.RENEW_TOKEN_SECRET
+    if (!secret) return null
+    const expected = crypto
+      .createHmac('sha256', Buffer.from(secret, 'utf8'))
+      .update(`${h}.${pl}`)
+      .digest()
+    const actual = b64urlDecode(sig)
+    if (expected.length !== actual.length) return null
+    if (!crypto.timingSafeEqual(expected, actual)) return null
+    const claims = JSON.parse(b64urlDecode(pl).toString('utf8')) as StepUpClaims
+    if (claims.use !== 'admin-stepup') return null
+    const email = (claims.email || '').toLowerCase()
+    if (!email || !SERVER_ADMIN_EMAILS.has(email)) return null
+    if (!claims.exp || claims.exp < Math.floor(Date.now() / 1000)) return null
+    return claims
+  } catch {
+    return null
+  }
+}
+
+/** אדמין *ופעולה משנה* — דורש גם step-up טרי. */
+async function requireGlossaryAdminStepUp(req: VercelRequest): Promise<boolean> {
+  if (!(await requireGlossaryAdmin(req))) return false
+  const tok = String((req.body as { stepUpToken?: string })?.stepUpToken || '')
+  return !!verifyAdminStepUp(tok)
+}
+
 /** החבילות מ-Firestore, עם ה-seed המובנה כברירת-מחדל בהתקנה נקייה. */
 async function readPacks(): Promise<GlossaryPack[]> {
   try {
@@ -7677,6 +7727,8 @@ async function readPacks(): Promise<GlossaryPack[]> {
 async function handleGlossaryPackSave(req: VercelRequest, res: VercelResponse) {
   if (!(await requireGlossaryAdmin(req)))
     return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requireGlossaryAdminStepUp(req)))
+    return res.status(403).json({ ok: false, error: 'step-up-required' })
   const b = (req.body || {}) as Partial<GlossaryPack>
   const id = String(b.id || '')
     .trim()
@@ -7712,6 +7764,8 @@ async function handleGlossaryPackSave(req: VercelRequest, res: VercelResponse) {
 async function handleGlossaryPackDelete(req: VercelRequest, res: VercelResponse) {
   if (!(await requireGlossaryAdmin(req)))
     return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requireGlossaryAdminStepUp(req)))
+    return res.status(403).json({ ok: false, error: 'step-up-required' })
   const id = String((req.body as { id?: string })?.id || '').trim()
   if (!id) return res.status(400).json({ ok: false, error: 'bad-id' })
   await getDb().collection('glossaryPacks').doc(id).delete()
@@ -7776,6 +7830,8 @@ async function handleSrtGet(req: VercelRequest, res: VercelResponse) {
 async function handleSrtDelete(req: VercelRequest, res: VercelResponse) {
   if (!(await requireGlossaryAdmin(req)))
     return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await requireGlossaryAdminStepUp(req)))
+    return res.status(403).json({ ok: false, error: 'step-up-required' })
   const raw = (req.body as { keys?: unknown })?.keys
   const keys = (Array.isArray(raw) ? raw : []).map(String).slice(0, 500)
   const safe = keys.filter((k) => k.startsWith('srt/') && !k.includes('..') && k.endsWith('.srt'))

@@ -14,7 +14,7 @@ import {
   Download,
   FilterX,
 } from 'lucide-react'
-import { getAdminIdToken } from '../../lib/adminApi'
+import { getAdminIdToken, getStepUpToken, clearStepUpToken } from '../../lib/adminApi'
 import { Portal } from '@/components/ui/Portal'
 import { buildZip } from '@/lib/zip'
 
@@ -46,6 +46,17 @@ interface Pack {
 }
 
 /**
+ * פעולות שמשנות מצב. הן דורשות אימות דו-שלבי (Passkey) בדיוק כמו כל
+ * מוטציה אחרת בפאנל: התחברות בלבד אינה מספיקה, כי מפגש חטוף מספיק כדי
+ * למחוק קטגוריה שמשתמשים כבר משתמשים בה או קובץ שנאסף.
+ */
+const MUTATIONS = new Set([
+  'srt-delete',
+  'glossary-pack-save',
+  'glossary-pack-delete',
+])
+
+/**
  * קריאת-אדמין ל-api/revisions. תמיד POST: ה-idToken נשלח בגוף ולא
  * ב-URL, כי הוא אישור-גישה ו-URL נרשם בלוגים.
  */
@@ -56,15 +67,35 @@ async function api<T>(action: string, body: Record<string, unknown> = {}): Promi
     e.code = 'auth'
     throw e
   }
-  const res = await fetch(`/api/revisions?action=${action}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ idToken, ...body }),
-  })
-  const j = (await res.json()) as { ok?: boolean; error?: string }
-  if (!res.ok || !j.ok) {
-    const e = new Error(j.error || 'שגיאה') as Error & { code?: string }
-    if (res.status === 401) e.code = 'auth'
+  const needsStepUp = MUTATIONS.has(action)
+
+  const send = async (stepUpToken?: string) => {
+    const res = await fetch(`/api/revisions?action=${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        idToken,
+        ...(stepUpToken ? { stepUpToken } : {}),
+        ...body,
+      }),
+    })
+    const j = (await res.json()) as { ok?: boolean; error?: string }
+    return { status: res.status, j }
+  }
+
+  let { status, j } = await send(needsStepUp ? await getStepUpToken() : undefined)
+  // האסימון חי שתי דקות; אם פג בין ההנפקה לנחיתה — מנפיקים שוב, פעם
+  // אחת. ניסיון חוזר אינסופי היה הופך כשל-אימות ללולאת-ביומטריה.
+  if (needsStepUp && status === 403) {
+    clearStepUpToken()
+    ;({ status, j } = await send(await getStepUpToken()))
+  }
+
+  if (status !== 200 || !j.ok) {
+    const e = new Error(
+      j.error === 'step-up-required' ? 'האימות נדחה — נסו שוב' : j.error || 'שגיאה',
+    ) as Error & { code?: string }
+    if (status === 401) e.code = 'auth'
     throw e
   }
   return j as T
