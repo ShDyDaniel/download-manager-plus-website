@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   RefreshCw,
   Loader2,
@@ -11,9 +11,12 @@ import {
   ThumbsUp,
   ThumbsDown,
   Minus,
+  Download,
+  FilterX,
 } from 'lucide-react'
 import { getAdminIdToken } from '../../lib/adminApi'
 import { Portal } from '@/components/ui/Portal'
+import { buildZip } from '@/lib/zip'
 
 /**
  * טאב "תמלול" — שני חלקים:
@@ -127,10 +130,38 @@ export default function TranscriptionTab({
 }
 
 /* ── קבצים שנאספו ─────────────────────────────────────────────── */
+
+/** מוריד Blob בשם נתון. */
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+const EMPTY_FILTERS = {
+  rating: '',
+  device: '',
+  version: '',
+  maxWords: '',
+  speakers: '',
+  from: '',
+  to: '',
+  minSec: '',
+  maxSec: '',
+}
+type Filters = typeof EMPTY_FILTERS
+
 function FilesView({ onError }: { onError: (e: unknown) => void }) {
   const [files, setFiles] = useState<SrtFile[] | null>(null)
   const [busy, setBusy] = useState(false)
+  const [exporting, setExporting] = useState(0)
   const [preview, setPreview] = useState<{ key: string; text: string } | null>(null)
+  const [f, setF] = useState<Filters>(EMPTY_FILTERS)
 
   const load = useCallback(async () => {
     setBusy(true)
@@ -148,8 +179,99 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
     void load()
   }, [load])
 
-  const good = files?.filter((f) => f.rating === 'good').length ?? 0
-  const bad = files?.filter((f) => f.rating === 'bad').length ?? 0
+  /** הערכים שקיימים בפועל — כדי שלא יוצעו מסננים שלא יחזירו כלום. */
+  const options = useMemo(() => {
+    const uniq = (pick: (x: SrtFile) => string) =>
+      Array.from(new Set((files ?? []).map(pick).filter((v) => v && v !== 'x'))).sort()
+    return {
+      device: uniq((x) => x.device),
+      version: uniq((x) => x.version),
+      maxWords: uniq((x) => x.maxWords),
+      speakers: uniq((x) => x.speakers),
+    }
+  }, [files])
+
+  /**
+   * הסינון. "הרשימה בפועל" היא זו שמוצגת כאן — וגם זו שיורדת בייצוא,
+   * כדי שלא תהיה אי-התאמה בין מה שרואים למה שמקבלים.
+   */
+  const shown = useMemo(() => {
+    const num = (v: string) => (v.trim() === '' ? null : Number(v))
+    const fromMs = f.from ? new Date(f.from).getTime() : null
+    const toMs = f.to ? new Date(f.to).getTime() + 86_400_000 : null
+    const minS = num(f.minSec)
+    const maxS = num(f.maxSec)
+    return (files ?? []).filter((x) => {
+      const rated = x.rating === 'good' || x.rating === 'bad'
+      if (f.rating === 'none' && rated) return false
+      if (f.rating && f.rating !== 'none' && x.rating !== f.rating) return false
+      if (f.device && x.device !== f.device) return false
+      if (f.version && x.version !== f.version) return false
+      if (f.maxWords && x.maxWords !== f.maxWords) return false
+      if (f.speakers && x.speakers !== f.speakers) return false
+      if (fromMs !== null && x.at < fromMs) return false
+      if (toMs !== null && x.at >= toMs) return false
+      const sec = Number(x.seconds)
+      if (minS !== null && (!Number.isFinite(sec) || sec < minS)) return false
+      if (maxS !== null && (!Number.isFinite(sec) || sec > maxS)) return false
+      return true
+    })
+  }, [files, f])
+
+  const active = Object.values(f).some((v) => v !== '')
+  const good = shown.filter((x) => x.rating === 'good').length
+  const bad = shown.filter((x) => x.rating === 'bad').length
+
+  async function removeOne(key: string) {
+    if (!confirm('למחוק את הקובץ? הפעולה בלתי הפיכה.')) return
+    try {
+      await api('srt-delete', { keys: [key] })
+      setFiles((prev) => (prev ?? []).filter((x) => x.key !== key))
+    } catch (e) {
+      onError(e)
+    }
+  }
+
+  async function downloadOne(key: string) {
+    try {
+      const r = await api<{ text: string }>('srt-get', { key })
+      saveBlob(new Blob([r.text], { type: 'application/x-subrip' }), key.slice(4))
+    } catch (e) {
+      onError(e)
+    }
+  }
+
+  /**
+   * ייצוא של הרשימה המסוננת ל-ZIP. השרת מגביל 40 קבצים לקריאה כדי
+   * לא לחרוג ממגבלת גודל-התשובה, ולכן נמשך בקבוצות.
+   */
+  async function downloadFiltered() {
+    if (!shown.length) return
+    setExporting(1)
+    try {
+      const enc = new TextEncoder()
+      const entries: { name: string; data: Uint8Array }[] = []
+      for (let i = 0; i < shown.length; i += 40) {
+        const chunk = shown.slice(i, i + 40).map((x) => x.key)
+        const r = await api<{ files: { key: string; text: string }[] }>('srt-bulk', {
+          keys: chunk,
+        })
+        for (const it of r.files) {
+          entries.push({ name: it.key.slice(4), data: enc.encode(it.text) })
+        }
+        setExporting(Math.min(i + 40, shown.length))
+      }
+      const stamp = new Date().toISOString().slice(0, 10)
+      saveBlob(buildZip(entries), `srt-${stamp}-${entries.length}.zip`)
+    } catch (e) {
+      onError(e)
+    } finally {
+      setExporting(0)
+    }
+  }
+
+  const sel =
+    'rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-foreground'
 
   return (
     <div className="space-y-3">
@@ -166,10 +288,24 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
           )}
           רענון
         </button>
+        <button
+          onClick={() => void downloadFiltered()}
+          disabled={!shown.length || exporting > 0}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+        >
+          {exporting > 0 ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Download className="h-3.5 w-3.5" />
+          )}
+          {exporting > 0
+            ? `${exporting}/${shown.length}`
+            : `הורדת הרשימה (${shown.length})`}
+        </button>
         {files && (
           <div className="flex flex-wrap gap-2 text-xs">
             <span className="rounded-md bg-secondary px-2 py-1">
-              {files.length} קבצים
+              {active ? `${shown.length} מתוך ${files.length}` : `${files.length} קבצים`}
             </span>
             <span className="inline-flex items-center gap-1 rounded-md bg-success/15 px-2 py-1 text-success">
               <ThumbsUp className="h-3 w-3" />
@@ -181,11 +317,101 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
             </span>
             <span className="inline-flex items-center gap-1 rounded-md bg-secondary px-2 py-1 text-muted-foreground">
               <Minus className="h-3 w-3" />
-              {files.length - good - bad} ללא דירוג
+              {shown.length - good - bad} ללא דירוג
             </span>
           </div>
         )}
       </div>
+
+      {/* מסננים — הייצוא והמחיקה פועלים על מה שמוצג אחריהם. */}
+      {!!files?.length && (
+        <div className="flex flex-wrap items-end gap-2 rounded-xl border border-border bg-card p-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-muted-foreground">דירוג</span>
+            <select
+              value={f.rating}
+              onChange={(e) => setF({ ...f, rating: e.target.value })}
+              className={sel}
+            >
+              <option value="">הכל</option>
+              <option value="good">חיובי</option>
+              <option value="bad">שלילי</option>
+              <option value="none">ללא דירוג</option>
+            </select>
+          </label>
+          {(
+            [
+              ['device', 'מכשיר', options.device],
+              ['version', 'גרסה', options.version],
+              ['maxWords', 'מילים/כתובית', options.maxWords],
+              ['speakers', 'דוברים', options.speakers],
+            ] as const
+          ).map(([key, label, opts]) => (
+            <label key={key} className="flex flex-col gap-1">
+              <span className="text-[11px] text-muted-foreground">{label}</span>
+              <select
+                value={f[key]}
+                onChange={(e) => setF({ ...f, [key]: e.target.value })}
+                className={sel}
+              >
+                <option value="">הכל</option>
+                {opts.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-muted-foreground">מתאריך</span>
+            <input
+              type="date"
+              value={f.from}
+              onChange={(e) => setF({ ...f, from: e.target.value })}
+              className={sel}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-muted-foreground">עד תאריך</span>
+            <input
+              type="date"
+              value={f.to}
+              onChange={(e) => setF({ ...f, to: e.target.value })}
+              className={sel}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-muted-foreground">אורך מ־ (שניות)</span>
+            <input
+              type="number"
+              min={0}
+              value={f.minSec}
+              onChange={(e) => setF({ ...f, minSec: e.target.value })}
+              className={`${sel} w-24`}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-muted-foreground">עד (שניות)</span>
+            <input
+              type="number"
+              min={0}
+              value={f.maxSec}
+              onChange={(e) => setF({ ...f, maxSec: e.target.value })}
+              className={`${sel} w-24`}
+            />
+          </label>
+          {active && (
+            <button
+              onClick={() => setF(EMPTY_FILTERS)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-secondary"
+            >
+              <FilterX className="h-3.5 w-3.5" />
+              ניקוי
+            </button>
+          )}
+        </div>
+      )}
 
       {files === null && (
         <div className="py-8 text-center text-muted-foreground">
@@ -197,8 +423,13 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
           עדיין לא נאספו קבצים. משתמשים משתפים רק אחרי אישור מפורש בתוכנה.
         </p>
       )}
+      {!!files?.length && shown.length === 0 && (
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          אין קבצים שתואמים לסינון.
+        </p>
+      )}
 
-      {!!files?.length && (
+      {!!shown.length && (
         <div className="overflow-x-auto rounded-xl border border-border">
           <table className="w-full text-right text-sm">
             <thead className="bg-secondary/50 text-xs text-muted-foreground">
@@ -213,43 +444,59 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
               </tr>
             </thead>
             <tbody>
-              {files.map((f) => (
-                <tr key={f.key} className="border-t border-border">
+              {shown.map((x) => (
+                <tr key={x.key} className="border-t border-border">
                   <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">
-                    {f.at ? new Date(f.at).toLocaleString('he-IL') : '—'}
+                    {x.at ? new Date(x.at).toLocaleString('he-IL') : '—'}
                   </td>
                   <td className="px-3 py-2">
-                    {f.rating === 'good' ? (
+                    {x.rating === 'good' ? (
                       <ThumbsUp className="h-3.5 w-3.5 text-success" />
-                    ) : f.rating === 'bad' ? (
+                    ) : x.rating === 'bad' ? (
                       <ThumbsDown className="h-3.5 w-3.5 text-destructive" />
                     ) : (
                       <span className="text-xs text-muted-foreground">—</span>
                     )}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-xs">
-                    {f.seconds && f.seconds !== 'x' ? `${f.seconds}ש׳` : '—'}
+                    {x.seconds && x.seconds !== 'x' ? `${x.seconds}ש׳` : '—'}
                   </td>
-                  <td className="px-3 py-2 text-xs">{f.maxWords || '—'}</td>
-                  <td className="px-3 py-2 text-xs">{f.speakers || '—'}</td>
-                  <td className="px-3 py-2 text-xs">{f.device || '—'}</td>
-                  <td className="whitespace-nowrap px-3 py-2 text-xs">{f.version || '—'}</td>
-                  <td className="px-3 py-2">
-                    <button
-                      onClick={async () => {
-                        try {
-                          const r = await api<{ text: string }>('srt-get', {
-                            key: f.key,
-                          })
-                          setPreview({ key: f.key, text: r.text })
-                        } catch (e) {
-                          onError(e)
-                        }
-                      }}
-                      className="text-xs text-primary hover:underline"
-                    >
-                      צפייה
-                    </button>
+                  <td className="px-3 py-2 text-xs">{x.maxWords || '—'}</td>
+                  <td className="px-3 py-2 text-xs">{x.speakers || '—'}</td>
+                  <td className="px-3 py-2 text-xs">{x.device || '—'}</td>
+                  <td className="whitespace-nowrap px-3 py-2 text-xs">{x.version || '—'}</td>
+                  <td className="whitespace-nowrap px-3 py-2">
+                    <div className="flex items-center justify-end gap-3">
+                      <button
+                        onClick={async () => {
+                          try {
+                            const r = await api<{ text: string }>('srt-get', {
+                              key: x.key,
+                            })
+                            setPreview({ key: x.key, text: r.text })
+                          } catch (e) {
+                            onError(e)
+                          }
+                        }}
+                        className="text-xs text-primary hover:underline"
+                      >
+                        צפייה
+                      </button>
+                      <button
+                        onClick={() => void downloadOne(x.key)}
+                        title="הורדה"
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => void removeOne(x.key)}
+                        title="מחיקה"
+                        className="text-muted-foreground hover:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

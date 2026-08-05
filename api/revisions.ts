@@ -7766,6 +7766,63 @@ async function handleSrtGet(req: VercelRequest, res: VercelResponse) {
   return res.status(200).json({ ok: true, text: String(text || '').slice(0, 200_000) })
 }
 
+/**
+ * action=srt-delete (אדמין) — מחיקת קבצים שנאספו.
+ *
+ * המפתחות מגיעים מהלקוח, ולכן כל אחד נבדק שהוא באמת בתוך `srt/`
+ * ובלי `..`: בלי הבדיקה הזאת פעולת-מחיקה של האדמין הופכת למחיקה
+ * שרירותית בכל הדלי, כולל המודלים עצמם.
+ */
+async function handleSrtDelete(req: VercelRequest, res: VercelResponse) {
+  if (!(await requireGlossaryAdmin(req)))
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const raw = (req.body as { keys?: unknown })?.keys
+  const keys = (Array.isArray(raw) ? raw : []).map(String).slice(0, 500)
+  const safe = keys.filter((k) => k.startsWith('srt/') && !k.includes('..') && k.endsWith('.srt'))
+  if (!safe.length) return res.status(400).json({ ok: false, error: 'bad-keys' })
+  let deleted = 0
+  for (const Key of safe) {
+    try {
+      await getModelsR2().send(new DeleteObjectCommand({ Bucket: MODELS_BUCKET, Key }))
+      deleted++
+    } catch (e) {
+      console.error('[srt-delete]', Key, e)
+    }
+  }
+  return res.status(200).json({ ok: true, deleted })
+}
+
+/**
+ * action=srt-bulk (אדמין) — תוכן של כמה קבצים בבת-אחת, לייצוא.
+ *
+ * מוגבל ל-40 קבצים לקריאה כדי לא לחרוג ממגבלת גודל-התשובה; הלקוח
+ * מחלק לקבוצות ומרכיב את ה-ZIP אצלו.
+ */
+async function handleSrtBulk(req: VercelRequest, res: VercelResponse) {
+  if (!(await requireGlossaryAdmin(req)))
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const raw = (req.body as { keys?: unknown })?.keys
+  const keys = (Array.isArray(raw) ? raw : [])
+    .map(String)
+    .filter((k) => k.startsWith('srt/') && !k.includes('..'))
+    .slice(0, 40)
+  const files: { key: string; text: string }[] = []
+  for (const Key of keys) {
+    try {
+      const obj = await getModelsR2().send(
+        new GetObjectCommand({ Bucket: MODELS_BUCKET, Key }),
+      )
+      files.push({
+        key: Key,
+        text: String((await obj.Body?.transformToString('utf-8')) || ''),
+      })
+    } catch (e) {
+      console.error('[srt-bulk]', Key, e)
+    }
+  }
+  return res.status(200).json({ ok: true, files })
+}
+
 async function handleGlossaryPacks(req: VercelRequest, res: VercelResponse) {
   // ציבורי בכוונה: אין כאן מידע משתמש, וזה מאפשר גם לדף באתר להציג
   // תצוגה מקדימה בלי התחברות.
@@ -7838,6 +7895,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleSrtList(req, res)
       case 'srt-get':
         return await handleSrtGet(req, res)
+      case 'srt-delete':
+        return await handleSrtDelete(req, res)
+      case 'srt-bulk':
+        return await handleSrtBulk(req, res)
       case 'srt-collect':
         return await handleSrtCollect(req, res)
       case 'drive-import-init':
