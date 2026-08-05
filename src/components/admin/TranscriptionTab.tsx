@@ -158,6 +158,7 @@ type Filters = typeof EMPTY_FILTERS
 
 function FilesView({ onError }: { onError: (e: unknown) => void }) {
   const [files, setFiles] = useState<SrtFile[] | null>(null)
+  const [truncated, setTruncated] = useState(false)
   const [busy, setBusy] = useState(false)
   const [exporting, setExporting] = useState(0)
   const [preview, setPreview] = useState<{ key: string; text: string } | null>(null)
@@ -166,8 +167,9 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
   const load = useCallback(async () => {
     setBusy(true)
     try {
-      const r = await api<{ files: SrtFile[] }>('srt-list')
+      const r = await api<{ files: SrtFile[]; truncated?: boolean }>('srt-list')
       setFiles(r.files)
+      setTruncated(!!r.truncated)
     } catch (e) {
       onError(e)
     } finally {
@@ -411,6 +413,14 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
             </button>
           )}
         </div>
+      )}
+
+      {/* השרת מחזיר עד 1000 מפתחות בקריאה. אם נחתך — צריך לומר את זה,
+          אחרת "הורדת הרשימה" נראית כאילו הורידה את הכל. */}
+      {truncated && (
+        <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-600">
+          מוצגים 1000 הקבצים האחרונים בלבד. הסינון וההורדה חלים עליהם.
+        </p>
       )}
 
       {files === null && (
