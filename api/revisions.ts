@@ -7789,17 +7789,30 @@ async function handleSrtList(req: VercelRequest, res: VercelResponse) {
   const out = await getModelsR2().send(
     new ListObjectsV2Command({ Bucket: MODELS_BUCKET, Prefix: 'srt/', MaxKeys: 1000 }),
   )
+  /**
+   * פענוח שם-הקובץ לפי *שדות* ולא לפי ביטוי-רגולרי על המחרוזת כולה.
+   *
+   * שדה הדירוג נוסף מאוחר, וכל הקבצים שנאספו לפניו בנויים בלעדיו.
+   * הביטוי הקודם דרש אותו כעוגן כדי למצוא את המכשיר, ולכן בכל הקבצים
+   * הישנים עמודת "מכשיר" יצאה ריקה. פענוח לפי שדות עובד על שתי
+   * הצורות, וימשיך לעבוד גם אם ייווסף שדה נוסף.
+   */
   const parse = (key: string) => {
-    const n = key.slice('srt/'.length)
-    const g = (re: RegExp) => n.match(re)?.[1] ?? ''
-    return {
-      maxWords: g(/mw([\w.]+?)-/),
-      seconds: g(/-t([\w.]+?)s-/),
-      speakers: g(/-spk([\w.]+?)-/),
-      rating: g(/-r([\w.]+?)-/),
-      device: g(/-r[\w.]+?-([\w.]+?)-v/),
-      version: g(/-v([\w.]+?)-[0-9a-f]{12}\.srt$/),
+    const parts = key.slice('srt/'.length).replace(/\.srt$/, '').split('-')
+    const take = (re: RegExp) => {
+      const i = parts.findIndex((x) => re.test(x))
+      if (i < 0) return ''
+      const v = (parts.splice(i, 1)[0].match(re) as RegExpMatchArray)[1] || ''
+      return v === 'x' ? '' : v
     }
+    const maxWords = take(/^mw([\w.]*)$/)
+    const seconds = take(/^t([\w.]*)s$/)
+    const speakers = take(/^spk([\w.]*)$/)
+    const rating = take(/^r(good|bad|x)$/)
+    const version = take(/^v([\d.]+)$/)
+    parts.pop() // הסיומת האקראית
+    const device = parts.join('-').replace(/^x$/, '')
+    return { maxWords, seconds, speakers, rating, device, version }
   }
   const files = (out.Contents || [])
     .filter((o) => o.Key?.endsWith('.srt'))
