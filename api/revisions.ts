@@ -7579,6 +7579,81 @@ async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
   }
 }
 
+
+// ─────────────────────────────────────────────────────────────────────
+// action=glossary-packs  →  חבילות-מונחים לתמלול (קטלוג + תוכן).
+//
+// המשתמש מפעיל חבילה באפליקציה והיא נשמרת אצלו כ*מזהה* בלבד. התוכן
+// נמשך מכאן, כדי ששיפור של רשימה יגיע לכולם בלי שיוסיפו אותה מחדש.
+//
+// כלל-האצבע באוצרות הרשימות (נמדד — ראה glossary.py בדסקטופ): מעדיפים
+// *צירופים*. מונח בן מילה אחת מתוקן רק בהתאמה פונטית מדויקת, ולכן
+// מילה שיש לה הומופון נפוץ בעברית ("קיימא" מול הפועל "קיימה") עלולה
+// לדרוס טקסט תקין. צירוף כמעט אף פעם לא מתנגש.
+// ─────────────────────────────────────────────────────────────────────
+type GlossaryPack = { id: string; name: string; description: string; terms: string[] }
+
+const GLOSSARY_PACKS: GlossaryPack[] = [
+  {
+    id: 'chabad',
+    name: 'חב״ד',
+    description: 'מונחים, תאריכים ושמות שחוזרים בתוכן חב״די',
+    terms: [
+      'האדמו״ר הזקן',
+      'האדמו״ר הריי״צ',
+      'האדמו״ר האמצעי',
+      'כ״ק אדמו״ר',
+      'הרבי מליובאוויטש',
+      'רבי מליובאוויטש',
+      'בית חב״ד',
+      'כפר חב״ד',
+      'חסידי חב״ד',
+      'ישיבת תומכי תמימים',
+      'תומכי תמימים',
+      'שיחת קודש',
+      'לקוטי שיחות',
+      'לקוטי תורה',
+      'דבר מלכות',
+      'מאמר חסידות',
+      'ספר התניא',
+      'היום יום',
+      'יט כסלו',
+      'חג הגאולה',
+      'יו״ד שבט',
+      'י״א ניסן',
+      'ג׳ תמוז',
+      'כ״ד טבת',
+      'ז׳ אדר',
+      'חלוקת דולרים',
+      'מבצע תפילין',
+      'קבלת פני משיח',
+      'פדיון נפש',
+      'ברכה והצלחה',
+      'זרע חיה וקיימא',
+      'חיה וקיימא',
+      'אנשי שלומנו',
+      'שלוחי הרבי',
+      'התוועדות',
+      'פארבריינגען',
+      'ליובאוויטש',
+      'הילולא',
+    ],
+  },
+]
+
+async function handleGlossaryPacks(req: VercelRequest, res: VercelResponse) {
+  // ציבורי בכוונה: אין כאן מידע משתמש, וזה מאפשר גם לדף באתר להציג
+  // תצוגה מקדימה בלי התחברות.
+  res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=3600')
+  const id = String(req.query.id || '').trim()
+  if (id) {
+    const pack = GLOSSARY_PACKS.find((p) => p.id === id)
+    if (!pack) return res.status(404).json({ ok: false, error: 'not-found' })
+    return res.status(200).json({ ok: true, pack })
+  }
+  return res.status(200).json({ ok: true, packs: GLOSSARY_PACKS })
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   recordVercelInvocation()
   const action = String(req.query.action || '').trim()
@@ -7627,6 +7702,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleR2UploadAbort(req, res)
       case 'transcription-models':
         return await handleTranscriptionModels(req, res)
+      case 'glossary-packs':
+        return await handleGlossaryPacks(req, res)
       case 'srt-collect':
         return await handleSrtCollect(req, res)
       case 'drive-import-init':
