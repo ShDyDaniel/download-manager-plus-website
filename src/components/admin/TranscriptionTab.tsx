@@ -70,6 +70,31 @@ async function api<T>(action: string, body: Record<string, unknown> = {}): Promi
   return j as T
 }
 
+/**
+ * מזהה לטיני מתוך שם עברי.
+ *
+ * המזהה הוא פרט טכני — הוא מופיע רק בקישור `dmplus://glossary?pack=…`
+ * ובמפתח המסמך. דרישה מהאדמין להמציא אותו באנגלית היא מלכודת: שם
+ * עברי בשדה הזה מנוקה בשרת עד למחרוזת ריקה, והשמירה נכשלת עם
+ * "bad-id" — כלומר "אי אפשר ליצור קטגוריה". לכן הוא נגזר מהשם.
+ */
+const HEB_LATIN: Record<string, string> = {
+  א: 'a', ב: 'b', ג: 'g', ד: 'd', ה: 'h', ו: 'v', ז: 'z', ח: 'ch',
+  ט: 't', י: 'y', כ: 'k', ך: 'k', ל: 'l', מ: 'm', ם: 'm', נ: 'n',
+  ן: 'n', ס: 's', ע: 'a', פ: 'p', ף: 'f', צ: 'tz', ץ: 'tz', ק: 'k',
+  ר: 'r', ש: 'sh', ת: 't',
+}
+
+function slugify(name: string): string {
+  const out = Array.from(name.trim())
+    .map((c) => HEB_LATIN[c] ?? (/[a-zA-Z0-9]/.test(c) ? c.toLowerCase() : '-'))
+    .join('')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40)
+  return out || 'pack'
+}
+
 export default function TranscriptionTab({
   onAuthExpired,
 }: {
@@ -551,6 +576,10 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
   /** שגיאה של החלון עצמו. הודעת-השגיאה של הטאב מוצגת מאחורי החלון
       ולכן אינה נראית — כשל שמירה היה נראה כמו "כלום לא קרה". */
   const [modalError, setModalError] = useState('')
+  /** מזהה של קטגוריה קיימת אינו ניתן לשינוי — שינוי שלו היה יוצר
+      מסמך חדש ומשאיר את הישן, כלומר שכפול שקט. */
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [idTouched, setIdTouched] = useState(false)
 
   /** הוספת מונח (או כמה, מופרדים בפסיק) לראש הרשימה. */
   function addTerms() {
@@ -589,8 +618,16 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
     setModalError('')
     try {
       await api('glossary-pack-save', p as unknown as Record<string, unknown>)
+      // עדכון מקומי מיידי: הקריאה החוזרת לשרת עוברת דרך שכבת-מטמון,
+      // ובלי זה השינוי מופיע רק אחרי מעבר-טאב וחזרה.
+      setPacks((prev) => {
+        const list = prev ?? []
+        return list.some((x) => x.id === p.id)
+          ? list.map((x) => (x.id === p.id ? { ...p } : x))
+          : [...list, { ...p }]
+      })
       setEdit(null)
-      await load()
+      void load()
     } catch (e) {
       const err = e as Error & { code?: string }
       if (err.code === 'auth') onError(e)
@@ -604,7 +641,8 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
     if (!confirm(`למחוק את הקטגוריה "${id}"? הפעולה בלתי הפיכה.`)) return
     try {
       await api('glossary-pack-delete', { id })
-      await load()
+      setPacks((prev) => (prev ?? []).filter((x) => x.id !== id))
+      void load()
     } catch (e) {
       onError(e)
     }
@@ -616,6 +654,8 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
         onClick={() => {
           setModalError('')
           setDraft('')
+          setEditingId(null)
+          setIdTouched(false)
           setEdit({ id: '', name: '', description: '', terms: [] })
         }}
         className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
@@ -666,6 +706,8 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
                 onClick={() => {
                   setModalError('')
                   setDraft('')
+                  setEditingId(p.id)
+                  setIdTouched(true)
                   setEdit({ ...p })
                 }}
                 className="mt-3 text-sm text-primary hover:underline"
@@ -692,23 +734,53 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
 
               <div className="space-y-3">
                 <label className="block">
-                  <span className="text-xs text-muted-foreground">
-                    מזהה (אנגלית, ללא רווחים)
-                  </span>
+                  <span className="text-xs text-muted-foreground">שם לתצוגה</span>
                   <input
-                    dir="ltr"
-                    value={edit.id}
-                    onChange={(e) => setEdit({ ...edit, id: e.target.value })}
+                    autoFocus
+                    value={edit.name}
+                    onChange={(e) => {
+                      const name = e.target.value
+                      // המזהה נגזר מהשם כל עוד לא נערך ידנית, וקטגוריה
+                      // קיימת שומרת על שלה.
+                      setEdit({
+                        ...edit,
+                        name,
+                        id: editingId ?? (idTouched ? edit.id : slugify(name)),
+                      })
+                    }}
+                    placeholder="לדוגמה: חב״ד"
                     className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                   />
                 </label>
                 <label className="block">
-                  <span className="text-xs text-muted-foreground">שם לתצוגה</span>
+                  <span className="text-xs text-muted-foreground">
+                    מזהה טכני — נוצר מהשם, ומופיע בקישור ההוספה מהאתר
+                  </span>
                   <input
-                    value={edit.name}
-                    onChange={(e) => setEdit({ ...edit, name: e.target.value })}
-                    className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                    dir="ltr"
+                    value={edit.id}
+                    readOnly={!!editingId}
+                    onChange={(e) => {
+                      setIdTouched(true)
+                      setEdit({ ...edit, id: e.target.value })
+                    }}
+                    className={
+                      'mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm ' +
+                      (editingId ? 'text-muted-foreground' : '')
+                    }
                   />
+                  {editingId ? (
+                    <span className="mt-1 block text-[11px] text-muted-foreground">
+                      מזהה של קטגוריה קיימת אינו ניתן לשינוי — שינוי היה יוצר
+                      קטגוריה שנייה ומשאיר את הקיימת אצל מי שכבר הוסיף אותה.
+                    </span>
+                  ) : (
+                    !/^[a-z0-9-]+$/.test(edit.id) && (
+                      <span className="mt-1 block text-[11px] text-amber-600">
+                        אותיות אנגליות קטנות, ספרות ומקפים בלבד.
+                      </span>
+                    )
+                  )}
                 </label>
                 <label className="block">
                   <span className="text-xs text-muted-foreground">תיאור קצר</span>
@@ -793,7 +865,21 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
                 </button>
                 <button
                   onClick={() => void save(edit)}
-                  disabled={saving || !edit.id.trim() || edit.terms.length === 0}
+                  title={
+                    !edit.name.trim()
+                      ? 'צריך שם לתצוגה'
+                      : !/^[a-z0-9-]+$/.test(edit.id)
+                        ? 'המזהה חייב להיות באנגלית'
+                        : edit.terms.length === 0
+                          ? 'צריך לפחות מונח אחד'
+                          : ''
+                  }
+                  disabled={
+                    saving ||
+                    !edit.name.trim() ||
+                    !/^[a-z0-9-]+$/.test(edit.id) ||
+                    edit.terms.length === 0
+                  }
                   className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
                 >
                   {saving ? (
