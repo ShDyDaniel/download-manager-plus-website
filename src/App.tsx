@@ -31,6 +31,7 @@ import { DeliveryPage } from './pages/DeliveryPage'
 import { RevisionsPage } from './pages/RevisionsPage'
 import { DeliveriesPage } from './pages/DeliveriesPage'
 import { SyncLandingPage } from './pages/SyncLandingPage'
+import { GlossaryPacksPage } from './pages/GlossaryPacksPage'
 import { CollabLandingPage } from './pages/CollabLandingPage'
 import DrivePickerPage from './pages/DrivePickerPage'
 import PartnerPage from './pages/PartnerPage'
@@ -242,6 +243,9 @@ function AnimatedRoutes() {
               that routes to the home page (single download surface).
               See pages/SyncLandingPage.tsx. */}
           <Route path="/sync" element={<SyncLandingPage />} />
+          {/* קטלוג חבילות-המונחים לתמלול. תצוגה בלבד — ההפעלה
+              עצמה נעשית בתוכנה, שם נשמרת ההגדרה ורץ המנוע. */}
+          <Route path="/glossary" element={<GlossaryPacksPage />} />
           {/* Marketing landing for the client-collaboration features
               (revision rounds + client delivery): animated review-player
               demo + editorial sections. See pages/CollabLandingPage.tsx. */}
