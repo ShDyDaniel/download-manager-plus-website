@@ -7617,7 +7617,7 @@ const GLOSSARY_PACKS: GlossaryPack[] = [
       'מאמר חסידות',
       'ספר התניא',
       'היום יום',
-      'יט כסלו',
+      'י״ט כסלו',
       'חג הגאולה',
       'יו״ד שבט',
       'י״א ניסן',
@@ -7738,10 +7738,19 @@ async function handleGlossaryPackSave(req: VercelRequest, res: VercelResponse) {
   if (!id) return res.status(400).json({ ok: false, error: 'bad-id' })
   // ניקוי + ייחוד. מונח ריק או ארוך-מדי נזרק כאן ולא בלקוח, כי הלקוח
   // אינו מקור-אמת.
+  // גרש/גרשיים מואחדים לצורה העברית כבר בשמירה. מה שנכתב במילון הוא
+  // מה שייכתב בכתוביות, ולכן שתי צורות לאותו סימן היו יוצרות טקסט
+  // לא-עקבי אצל הלקוח — ובלבול לאדמין שרואה שתי גרסאות של אותו מונח.
+  const canonQuotes = (t: string) =>
+    t
+      .replace(/(?<=[\u0590-\u05ff])(''|``|"")(?=[\u0590-\u05ff]|$)/g, '\u05f4')
+      .replace(/(?<=[\u0590-\u05ff])["\u201c\u201d](?=[\u0590-\u05ff]|$)/g, '\u05f4')
+      .replace(/(?<=[\u0590-\u05ff])['`\u2018\u2019](?=[\u0590-\u05ff]|$)/g, '\u05f3')
+
   const terms = Array.from(
     new Set(
       (Array.isArray(b.terms) ? b.terms : [])
-        .map((t) => String(t).replace(/\s+/g, ' ').trim())
+        .map((t) => canonQuotes(String(t).replace(/\s+/g, ' ').trim()))
         .filter((t) => t && t.length <= 60),
     ),
   ).slice(0, 500)
