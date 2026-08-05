@@ -37,6 +37,9 @@ interface SrtFile {
   rating: string
   device: string
   version: string
+  diarize: string
+  words: string
+  cues: string
 }
 interface Pack {
   id: string
@@ -500,7 +503,7 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
           <table className="w-full text-right text-sm">
             <thead className="bg-secondary/50 text-xs text-muted-foreground">
               <tr>
-                {['תאריך', 'דירוג', 'אורך', 'מילים/כתובית', 'דוברים', 'מכשיר', 'גרסה', ''].map(
+                {['תאריך', 'דירוג', 'אורך', 'מילים', 'כתוביות', 'דוברים', 'מכשיר', 'גרסה', ''].map(
                   (h) => (
                     <th key={h} className="whitespace-nowrap px-3 py-2 font-medium">
                       {h}
@@ -527,8 +530,16 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
                   <td className="whitespace-nowrap px-3 py-2 text-xs">
                     {x.seconds && x.seconds !== 'x' ? `${x.seconds}ש׳` : '—'}
                   </td>
-                  <td className="px-3 py-2 text-xs">{x.maxWords || '—'}</td>
-                  <td className="px-3 py-2 text-xs">{x.speakers || '—'}</td>
+                  <td className="px-3 py-2 text-xs">{x.words || '—'}</td>
+                  <td className="px-3 py-2 text-xs">{x.cues || '—'}</td>
+                  {/* דובר אחד בלי זיהוי-דוברים אינו נתון אלא ברירת-מחדל,
+                      ולכן מוצג רק כשהזיהוי היה דלוק. בקבצים שנאספו לפני
+                      שהדגל נשמר, מוצג רק כשיש יותר מדובר אחד. */}
+                  <td className="px-3 py-2 text-xs">
+                    {x.diarize === '1' || (!x.diarize && Number(x.speakers) > 1)
+                      ? x.speakers
+                      : '—'}
+                  </td>
                   <td className="px-3 py-2 text-xs">{x.device || '—'}</td>
                   <td className="whitespace-nowrap px-3 py-2 text-xs">{x.version || '—'}</td>
                   <td className="whitespace-nowrap px-3 py-2">

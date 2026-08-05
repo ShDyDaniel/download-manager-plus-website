@@ -7545,6 +7545,8 @@ async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
       version?: string
       /** דירוג המשתמש לתמלול: good / bad / undefined = לא ענה. */
       rating?: string
+      /** האם זיהוי-הדוברים היה דלוק בהרצה. */
+      diarize?: boolean
     }
   }
   const srt = String(body.srt || '')
@@ -7559,9 +7561,20 @@ async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
       String(v ?? fb)
         .replace(/[^\w.]+/g, '')
         .slice(0, 16) || fb
+    // ספירת מילים וכתוביות מהתוכן עצמו — מקור-אמת אחד, ולא מדד
+    // שהלקוח שלח. `d1`/`d0` מציין אם זיהוי-הדוברים בכלל היה דלוק,
+    // כי "דובר אחד" בלי זיהוי אינו נתון אלא ברירת-מחדל.
+    const cueCount = srt.split(/\n\s*\n/).filter((b) => b.trim()).length
+    const wordCount = srt
+      .split('\n')
+      .filter((l) => !/^\d+$/.test(l.trim()) && !l.includes('-->'))
+      .join(' ')
+      .split(/\s+/)
+      .filter(Boolean).length
     const key =
       `srt/mw${tok(m.maxWords, 'x')}-t${tok(m.seconds, 'x')}s` +
-      `-spk${tok(m.speakers, 'x')}-r${tok(m.rating, 'x')}` +
+      `-spk${tok(m.speakers, 'x')}-d${m.diarize ? '1' : '0'}` +
+      `-w${wordCount}-c${cueCount}-r${tok(m.rating, 'x')}` +
       `-${tok(m.device, 'x')}-v${tok(m.version, 'x')}` +
       `-${crypto.randomBytes(6).toString('hex')}.srt`
     await getModelsR2().send(
@@ -7808,11 +7821,14 @@ async function handleSrtList(req: VercelRequest, res: VercelResponse) {
     const maxWords = take(/^mw([\w.]*)$/)
     const seconds = take(/^t([\w.]*)s$/)
     const speakers = take(/^spk([\w.]*)$/)
+    const diarize = take(/^d([01])$/)
+    const words = take(/^w(\d+)$/)
+    const cues = take(/^c(\d+)$/)
     const rating = take(/^r(good|bad|x)$/)
     const version = take(/^v([\d.]+)$/)
     parts.pop() // הסיומת האקראית
     const device = parts.join('-').replace(/^x$/, '')
-    return { maxWords, seconds, speakers, rating, device, version }
+    return { maxWords, seconds, speakers, rating, device, version, diarize, words, cues }
   }
   const files = (out.Contents || [])
     .filter((o) => o.Key?.endsWith('.srt'))
@@ -7823,7 +7839,42 @@ async function handleSrtList(req: VercelRequest, res: VercelResponse) {
       ...parse(o.Key as string),
     }))
     .sort((a, b) => b.at - a.at)
-  return res.status(200).json({ ok: true, files, truncated: !!out.IsTruncated })
+
+  // קבצים שנאספו לפני שהספירות נכנסו לשם-הקובץ — נספרים כאן מהתוכן.
+  // מוגבל, כי כל אחד הוא קריאה נפרדת; מעבר לתקרה העמודות יישארו ריקות
+  // ולא נציג מספר שאינו נכון.
+  const COUNT_LIMIT = 100
+  const missing = files.filter((f) => !f.words).slice(0, COUNT_LIMIT)
+  for (let i = 0; i < missing.length; i += 10) {
+    await Promise.all(
+      missing.slice(i, i + 10).map(async (f) => {
+        try {
+          const obj = await getModelsR2().send(
+            new GetObjectCommand({ Bucket: MODELS_BUCKET, Key: f.key }),
+          )
+          const txt = String((await obj.Body?.transformToString('utf-8')) || '')
+          f.cues = String(txt.split(/\n\s*\n/).filter((b) => b.trim()).length)
+          f.words = String(
+            txt
+              .split('\n')
+              .filter((l) => !/^\d+$/.test(l.trim()) && !l.includes('-->'))
+              .join(' ')
+              .split(/\s+/)
+              .filter(Boolean).length,
+          )
+        } catch {
+          /* קובץ בודד שנכשל — נשאר בלי ספירה */
+        }
+      }),
+    )
+  }
+
+  return res.status(200).json({
+    ok: true,
+    files,
+    truncated: !!out.IsTruncated,
+    countsCapped: files.filter((f) => !f.words).length,
+  })
 }
 
 // action=srt-get (אדמין) — תוכן קובץ בודד לתצוגה.
