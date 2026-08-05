@@ -7503,6 +7503,10 @@ const MODEL_ASSETS: Array<{ id: string; key: string }> = [
   { id: 'yamnet', key: 'asset-04.dat' },
   { id: 'segmenter', key: 'asset-05.dat' },
   { id: 'whisper-ct2', key: 'asset-06.dat' },
+  // מודלי "מדוייק" (large-v3 מלא) — אופציונליים. הדסקטופ מבקש אותם רק
+  // כשהמשתמש בוחר מצב-מדוייק ומוריד אותם.
+  { id: 'whisper-mlx-large', key: 'asset-07.dat' },
+  { id: 'whisper-ct2-large', key: 'asset-08.dat' },
 ]
 
 // action=transcription-models → presigned GET urls for the model assets.
@@ -7539,6 +7543,8 @@ async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
       speakers?: number
       device?: string
       version?: string
+      /** דירוג המשתמש לתמלול: good / bad / undefined = לא ענה. */
+      rating?: string
     }
   }
   const srt = String(body.srt || '')
@@ -7547,7 +7553,7 @@ async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
   }
   try {
     // שם-הקובץ מקודד מטא-דאטה (לניתוח + ארגון דאטת-האימון), הכל מנוקה:
-    //   mw{מילים-מקס}-t{שניות}s-spk{דוברים}-{מכשיר}-v{גרסה}-{אקראי}.srt
+    //   mw{מילים-מקס}-t{שניות}s-spk{דוברים}-r{דירוג}-{מכשיר}-v{גרסה}-{אקראי}.srt
     const m = body.meta || {}
     const tok = (v: unknown, fb: string) =>
       String(v ?? fb)
@@ -7555,7 +7561,8 @@ async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
         .slice(0, 16) || fb
     const key =
       `srt/mw${tok(m.maxWords, 'x')}-t${tok(m.seconds, 'x')}s` +
-      `-spk${tok(m.speakers, 'x')}-${tok(m.device, 'x')}-v${tok(m.version, 'x')}` +
+      `-spk${tok(m.speakers, 'x')}-r${tok(m.rating, 'x')}` +
+      `-${tok(m.device, 'x')}-v${tok(m.version, 'x')}` +
       `-${crypto.randomBytes(6).toString('hex')}.srt`
     await getModelsR2().send(
       new PutObjectCommand({
