@@ -503,7 +503,18 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
           <table className="w-full text-right text-sm">
             <thead className="bg-secondary/50 text-xs text-muted-foreground">
               <tr>
-                {['תאריך', 'דירוג', 'אורך', 'מילים', 'כתוביות', 'דוברים', 'מכשיר', 'גרסה', ''].map(
+                {[
+                  'תאריך',
+                  'דירוג',
+                  'אורך',
+                  'מילים',
+                  'כתוביות',
+                  'מקס׳ מילים',
+                  'דוברים',
+                  'מכשיר',
+                  'גרסה',
+                  '',
+                ].map(
                   (h) => (
                     <th key={h} className="whitespace-nowrap px-3 py-2 font-medium">
                       {h}
@@ -532,6 +543,10 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
                   </td>
                   <td className="px-3 py-2 text-xs">{x.words || '—'}</td>
                   <td className="px-3 py-2 text-xs">{x.cues || '—'}</td>
+                  {/* ההגדרה שאיתה רץ התמלול — לא מדידה, ולכן בעמודה נפרדת. */}
+                  <td className="px-3 py-2 text-xs text-muted-foreground">
+                    {x.maxWords || '—'}
+                  </td>
                   {/* דובר אחד בלי זיהוי-דוברים אינו נתון אלא ברירת-מחדל,
                       ולכן מוצג רק כשהזיהוי היה דלוק. בקבצים שנאספו לפני
                       שהדגל נשמר, מוצג רק כשיש יותר מדובר אחד. */}
