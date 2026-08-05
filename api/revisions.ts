@@ -7641,17 +7641,143 @@ const GLOSSARY_PACKS: GlossaryPack[] = [
   },
 ]
 
+
+/** שער-אדמין לפעולות-ניהול כאן. אותו מקור-אמת כמו SERVER_ADMIN_EMAILS. */
+async function requireGlossaryAdmin(req: VercelRequest): Promise<boolean> {
+  const v = await verifyOwnerAuth(req)
+  const email = (v?.email || '').toLowerCase()
+  return !!email && SERVER_ADMIN_EMAILS.has(email)
+}
+
+/** החבילות מ-Firestore, עם ה-seed המובנה כברירת-מחדל בהתקנה נקייה. */
+async function readPacks(): Promise<GlossaryPack[]> {
+  try {
+    const snap = await getDb().collection('glossaryPacks').get()
+    if (snap.empty) return GLOSSARY_PACKS
+    return snap.docs
+      .map((d) => {
+        const v = d.data() as Partial<GlossaryPack>
+        return {
+          id: d.id,
+          name: String(v.name || d.id),
+          description: String(v.description || ''),
+          terms: Array.isArray(v.terms) ? v.terms.map(String).filter(Boolean) : [],
+        }
+      })
+      .filter((p) => p.terms.length > 0)
+      .sort((a, b) => a.name.localeCompare(b.name, 'he'))
+  } catch (e) {
+    // כשל-קריאה לא משתיק את התכונה — מגישים את ה-seed.
+    console.warn('[glossary-packs] firestore read failed, serving seed:', e)
+    return GLOSSARY_PACKS
+  }
+}
+
+// action=glossary-pack-save (אדמין) — יוצר/מעדכן חבילה.
+async function handleGlossaryPackSave(req: VercelRequest, res: VercelResponse) {
+  if (!(await requireGlossaryAdmin(req)))
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const b = (req.body || {}) as Partial<GlossaryPack>
+  const id = String(b.id || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '')
+    .slice(0, 40)
+  if (!id) return res.status(400).json({ ok: false, error: 'bad-id' })
+  // ניקוי + ייחוד. מונח ריק או ארוך-מדי נזרק כאן ולא בלקוח, כי הלקוח
+  // אינו מקור-אמת.
+  const terms = Array.from(
+    new Set(
+      (Array.isArray(b.terms) ? b.terms : [])
+        .map((t) => String(t).replace(/\s+/g, ' ').trim())
+        .filter((t) => t && t.length <= 60),
+    ),
+  ).slice(0, 500)
+  await getDb()
+    .collection('glossaryPacks')
+    .doc(id)
+    .set(
+      {
+        name: String(b.name || id).slice(0, 60),
+        description: String(b.description || '').slice(0, 200),
+        terms,
+        updatedAt: Date.now(),
+      },
+      { merge: true },
+    )
+  return res.status(200).json({ ok: true, id, count: terms.length })
+}
+
+// action=glossary-pack-delete (אדמין)
+async function handleGlossaryPackDelete(req: VercelRequest, res: VercelResponse) {
+  if (!(await requireGlossaryAdmin(req)))
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const id = String((req.body as { id?: string })?.id || '').trim()
+  if (!id) return res.status(400).json({ ok: false, error: 'bad-id' })
+  await getDb().collection('glossaryPacks').doc(id).delete()
+  return res.status(200).json({ ok: true })
+}
+
+// action=srt-list (אדמין) — קובצי ה-SRT שנאספו, עם המטא-דאטה שמקודדת
+// בשם-הקובץ. אין כאן זהות משתמש: המפתח נבנה אנונימי מלכתחילה.
+async function handleSrtList(req: VercelRequest, res: VercelResponse) {
+  if (!(await requireGlossaryAdmin(req)))
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const out = await getModelsR2().send(
+    new ListObjectsV2Command({ Bucket: MODELS_BUCKET, Prefix: 'srt/', MaxKeys: 1000 }),
+  )
+  const parse = (key: string) => {
+    const n = key.slice('srt/'.length)
+    const g = (re: RegExp) => n.match(re)?.[1] ?? ''
+    return {
+      maxWords: g(/mw([\w.]+?)-/),
+      seconds: g(/-t([\w.]+?)s-/),
+      speakers: g(/-spk([\w.]+?)-/),
+      rating: g(/-r([\w.]+?)-/),
+      device: g(/-r[\w.]+?-([\w.]+?)-v/),
+      version: g(/-v([\w.]+?)-[0-9a-f]{12}\.srt$/),
+    }
+  }
+  const files = (out.Contents || [])
+    .filter((o) => o.Key?.endsWith('.srt'))
+    .map((o) => ({
+      key: o.Key as string,
+      size: o.Size ?? 0,
+      at: o.LastModified ? new Date(o.LastModified).getTime() : 0,
+      ...parse(o.Key as string),
+    }))
+    .sort((a, b) => b.at - a.at)
+  return res.status(200).json({ ok: true, files, truncated: !!out.IsTruncated })
+}
+
+// action=srt-get (אדמין) — תוכן קובץ בודד לתצוגה.
+async function handleSrtGet(req: VercelRequest, res: VercelResponse) {
+  if (!(await requireGlossaryAdmin(req)))
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  // מהגוף ולא מה-URL: את ה-idToken אסור לשים ב-query (הוא אישור-גישה
+  // שנרשם בלוגים של פרוקסי/CDN), ולכן שתי הפעולות כאן הן POST.
+  const key = String((req.body as { key?: string })?.key || '')
+  if (!key.startsWith('srt/') || key.includes('..'))
+    return res.status(400).json({ ok: false, error: 'bad-key' })
+  const obj = await getModelsR2().send(
+    new GetObjectCommand({ Bucket: MODELS_BUCKET, Key: key }),
+  )
+  const text = await obj.Body?.transformToString('utf-8')
+  return res.status(200).json({ ok: true, text: String(text || '').slice(0, 200_000) })
+}
+
 async function handleGlossaryPacks(req: VercelRequest, res: VercelResponse) {
   // ציבורי בכוונה: אין כאן מידע משתמש, וזה מאפשר גם לדף באתר להציג
   // תצוגה מקדימה בלי התחברות.
   res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=3600')
+  const all = await readPacks()
   const id = String(req.query.id || '').trim()
   if (id) {
-    const pack = GLOSSARY_PACKS.find((p) => p.id === id)
+    const pack = all.find((p) => p.id === id)
     if (!pack) return res.status(404).json({ ok: false, error: 'not-found' })
     return res.status(200).json({ ok: true, pack })
   }
-  return res.status(200).json({ ok: true, packs: GLOSSARY_PACKS })
+  return res.status(200).json({ ok: true, packs: all })
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -7704,6 +7830,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleTranscriptionModels(req, res)
       case 'glossary-packs':
         return await handleGlossaryPacks(req, res)
+      case 'glossary-pack-save':
+        return await handleGlossaryPackSave(req, res)
+      case 'glossary-pack-delete':
+        return await handleGlossaryPackDelete(req, res)
+      case 'srt-list':
+        return await handleSrtList(req, res)
+      case 'srt-get':
+        return await handleSrtGet(req, res)
       case 'srt-collect':
         return await handleSrtCollect(req, res)
       case 'drive-import-init':

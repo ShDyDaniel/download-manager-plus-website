@@ -1273,6 +1273,9 @@ const BACKUP_COLLECTIONS = [
   'productKeys',
   'users',
   'appConfig',
+  // חבילות-המונחים לתמלול. נערכות ידנית באדמין ואינן נגזרות משום
+  // מקור אחר — בלי זה עבודת-האוצרות תלך לאיבוד בשחזור.
+  'glossaryPacks',
   // Admin-only persistent config (sibling of appConfig): logs password,
   // Pro/trial storage quotas, and the עוסק identity + signature for the
   // 8356 PDF. Set manually by the admin and not derivable from anything

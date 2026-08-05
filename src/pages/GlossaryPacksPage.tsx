@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { BookOpen, Check, Loader2, Layers, ArrowLeft } from 'lucide-react'
+import { BookOpen, Check, Loader2, Layers, ArrowLeft, Plus } from 'lucide-react'
 import { Footer } from '../components/Footer'
 
 /**
@@ -95,13 +95,25 @@ export function GlossaryPacksPage() {
                   </span>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setOpen(isOpen ? null : p.id)}
-                  className="mt-4 text-sm font-medium text-primary underline-offset-4 hover:underline"
-                >
-                  {isOpen ? 'הסתרת הרשימה' : 'הצגת כל המונחים'}
-                </button>
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  {/* פותח את התוכנה ומפעיל את הקטגוריה. הקישור נושא מזהה
+                      בלבד — המונחים נמשכים מהשרת, כך שאי-אפשר להזריק
+                      מילים למילון דרך URL. */}
+                  <a
+                    href={`dmplus://glossary?pack=${encodeURIComponent(p.id)}`}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-br from-primary to-accent px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                  >
+                    <Plus className="h-4 w-4" />
+                    הוספה לתוכנה
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => setOpen(isOpen ? null : p.id)}
+                    className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+                  >
+                    {isOpen ? 'הסתרת הרשימה' : 'הצגת כל המונחים'}
+                  </button>
+                </div>
 
                 {isOpen && (
                   <div className="mt-3 flex max-h-64 flex-wrap gap-1.5 overflow-y-auto rounded-xl border border-border bg-background p-3">
@@ -126,8 +138,8 @@ export function GlossaryPacksPage() {
           <ol className="mt-4 space-y-3 text-sm text-muted-foreground">
             {[
               'פותחים בתוכנה את הטאב "תמלול חכם".',
-              'לוחצים על "מתקדם", ובכרטיס "מילון אישי" על הכפתור "קטגוריה".',
-              'בוחרים את הקטגוריה — היא מופיעה כתגית אחת, בלי למלא את המילון.',
+              'לוחצים כאן על "הוספה לתוכנה" — או, בתוך התוכנה, על "מתקדם" ואז על הכפתור "קטגוריה".',
+              'הקטגוריה מופיעה כתגית אחת במילון האישי, בלי למלא אותו במאות מונחים.',
             ].map((step, i) => (
               <li key={i} className="flex gap-3">
                 <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[11px] font-semibold text-primary">

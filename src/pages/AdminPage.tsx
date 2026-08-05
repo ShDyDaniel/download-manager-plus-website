@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { onAuthStateChanged } from 'firebase/auth'
 import {
+  Captions,
   LayoutDashboard,
   Users as UsersIcon,
   Key as KeyIcon,
@@ -45,6 +46,7 @@ import DataTab from '../components/admin/DataTab'
 import RevenueTab from '../components/admin/RevenueTab'
 import ReferralsTab from '../components/admin/ReferralsTab'
 import FeedbackTab from '../components/admin/FeedbackTab'
+import TranscriptionTab from '../components/admin/TranscriptionTab'
 import UpdatesTab from '../components/admin/UpdatesTab'
 import ReceiptsTab from '../components/admin/ReceiptsTab'
 import BackupTab from '../components/admin/BackupTab'
@@ -73,6 +75,7 @@ type AdminTabKey =
   | 'referrals'
   | 'updates'
   | 'feedback'
+  | 'transcription'
   | 'receipts'
   | 'backup'
   | 'logs'
@@ -93,6 +96,7 @@ const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
   { key: 'referrals', label: 'שותפים', icon: Share2 },
   { key: 'updates', label: 'עדכונים', icon: DownloadCloud },
   { key: 'feedback', label: 'פניות', icon: MessageSquare },
+  { key: 'transcription', label: 'תמלול', icon: Captions },
   { key: 'backup', label: 'גיבוי', icon: DatabaseBackup },
   { key: 'logs', label: 'לוגים', icon: ScrollText },
   { key: 'prices', label: 'מחירים', icon: Ticket },
@@ -553,6 +557,8 @@ function AdminShell({
             <ReferralsTab onAuthExpired={onAuthExpired} />
           ) : tab === 'feedback' ? (
             <FeedbackTab onAuthExpired={onAuthExpired} />
+          ) : tab === 'transcription' ? (
+            <TranscriptionTab onAuthExpired={onAuthExpired} />
           ) : tab === 'updates' ? (
             <UpdatesTab onAuthExpired={onAuthExpired} />
           ) : tab === 'receipts' ? (
