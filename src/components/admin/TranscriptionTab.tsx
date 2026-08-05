@@ -40,6 +40,8 @@ interface SrtFile {
   diarize: string
   words: string
   cues: string
+  duration: string
+  quality: string
 }
 interface Pack {
   id: string
@@ -200,6 +202,20 @@ function saveBlob(blob: Blob, filename: string) {
   a.click()
   a.remove()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+/** שניות → מ:שש, כדי שאורך של שש דקות לא ייקרא כמספר סתמי. */
+function fmtDur(sec: number): string {
+  if (!Number.isFinite(sec) || sec <= 0) return '—'
+  const m = Math.floor(sec / 60)
+  const s = Math.round(sec % 60)
+  return m ? `${m}:${String(s).padStart(2, '0')}` : `${s}ש׳`
+}
+
+const QUALITY: Record<string, string> = {
+  fast: 'מהיר',
+  balanced: 'מאוזן',
+  accurate: 'מדויק',
 }
 
 const EMPTY_FILTERS = {
@@ -507,9 +523,11 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
                   'תאריך',
                   'דירוג',
                   'אורך',
+                  'זמן תמלול',
                   'מילים',
                   'כתוביות',
                   'מקס׳ מילים',
+                  'מודל',
                   'דוברים',
                   'מכשיר',
                   'גרסה',
@@ -538,14 +556,22 @@ function FilesView({ onError }: { onError: (e: unknown) => void }) {
                       <span className="text-xs text-muted-foreground">—</span>
                     )}
                   </td>
+                  {/* אורך הכתוביות עצמן — נגזר מחותמת-הסיום בקובץ. */}
                   <td className="whitespace-nowrap px-3 py-2 text-xs">
-                    {x.seconds && x.seconds !== 'x' ? `${x.seconds}ש׳` : '—'}
+                    {x.duration ? fmtDur(Number(x.duration)) : '—'}
+                  </td>
+                  {/* כמה זמן לקח לתמלל — מדד ביצועים, לא אורך תוכן. */}
+                  <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">
+                    {x.seconds && x.seconds !== 'x' ? fmtDur(Number(x.seconds)) : '—'}
                   </td>
                   <td className="px-3 py-2 text-xs">{x.words || '—'}</td>
                   <td className="px-3 py-2 text-xs">{x.cues || '—'}</td>
                   {/* ההגדרה שאיתה רץ התמלול — לא מדידה, ולכן בעמודה נפרדת. */}
                   <td className="px-3 py-2 text-xs text-muted-foreground">
                     {x.maxWords || '—'}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 text-xs">
+                    {QUALITY[x.quality] || '—'}
                   </td>
                   {/* דובר אחד בלי זיהוי-דוברים אינו נתון אלא ברירת-מחדל,
                       ולכן מוצג רק כשהזיהוי היה דלוק. בקבצים שנאספו לפני

@@ -7529,6 +7529,30 @@ async function handleTranscriptionModels(req: VercelRequest, res: VercelResponse
   }
 }
 
+/** אורך הכתוביות בשניות — חותמת-הסיום האחרונה ב-SRT. */
+function srtDurationSeconds(srt: string): number {
+  let last = 0
+  const re = /(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(srt))) {
+    const t = +m[1] * 3600 + +m[2] * 60 + +m[3] + +m[4] / 1000
+    if (t > last) last = t
+  }
+  return Math.round(last)
+}
+
+/** מילים וכתוביות מתוך תוכן ה-SRT — מקור-אמת אחד לשני הצדדים. */
+function srtCounts(srt: string): { words: number; cues: number } {
+  const cues = srt.split(/\n\s*\n/).filter((b) => b.trim()).length
+  const words = srt
+    .split('\n')
+    .filter((l) => !/^\d+$/.test(l.trim()) && !l.includes('-->'))
+    .join(' ')
+    .split(/\s+/)
+    .filter(Boolean).length
+  return { words, cues }
+}
+
 // action=srt-collect  Body: { idToken|sessionToken, srt }
 // Stores an anonymized SRT into models/srt/<random>.srt for continued
 // model training (beta). No uid, no identifying data in key or content.
@@ -7547,6 +7571,8 @@ async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
       rating?: string
       /** האם זיהוי-הדוברים היה דלוק בהרצה. */
       diarize?: boolean
+      /** רמת-הפענוח: fast / balanced / accurate. */
+      quality?: string
     }
   }
   const srt = String(body.srt || '')
@@ -7564,17 +7590,15 @@ async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
     // ספירת מילים וכתוביות מהתוכן עצמו — מקור-אמת אחד, ולא מדד
     // שהלקוח שלח. `d1`/`d0` מציין אם זיהוי-הדוברים בכלל היה דלוק,
     // כי "דובר אחד" בלי זיהוי אינו נתון אלא ברירת-מחדל.
-    const cueCount = srt.split(/\n\s*\n/).filter((b) => b.trim()).length
-    const wordCount = srt
-      .split('\n')
-      .filter((l) => !/^\d+$/.test(l.trim()) && !l.includes('-->'))
-      .join(' ')
-      .split(/\s+/)
-      .filter(Boolean).length
+    const { words: wordCount, cues: cueCount } = srtCounts(srt)
+    // `t…s` הוא זמן ה*עיבוד*; `dur` הוא אורך הכתוביות בפועל. שני
+    // מדדים שונים לגמרי שהוצגו עד עכשיו תחת כותרת אחת.
+    const durSec = srtDurationSeconds(srt)
     const key =
       `srt/mw${tok(m.maxWords, 'x')}-t${tok(m.seconds, 'x')}s` +
       `-spk${tok(m.speakers, 'x')}-d${m.diarize ? '1' : '0'}` +
-      `-w${wordCount}-c${cueCount}-r${tok(m.rating, 'x')}` +
+      `-w${wordCount}-c${cueCount}-dur${durSec}-q${tok(m.quality, 'x')}` +
+      `-r${tok(m.rating, 'x')}` +
       `-${tok(m.device, 'x')}-v${tok(m.version, 'x')}` +
       `-${crypto.randomBytes(6).toString('hex')}.srt`
     await getModelsR2().send(
@@ -7822,13 +7846,27 @@ async function handleSrtList(req: VercelRequest, res: VercelResponse) {
     const seconds = take(/^t([\w.]*)s$/)
     const speakers = take(/^spk([\w.]*)$/)
     const diarize = take(/^d([01])$/)
+    const duration = take(/^dur(\d+)$/)
+    const quality = take(/^q(fast|balanced|accurate|x)$/)
     const words = take(/^w(\d+)$/)
     const cues = take(/^c(\d+)$/)
     const rating = take(/^r(good|bad|x)$/)
     const version = take(/^v([\d.]+)$/)
     parts.pop() // הסיומת האקראית
     const device = parts.join('-').replace(/^x$/, '')
-    return { maxWords, seconds, speakers, rating, device, version, diarize, words, cues }
+    return {
+      maxWords,
+      seconds,
+      speakers,
+      rating,
+      device,
+      version,
+      diarize,
+      words,
+      cues,
+      duration,
+      quality,
+    }
   }
   const files = (out.Contents || [])
     .filter((o) => o.Key?.endsWith('.srt'))
@@ -7853,15 +7891,10 @@ async function handleSrtList(req: VercelRequest, res: VercelResponse) {
             new GetObjectCommand({ Bucket: MODELS_BUCKET, Key: f.key }),
           )
           const txt = String((await obj.Body?.transformToString('utf-8')) || '')
-          f.cues = String(txt.split(/\n\s*\n/).filter((b) => b.trim()).length)
-          f.words = String(
-            txt
-              .split('\n')
-              .filter((l) => !/^\d+$/.test(l.trim()) && !l.includes('-->'))
-              .join(' ')
-              .split(/\s+/)
-              .filter(Boolean).length,
-          )
+          const c = srtCounts(txt)
+          f.cues = String(c.cues)
+          f.words = String(c.words)
+          f.duration = String(srtDurationSeconds(txt))
         } catch {
           /* קובץ בודד שנכשל — נשאר בלי ספירה */
         }
