@@ -1165,8 +1165,8 @@ export function BuyPage() {
           <ul className="mb-7 grid grid-cols-1 gap-x-10 gap-y-3 sm:grid-cols-2">
             {[
               'סנכרון אוטומטי של וידאו וסאונד (מולטיקאם ומיקרופונים חיצוניים)',
-              'סבבי תיקונים — קישור ביקורת ללקוח עם הערות ממוקדות-זמן',
-              'מסירה ללקוח — שליחת הקובץ הסופי בקישור מאובטח עם תוקף',
+              'סבבי תיקונים: קישור ביקורת ללקוח עם הערות ממוקדות-זמן',
+              'מסירה ללקוח: שליחת הקובץ הסופי בקישור מאובטח עם תוקף',
               'אחסון של 100 ג׳יגה לסבבי התיקונים ולמסירות',
               'תמיכה בסרטונים באיכות 4K',
               'מספר פרויקטים בלתי מוגבל',
@@ -1255,7 +1255,7 @@ export function BuyPage() {
                           <span>
                             המנוי ה{fromLabel} הקיים{' '}
                             <strong className="text-fg">יבוטל אוטומטית</strong>{' '}
-                            — לא תחויב עליו שוב
+                            , לא תחויב עליו שוב
                           </span>
                         </div>
                         {carriedDays > 0 && (
@@ -1283,7 +1283,7 @@ export function BuyPage() {
                       </div>
 
                       <div className="mt-2 text-[11px] text-fg-muted">
-                        המפתח עצמו לא משתנה — אין צורך להזין שום דבר חדש בתוכנה.
+                        המפתח עצמו לא משתנה, אין צורך להזין שום דבר חדש בתוכנה.
                       </div>
                     </div>
                   </div>
@@ -1335,7 +1335,7 @@ export function BuyPage() {
                         ).toISOString(),
                       )}
                     </strong>{' '}
-                    — המפתח עצמו לא משתנה.
+                    . המפתח עצמו לא משתנה.
                   </div>
                 </div>
               </div>
@@ -1377,7 +1377,7 @@ export function BuyPage() {
                 </strong>
               </p>
               <p className="mt-2 text-xs text-fg-muted">
-                המפתח שלך נשאר אותו דבר — אין צורך לעדכן באפליקציה. שלחנו לך גם
+                המפתח שלך נשאר אותו דבר, אין צורך לעדכן באפליקציה. שלחנו לך גם
                 מייל אישור.
               </p>
             </div>
@@ -1413,7 +1413,7 @@ export function BuyPage() {
                   className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl bg-primary px-6 py-4 text-base font-bold text-bg shadow-lg shadow-primary/30 transition-all hover:bg-primary-hover hover:shadow-xl hover:shadow-primary/40 active:scale-[0.98]"
                 >
                   <Crown className="h-5 w-5" />
-                  המשך לחידוש —{' '}
+                  המשך לחידוש:{' '}
                   {formatPrice(effectivePrice(pricing[plan]))}{' '}
                   {currencySymbol(pricing.currency)}
                 </button>
@@ -1586,7 +1586,7 @@ export function BuyPage() {
                   ) : (
                     <>
                       <p className="text-xs text-fg-muted">
-                        הזינו את האימייל שאיתו נרשמתם — נשלח אליו קישור
+                        הזינו את האימייל שאיתו נרשמתם, ונשלח אליו קישור
                         לאיפוס הסיסמה.
                       </p>
                       <label className="block">
@@ -2030,7 +2030,7 @@ function SubscriptionFlow({
           הרישום בוטל
         </div>
         <p className="text-sm text-fg-secondary">
-          לא נוצר מנוי ולא חויבת. אם זה היה בטעות — פשוט נסה שוב למטה.
+          לא נוצר מנוי ולא חויבת. אם זה היה בטעות, פשוט נסה שוב למטה.
         </p>
         <a
           href="/buy"
@@ -2093,7 +2093,7 @@ function SubscriptionFlow({
           error?: string
         }
         if (!r.ok || !j.ok) {
-          setCouponErr(j.error || 'בדיקת הקופון נכשלה — נסו שוב')
+          setCouponErr(j.error || 'בדיקת הקופון נכשלה. נסו שוב')
           setCouponOk(null)
         } else if (!j.valid) {
           setCouponErr(j.error || 'קוד לא תקין')
@@ -2109,7 +2109,7 @@ function SubscriptionFlow({
           })
         }
       } catch {
-        setCouponErr('בדיקת הקופון נכשלה — נסו שוב')
+        setCouponErr('בדיקת הקופון נכשלה. נסו שוב')
       } finally {
         setCouponBusy(false)
       }
@@ -2303,7 +2303,7 @@ function SubscriptionFlow({
               {couponOk && !couponOk.saleCheaper && (
                 <div className="flex items-center gap-2 rounded-xl border border-success/40 bg-success/10 px-3 py-2 text-xs text-success">
                   <span>
-                    קופון {couponOk.pct}% הופעל —{' '}
+                    קופון {couponOk.pct}% הופעל:{' '}
                     {couponOk.duration === 'first'
                       ? `${formatPrice(couponOk.finalPrice)} ${sym} ל${cycleLabel} הראשון, אחר כך ${formatPrice(couponOk.recurringPrice ?? eff)} ${sym} ל${cycleLabel}`
                       : `${formatPrice(couponOk.finalPrice)} ${sym} ל${cycleLabel}`}
@@ -2324,7 +2324,7 @@ function SubscriptionFlow({
               )}
               {couponOk && couponOk.saleCheaper && (
                 <div className="rounded-xl border border-border bg-bg-elevated px-3 py-2 text-xs text-fg-secondary">
-                  המבצע הנוכחי זול יותר מהקופון — המחיר נשאר{' '}
+                  המבצע הנוכחי זול יותר מהקופון. המחיר נשאר{' '}
                   {formatPrice(eff)} {sym}. הקופון לא ינוצל.
                 </div>
               )}
@@ -2400,7 +2400,7 @@ function SubscriptionFlow({
             </button>
             <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-primary">
               <Crown className="h-4 w-4" />
-              תנאי המנוי — סיכום העסקה
+              תנאי המנוי · סיכום העסקה
             </div>
             <ul className="space-y-2.5 text-xs leading-relaxed text-fg-secondary">
               <li>
@@ -2436,7 +2436,7 @@ function SubscriptionFlow({
                   <>
                     {' '}
                     המחיר ה<strong>מוזל</strong> שלך נשמר לכל אורך תקופת המנוי
-                    — גם אם המבצע יסתיים, אתה תמשיך לשלם {formatPrice(eff)}{' '}
+                    . גם אם המבצע יסתיים, אתה תמשיך לשלם {formatPrice(eff)}{' '}
                     {sym} עד שתבטל.
                   </>
                 )}
@@ -2449,7 +2449,7 @@ function SubscriptionFlow({
                 >
                   החשבון שלי
                 </a>
-                . הביטול נכנס לתוקף מיידית — לא תחויב על תקופות עתידיות. גישת
+                . הביטול נכנס לתוקף מיידית, לא תחויב על תקופות עתידיות. גישת
                 ה-Pro תישאר פעילה עד סוף התקופה ששולמה.
               </li>
               <li>

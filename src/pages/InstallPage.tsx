@@ -129,7 +129,7 @@ export default function InstallPage() {
             : 'התקנת התוכנה בפעם הראשונה ב-Windows'}
         </h1>
         <p className="mx-auto mt-2 max-w-md text-center text-sm leading-relaxed text-muted-foreground">
-          ההורדה מתחילה אוטומטית ✓ — רק שלב קטן וחד-פעמי לפני שמתחילים.
+          ההורדה מתחילה אוטומטית ✓ · רק שלב קטן וחד-פעמי לפני שמתחילים.
         </p>
 
         {isMac ? <MacSteps /> : <WindowsSteps />}
@@ -138,7 +138,7 @@ export default function InstallPage() {
           <RefreshCw className="mt-0.5 h-5 w-5 shrink-0 text-success" />
           <div className="text-sm leading-relaxed text-foreground">
             <span className="font-semibold">זה קורה פעם אחת בלבד.</span>{' '}
-            כל העדכונים הבאים יותקנו אוטומטית ובצורה חלקה — בלי ההודעה הזו.
+            כל העדכונים הבאים יותקנו אוטומטית ובצורה חלקה, בלי ההודעה הזו.
           </div>
         </div>
 
@@ -164,12 +164,12 @@ function MacSteps() {
         <Step
           icon={<MousePointerClick className="h-4 w-4 text-accent" />}
           title="1. פתחו את קובץ ההתקנה"
-          body="לחצו פעמיים על הקובץ שהורד (‎.pkg‎). אם הוא נפתח רגיל — מצוין, סיימתם."
+          body="לחצו פעמיים על הקובץ שהורד (‎.pkg‎). אם הוא נפתח רגיל, מצוין, סיימתם."
         />
         <Step
           icon={<MousePointerClick className="h-4 w-4 text-accent" />}
           title='2. אם הופיעה ההודעה "Apple could not verify"'
-          body='לחצו "Done" (לא "Move to Trash"). זה לא מוחק כלום — רק סוגר את ההודעה.'
+          body='לחצו "Done" (לא "Move to Trash"). זה לא מוחק כלום, רק סוגר את ההודעה.'
         />
         <Step
           icon={<Settings className="h-4 w-4 text-accent" />}
@@ -189,7 +189,7 @@ function WindowsSteps() {
           למה תופיע הודעה של Windows?
         </div>
         <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-          בהפעלה הראשונה ייתכן שיופיע "Windows protected your PC". זה תקין —
+          בהפעלה הראשונה ייתכן שיופיע "Windows protected your PC". זה תקין,
           התוכנה בטוחה, וההודעה מופיעה רק מכיוון שהיא עדיין לא חתומה ב-Microsoft.
         </p>
       </div>

@@ -298,7 +298,7 @@ async function verifyAdminFromIdToken(
   try {
     decoded = await auth.verifyIdToken(idToken)
   } catch {
-    return { ok: false, status: 401, error: 'אימות נכשל — התחברו מחדש' }
+    return { ok: false, status: 401, error: 'אימות נכשל. התחברו מחדש' }
   }
   const email = (decoded.email || '').toLowerCase().trim()
   const uid = decoded.uid
@@ -441,7 +441,7 @@ async function handlePostSubmit(
     } catch {
       return res
         .status(401)
-        .json({ ok: false, error: 'אימות נכשל — התחברו מחדש' })
+        .json({ ok: false, error: 'אימות נכשל. התחברו מחדש' })
     }
     const uid = decoded.uid
     const email = (decoded.email || '').toLowerCase().trim() || null

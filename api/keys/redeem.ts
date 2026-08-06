@@ -179,7 +179,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!KEY_FORMAT.test(rawKey)) {
     return res.status(400).json({
       ok: false,
-      error: 'פורמט מפתח לא תקין — צריך להיות XXXX-XXXX-XXXX-XXXX',
+      error: 'פורמט מפתח לא תקין. צריך להיות XXXX-XXXX-XXXX-XXXX',
     })
   }
 
@@ -210,7 +210,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.warn('keys/redeem: id token verification failed', err)
         return res
           .status(401)
-          .json({ ok: false, error: 'אימות נכשל — התחברו מחדש ונסו שוב' })
+          .json({ ok: false, error: 'אימות נכשל. התחברו מחדש ונסו שוב' })
       }
       uid = decoded.uid
       email = (decoded.email || '').toLowerCase().trim()
@@ -220,7 +220,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!claims) {
         return res
           .status(401)
-          .json({ ok: false, error: 'אימות נכשל — התחברו מחדש ונסו שוב' })
+          .json({ ok: false, error: 'אימות נכשל. התחברו מחדש ונסו שוב' })
       }
       uid = claims.uid
       email = claims.email.toLowerCase().trim()
@@ -503,14 +503,14 @@ async function sendProActivatedEmail(args: {
         <a href="${WEBSITE_BASE_REDEEM}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE_REDEEM}/account</a>.
       </p>
       <p style="font-size:11px;line-height:1.6;margin:14px 0 0;color:#5C5444;">
-        בכל בעיה — תשובה ישירה למייל הזה תגיע לתמיכה.
+        בכל בעיה אפשר להשיב ישירות למייל הזה, וההודעה תגיע לתמיכה.
       </p>
     `,
   })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: '✓ החשבון שלך פעיל — ניהול הורדות פלוס Pro',
+    subject: '✓ החשבון שלך פעיל · ניהול הורדות פלוס Pro',
     html,
   })
 }

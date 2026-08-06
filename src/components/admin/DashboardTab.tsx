@@ -140,7 +140,7 @@ export default function DashboardTab({
         <div>
           <h2 className="text-3xl font-bold font-display text-fg">דשבורד שרתים</h2>
           <p className="mt-1 text-sm text-fg-muted">
-            שימוש חי במכסות — דאטאבייס, Cloudflare ו-Vercel.
+            שימוש חי במכסות: דאטאבייס, Cloudflare ו-Vercel.
           </p>
         </div>
         <button
@@ -182,7 +182,7 @@ export default function DashboardTab({
               <div>
                 <div className="font-semibold">המערכת כרגע בתחזוקה (Kill-switch פעיל)</div>
                 <div className="mt-0.5 text-[12px] text-destructive/90">
-                  משתמשים חסומים מהאתר והתוכנה — רק פאנל הניהול עובד.
+                  משתמשים חסומים מהאתר והתוכנה. רק פאנל הניהול עובד.
                   {usage.protection.autoTripped
                     ? ' המתג הופעל אוטומטית בעקבות חציית התקרה.'
                     : ''}{' '}
@@ -194,7 +194,7 @@ export default function DashboardTab({
 
           <Section
             icon={<Cpu className="h-5 w-5" />}
-            title="דאטאבייס — שימוש ועלות"
+            title="דאטאבייס · שימוש ועלות"
             sub="Firestore · 24 שעות אחרונות"
           >
             {usage.firestore.configured ? (
@@ -209,7 +209,7 @@ export default function DashboardTab({
 
           <Section
             icon={<Activity className="h-5 w-5" />}
-            title="Cloudflare Worker — בקשות ועלות"
+            title="Cloudflare Worker · בקשות ועלות"
             sub="Workers Free · 24 שעות אחרונות"
           >
             {usage.cloudflare.configured ? (
@@ -235,7 +235,7 @@ export default function DashboardTab({
                   limit={usage.email.limit || 500}
                 />
                 <p className="mt-3 text-[10px] leading-relaxed text-fg-faint">
-                  Gmail SMTP מוגבל ל-~500 מיילים ביום. זה כולל הכול — אימותים,
+                  Gmail SMTP מוגבל ל-~500 מיילים ביום. זה כולל הכול: אימותים,
                   מפתחות, קבלות, תזכורות ודיוור. אם מתקרבים לתקרה, מיילים נוספים
                   עלולים להיכשל עד למחרת. (זו אחת הסיבות לעבור בעתיד לספק דיוור
                   ייעודי.)
@@ -251,7 +251,7 @@ export default function DashboardTab({
 
           <Section
             icon={<Cloud className="h-5 w-5" />}
-            title="Cloudflare R2 — אחסון ועלות"
+            title="Cloudflare R2 · אחסון ועלות"
             sub="שטח בשימוש + עלות חודשית צפויה"
           >
             {usage.r2?.configured ? (
@@ -266,7 +266,7 @@ export default function DashboardTab({
 
           <Section
             icon={<BarChart3 className="h-5 w-5" />}
-            title="Vercel — קריאות פונקציות"
+            title="Vercel · קריאות פונקציות"
             sub="מד עצמאי · החודש"
           >
             {usage.vercel.configured ? (
@@ -287,7 +287,7 @@ export default function DashboardTab({
                 <p className="text-[10px] leading-relaxed text-fg-faint">
                   ל-Vercel אין API שימוש ב-Hobby, אז אנחנו סופרים בעצמנו: כל בקשה
                   ל-/api נספרת כ-invocation אחת (בקירוב, עם batching זול של כמה
-                  כתיבות ביום). 100K הוא התקרה החודשית של Hobby — מעבר אליה Vercel
+                  כתיבות ביום). 100K הוא התקרה החודשית של Hobby. מעבר אליה Vercel
                   עוצרת דיפלויים. למספר המדויק־רשמי, פתח את דשבורד Vercel.
                 </p>
               </div>
@@ -400,7 +400,7 @@ function R2Panel({
       setCleanInfo(
         `נמחקו ${r.orphansDeleted} קבצים יתומים ובוטלו ${r.multipartsAborted} העלאות מקוטעות` +
           (r.orphansDeleted === 0 && r.multipartsAborted === 0
-            ? ' — מה שנשאר צעיר מ-48 שעות ויטופל בניקוי הלילי'
+            ? ', מה שנשאר צעיר מ-48 שעות ויטופל בניקוי הלילי'
             : ''),
       )
       onCleaned()
@@ -491,7 +491,7 @@ function R2Panel({
           {(r2.breakdown?.orphans?.count || 0) > 0 && (
             <div className="mt-1 flex items-center justify-between rounded-lg bg-destructive/10 px-2 py-1.5">
               <span className="font-medium text-destructive">
-                קבצים יתומים — הרשומה שלהם נמחקה אך הקובץ נשאר
+                קבצים יתומים: הרשומה שלהם נמחקה אך הקובץ נשאר
               </span>
               <span className="tabular-nums text-destructive">
                 <bdi dir="ltr">{fmtGb((r2.breakdown?.orphans?.bytes || 0) / 1024 ** 3)} GB</bdi>
@@ -505,7 +505,7 @@ function R2Panel({
           {(r2.multipartCount || 0) > 0 && (
             <p className="mt-2 text-[10px] leading-relaxed text-fg-faint">
               יש <bdi dir="ltr">{r2.multipartCount}</bdi> העלאות מקוטעות שלא
-              הושלמו — הן תופסות אחסון בחיוב אך לא נספרות למעלה. הישנה ביותר:{' '}
+              הושלמו. הן תופסות אחסון בחיוב אך לא נספרות למעלה. הישנה ביותר:{' '}
               <bdi dir="ltr">{(r2.multipartOldest || '').slice(0, 10)}</bdi>
             </p>
           )}
@@ -549,8 +549,8 @@ function R2Panel({
       </div>
 
       <p className="text-[10px] leading-relaxed text-fg-faint">
-        אתה על R2 Paid — אין דמי-מנוי קבועים, משלמים רק לפי שימוש. תעבורה
-        (egress) חינם, ופעולות קריאה/כתיבה בדרך כלל בתוך החינם — לכן כל עוד
+        אתה על R2 Paid: אין דמי-מנוי קבועים, משלמים רק לפי שימוש. תעבורה
+        (egress) חינם, ופעולות קריאה/כתיבה בדרך כלל בתוך החינם, ולכן כל עוד
         אתה מתחת ל-{freeGb}GB העלות היא $0. החשבונית המדויקת תמיד ב-Cloudflare.
       </p>
     </div>
@@ -599,7 +599,7 @@ function WorkerPanel({ cloudflare }: { cloudflare: AdminUsage['cloudflare'] }) {
       </div>
 
       <p className="text-[10px] leading-relaxed text-fg-faint">
-        בתוכנית החינמית: עד 100,000 בקשות ביום — חינם. אם עוברים את זה, ה-Worker
+        בתוכנית החינמית: עד 100,000 בקשות ביום, חינם. אם עוברים את זה, ה-Worker
         <strong className="text-fg-muted"> מפסיק לענות עד איפוס למחרת</strong> (לא
         מחויב כסף, אבל השירות נופל זמנית). כדי להתרחב צריך Workers Paid: $5 לחודש
         שכוללים 10M בקשות, ואז ~$0.30 לכל מיליון בקשות נוסף (ו-$0.02 לכל מיליון
@@ -694,7 +694,7 @@ function DbPanel({
       </div>
 
       <p className="text-[10px] leading-relaxed text-fg-faint">
-        אתה בתוכנית בתשלום (Blaze) — מכסת החינם היומית (
+        אתה בתוכנית בתשלום (Blaze). מכסת החינם היומית (
         {freeReads.toLocaleString()} קריאות · {freeWrites.toLocaleString()} כתיבות){' '}
         <strong className="text-fg-muted">אינה חוסמת</strong>; מעבר אליה החיוב לפי
         שימוש (~$0.03 ל-100K קריאות, ~$0.18 ל-100K כתיבות). העלות היא הערכה לפי 24

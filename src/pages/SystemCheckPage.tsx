@@ -45,7 +45,7 @@ export default function SystemCheckPage() {
         <h1 className="mt-4 text-2xl font-bold">בדיקת מערכת לתמיכה</h1>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
           לחיצה על הכפתור תפתח את התוכנה ותריץ בדיקה אוטומטית של כל הרכיבים. כל מה
-          שצריך זה לאשר — התוצאות נשלחות ישירות לצוות התמיכה.
+          שצריך זה לאשר. התוצאות נשלחות ישירות לצוות התמיכה.
         </p>
 
         <button
@@ -59,7 +59,7 @@ export default function SystemCheckPage() {
 
         {opened && (
           <p className="mt-3 text-xs text-muted-foreground">
-            נפתח חלון "האם לפתוח את Download Manager Plus?" — אשרו אותו. בתוכנה
+            נפתח חלון "האם לפתוח את Download Manager Plus?". אשרו אותו. בתוכנה
             תופיע בקשה קצרה לאישור, ואז פס-התקדמות של הבדיקה.
           </p>
         )}

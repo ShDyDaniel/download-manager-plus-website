@@ -127,7 +127,7 @@ const COMPONENTS: Component[] = [
   {
     n: 5,
     name: 'מנוע סנכרון אודיו (resampler + ספריות שמע)',
-    role: 'ליבת "סנכרון אוטומטי". קריטי: הבינארי חייב את ספריות-השמע שלידו — בלעדיהן הסנכרון נכשל בשקט (תוצאה שגויה במקום שגיאה).',
+    role: 'ליבת "סנכרון אוטומטי". קריטי: הבינארי חייב את ספריות-השמע שלידו. בלעדיהן הסנכרון נכשל בשקט (תוצאה שגויה במקום שגיאה).',
     mac: [
       `${MAC_BASE}python/bin/resample_swr`,
       `${MAC_BASE}python/Frameworks/libswresample.6.dylib`,
@@ -159,7 +159,7 @@ const COMPONENTS: Component[] = [
   {
     n: 8,
     name: 'פייטון 3.12 (מובנה)',
-    role: 'מנוע ה-Python שמריץ סנכרון, תמלול ומצב AI. מובנה — אין התקנה אצל המשתמש.',
+    role: 'מנוע ה-Python שמריץ סנכרון, תמלול ומצב AI. מובנה, אין התקנה אצל המשתמש.',
     mac: [`${MAC_BASE}python-runtime/python/bin/python3.12`],
     win: [`${WIN_BASE}python-runtime\\python\\python.exe`],
     download: 'https://github.com/astral-sh/python-build-standalone/releases (3.12.10 · תג 20250409)',
@@ -186,9 +186,9 @@ const TRANSCRIBE: TranscriptRow[] = [
     win: 'C:\\Users\\<user>\\.dmp\\transcribe\\',
   },
   {
-    what: 'מודל Whisper ל-MLX (Mac בלבד — GPU של אפל)',
+    what: 'מודל Whisper ל-MLX (Mac בלבד, GPU של אפל)',
     mac: '/Users/<user>/.dmp/ivrit-mlx/',
-    win: '— (Windows משתמש ב-faster-whisper תחת מטמון HF)',
+    win: 'לא רלוונטי (Windows משתמש ב-faster-whisper תחת מטמון HF)',
   },
   {
     what: 'מטמון מודלים שירדו (Hugging Face)',
@@ -233,18 +233,18 @@ interface Trouble {
 const TROUBLES: Trouble[] = [
   {
     symptom: 'רכיב מובנה חסר (yt-dlp / ffmpeg / 7-Zip / סנכרון / פייטון / numpy)',
-    cause: 'התקנה פגומה — קובץ נמחק ע"י אנטי-וירוס או התקנה חלקית.',
+    cause: 'התקנה פגומה: קובץ נמחק ע"י אנטי-וירוס או התקנה חלקית.',
     fix: `התקנה מחדש של התוכנה מ-${REINSTALL_URL} (לא הורדת קובץ בודד).`,
   },
   {
     symptom: 'הורדת דרייב יוצרת קובץ פגום / לא נפתח',
     cause: 'גרסה ישנה (לפני אימות md5). מגרסה 1.9.197 יש אימות שלמות + resume.',
-    fix: 'לוודא שהלקוח על 1.9.197+. אם עדיין — לבדוק דיסק מלא / אנטי-וירוס שחוסם.',
+    fix: 'לוודא שהלקוח על 1.9.197+. אם עדיין, לבדוק דיסק מלא / אנטי-וירוס שחוסם.',
   },
   {
     symptom: 'סנכרון אוטומטי נכשל / לא מסנכרן כלום',
     cause: 'ספריות-שמע חסרות ליד resample_swr (סעיף 5), או כמות עצומה של קבצים שממלאת דיסק.',
-    fix: 'לבקש את sync-debug.log — שורת "fingerprints ok=X/N" מגלה אם טביעות נכשלו (דיסק מלא / זיכרון).',
+    fix: 'לבקש את sync-debug.log. שורת "fingerprints ok=X/N" מגלה אם טביעות נכשלו (דיסק מלא / זיכרון).',
   },
   {
     symptom: 'תמלול לא עובד / לא מפלח נכון',
@@ -253,7 +253,7 @@ const TROUBLES: Trouble[] = [
   },
   {
     symptom: 'אין הפעלה / אימות מנוי / עדכונים',
-    cause: 'אין גישה ל-dmplus.net — אינטרנט, חומת-אש/אנטי-וירוס, או VPN/פרוקסי.',
+    cause: 'אין גישה ל-dmplus.net: אינטרנט, חומת-אש/אנטי-וירוס, או VPN/פרוקסי.',
     fix: 'לבדוק שהלקוח מגיע ל-https://dmplus.net מהדפדפן; לבטל חסימות.',
   },
   {
@@ -363,7 +363,7 @@ function RemoteCheckCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
   return (
     <Card title="בדיקת מערכת מרחוק (תמיכה)">
       <p className="text-[11px] leading-relaxed text-fg-muted">
-        צור קישור ושלח ללקוח. בלחיצה — התוכנה נפתחת אצלו, מריצה בדיקה מלאה של כל
+        צור קישור ושלח ללקוח. בלחיצה, התוכנה נפתחת אצלו, מריצה בדיקה מלאה של כל
         הרכיבים (הוא רק מאשר), והתוצאה חוזרת לכאן: בדיוק מה עובד ומה לא.
       </p>
 
@@ -427,7 +427,7 @@ function RemoteCheckCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
           >
             {failed.length === 0 ? (
               <>
-                <Check className="h-4 w-4" /> הכול תקין — {results.length} רכיבים עברו
+                <Check className="h-4 w-4" /> הכול תקין · {results.length} רכיבים עברו
               </>
             ) : (
               <>
@@ -569,7 +569,7 @@ export default function SystemGuideTab({
       <div className="flex items-start gap-2 rounded-xl border border-accent/30 bg-accent/[0.06] px-3 py-2.5 text-sm text-fg">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
         <span>
-          רוב הרכיבים <b>מובנים בתוכנה</b> ותמיד אמורים להיות שם. אם רכיב מובנה חסר — ההתקנה
+          רוב הרכיבים <b>מובנים בתוכנה</b> ותמיד אמורים להיות שם. אם רכיב מובנה חסר, ההתקנה
           פגומה, והפתרון הוא <b>התקנה מחדש</b> מ-
           <a href={REINSTALL_URL} target="_blank" rel="noopener" className="text-accent underline">
             dmplus.net
@@ -626,7 +626,7 @@ export default function SystemGuideTab({
                     <>הורדה: {c.download}</>
                   )
                 ) : (
-                  <>הורדה ישירה: אין — אם חסר, התקנה מחדש של התוכנה.</>
+                  <>הורדה ישירה: אין. אם חסר, התקנה מחדש של התוכנה.</>
                 )}
               </div>
             </div>
@@ -643,7 +643,7 @@ export default function SystemGuideTab({
             <code dir="ltr" className="rounded bg-background/50 px-1.5 py-0.5 font-mono text-[11px]">
               https://dmplus.net
             </code>
-            . אם אדום — אינטרנט / חומת-אש / VPN אצל הלקוח (לא רכיב שמתקינים).
+            . אם אדום: אינטרנט / חומת-אש / VPN אצל הלקוח (לא רכיב שמתקינים).
           </span>
         </div>
       </Card>
@@ -651,7 +651,7 @@ export default function SystemGuideTab({
       {/* transcription subsystem */}
       <Card title="תת-מערכת תמלול (מודלים שיורדים)">
         <p className="text-[11px] leading-relaxed text-fg-muted">
-          מודלי התמלול/פילוח כבדים ולכן <b>יורדים בהפעלה ראשונה</b> (לא ארוזים). אם חסרים — בדוק אינטרנט
+          מודלי התמלול/פילוח כבדים ולכן <b>יורדים בהפעלה ראשונה</b> (לא ארוזים). אם חסרים, בדוק אינטרנט
           בהפעלה הראשונה; אפשר למחוק את התיקיות ולתת להוריד מחדש.
         </p>
         {TRANSCRIBE.map((t, i) => (
@@ -678,7 +678,7 @@ export default function SystemGuideTab({
       </Card>
 
       {/* troubleshooting */}
-      <Card title="פתרון תקלות — זיהוי ← סיבה ← פתרון">
+      <Card title="פתרון תקלות · זיהוי ← סיבה ← פתרון">
         <div className="space-y-2">
           {TROUBLES.map((t, i) => (
             <div key={i} className="rounded-xl border border-border bg-background/30 p-3">
@@ -733,14 +733,14 @@ export default function SystemGuideTab({
         <p className="text-[11px] text-fg-muted">
           איפוס מלא (מוחק גם העדפות): סגור את התוכנה ומחק את הקובץ{' '}
           <code dir="ltr" className="rounded bg-background/50 px-1 py-0.5 font-mono">config.json</code>{' '}
-          מתיקיית העבודה (למעלה) — התוכנה תיווצר מחדש בהפעלה הבאה.
+          מתיקיית העבודה (למעלה). התוכנה תיווצר מחדש בהפעלה הבאה.
         </p>
       </Card>
 
       {/* quick procedure */}
       <Card title="נוהל טיפול מהיר">
         <ol className="list-inside list-decimal space-y-1 text-xs leading-relaxed text-fg">
-          <li>הגדרות → בדיקת מערכת — לראות איזה רכיב אדום (חסר).</li>
+          <li>הגדרות → בדיקת מערכת, לראות איזה רכיב אדום (חסר).</li>
           <li>רכיב מובנה חסר → התקנה מחדש מ-dmplus.net.</li>
           <li>חיבור לשרת אדום → אינטרנט / חומת-אש / VPN אצל הלקוח.</li>
           <li>סנכרון נכשל אבל הכל ירוק → לבקש את sync-debug.log לבדיקה.</li>

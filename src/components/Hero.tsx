@@ -197,7 +197,7 @@ export function Hero() {
             className="mt-6 max-w-lg text-base text-fg-secondary md:mt-8 md:text-xl"
             style={{ lineHeight: 1.55 }}
           >
-            קובץ שיורד — וידאו, סאונד, תמונה — נכנס מיד לפרויקט הנכון.
+            כל קובץ שיורד (וידאו, סאונד, תמונה) נכנס מיד לפרויקט הנכון.
             ועוד הרבה כלים שיחסכו לכם הרבה מאוד זמן.
           </motion.p>
 
@@ -336,7 +336,7 @@ function HeroProductVisual() {
         />
         <span className="h-3 w-3 rounded-full bg-success opacity-70" />
         <div className="flex-1 text-center text-xs text-fg-muted" dir="rtl">
-          ניהול הורדות פלוס — טריילר_סרט_קיץ.proj
+          ניהול הורדות פלוס · טריילר_סרט_קיץ.proj
         </div>
         <span className="w-12" aria-hidden />
       </div>

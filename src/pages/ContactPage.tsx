@@ -39,12 +39,12 @@ export default function ContactPage() {
       })
       const j = (await r.json()) as { ok: boolean; error?: string }
       if (!r.ok || !j.ok) {
-        setError(j.error || 'שליחת הפנייה נכשלה — נסו שוב')
+        setError(j.error || 'שליחת הפנייה נכשלה. נסו שוב')
       } else {
         setSent(true)
       }
     } catch {
-      setError('שליחת הפנייה נכשלה — נסו שוב')
+      setError('שליחת הפנייה נכשלה. נסו שוב')
     } finally {
       setBusy(false)
     }

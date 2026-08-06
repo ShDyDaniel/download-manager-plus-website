@@ -457,7 +457,7 @@ async function extendLicense(
   }
   const previousIso = data.expiresAt
   if (!previousIso) {
-    throw new Error('המפתח לא כולל תאריך תפוגה — אי אפשר להאריך')
+    throw new Error('המפתח לא כולל תאריך תפוגה, אי אפשר להאריך')
   }
   const previousExpiresAt = new Date(previousIso)
   const baseTime = Math.max(previousExpiresAt.getTime(), Date.now())
@@ -580,7 +580,7 @@ async function sendLicenseEmail(
         <div>4. זהו, יש לך Pro! 🚀</div>
       </div>
       <p style="font-size:11px;margin:24px 0 0;color:#5C5444;">
-        המפתח שמור לחשבון שלך. בכל בעיה — תשובה ישירה למייל הזה.
+        המפתח שמור לחשבון שלך. בכל בעיה אפשר להשיב ישירות למייל הזה.
       </p>
     `,
   })
@@ -621,7 +621,7 @@ async function sendRenewalEmail(
     heading: 'המנוי שלך הוארך ✓',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 20px;color:#C9BFA8;">
-        הוספנו <strong>${durationLabel}</strong> נוסף למפתח Pro שלך לתוכנה <strong>ניהול הורדות פלוס</strong>. המפתח עצמו נשאר זהה — אין מה לעדכן באפליקציה.
+        הוספנו <strong>${durationLabel}</strong> נוסף למפתח Pro שלך לתוכנה <strong>ניהול הורדות פלוס</strong>. המפתח עצמו נשאר זהה, אין מה לעדכן באפליקציה.
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:18px;margin:0 0 24px;text-align:center;">
         <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">תוקף קודם</div>
@@ -630,14 +630,14 @@ async function sendRenewalEmail(
         <div style="font-size:20px;color:#7DAA6B;font-weight:700;">${newDate}</div>
       </div>
       <p style="font-size:11px;margin:24px 0 0;color:#5C5444;">
-        תודה שאתם איתנו. בכל בעיה — תשובה ישירה למייל הזה.
+        תודה שאתם איתנו. בכל בעיה אפשר להשיב ישירות למייל הזה.
       </p>
     `,
   })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to,
-    subject: 'חידוש מנוי ניהול הורדות פלוס — תוקף עד ' + newDate,
+    subject: 'חידוש מנוי ניהול הורדות פלוס · תוקף עד ' + newDate,
     html,
   })
 }

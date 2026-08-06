@@ -332,7 +332,7 @@ export default function UpdatesTab({
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
               {isEditingDraft
-                ? 'טיוטה לעדכון הבא — לא נראה למשתמשים עד שתלחץ "פרסם טיוטה" בכרטיס הטיוטה.'
+                ? 'טיוטה לעדכון הבא · לא נראה למשתמשים עד שתלחץ "פרסם טיוטה" בכרטיס הטיוטה.'
                 : 'שמור כטיוטה כדי להמשיך מאוחר יותר, או פרסם כדי שכל המשתמשים יקבלו את הגרסה הזאת.'}
             </p>
           </div>
@@ -368,7 +368,7 @@ export default function UpdatesTab({
             <div className="text-xs font-semibold text-foreground">
               קישורי הורדה אוטומטית
               <span className="mr-2 font-normal text-muted-foreground">
-                — מומלץ GitHub Releases (יציב, בלי הגבלת גודל)
+                מומלץ GitHub Releases (יציב, בלי הגבלת גודל)
               </span>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -381,12 +381,12 @@ export default function UpdatesTab({
             <div className="text-xs font-semibold text-foreground">
               קישורי גיבוי להתקנה ידנית
               <span className="mr-2 font-normal text-muted-foreground">
-                — אופציונלי, נפתח בדפדפן כשהמשתמש לוחץ "התקן ידנית"
+                אופציונלי, נפתח בדפדפן כשהמשתמש לוחץ "התקן ידנית"
               </span>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <UrlField label="macOS — קישור גיבוי" value={draft.macUrlBackup} onChange={(v) => patch('macUrlBackup', v)} placeholder="https://drive.google.com/file/d/..." />
-              <UrlField label="Windows — קישור גיבוי" value={draft.winUrlBackup} onChange={(v) => patch('winUrlBackup', v)} placeholder="https://drive.google.com/file/d/..." />
+              <UrlField label="macOS · קישור גיבוי" value={draft.macUrlBackup} onChange={(v) => patch('macUrlBackup', v)} placeholder="https://drive.google.com/file/d/..." />
+              <UrlField label="Windows · קישור גיבוי" value={draft.winUrlBackup} onChange={(v) => patch('winUrlBackup', v)} placeholder="https://drive.google.com/file/d/..." />
             </div>
           </div>
 
@@ -401,7 +401,7 @@ export default function UpdatesTab({
                 עדכון חובה
               </div>
               <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-                כשמופעל — המשתמש לא יוכל לסגור את חלון העדכון או להשתמש בתוכנה
+                כשמופעל, המשתמש לא יוכל לסגור את חלון העדכון או להשתמש בתוכנה
                 בגרסה הישנה. שמור ל-bug-fix קריטיים או שינויים שוברי-תאימות.
               </p>
             </div>
@@ -568,7 +568,7 @@ export default function UpdatesTab({
                 )}
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
-                עדכון בעבודה — נראה רק לאדמין עד שיתפרסם.
+                עדכון בעבודה · נראה רק לאדמין עד שיתפרסם.
               </div>
             </div>
             <div className="flex shrink-0 gap-1">
@@ -755,7 +755,7 @@ function UrlPreview({ label, url }: { label: string; url: string }) {
         dir="ltr"
         title={url}
       >
-        {url || '— לא הוגדר'}
+        {url || 'לא הוגדר'}
       </div>
     </div>
   )

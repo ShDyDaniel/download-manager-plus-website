@@ -254,7 +254,7 @@ async function postJson<T>(
     // Network failure — be explicit so the UI can surface a
     // "check your connection" hint rather than the generic message
     // we use for server errors.
-    return { ok: false, error: 'בעיית רשת — בדקו את החיבור ונסו שוב' }
+    return { ok: false, error: 'בעיית רשת. בדקו את החיבור ונסו שוב' }
   }
   let json: unknown
   try {
@@ -418,7 +418,7 @@ export async function requestPasswordReset(
       body: JSON.stringify({ email: email.trim().toLowerCase() }),
     })
   } catch {
-    return { ok: false, error: 'בעיית רשת — בדקו את החיבור ונסו שוב' }
+    return { ok: false, error: 'בעיית רשת. בדקו את החיבור ונסו שוב' }
   }
   const data = (await r.json().catch(() => ({}))) as {
     ok?: boolean

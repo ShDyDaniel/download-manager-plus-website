@@ -87,7 +87,7 @@ export async function uploadFileToDrive(
     (args.mimeType || args.file.type || 'application/octet-stream').trim()
   const totalBytes = args.file.size
   if (totalBytes === 0) {
-    throw new Error('הקובץ ריק — לא ניתן להעלות קובץ של 0 בייטים')
+    throw new Error('הקובץ ריק. לא ניתן להעלות קובץ של 0 בייטים')
   }
 
   // Step 1 — initiate the resumable session. The session URL we
@@ -123,7 +123,7 @@ export async function uploadFileToDrive(
   }
   const sessionUrl = initResp.headers.get('Location')
   if (!sessionUrl) {
-    throw new Error('Drive לא החזיר session URL — נסו שוב')
+    throw new Error('Drive לא החזיר session URL. נסו שוב')
   }
 
   // Step 2 — chunked PUTs. We track bytes uploaded across chunks

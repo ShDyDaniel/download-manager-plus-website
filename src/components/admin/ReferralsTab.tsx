@@ -222,7 +222,7 @@ export default function ReferralsTab({
           <Field value={loginEmail} onChange={setLoginEmail} placeholder="מייל כניסה לדשבורד" ltr />
         </div>
         <p className="text-[11px] text-fg-faint">
-          אם מזינים מייל — המערכת יוצרת סיסמה זמנית ושולחת אותה אוטומטית
+          אם מזינים מייל, המערכת יוצרת סיסמה זמנית ושולחת אותה אוטומטית
           לשותף במייל. אין צורך להזין סיסמה.
         </p>
         {created && (
@@ -232,7 +232,7 @@ export default function ReferralsTab({
             ) : (
               <>
                 השותף נוצר, אך שליחת המייל נכשלה. הסיסמה הזמנית:{' '}
-                <strong dir="ltr">{created.tempPassword || '—'}</strong> — העבירו
+                <strong dir="ltr">{created.tempPassword || '—'}</strong>. העבירו
                 אותה לשותף ידנית.
               </>
             )}
@@ -282,7 +282,7 @@ export default function ReferralsTab({
               onChange={(e) => setCommFirstOnly(e.target.checked)}
               className="h-4 w-4 accent-primary"
             />
-            <span>מקנייה ראשונה בלבד (התשלום הראשון) — לא על חידושים</span>
+            <span>מקנייה ראשונה בלבד (התשלום הראשון), לא על חידושים</span>
           </label>
         )}
       </div>
@@ -599,7 +599,7 @@ function PartnerCard({
       const link = `dmplus.net/?ref=${p.code}`
       const rangeLabel =
         exportFrom || exportTo
-          ? `${exportFrom || 'ההתחלה'} — ${exportTo || 'היום'}`
+          ? `${exportFrom || 'ההתחלה'} עד ${exportTo || 'היום'}`
           : 'כל הזמן'
       const today = new Date().toLocaleDateString('he-IL')
       const paidCount = j.accounts.filter((a) => paidByEmail[a.email.toLowerCase()]).length
@@ -698,7 +698,7 @@ function PartnerCard({
 </body></html>`
       const w = window.open('', '_blank', 'width=900,height=1200')
       if (!w) {
-        setMsg('הדפדפן חסם את חלון ההדפסה — אפשר חלונות קופצים ונסה שוב')
+        setMsg('הדפדפן חסם את חלון ההדפסה. אפשר חלונות קופצים ונסה שוב')
         return
       }
       w.document.open()
@@ -958,7 +958,7 @@ function PartnerCard({
               </button>
             </div>
             <div className="mt-1.5 text-[11px] text-fg-muted">
-              משייך לצמיתות את כל החיובים של האימייל לשותף הזה — נרשם על
+              משייך לצמיתות את כל החיובים של האימייל לשותף הזה. נרשם על
               העסקאות עצמן, כך שזה לא יאבד גם אם המשתמש נמחק.
             </div>
             {attrResult && (
@@ -1007,7 +1007,7 @@ function PartnerCard({
                   className="h-4 w-4 accent-primary"
                 />
                 <span>
-                  מקנייה ראשונה בלבד (התשלום הראשון) — לא על חידושים
+                  מקנייה ראשונה בלבד (התשלום הראשון), לא על חידושים
                 </span>
               </label>
             )}

@@ -118,7 +118,7 @@ async function handleInfo(req: VercelRequest, res: VercelResponse) {
   if (!expiresAt || !Number.isFinite(expiresAt.getTime())) {
     return res.status(500).json({
       ok: false,
-      error: 'מפתח ללא תאריך תפוגה — לא ניתן לחדש',
+      error: 'מפתח ללא תאריך תפוגה, לא ניתן לחדש',
     })
   }
   const displayEmail = data.buyerEmail || data.redeemedByEmail || ''

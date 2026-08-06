@@ -77,7 +77,7 @@ export default function TrialActivatePage() {
       } catch {
         setState({
           kind: 'error',
-          msg: 'שגיאת רשת — בדקו את החיבור ונסו שוב.',
+          msg: 'שגיאת רשת. בדקו את החיבור ונסו שוב.',
         })
       }
     })()
@@ -107,7 +107,7 @@ export default function TrialActivatePage() {
             <h1 className="mt-4 text-2xl font-bold">הניסיון הופעל! 🎉</h1>
             <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
               קיבלת 7 ימי Pro
-              {state.expiresAt ? ` — בתוקף עד ${fmtDate(state.expiresAt)}` : ''}.
+              {state.expiresAt ? `, בתוקף עד ${fmtDate(state.expiresAt)}` : ''}.
             </p>
             <div className="mt-6 flex items-center justify-center gap-2 rounded-xl border border-success/30 bg-success/[0.06] px-4 py-3 text-sm text-success">
               <CheckCircle2 className="h-4 w-4 shrink-0" />

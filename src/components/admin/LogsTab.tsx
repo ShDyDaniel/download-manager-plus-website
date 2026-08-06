@@ -329,8 +329,8 @@ export default function LogsTab({
       a.remove()
       URL.revokeObjectURL(url)
       setTelInfo(
-        `${r.count} סנכרונים · ${r.fingerprintCount} טביעות אצבע · ${r.timelineCount ?? 0} קבצי טיימליין — ירדו כקובץ ZIP אחד` +
-          (skipped ? ` (${skipped} קבצים דולגו — ייתכן שהעלאה רצה ברקע)` : ''),
+        `${r.count} סנכרונים · ${r.fingerprintCount} טביעות אצבע · ${r.timelineCount ?? 0} קבצי טיימליין · ירדו כקובץ ZIP אחד` +
+          (skipped ? ` (${skipped} קבצים דולגו, ייתכן שהעלאה רצה ברקע)` : ''),
       )
     } catch (e) {
       handleErr(e)
@@ -351,7 +351,7 @@ export default function LogsTab({
     setTelInfo('')
     try {
       const r = await adminApi<{ deleted: number }>('admin-sync-telemetry-clear', {})
-      setTelInfo(`נמחקו ${r.deleted} קבצים — המערכת נקייה ומוכנה לאיסוף חדש`)
+      setTelInfo(`נמחקו ${r.deleted} קבצים. המערכת נקייה ומוכנה לאיסוף חדש`)
     } catch (e) {
       handleErr(e)
     } finally {
@@ -367,7 +367,7 @@ export default function LogsTab({
         <div>
           <h2 className="text-3xl font-bold font-display text-fg">לוגים</h2>
           <p className="mt-1 text-sm text-fg-muted">
-            תקלות שהתוכנה דיווחה עליהן, מקובצות לפי סוג — שורה אחת לכל תקלה עם
+            תקלות שהתוכנה דיווחה עליהן, מקובצות לפי סוג. שורה אחת לכל תקלה עם
             מספר הפעמים והמכשירים. לחיצה פותחת את הפרטים.
           </p>
           <label className="mt-2 flex w-fit cursor-pointer items-center gap-2">
@@ -383,8 +383,8 @@ export default function LogsTab({
               }
             >
               {logsOff
-                ? 'איסוף שגיאות מושבת — לא נשלחות שגיאות מהמשתמשים'
-                : 'השבתת איסוף שגיאות — עצירת שליחת כל השגיאות מהמשתמשים'}
+                ? 'איסוף שגיאות מושבת · לא נשלחות שגיאות מהמשתמשים'
+                : 'השבתת איסוף שגיאות · עצירת שליחת כל השגיאות מהמשתמשים'}
             </span>
           </label>
         </div>
@@ -433,9 +433,9 @@ export default function LogsTab({
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-fg">נתוני סנכרון אוטומטי</div>
           <div className="text-xs text-fg-muted">
-            נתונים אנונימיים שמשתמשים שאישרו שולחים בסוף כל סנכרון — כל מועמד
+            נתונים אנונימיים שמשתמשים שאישרו שולחים בסוף כל סנכרון. כל מועמד
             והציונים שלו, ההקשר, טביעות האצבע האקוסטיות, ומבנה הטיימליין של
-            הקלט והפלט (מעוקר — ללא מדיה או שמות קבצים). ההורדה היא קובץ ZIP
+            הקלט והפלט (מעוקר, ללא מדיה או שמות קבצים). ההורדה היא קובץ ZIP
             אחד עם כל הקבצים מסודרים בתיקיות.
           </div>
           <label className="mt-2 flex w-fit cursor-pointer items-center gap-2">
@@ -451,8 +451,8 @@ export default function LogsTab({
               }
             >
               {telPaused
-                ? 'קליטת נתונים מושבתת — משתמשים לא מעלים שום דבר חדש'
-                : 'השבתת קליטה — עצירת כל ההעלאות מהמשתמשים'}
+                ? 'קליטת נתונים מושבתת · משתמשים לא מעלים שום דבר חדש'
+                : 'השבתת קליטה · עצירת כל ההעלאות מהמשתמשים'}
             </span>
           </label>
           {telInfo && (
@@ -685,7 +685,7 @@ export default function LogsTab({
       )}
 
       <p className="text-[11px] leading-relaxed text-fg-faint">
-        התקלות מגיעות מהתוכנה במחשבי המשתמשים — היא כותבת אותן לקובץ מקומי
+        התקלות מגיעות מהתוכנה במחשבי המשתמשים. היא כותבת אותן לקובץ מקומי
         ומעלה אותו אוטומטית כל כמה שעות. תקלות זהות מקובצות יחד. "טופל" רק מסמן
         ויזואלית; "מחק" מסיר את הרישום.
       </p>

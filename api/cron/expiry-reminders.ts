@@ -260,7 +260,7 @@ async function sendReminderEmail(
         המפתח שלך לתוכנה <strong>ניהול הורדות פלוס</strong> פג בעוד <strong>${daysWord}</strong> (${dateStr}).
       </p>
       <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
-        לחיצה על הכפתור למטה תעביר אותך לעמוד החידוש. המפתח שלך נשאר אותו דבר — אין מה לעדכן באפליקציה, פשוט מאריכים את התוקף.
+        לחיצה על הכפתור למטה תעביר אותך לעמוד החידוש. המפתח שלך נשאר אותו דבר, אין מה לעדכן באפליקציה, פשוט מאריכים את התוקף.
       </p>
       <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
         <tr><td align="center">
@@ -274,14 +274,14 @@ async function sendReminderEmail(
         ${renewUrl}
       </p>
       <p style="font-size:11px;margin:22px 0 0;color:#5C5444;">
-        הקישור תקף ל-${REMINDER_TOKEN_TTL_DAYS} ימים. לא רוצים להמשיך? אל תעשו כלום — המנוי פג מעצמו.
+        הקישור תקף ל-${REMINDER_TOKEN_TTL_DAYS} ימים. לא רוצים להמשיך? אל תעשו כלום, המנוי פג מעצמו.
       </p>
     `,
   })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to,
-    subject: `⏳ המנוי שלך מסתיים בעוד ${daysWord} — חידוש בלחיצה`,
+    subject: `⏳ המנוי שלך מסתיים בעוד ${daysWord} · חידוש בלחיצה`,
     html,
   })
 }
@@ -619,7 +619,7 @@ async function sendAnnualReportEmail(args: {
     })
     .join(' / ')
   const html = renderEmail({
-    heading: `סיכום חיובים שנתי — ${args.year}`,
+    heading: `סיכום חיובים שנתי · ${args.year}`,
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
         ריכוז כל החיובים שבוצעו על המנוי שלך ל-<strong>ניהול הורדות פלוס</strong> במהלך ${args.year}.
@@ -648,7 +648,7 @@ async function sendAnnualReportEmail(args: {
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: `סיכום חיובים שנתי — ${args.year}`,
+    subject: `סיכום חיובים שנתי · ${args.year}`,
     html,
   })
 }
@@ -1228,10 +1228,10 @@ export function buildPurgeWarningEmail(args: {
     args.kind === 'trial' ? 'שדרוג ושמירת הסבבים 👑' : 'חידוש ושמירת הסבבים 👑'
   const heading = args.isFinal
     ? '🚨 סבבי התיקונים שלך יימחקו בקרוב'
-    : '⚠️ הגישה הסתיימה — סבבי התיקונים יימחקו בקרוב'
+    : '⚠️ הגישה הסתיימה · סבבי התיקונים יימחקו בקרוב'
   const subject = args.isFinal
     ? `🚨 סבבי התיקונים שלך יימחקו בעוד ${daysWord}`
-    : `⚠️ הגישה הסתיימה — סבבי התיקונים יימחקו בעוד ${daysWord}`
+    : `⚠️ הגישה הסתיימה · סבבי התיקונים יימחקו בעוד ${daysWord}`
   const html = renderEmail({
     heading,
     contentHtml: `
@@ -1249,7 +1249,7 @@ export function buildPurgeWarningEmail(args: {
         </td></tr>
       </table>
       <p style="font-size:12px;margin:0;color:#5C5444;">
-        לא רוצים להמשיך? אין צורך לעשות דבר — סבבי התיקונים יימחקו אוטומטית בתאריך הנ"ל.
+        לא רוצים להמשיך? אין צורך לעשות דבר, סבבי התיקונים יימחקו אוטומטית בתאריך הנ"ל.
       </p>
     `,
   })

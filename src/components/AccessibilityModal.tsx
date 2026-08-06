@@ -220,7 +220,7 @@ function AccessibilityStatementBody() {
           >
             help.dm.plus@gmail.com
           </a>{' '}
-          — ונטפל בה בהקדם.
+          ונטפל בה בהקדם.
         </Section>
 
         <p className="border-t border-border/60 pt-6 text-xs text-fg-muted">

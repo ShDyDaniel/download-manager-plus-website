@@ -76,8 +76,8 @@ export function KeyDetailsModal({
     const cb = keyDoc.createdBy || ''
     if (cb.startsWith('admin-grant:')) return `הענקת אדמין (${cb.slice(12)})`
     if (cb.startsWith('admin-web:')) return `הענקת אדמין (${cb.slice(10)})`
-    if (cb.startsWith('paypal-subscription-yearly')) return 'PayPal — מנוי שנתי'
-    if (cb.startsWith('paypal-subscription-monthly')) return 'PayPal — מנוי חודשי'
+    if (cb.startsWith('paypal-subscription-yearly')) return 'PayPal · מנוי שנתי'
+    if (cb.startsWith('paypal-subscription-monthly')) return 'PayPal · מנוי חודשי'
     if (cb.startsWith('paypal')) return 'PayPal'
     if (cb === 'manual') return 'ידני (קונסול)'
     return cb || '—'
@@ -172,7 +172,7 @@ export function KeyDetailsModal({
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-1 rounded border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent transition-colors hover:bg-accent/20"
-                        title="פותח את דף המנוי ב-PayPal — שם רואים את כל החיובים שבוצעו בפועל"
+                        title="פותח את דף המנוי ב-PayPal. שם רואים את כל החיובים שבוצעו בפועל"
                       >
                         <ExternalLink className="h-2.5 w-2.5" />
                         צפה ב-PayPal

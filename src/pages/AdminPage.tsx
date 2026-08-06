@@ -277,7 +277,7 @@ function AdminLogin({ onNeedCode }: { onNeedCode: () => void }) {
           <AuthButton busy={busy}>המשך</AuthButton>
         </form>
         <p className="mt-6 text-center text-xs text-fg-muted">
-          לאחר הסיסמה — אימות מהיר ב-Passkey (Touch ID / Face ID), או קוד למייל.
+          לאחר הסיסמה: אימות מהיר ב-Passkey (Touch ID / Face ID), או קוד למייל.
         </p>
       </div>
     </div>

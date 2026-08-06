@@ -206,7 +206,7 @@ export function DownloadAuthModal({
     setError(null)
     await requestPasswordReset(email)
     setBusy(false)
-    setNotice('אם המייל קיים במערכת — נשלח אליו קישור לאיפוס סיסמה.')
+    setNotice('אם המייל קיים במערכת, נשלח אליו קישור לאיפוס סיסמה.')
   }
 
   if (!open) return null
@@ -286,7 +286,7 @@ export function DownloadAuthModal({
               <AuthButton busy={busy}>התחברות והורדה</AuthButton>
               <AuthModeLinks
                 items={[
-                  { label: 'אין לי חשבון — הרשמה', onClick: () => switchMode('signup'), accent: true },
+                  { label: 'אין לי חשבון · הרשמה', onClick: () => switchMode('signup'), accent: true },
                   { label: 'שכחתי סיסמה', onClick: () => switchMode('forgot') },
                 ]}
               />
@@ -364,7 +364,7 @@ export function DownloadAuthModal({
               <AuthButton busy={busy}>שליחת קוד אימות</AuthButton>
               <AuthModeLinks
                 items={[
-                  { label: 'כבר יש לי חשבון — התחברות', onClick: () => switchMode('login'), accent: true },
+                  { label: 'כבר יש לי חשבון · התחברות', onClick: () => switchMode('login'), accent: true },
                 ]}
               />
             </form>

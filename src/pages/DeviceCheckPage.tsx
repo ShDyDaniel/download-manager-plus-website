@@ -64,7 +64,7 @@ export default function DeviceCheckPage() {
 
         {opened && (
           <p className="mt-3 text-xs text-muted-foreground">
-            נפתח חלון "האם לפתוח את Download Manager Plus?" — אשרו אותו כדי
+            נפתח חלון "האם לפתוח את Download Manager Plus?". אשרו אותו כדי
             לשלוח. אפשר לסגור את הדף הזה לאחר מכן.
           </p>
         )}

@@ -3586,20 +3586,20 @@ async function sendRoundReadyEmail(args: {
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: `הסבב מוכן לתיקונים — ${safeTitle} (סבב ${args.roundNumber})`,
+    subject: `הסבב מוכן לתיקונים · ${safeTitle} (סבב ${args.roundNumber})`,
     html: `
       <div dir="rtl" style="font-family:Arial,sans-serif;background:#1A140C;color:#E8DFC8;padding:24px;border-radius:12px;max-width:480px;margin:auto;">
         <h2 style="margin:0 0 12px;color:#E8DFC8;">הסבב הזה מוכן לתיקונים ✅</h2>
         <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
           סבב <strong>${args.roundNumber}</strong> של הפרויקט <strong>${safeTitle}</strong>
-          מוכן לתיקונים — סומן שסיימו לרשום את כל מה שצריך לתקן בו.
+          מוכן לתיקונים. סומן שסיימו לרשום את כל מה שצריך לתקן בו.
         </p>
         <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
           הסבב ננעל ולא ייכנסו אליו עוד תיקונים חדשים. אפשר להתחיל לעבוד עליו.
         </p>
         ${markedBy}
         <a href="https://dmplus.net/revisions" style="display:inline-block;background:#B8794F;color:#1A140C;text-decoration:none;font-weight:bold;padding:10px 20px;border-radius:8px;font-size:14px;">מעבר לדף התיקונים</a>
-        <p style="font-size:11px;margin:18px 0 0;color:#5C5444;">ניהול הורדות פלוס — מערכת סבבי תיקונים.</p>
+        <p style="font-size:11px;margin:18px 0 0;color:#5C5444;">ניהול הורדות פלוס · מערכת סבבי תיקונים.</p>
       </div>
     `,
   })
@@ -5013,7 +5013,7 @@ async function handleAdminUsage(req: VercelRequest, res: VercelResponse) {
         ? `קריאות ${reads.toLocaleString()}/${cfg.dailyReadCeiling.toLocaleString()}`
         : `כתיבות ${writes.toLocaleString()}/${cfg.dailyWriteCeiling.toLocaleString()}`
       await sendTelegramAlert(
-        `🚨 מצב תחזוקה נדלק אוטומטית — נחצתה התקרה היומית (${which}). האתר והתוכנה חסומים עד שתכבה ידנית ב"הגדרות".`,
+        `🚨 מצב תחזוקה נדלק אוטומטית. נחצתה התקרה היומית (${which}). האתר והתוכנה חסומים עד שתכבה ידנית ב"הגדרות".`,
       )
     } catch {
       /* if the write fails, leave the switch as-is */
@@ -5521,7 +5521,7 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
     // so it gets the original flow (with notes-folder cleanup etc.).
     return res.status(400).json({
       ok: false,
-      error: 'סבב ישן — השתמש ב-delete-project',
+      error: 'סבב ישן. השתמש ב-delete-project',
     })
   }
 
@@ -5722,7 +5722,7 @@ async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
   if (roundData.locked === true) {
     return res.status(423).json({
       ok: false,
-      error: 'הסבב סגור — אי אפשר למחוק תיקונים בשלב זה.',
+      error: 'הסבב סגור. אי אפשר למחוק תיקונים בשלב זה.',
     })
   }
 
@@ -6151,7 +6151,7 @@ async function handleOwnerSignin(req: VercelRequest, res: VercelResponse) {
   if (ownerEmail !== email) {
     return res.status(403).json({
       ok: false,
-      error: 'המייל אינו של בעל הסבב — לא ניתן להתחבר כעורך',
+      error: 'המייל אינו של בעל הסבב, לא ניתן להתחבר כעורך',
     })
   }
 
@@ -6205,7 +6205,7 @@ async function handleOwnerSignin(req: VercelRequest, res: VercelResponse) {
     })
   } catch (err) {
     console.error('[owner-signin] failed:', err)
-    return res.status(502).json({ ok: false, error: 'תקלת רשת — נסו שוב' })
+    return res.status(502).json({ ok: false, error: 'תקלת רשת. נסו שוב' })
   }
 }
 
@@ -7215,7 +7215,7 @@ async function callGemini(
           tagged = `rate limit / too many requests (429) — ${gMsg}`
         else if (r.status === 400) tagged = `bad request (400) — ${gMsg}`
         else if (r.status === 403)
-          tagged = `403 forbidden — מפתח ה-AI נדחה או חסר הרשאה — ${gMsg}`
+          tagged = `403 forbidden: מפתח ה-AI נדחה או חסר הרשאה · ${gMsg}`
         else if (r.status >= 500)
           tagged = `503 service unavailable (${r.status}) — ${gMsg}`
         if (r.status >= 500 && attempt === 0) {

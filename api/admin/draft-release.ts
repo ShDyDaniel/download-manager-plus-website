@@ -220,7 +220,7 @@ async function verifyAdmin(body: {
   try {
     decoded = await auth.verifyIdToken((body.idToken || '').trim())
   } catch {
-    return { ok: false, status: 401, error: 'אימות נכשל — התחברו מחדש' }
+    return { ok: false, status: 401, error: 'אימות נכשל. התחברו מחדש' }
   }
   const email = (decoded.email || '').toLowerCase().trim()
   const uid = decoded.uid

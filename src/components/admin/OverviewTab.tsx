@@ -69,7 +69,7 @@ export default function OverviewTab({
         <div>
           <h2 className="text-3xl font-bold font-display text-fg">נתונים כלליים</h2>
           <p className="mt-1 text-sm text-fg-muted">
-            מבט מהיר במספרים בלבד — בלי לטעון רשימות, כדי לחסוך קריאות.
+            מבט מהיר במספרים בלבד, בלי לטעון רשימות, כדי לחסוך קריאות.
           </p>
         </div>
         <button
@@ -125,7 +125,7 @@ export default function OverviewTab({
           </div>
 
           <p className="text-[11px] text-fg-faint">
-            המספרים מחושבים בספירה מצרפית — מספר קריאות זעום, ללא טעינת
+            המספרים מחושבים בספירה מצרפית: מספר קריאות זעום, ללא טעינת
             הרשומות עצמן. הנתונים נשמרים זמנית, רענון מושך מספרים טריים.
           </p>
         </>

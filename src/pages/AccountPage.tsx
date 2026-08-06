@@ -715,7 +715,7 @@ export default function AccountPage() {
             {profile?.email ? 'הפרופיל שלך' : 'התחברות לחשבון שלך'}
           </h1>
           <p className="mx-auto mt-3 max-w-xl text-sm text-fg-muted md:text-base">
-            פרטי החשבון, המנוי, וההיסטוריית התשלומים שלך — במקום אחד.
+            פרטי החשבון, המנוי, וההיסטוריית התשלומים שלך, במקום אחד.
           </p>
         </header>
 
@@ -790,7 +790,7 @@ export default function AccountPage() {
               // ── Email-entry view ──
               <>
                 <p className="text-xs text-fg-muted">
-                  הזן את האימייל שאיתו נרשמת — נשלח אליו קישור לאיפוס
+                  הזן את האימייל שאיתו נרשמת, ונשלח אליו קישור לאיפוס
                   הסיסמה.
                 </p>
                 <AuthInput
@@ -837,7 +837,7 @@ export default function AccountPage() {
             </p>
             {ssoState === 'failed' && ssoError && (
               <AuthError
-                message={`התחברות אוטומטית נכשלה (${ssoError}) — התחבר עם סיסמה.`}
+                message={`התחברות אוטומטית נכשלה (${ssoError}). התחבר עם סיסמה.`}
               />
             )}
             <AuthInput

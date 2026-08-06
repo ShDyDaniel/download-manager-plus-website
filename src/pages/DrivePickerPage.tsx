@@ -84,7 +84,7 @@ export default function DrivePickerPage() {
         await api('picker-result', { session, file: picked })
         setPhase({
           kind: 'done',
-          message: 'הסרטון נבחר! אפשר לחזור לתוכנה — החלון הזה יכול להיסגר.',
+          message: 'הסרטון נבחר! אפשר לחזור לתוכנה, החלון הזה יכול להיסגר.',
         })
         // Best-effort auto-close (works when the tab was script-opened).
         window.setTimeout(() => {

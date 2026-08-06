@@ -201,7 +201,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(404).json({
           ok: false,
           error:
-            'הקובץ לא נמצא או שאין הרשאת ציבורית — ודאו שהשיתוף הוא "כל מי שיש לו הקישור"',
+            'הקובץ לא נמצא או שאין הרשאת ציבורית. ודאו שהשיתוף הוא "כל מי שיש לו הקישור"',
         })
       }
       return res.status(200).json({
@@ -223,7 +223,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).json({
         ok: false,
         error:
-          'הקישור לא נמצא או שאין הרשאת ציבורית — ודאו שהשיתוף הוא "כל מי שיש לו הקישור"',
+          'הקישור לא נמצא או שאין הרשאת ציבורית. ודאו שהשיתוף הוא "כל מי שיש לו הקישור"',
       })
     }
 

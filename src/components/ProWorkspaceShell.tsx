@@ -704,7 +704,7 @@ function SignupDetailsForm({
           disabled={busy}
           className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
         >
-          {busy ? 'שולח קוד אימות…' : 'המשך — שליחת קוד אימות'}
+          {busy ? 'שולח קוד אימות…' : 'המשך · שליחת קוד אימות'}
         </button>
         <button
           type="button"

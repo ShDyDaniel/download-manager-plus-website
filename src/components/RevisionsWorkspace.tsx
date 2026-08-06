@@ -177,7 +177,7 @@ async function uploadRoundVideo(
   }
   if (source.kind !== 'upload') {
     throw new Error(
-      'ייבוא מ-Drive זמין רק במצב Google Drive — העלו קובץ מהמחשב',
+      'ייבוא מ-Drive זמין רק במצב Google Drive. העלו קובץ מהמחשב',
     )
   }
   // Show the progress bar IMMEDIATELY so the click gives instant
@@ -458,7 +458,7 @@ function ConnectDriveEmptyState({
         חיבור Google Drive
       </h1>
       <p className="mx-auto mb-8 max-w-md text-sm leading-relaxed text-fg-muted">
-        סבבי התיקונים נשמרים בדרייב שלך — אנחנו לא מאחסנים את
+        סבבי התיקונים נשמרים בדרייב שלך, ואנחנו לא מאחסנים את
         הסרטונים אצלנו. כדי להתחיל, חברו חשבון Google.
       </p>
       <button
@@ -480,7 +480,7 @@ function ConnectDriveEmptyState({
       )}
       {waitingForOAuth && (
         <p className="mt-6 text-xs text-fg-muted">
-          חזרת מ-Google? אפשר לסגור את החלון השני — הדף הזה
+          חזרת מ-Google? אפשר לסגור את החלון השני. הדף הזה
           יזהה את החיבור תוך שניות.
         </p>
       )}
@@ -1511,7 +1511,7 @@ function R2StorageBar({
       </div>
       {pct >= 95 && (
         <div className="mt-2 text-[11px] text-destructive">
-          האחסון כמעט מלא — מחק סבבים ישנים כדי לפנות מקום.
+          האחסון כמעט מלא. מחק סבבים ישנים כדי לפנות מקום.
         </div>
       )}
     </div>
@@ -2426,7 +2426,7 @@ function ConfirmDeleteModal({
       ) : mode === 'mixed' ? (
         <p className="text-sm leading-relaxed text-fg-muted">
           בפרויקט הזה יש סבבים גם ב-Google Drive וגם באחסון שלנו. כל
-          הקבצים יימחקו — גם מ-Google Drive וגם מהאחסון — ולא יהיה ניתן
+          הקבצים יימחקו, גם מ-Google Drive וגם מהאחסון, ולא יהיה ניתן
           לשחזר אותם.
         </p>
       ) : (
@@ -2518,7 +2518,7 @@ function RoundDetailView({
   const projectId = isLegacy ? target.legacy.id : target.round.id
   const title = isLegacy
     ? target.legacy.title || 'ללא שם'
-    : `${target.group.title || 'ללא שם'} — סבב מס׳ ${target.round.roundNumber}`
+    : `${target.group.title || 'ללא שם'} · סבב מס׳ ${target.round.roundNumber}`
   const shareUrl = isLegacy
     ? buildShareUrl(target.legacy.shareToken)
     : `${buildShareUrl(target.group.shareToken)}?r=${target.round.id}`
@@ -3262,7 +3262,7 @@ function VideoSourceField({
               <p className="mt-2 text-xs leading-relaxed text-fg-muted">
                 הסרטון חייב להיות משותף ל"כל מי שיש לו את הקישור". המערכת
                 תבדוק את גודל הקובץ ואת המקום הפנוי, ואז תעביר אותו
-                לאחסון שלנו — בלי להוריד ולהעלות מחדש.
+                לאחסון שלנו, בלי להוריד ולהעלות מחדש.
               </p>
             </div>
           ) : mode === 'upload' ? (
@@ -3333,7 +3333,7 @@ function VideoSourceField({
                     : 'בחירת סרטון מ-Google Drive'}
                 </div>
                 <div className="mt-1 text-xs text-fg-muted">
-                  בוחרים קובץ קיים — בלי להעלות מחדש
+                  בוחרים קובץ קיים, בלי להעלות מחדש
                 </div>
               </div>
             </button>

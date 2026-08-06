@@ -965,7 +965,7 @@ function OwnerSignInPrompt({
           </h1>
           <p className="mt-1 text-xs leading-relaxed text-fg-muted">
             אחרי ההתחברות תוכלו לסמן תיקונים כטופלו, לפתוח שאלות ולסמן
-            תיקונים שאי אפשר לבצע — הכל ישירות מהאתר, בלי לפתוח את התוכנה.
+            תיקונים שאי אפשר לבצע. הכל ישירות מהאתר, בלי לפתוח את התוכנה.
           </p>
         </div>
         <div className="space-y-1.5">
@@ -1059,7 +1059,7 @@ function OnboardingScreen({
         {/* Steps card */}
         <div className="space-y-3 rounded-2xl border border-white/5 bg-white/[0.02] p-5">
           <h2 className="mb-1 text-sm font-medium text-fg">
-            איך זה עובד —
+            איך זה עובד
           </h2>
           <Step
             number="1"
@@ -1075,15 +1075,15 @@ function OnboardingScreen({
                 <br />
                 <strong className="font-semibold text-fg/90">
                   • תיקון חדש
-                </strong>{' '}
-                — סתם להכניס הערה בטקסט.
+                </strong>{': '}
+                סתם להכניס הערה בטקסט.
                 <br />
                 <strong className="font-semibold text-fg/90">
                   • צלם + תיקון
-                </strong>{' '}
-                — צילום של הקטע מהסרטון + אופציה לסמן על ידי ציור את התיקון.
+                </strong>{': '}
+                צילום של הקטע מהסרטון + אופציה לסמן על ידי ציור את התיקון.
                 <br />
-                בשני המקרים — הזמן בסרטון נשמר אוטומטית.
+                בשני המקרים, הזמן בסרטון נשמר אוטומטית.
               </>
             }
           />
@@ -1108,20 +1108,20 @@ function OnboardingScreen({
                 <span className="mt-1 inline-flex items-center gap-0.5 rounded bg-yellow-500/15 px-1 py-0 text-[10px] font-medium text-yellow-400">
                   <CheckCircle2 className="h-2.5 w-2.5" />
                   טופל
-                </span>{' '}
-                — התיקון נכנס לסרטון.
+                </span>{': '}
+                התיקון נכנס לסרטון.
                 <br />
                 <span className="mt-1 inline-flex items-center gap-0.5 rounded bg-sky-500/15 px-1 py-0 text-[10px] font-medium text-sky-400">
                   <MessageSquare className="h-2.5 w-2.5" />
                   שאלה
-                </span>{' '}
-                — העורך לא בטוח מה התכוונתם, ויראה לכם שאלה ליד.
+                </span>{': '}
+                העורך לא בטוח מה התכוונתם, ויראה לכם שאלה ליד.
                 <br />
                 <span className="mt-1 inline-flex items-center gap-0.5 rounded bg-red-500/15 px-1 py-0 text-[10px] font-medium text-red-400">
                   <AlertTriangle className="h-2.5 w-2.5" />
                   לא אפשרי
-                </span>{' '}
-                — אי אפשר לבצע את התיקון, והעורך יסביר למה ליד.
+                </span>{': '}
+                אי אפשר לבצע את התיקון, והעורך יסביר למה ליד.
               </>
             }
           />
@@ -1249,7 +1249,7 @@ function ReviewHeader({
           target="_blank"
           rel="noopener noreferrer"
           className="group flex items-center gap-2.5 transition-opacity"
-          aria-label="ניהול הורדות פלוס — דף הבית"
+          aria-label="ניהול הורדות פלוס · דף הבית"
         >
           <img
             src="/icon.png"
@@ -1286,7 +1286,7 @@ function ReviewHeader({
               <button
                 type="button"
                 onClick={logout}
-                title="התנתקות — איפוס המייל והסיסמה השמורים"
+                title="התנתקות · איפוס המייל והסיסמה השמורים"
                 aria-label="התנתקות"
                 className="inline-flex h-7 items-center gap-1 rounded-full border border-white/5 bg-white/[0.02] px-2.5 text-[11px] text-fg-muted transition-colors hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
               >
@@ -2280,7 +2280,7 @@ function ReviewWorkspace({
           {/* One-line hint so it's obvious WHY the button exists —
               new notes from others aren't pushed automatically. */}
           <p className="mb-3 text-[10px] leading-relaxed text-fg-faint">
-            תיקונים חדשים של אחרים לא מתעדכנים לבד — לחצו "טען תיקונים חדשים".
+            תיקונים חדשים של אחרים לא מתעדכנים לבד. לחצו "טען תיקונים חדשים".
           </p>
           {notesLoading ? (
             <div className="flex items-center justify-center py-10">
@@ -2521,7 +2521,7 @@ function EmptyNotesState() {
       <p className="text-[11px] leading-relaxed text-fg-muted">
         עדיין אין תיקונים. עצרו את הסרטון ולחצו על
         <strong className="font-semibold text-fg/80"> "תיקון חדש" </strong>
-        — הזמן ייכנס אוטומטית.
+        והזמן ייכנס אוטומטית.
       </p>
     </div>
   )
@@ -2694,7 +2694,7 @@ function NoteItem({
                 // moment. Not clickable because there's nowhere to
                 // seek to.
                 <span
-                  title="הערה כללית — לא מקושרת לזמן ספציפי בסרטון"
+                  title="הערה כללית, לא מקושרת לזמן ספציפי בסרטון"
                   className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-fg-muted/80"
                 >
                   <MessageSquare className="h-2.5 w-2.5" />
@@ -2743,7 +2743,7 @@ function NoteItem({
                   )}
                   {isQuestion && (
                     <span
-                      title="העורך מבקש הבהרה — ראו את הטקסט בתוך התיקון"
+                      title="העורך מבקש הבהרה · ראו את הטקסט בתוך התיקון"
                       className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-400 whitespace-nowrap"
                     >
                       <MessageSquare className="h-2.5 w-2.5" />
@@ -2752,7 +2752,7 @@ function NoteItem({
                   )}
                   {isNotPossible && (
                     <span
-                      title="העורך הסביר למה לא ניתן לבצע — ראו את הטקסט בתוך התיקון"
+                      title="העורך הסביר למה לא ניתן לבצע · ראו את הטקסט בתוך התיקון"
                       className="inline-flex items-center gap-1 rounded-full border border-red-500/40 bg-red-500/15 px-1.5 py-0.5 text-[9px] font-medium text-red-400 whitespace-nowrap"
                     >
                       <AlertTriangle className="h-2.5 w-2.5" />

@@ -112,7 +112,7 @@ export default function NewsletterTab({
       <header>
         <h2 className="text-3xl font-bold font-display text-fg">ניוזלטר</h2>
         <p className="mt-1 text-sm text-fg-muted">
-          רשימת התפוצה — כל מי שהסכים לקבל תוכן שיווקי בהרשמה — ובניית מייל שיווקי ושליחתו.
+          רשימת התפוצה (כל מי שהסכים לקבל תוכן שיווקי בהרשמה), ובניית מייל שיווקי ושליחתו.
         </p>
       </header>
       {error && (
@@ -735,7 +735,7 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
       <Input
         value={subject}
         onChange={(e) => setSubject(e.target.value)}
-        placeholder="נושא (Subject) — לדוגמה: 50% הנחה לסוף שבוע"
+        placeholder="נושא (Subject) · לדוגמה: 50% הנחה לסוף שבוע"
         disabled={bcBusy}
       />
       <Input
@@ -796,7 +796,7 @@ function BroadcastCard({ onErr }: { onErr: (e: unknown) => void }) {
       {showPreview && (
         <div className="overflow-hidden rounded-xl border border-border">
           <div className="flex items-center gap-2 border-b border-border bg-background/40 px-3 py-1.5 text-[11px] text-fg-muted">
-            <span>תצוגה מקדימה — בדיוק כמו שהמייל ייראה אצל הנמען</span>
+            <span>תצוגה מקדימה · בדיוק כמו שהמייל ייראה אצל הנמען</span>
             <div className="ms-auto flex items-center gap-0.5 rounded-lg border border-border p-0.5">
               <button
                 type="button"
@@ -1141,7 +1141,7 @@ function BlockEditor({
           <Input
             value={block.alt}
             onChange={(e) => onChange({ alt: e.target.value })}
-            placeholder="תיאור התמונה (alt) — אופציונלי"
+            placeholder="תיאור התמונה (alt) · אופציונלי"
             disabled={disabled}
           />
           <p className="text-[10px] leading-relaxed text-fg-muted">

@@ -180,7 +180,7 @@ export default function RevenueTab({
         <div>
           <h2 className="text-3xl font-bold font-display text-fg">הכנסות</h2>
           <p className="mt-1 text-sm text-fg-muted">
-            כל ההכנסות, עמלות PayPal, חלוקה לשותפים והשורה התחתונה — לפי חודשים.
+            כל ההכנסות, עמלות PayPal, חלוקה לשותפים והשורה התחתונה, לפי חודשים.
           </p>
         </div>
         <button
@@ -329,15 +329,15 @@ function PnLCard({
   const cfState =
     cloudflare && cloudflare.costUsd > 0
       ? 'מעל החינם'
-      : '$0 — מתחת ל-10GB החינמיים'
+      : '$0 · מתחת ל-10GB החינמיים'
   const dbState =
-    dbUsd > 0 ? 'מעל מכסת החינם' : '$0 — בתוך מכסת החינם היומית'
+    dbUsd > 0 ? 'מעל מכסת החינם' : '$0 · בתוך מכסת החינם היומית'
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-card">
       <div className="border-b border-border px-5 py-3.5">
         <h3 className="text-sm font-semibold text-fg">שורת רווח</h3>
         <p className="mt-0.5 text-[11px] text-fg-faint">
-          מהברוטו ועד מה שנשאר לך ביד — אחרי כל העלויות
+          מהברוטו ועד מה שנשאר לך ביד, אחרי כל העלויות
         </p>
       </div>
       <div className="px-5 py-1.5">
@@ -375,8 +375,8 @@ function PnLCard({
         <p className="text-[10px] leading-relaxed text-fg-faint">
           ההכנסות מצטברות מתחילת הפעילות; עלויות התשתית חודשיות שוטפות.
           Cloudflare R2 (לפי שימוש; כרגע {cfState}); Cloudflare Worker (תוכנית
-          חינמית — $0; מעבר ל-100K בקשות ביום נחסם, לא מחויב); מסד נתונים
-          (Firestore — הערכה לפי השימוש ב-24 השעות האחרונות × 30; כרגע {dbState})
+          חינמית, $0; מעבר ל-100K בקשות ביום נחסם, לא מחויב); מסד נתונים
+          (Firestore: הערכה לפי השימוש ב-24 השעות האחרונות × 30; כרגע {dbState})
           {cloudflare ? `; שער המרה ≈ ${cloudflare.fxRate.toFixed(2)} ₪/$` : ''}.
         </p>
       </div>

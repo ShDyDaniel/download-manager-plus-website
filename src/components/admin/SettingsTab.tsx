@@ -115,7 +115,7 @@ const PARTNER_TERMS_DEFAULT: { lastUpdated: string; sections: Section[] } = {
     {
       title: '3. תשלומים',
       paragraphs: [
-        'תשלום העמלות יבוצע במועדים ובאמצעים שתיאמת עם החברה. עסקה שבוטלה, הוחזרה (chargeback) או לא נגבתה — לא תזכה בעמלה, ותקוזז אם כבר שולמה.',
+        'תשלום העמלות יבוצע במועדים ובאמצעים שתיאמת עם החברה. עסקה שבוטלה, הוחזרה (chargeback) או לא נגבתה, לא תזכה בעמלה, ותקוזז אם כבר שולמה.',
       ],
     },
     {
@@ -152,7 +152,7 @@ const PARTNER_TERMS_DEFAULT: { lastUpdated: string; sections: Section[] } = {
 const TEST_EMAILS: { kind: string; label: string }[] = [
   { kind: 'verify-signup', label: 'קוד אימות הרשמה' },
   { kind: 'verify-existing', label: 'קוד אימות למשתמש קיים' },
-  { kind: 'welcome-subscription', label: 'ברוכים הבאים — מנוי' },
+  { kind: 'welcome-subscription', label: 'ברוכים הבאים · מנוי' },
   { kind: 'pro-activated', label: 'אישור הפעלת Pro' },
   { kind: 'cancellation', label: 'אישור ביטול מנוי' },
   { kind: 'capture-key', label: 'מפתח לאחר רכישה (legacy)' },
@@ -162,8 +162,8 @@ const TEST_EMAILS: { kind: string; label: string }[] = [
   { kind: 'annual-report', label: 'סיכום חיובים שנתי' },
   { kind: 'payment-failed', label: 'כשל בחיוב מנוי' },
   { kind: 'plan-switch', label: 'החלפת מסלול (חודשי/שנתי)' },
-  { kind: 'purge-warning-subscription', label: 'אזהרת מחיקת סבבים — מנוי שהסתיים' },
-  { kind: 'purge-warning-trial', label: 'אזהרת מחיקת סבבים — ניסיון שהסתיים' },
+  { kind: 'purge-warning-subscription', label: 'אזהרת מחיקת סבבים · מנוי שהסתיים' },
+  { kind: 'purge-warning-trial', label: 'אזהרת מחיקת סבבים · ניסיון שהסתיים' },
 ]
 
 export default function SettingsTab({
@@ -370,7 +370,7 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
             <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted-foreground">
               {betaActive
                 ? 'כל המשתמשים מחוברים מקבלים גישה לתכונות Pro בחינם. כיבוי יחזיר כל משתמש למנוי האמיתי שלו באופן מיידי.'
-                : 'מצב רגיל — כל משתמש מקבל את התכונות לפי המנוי שלו. הפעלה תעניק לכולם Pro חינם בזמן שהוא דולק.'}
+                : 'מצב רגיל · כל משתמש מקבל את התכונות לפי המנוי שלו. הפעלה תעניק לכולם Pro חינם בזמן שהוא דולק.'}
             </p>
             {betaErr && (
               <div className="mt-1.5 flex items-center gap-1 text-[11px] text-destructive">
@@ -399,7 +399,7 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
             <div className="text-sm font-bold text-foreground">סיסמת לוגים (תוכנה)</div>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
               הסיסמה שפותחת את חלון הלוגים בתוכנה דרך הקיצור הסודי
-              Ctrl+Shift+1. אם ריק — נעשה שימוש בסיסמת ברירת המחדל המובנית.
+              Ctrl+Shift+1. אם ריק, נעשה שימוש בסיסמת ברירת המחדל המובנית.
             </p>
           </div>
         </div>
@@ -629,8 +629,8 @@ export function ProtectionCard({ onErr }: { onErr: (e: unknown) => void }) {
             </div>
             <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted-foreground">
               {kill
-                ? 'פעיל — האתר והתוכנה חסומים לכל המשתמשים (פאנל הניהול ממשיך לעבוד). כיבוי יחזיר את השירות מיידית.'
-                : 'כבוי — הכל עובד כרגיל. הפעלה חוסמת מיידית את כל המשתמשים — מצוין לעצירת חירום בזמן פיתוח או מתקפה.'}
+                ? 'פעיל · האתר והתוכנה חסומים לכל המשתמשים (פאנל הניהול ממשיך לעבוד). כיבוי יחזיר את השירות מיידית.'
+                : 'כבוי · הכל עובד כרגיל. הפעלה חוסמת מיידית את כל המשתמשים, מצוין לעצירת חירום בזמן פיתוח או מתקפה.'}
             </p>
           </div>
         </div>
@@ -661,7 +661,7 @@ export function ProtectionCard({ onErr }: { onErr: (e: unknown) => void }) {
               />
             </div>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              כשמופעל — אם השימוש היומי חוצה תקרה, מצב התחזוקה נדלק אוטומטית.
+              כשמופעל, אם השימוש היומי חוצה תקרה, מצב התחזוקה נדלק אוטומטית.
               הבדיקה מול נתוני הניטור (חינם), בלי קריאות נוספות למסד.
             </p>
           </div>
@@ -684,7 +684,7 @@ export function ProtectionCard({ onErr }: { onErr: (e: unknown) => void }) {
           />
         </div>
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          0 = ללא תקרה. התקרה רק מתריעה/חוסמת לפי הבחירה למעלה — היא לא משנה את
+          0 = ללא תקרה. התקרה רק מתריעה/חוסמת לפי הבחירה למעלה. היא לא משנה את
           החיוב בפועל.
         </p>
 
@@ -701,7 +701,7 @@ export function ProtectionCard({ onErr }: { onErr: (e: unknown) => void }) {
         </div>
 
         <p className="border-t border-border pt-3 text-[11px] leading-relaxed text-muted-foreground">
-          זו עצירה ברמת האפליקציה — מיידית והפיכה. כגיבוי-אסון מוחלט מול עלות
+          זו עצירה ברמת האפליקציה: מיידית והפיכה. כגיבוי-אסון מוחלט מול עלות
           בלתי-צפויה קיים גם ה-kill-switch ברמת החיוב של Google Cloud (Budget →
           Cloud Function שמכבה חיוב), שמתואר ב-
           <span dir="ltr">docs/killswitch</span>.
@@ -836,7 +836,7 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
     e.target.value = ''
     if (!file) return
     if (file.size > 4 * 1024 * 1024) {
-      setMsg('התמונה גדולה מדי — מקסימום 4MB')
+      setMsg('התמונה גדולה מדי. מקסימום 4MB')
       return
     }
     setUploading(true)
@@ -1066,7 +1066,7 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
             </div>
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">
-                קישור בלחיצה על התמונה — אפשר להשאיר ריק
+                קישור בלחיצה על התמונה, אפשר להשאיר ריק
               </label>
               <Input
                 dir="ltr"
@@ -1190,7 +1190,7 @@ function PasskeysCard({ onErr }: { onErr: (e: unknown) => void }) {
           </div>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             רשום את המכשיר הזה (Touch ID במק / Face ID באייפון / Windows Hello)
-            כדי להיכנס בלי קוד מייל. אפשר לרשום כמה מכשירים — אחד למחשב ואחד
+            כדי להיכנס בלי קוד מייל. אפשר לרשום כמה מכשירים, אחד למחשב ואחד
             לטלפון. קוד המייל יישאר כגיבוי.
           </p>
         </div>
@@ -1220,7 +1220,7 @@ function PasskeysCard({ onErr }: { onErr: (e: unknown) => void }) {
         </div>
       ) : list.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          עדיין לא נרשמו מכשירים — תיכנס עם קוד מייל עד שתרשום אחד.
+          עדיין לא נרשמו מכשירים. תיכנס עם קוד מייל עד שתרשום אחד.
         </p>
       ) : (
         <div className="space-y-1.5">
@@ -1563,7 +1563,7 @@ function LegalCard({
               <div className="space-y-2">
                 {s.paragraphs.length === 0 && (
                   <div className="px-1 text-[11px] text-fg-faint">
-                    אין עדיין פסקאות — הוסיפו אחת למטה.
+                    אין עדיין פסקאות. הוסיפו אחת למטה.
                   </div>
                 )}
                 {s.paragraphs.map((p, pi) => (
@@ -1616,7 +1616,7 @@ function LegalCard({
               </div>
             ) : (
               <div className="px-1 text-[11px] text-fg-faint">
-                {s.paragraphs.length} פסקאות — לחצו לפתיחה
+                {s.paragraphs.length} פסקאות · לחצו לפתיחה
               </div>
             )}
           </div>
@@ -1673,7 +1673,7 @@ function SumitTestCard({ onErr }: { onErr: (e: unknown) => void }) {
   }
 
   return (
-    <Card title="בדיקת קבלה — SUMIT (סאמיט)">
+    <Card title="בדיקת קבלה · SUMIT (סאמיט)">
       <div className="flex flex-wrap items-center gap-2">
         <input
           value={target}
@@ -1696,7 +1696,7 @@ function SumitTestCard({ onErr }: { onErr: (e: unknown) => void }) {
         <div className="mt-2 space-y-1 text-xs">
           <div className={result.ok ? 'text-success' : 'text-destructive'}>
             {result.ok
-              ? `הצליח ${result.draft ? '(טיוטה)' : ''} ${result.emailed ? '— נשלח במייל' : ''}`
+              ? `הצליח ${result.draft ? '(טיוטה)' : ''} ${result.emailed ? '· נשלח במייל' : ''}`
               : `נכשל: ${result.error || 'שגיאה'}`}
           </div>
           {result.url && (
@@ -1722,7 +1722,7 @@ function SumitTestCard({ onErr }: { onErr: (e: unknown) => void }) {
         </div>
       )}
       <p className="text-[11px] text-fg-faint">
-        מפיק מסמך טיוטה ב-SUMIT ושולח אותו מהמייל שלנו. כשהעסק מוגדר —
+        מפיק מסמך טיוטה ב-SUMIT ושולח אותו מהמייל שלנו. כשהעסק מוגדר,
         הגדר env <code>SUMIT_LIVE=true</code> כדי להפיק מסמכים אמיתיים.
       </p>
     </Card>
@@ -1864,7 +1864,7 @@ export function PricingCard({ onErr }: { onErr: (e: unknown) => void }) {
           </div>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             מחירים שמופיעים באתר ושנגבים דרך PayPal. שינויים מתעדכנים מיד באתר.
-            המערכת מאמתת בצד שרת שהסכום שאושר ב-PayPal תואם למחיר העכשווי — לקוח
+            המערכת מאמתת בצד שרת שהסכום שאושר ב-PayPal תואם למחיר העכשווי. לקוח
             לא יכול לקנות במחיר ישן או נמוך יותר.
           </p>
         </div>
@@ -1954,7 +1954,7 @@ export function PricingCard({ onErr }: { onErr: (e: unknown) => void }) {
 
       <div>
         <label className="mb-1.5 block text-xs text-muted-foreground">
-          תווית מבצע (אופציונלי) — מופיעה ככרזת מעל הכרטיס באתר
+          תווית מבצע (אופציונלי) · מופיעה ככרזת מעל הכרטיס באתר
         </label>
         <Input
           value={draft.saleLabel ?? ''}
@@ -2069,7 +2069,7 @@ function EmailToolsCard({ onErr }: { onErr: (e: unknown) => void }) {
   }
 
   return (
-    <Card title="כלי דיוור — מייל בדיקה">
+    <Card title="כלי דיוור · מייל בדיקה">
       <div className="flex flex-wrap items-center gap-2">
         <input
           value={target}

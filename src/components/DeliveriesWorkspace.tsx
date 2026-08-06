@@ -278,7 +278,7 @@ function DriveNoAccessPanel() {
       </h1>
       <p className="mt-3 text-sm leading-relaxed text-fg-muted">
         מערכת המסירה ללקוח עובדת מול האחסון שלנו. החשבון שלך מוגדר
-        לאחסון ב‑Google Drive, ולכן אין גישה לטאב הזה. כדי לפתוח אותו —
+        לאחסון ב‑Google Drive, ולכן אין גישה לטאב הזה. כדי לפתוח אותו,
         אפשר לפנות לתמיכה.
       </p>
       <a
@@ -323,7 +323,7 @@ function StorageBar({
       </div>
       {pct >= 95 && (
         <div className="mt-2 text-[11px] text-destructive">
-          האחסון כמעט מלא — מחקו מסירות/סבבים ישנים כדי לפנות מקום.
+          האחסון כמעט מלא. מחקו מסירות/סבבים ישנים כדי לפנות מקום.
         </div>
       )}
     </div>
@@ -687,7 +687,7 @@ function DeliveryComposerModal({
                             </div>
                             <p className="mt-2 text-xs leading-relaxed text-fg-muted">
                               הסרטון חייב להיות משותף ל"כל מי שיש לו את
-                              הקישור". המערכת תעביר אותו לאחסון שלנו — בלי
+                              הקישור". המערכת תעביר אותו לאחסון שלנו, בלי
                               להוריד ולהעלות מחדש.
                             </p>
                           </div>
@@ -778,12 +778,12 @@ function DeliveryComposerModal({
                     {/* Title */}
                     <div>
                       <label className="mb-1.5 block text-xs text-fg-muted">
-                        שם המסירה (אופציונלי — יוצג ללקוח)
+                        שם המסירה (אופציונלי, יוצג ללקוח)
                       </label>
                       <input
                         value={title}
                         onChange={(e) => setTitle(e.target.value)}
-                        placeholder="למשל: הקאט הסופי — קמפיין קיץ"
+                        placeholder="למשל: הקאט הסופי לקמפיין קיץ"
                         disabled={busy}
                         className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-primary disabled:opacity-60"
                       />
@@ -902,7 +902,7 @@ function DeliverySuccessView({
           הסרטון הועלה והקישור מוכן
         </h3>
         <p className="mt-2 text-xs text-fg-muted">
-          שלחו את הקישור הזה ללקוח — הוא יוכל לצפות בסרטון ולהוריד אותו.
+          שלחו את הקישור הזה ללקוח. הוא יוכל לצפות בסרטון ולהוריד אותו.
         </p>
       </div>
 

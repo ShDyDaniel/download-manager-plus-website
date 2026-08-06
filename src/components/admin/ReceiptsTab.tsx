@@ -473,7 +473,7 @@ export default function ReceiptsTab({
   <div class="header">${logo ? `<img src="${logo}" alt="logo"/>` : ''}<div class="brand">דיווח עסקת אקראי<b>ניהול הורדות פלוס</b></div></div>
   <div class="accent"></div>
   <div class="wrap">
-    <h1>דיווח עסקת אקראי — טופס 8356</h1>
+    <h1>דיווח עסקת אקראי · טופס 8356</h1>
     <div class="sub">עסקה מס׳ ${esc(row.seq)} · הופק בתאריך ${esc(today)}</div>
     ${infoMissing}
 
@@ -527,7 +527,7 @@ export default function ReceiptsTab({
 
     const w = window.open('', '_blank', 'width=900,height=1200')
     if (!w) {
-      setError('הדפדפן חסם את חלון ההדפסה — אפשר חלונות קופצים ונסה שוב')
+      setError('הדפדפן חסם את חלון ההדפסה. אפשר חלונות קופצים ונסה שוב')
       return
     }
     w.document.open()
@@ -556,9 +556,9 @@ export default function ReceiptsTab({
               הפקת קבלות אוטומטית דרך SUMIT
             </div>
             <p className="mt-1 text-xs leading-relaxed text-fg-muted">
-              כשהמתג כבוי — המערכת לא מפיקה קבלות ולא שולחת ל-SUMIT שום
+              כשהמתג כבוי, המערכת לא מפיקה קבלות ולא שולחת ל-SUMIT שום
               מידע על לקוחות. כל הגבייה ממשיכה כרגיל, פשוט בלי קבלה
-              אוטומטית. כשהוא דלוק — כל קבלה מופקת ונשלחת ללקוח בדיוק כמו
+              אוטומטית. כשהוא דלוק, כל קבלה מופקת ונשלחת ללקוח בדיוק כמו
               עכשיו.
             </p>
             {!sumitConfigured && (
@@ -829,14 +829,14 @@ function CasualReport({
       <div className="rounded-2xl border border-amber-500/30 bg-amber-500/[0.06] p-4 text-xs leading-relaxed text-fg-muted">
         <p className="text-fg">
           עסקת אקראי מדווחת <strong>לכל עסקה בנפרד</strong> בטופס 8356, ויש
-          לדווח ולשלם את המע"מ <strong>תוך 30 יום</strong> מהעסקה — לא פעם
+          לדווח ולשלם את המע"מ <strong>תוך 30 יום</strong> מהעסקה, לא פעם
           בחודש. הדוח כאן הוא יומן מרוכז לנוחותך; עמודת "מועד דיווח אחרון"
           מראה עד מתי לדווח כל שורה.
         </p>
         <p className="mt-2">
           המספרים מחושבים לפי מחיר הכולל מע"מ בשיעור הנוכחי. נותן השירות
           הוא החייב בתשלום המע"מ. שים לב: מכירה חוזרת ושיטתית של מנויים
-          עלולה להיחשב "עסק" ולא עסקת אקראי — נקודה לבדוק מול רואה החשבון.
+          עלולה להיחשב "עסק" ולא עסקת אקראי. נקודה לבדוק מול רואה החשבון.
         </p>
       </div>
 
@@ -1152,7 +1152,7 @@ function BusinessDetailsCard({
       <div className="border-t border-border p-4">
         <p className="mb-3 text-xs leading-relaxed text-fg-muted">
           אלה הפרטים שטופס 8356 מבקש על המדווח (נותן השירות). עסקת אקראי
-          מדווחת על ידי אדם פרטי — לא דרושים פרטי עוסק. הפרטים נשמרים
+          מדווחת על ידי אדם פרטי. לא דרושים פרטי עוסק. הפרטים נשמרים
           אצלך בלבד (לא חשופים לאפליקציה) ומשובצים אוטומטית בכל מסמך
           שתורידו. מלאו פעם אחת.
         </p>
@@ -1541,7 +1541,7 @@ function ActiveSubscriptions({
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-fg-muted">
-          מנויים פעילים והחשבון שמקושר אליהם. אפשר לעצור חידוש — המשתמש
+          מנויים פעילים והחשבון שמקושר אליהם. אפשר לעצור חידוש. המשתמש
           נשאר עם הגישה עד סוף התקופה ששולמה, ולא יחויב שוב.
         </p>
         <button
@@ -1688,7 +1688,7 @@ function ActiveSubscriptions({
                 {openKind === 'cancel' && (
                   <div className="mt-2 space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-2.5">
                     <div className="text-[11px] text-destructive">
-                      עצירת החידוש דרך PayPal — לא יבוצעו חיובים נוספים. המשתמש
+                      עצירת החידוש דרך PayPal. לא יבוצעו חיובים נוספים. המשתמש
                       נשאר Pro עד <bdi>{subDate(s.expiresAt)}</bdi>, ותישלח לו
                       הודעת אישור במייל.
                     </div>
@@ -1696,7 +1696,7 @@ function ActiveSubscriptions({
                       type="text"
                       value={reason}
                       onChange={(e) => setReason(e.target.value)}
-                      placeholder="סיבה (רשות) — לתיעוד פנימי"
+                      placeholder="סיבה (רשות) · לתיעוד פנימי"
                       className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-fg outline-none focus:border-destructive"
                     />
                     <div className="flex items-center justify-end gap-1.5">
@@ -1743,7 +1743,7 @@ function ActiveSubscriptions({
                       step="0.01"
                       value={refundAmount}
                       onChange={(e) => setRefundAmount(e.target.value)}
-                      placeholder="סכום (רשות) — ריק = החזר מלא"
+                      placeholder="סכום (רשות) · ריק = החזר מלא"
                       dir="ltr"
                       className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-right text-xs text-fg outline-none focus:border-amber-400"
                     />

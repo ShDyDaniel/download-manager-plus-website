@@ -129,14 +129,14 @@ async function sendResetEmail(to: string, resetUrl: string): Promise<void> {
         ⚠️ הקישור תקף לשעה אחת בלבד.
       </p>
       <p style="font-size:11px;line-height:1.6;margin:24px 0 0;color:#5C5444;">
-        לא ביקשת לאפס סיסמה? פשוט התעלם מהמייל הזה — אף אחד לא יכול להחליף לך את הסיסמה בלי לחיצה על הקישור למעלה.
+        לא ביקשת לאפס סיסמה? פשוט התעלם מהמייל הזה. אף אחד לא יכול להחליף לך את הסיסמה בלי לחיצה על הקישור למעלה.
       </p>
     `,
   })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to,
-    subject: 'איפוס סיסמה — ניהול הורדות פלוס',
+    subject: 'איפוס סיסמה · ניהול הורדות פלוס',
     html,
   })
 }

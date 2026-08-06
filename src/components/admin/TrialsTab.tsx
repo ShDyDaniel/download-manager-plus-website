@@ -136,7 +136,7 @@ function DeviceCheckCard({
     if (busy || !check?.matchedUid) return
     if (
       !window.confirm(
-        'לאפס את הזכאות לניסיון של החשבון שנמצא?\nהפעולה תמחק את טביעת המחשב — המחשב יוכל לקבל שוב 7 ימי ניסיון חינם.',
+        'לאפס את הזכאות לניסיון של החשבון שנמצא?\nהפעולה תמחק את טביעת המחשב. המחשב יוכל לקבל שוב 7 ימי ניסיון חינם.',
       )
     )
       return
@@ -265,7 +265,7 @@ function DeviceCheckCard({
                 )}
               {resetDone ? (
                 <div className="mt-3 flex items-center gap-1.5 text-xs text-success">
-                  <CheckCircle2 className="h-3.5 w-3.5" /> הזכאות אופסה — המחשב
+                  <CheckCircle2 className="h-3.5 w-3.5" /> הזכאות אופסה. המחשב
                   יכול לקבל ניסיון מחדש.
                 </div>
               ) : (
@@ -485,7 +485,7 @@ export default function TrialsTab({
             </div>
             <p className="text-xs text-fg-muted">
               משתמשים אלו כבר קיבלו 7 ימי ניסיון ולא יכולים לקבל שוב. מחיקה
-              מהרשימה מאפסת את הזכאות שלהם — הם יוכלו לקבל ניסיון חינם מחדש.
+              מהרשימה מאפסת את הזכאות שלהם. הם יוכלו לקבל ניסיון חינם מחדש.
             </p>
             {used.length === 0 ? (
               <div className="rounded-2xl border border-border py-8 text-center text-sm text-fg-muted">

@@ -98,7 +98,7 @@ async function api<T>(action: string, body: Record<string, unknown> = {}): Promi
 
   if (status !== 200 || !j.ok) {
     const e = new Error(
-      j.error === 'step-up-required' ? 'האימות נדחה — נסו שוב' : j.error || 'שגיאה',
+      j.error === 'step-up-required' ? 'האימות נדחה. נסו שוב' : j.error || 'שגיאה',
     ) as Error & { code?: string }
     if (status === 401) e.code = 'auth'
     throw e
@@ -837,7 +837,7 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
                 </label>
                 <label className="block">
                   <span className="text-xs text-muted-foreground">
-                    מזהה טכני — נוצר מהשם, ומופיע בקישור ההוספה מהאתר
+                    מזהה טכני · נוצר מהשם, ומופיע בקישור ההוספה מהאתר
                   </span>
                   <input
                     dir="ltr"
@@ -854,7 +854,7 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
                   />
                   {editingId ? (
                     <span className="mt-1 block text-[11px] text-muted-foreground">
-                      מזהה של קטגוריה קיימת אינו ניתן לשינוי — שינוי היה יוצר
+                      מזהה של קטגוריה קיימת אינו ניתן לשינוי. שינוי היה יוצר
                       קטגוריה שנייה ומשאיר את הקיימת אצל מי שכבר הוסיף אותה.
                     </span>
                   ) : (
@@ -877,7 +877,7 @@ function PacksView({ onError }: { onError: (e: unknown) => void }) {
                 <div>
                   <div className="flex items-baseline justify-between">
                     <span className="text-xs text-muted-foreground">
-                      מונחים — עדיפו צירופים על מילים בודדות
+                      מונחים · עדיפו צירופים על מילים בודדות
                     </span>
                     <span className="text-xs text-muted-foreground">
                       {edit.terms.length}

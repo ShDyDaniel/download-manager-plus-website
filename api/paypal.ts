@@ -2107,7 +2107,7 @@ async function handleWebhook(req: VercelRequest, res: VercelResponse) {
       await sendTelegramAlert(`⚠️ חיוב נכשל ללקוח\n${result.summary}`)
     } else if (event.event_type === 'CUSTOMER.DISPUTE.CREATED') {
       await sendTelegramAlert(
-        `🚨 נפתחה מחלוקת (dispute) ב-PayPal — דורש טיפול ידני\nאירוע: ${event.id}`,
+        `🚨 נפתחה מחלוקת (dispute) ב-PayPal · דורש טיפול ידני\nאירוע: ${event.id}`,
       )
     } else if (
       event.event_type === 'PAYMENT.SALE.COMPLETED' &&
@@ -2169,7 +2169,7 @@ async function handleSaleCompleted(
             recipient,
             amount,
             currency: resource.amount.currency,
-            description: 'ניהול הורדות פלוס — מנוי',
+            description: 'ניהול הורדות פלוס · מנוי',
             subscriptionId,
           })
         }
@@ -2258,7 +2258,7 @@ async function handleSaleCompleted(
           recipient,
           amount: paidAmount,
           currency: resource.amount.currency,
-          description: `ניהול הורדות פלוס — ${planLabel}`,
+          description: `ניהול הורדות פלוס · ${planLabel}`,
           subscriptionId,
         })
         if (url) {
@@ -3168,7 +3168,7 @@ async function ensurePlanForAmount(
   const productId = await getOrCreateProduct()
   const planId = await createPaypalPlan({
     productId,
-    label: `קופון — ${interval === 'monthly' ? 'חודשי' : 'שנתי'} ${amount}`,
+    label: `קופון · ${interval === 'monthly' ? 'חודשי' : 'שנתי'} ${amount}`,
     amount,
     currency,
     interval,
@@ -3212,7 +3212,7 @@ async function ensureIntroPlan(
   const productId = await getOrCreateProduct()
   const planId = await createPaypalPlan({
     productId,
-    label: `קופון היכרות — ${interval === 'monthly' ? 'חודשי' : 'שנתי'} ${introAmount}→${recurringAmount}`,
+    label: `קופון היכרות · ${interval === 'monthly' ? 'חודשי' : 'שנתי'} ${introAmount}→${recurringAmount}`,
     amount: recurringAmount,
     introAmount,
     currency,
@@ -3234,7 +3234,7 @@ async function handleCouponCheck(req: VercelRequest, res: VercelResponse) {
   if (couponThrottled(ip)) {
     return res
       .status(429)
-      .json({ ok: false, error: 'יותר מדי ניסיונות — נסו שוב בעוד כמה דקות' })
+      .json({ ok: false, error: 'יותר מדי ניסיונות. נסו שוב בעוד כמה דקות' })
   }
   const pricing = await loadCurrentPricingStrict()
   if (!pricing) {
@@ -3406,7 +3406,7 @@ async function handleCreateSubscription(
   if (!planId) {
     return res
       .status(500)
-      .json({ ok: false, error: 'תצורת תוכנית לא תקינה — נסה שוב' })
+      .json({ ok: false, error: 'תצורת תוכנית לא תקינה. נסה שוב' })
   }
 
   // ── Coupon (server-side ONLY: the client sent just a code) ──
@@ -4814,7 +4814,7 @@ async function sendReceiptEmail(args: {
   })
   const sym = args.currency === 'USD' ? '$' : '₪'
   const draftNote = args.draft
-    ? `<p style="font-size:11px;margin:0 0 14px;color:#8B8170;">[מסמך טיוטה — לבדיקה בלבד]</p>`
+    ? `<p style="font-size:11px;margin:0 0 14px;color:#8B8170;">[מסמך טיוטה · לבדיקה בלבד]</p>`
     : ''
 
   // Try to fetch the actual receipt PDF and attach it, so the customer
@@ -4846,7 +4846,7 @@ async function sendReceiptEmail(args: {
     contentHtml: `
       ${draftNote}
       <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-        תודה על התשלום ל-<strong>ניהול הורדות פלוס</strong>. הקבלה הרשמית עבור: ${args.description} — <strong dir="ltr">${args.amount} ${sym}</strong>.
+        תודה על התשלום ל-<strong>ניהול הורדות פלוס</strong>. הקבלה הרשמית עבור: ${args.description}: <strong dir="ltr">${args.amount} ${sym}</strong>.
       </p>
       ${ctaHtml}
       <p style="font-size:11px;margin:0;color:#5C5444;">הקבלה הופקה דרך מערכת SUMIT.</p>
@@ -4855,7 +4855,7 @@ async function sendReceiptEmail(args: {
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: 'הקבלה שלך — ניהול הורדות פלוס',
+    subject: 'הקבלה שלך · ניהול הורדות פלוס',
     html,
     attachments: pdf
       ? [{ filename: 'קבלה.pdf', content: pdf, contentType: 'application/pdf' }]
@@ -4934,7 +4934,7 @@ async function sendPartnerWelcomeEmail(args: {
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: 'הצטרפתם כשותפים — ניהול הורדות פלוס',
+    subject: 'הצטרפתם כשותפים · ניהול הורדות פלוס',
     html,
   })
 }
@@ -4978,14 +4978,14 @@ async function sendPartnerCommissionChangeEmail(args: {
         </td></tr>
       </table>
       <p style="font-size:12px;line-height:1.7;margin:0;color:#8B8170;">
-        אם יש שאלה לגבי השינוי — השיבו למייל הזה ונשמח להבהיר.
+        אם יש שאלה לגבי השינוי, השיבו למייל הזה ונשמח להבהיר.
       </p>
     `,
   })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: 'עודכן הסכם העמלה שלכם — ניהול הורדות פלוס',
+    subject: 'עודכן הסכם העמלה שלכם · ניהול הורדות פלוס',
     html,
   })
 }
@@ -5100,9 +5100,9 @@ async function sendSubscriptionWelcomeEmail(args: {
         <div>• תוכנית: ${args.planLabel}</div>
         ${
           args.coupon && firstIsDiscounted
-            ? `<div>• שולם עכשיו: <strong>${args.firstChargePrice} ${symbol}</strong> (קופון ${couponCode} — ${args.coupon.pct}% הנחה)</div>`
+            ? `<div>• שולם עכשיו: <strong>${args.firstChargePrice} ${symbol}</strong> (קופון ${couponCode} · ${args.coupon.pct}% הנחה)</div>`
             : args.coupon
-              ? `<div>• מחיר: ${args.price} ${symbol} (קופון ${couponCode} — ${args.coupon.pct}% הנחה)</div>`
+              ? `<div>• מחיר: ${args.price} ${symbol} (קופון ${couponCode} · ${args.coupon.pct}% הנחה)</div>`
               : `<div>• מחיר: ${args.price} ${symbol}</div>`
         }
         ${
@@ -5122,7 +5122,7 @@ async function sendSubscriptionWelcomeEmail(args: {
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: 'המנוי שלך פעיל — ניהול הורדות פלוס Pro',
+    subject: 'המנוי שלך פעיל · ניהול הורדות פלוס Pro',
     html,
   })
 }
@@ -5225,12 +5225,12 @@ async function sendPlanSwitchEmail(args: {
             ✓ <strong>חויבת ב-${args.price} ${symbol}</strong> עבור המסלול ה${newPlanLabel}
           </div>
           <div style="margin-bottom:8px;">
-            ✓ <strong>המנוי ה${oldPlanLabel} הקודם בוטל</strong> אוטומטית — לא תחויב עליו שוב
+            ✓ <strong>המנוי ה${oldPlanLabel} הקודם בוטל</strong> אוטומטית, לא תחויב עליו שוב
           </div>
           ${
             carriedDays > 0
               ? `<div style="margin-bottom:8px;">
-                  ✓ <strong>${carriedDays} ימים</strong> שנותרו לך מהמסלול ה${oldPlanLabel} <strong>נשמרו כבונוס</strong> — נוספים על גבי ה${newCycleWord} החדש
+                  ✓ <strong>${carriedDays} ימים</strong> שנותרו לך מהמסלול ה${oldPlanLabel} <strong>נשמרו כבונוס</strong>, נוספים על גבי ה${newCycleWord} החדש
                 </div>`
               : ''
           }
@@ -5243,11 +5243,11 @@ async function sendPlanSwitchEmail(args: {
       </div>
       <h3 style="font-size:14px;margin:0 0 8px;color:#F5EFE6;font-weight:600;">חיוב הבא</h3>
       <div style="font-size:13px;line-height:1.85;margin:0 0 22px;color:#C9BFA8;">
-        החיוב הבא יתבצע ב-<strong>${nextChargeStr}</strong> — ${args.price} ${symbol} עבור ה${newCycleWord} הבא. תוכל לבטל בכל עת מ-<a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/account</a>.
+        החיוב הבא יתבצע ב-<strong>${nextChargeStr}</strong>: ${args.price} ${symbol} עבור ה${newCycleWord} הבא. תוכל לבטל בכל עת מ-<a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/account</a>.
       </div>
       <h3 style="font-size:14px;margin:0 0 8px;color:#F5EFE6;font-weight:600;">המפתח שלך</h3>
       <p style="font-size:12px;line-height:1.6;margin:0 0 10px;color:#8B8170;">
-        אותו מפתח נשאר — אין צורך להזין משהו חדש בתוכנה.
+        אותו מפתח נשאר, אין צורך להזין משהו חדש בתוכנה.
       </p>
       <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:16px;margin:0 0 22px;">
         <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:18px;color:#D4A574;letter-spacing:0.08em;font-weight:700;">${args.key}</div>
@@ -5260,7 +5260,7 @@ async function sendPlanSwitchEmail(args: {
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: `${titleEmoji} עברת ל${newPlanLabelLong} — ניהול הורדות פלוס`,
+    subject: `${titleEmoji} עברת ל${newPlanLabelLong} · ניהול הורדות פלוס`,
     html,
   })
 }
@@ -5335,14 +5335,14 @@ async function sendProActivatedEmail(args: {
         <a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/account</a>.
       </p>
       <p style="font-size:11px;line-height:1.6;margin:14px 0 0;color:#5C5444;">
-        בכל בעיה — תשובה ישירה למייל הזה תגיע לתמיכה.
+        בכל בעיה אפשר להשיב ישירות למייל הזה, וההודעה תגיע לתמיכה.
       </p>
     `,
   })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: '✓ החשבון שלך פעיל — ניהול הורדות פלוס Pro',
+    subject: '✓ החשבון שלך פעיל · ניהול הורדות פלוס Pro',
     html,
   })
 }
@@ -5404,21 +5404,21 @@ async function sendCancellationEmail(args: {
         </div>
       </div>
       <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
-        <strong>אין החזר על תקופות ששולמו</strong> — מאחר שמדובר במוצר דיגיטלי שניתן לשימוש מיידי, אין מדיניות החזרים על תקופות שכבר חויבו ושולמו (תואם תנאי השימוש שאישרת בעת הרישום).
+        <strong>אין החזר על תקופות ששולמו</strong>. מאחר שמדובר במוצר דיגיטלי שניתן לשימוש מיידי, אין מדיניות החזרים על תקופות שכבר חויבו ושולמו (תואם תנאי השימוש שאישרת בעת הרישום).
       </p>
       <p style="font-size:12px;line-height:1.7;margin:18px 0 0;color:#C9BFA8;">
         משנים את דעתכם? אפשר להירשם מחדש בכל עת ב-
         <a href="${WEBSITE_BASE}/buy" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/buy</a>.
       </p>
       <p style="font-size:11px;line-height:1.6;margin:14px 0 0;color:#5C5444;">
-        בכל בעיה — תשובה ישירה למייל הזה תגיע לתמיכה.
+        בכל בעיה אפשר להשיב ישירות למייל הזה, וההודעה תגיע לתמיכה.
       </p>
     `,
   })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: 'אישור ביטול מנוי — ניהול הורדות פלוס',
+    subject: 'אישור ביטול מנוי · ניהול הורדות פלוס',
     html,
   })
 }
@@ -5466,7 +5466,7 @@ async function sendPaymentFailedEmail(args: {
         <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה ל-Pro פעילה עד</div>
         <div style="font-size:18px;color:#F5EFE6;font-weight:600;">${validUntilStr}</div>
         <div style="margin-top:10px;font-size:11px;line-height:1.6;color:#8B8170;">
-          PayPal ינסה שוב באופן אוטומטי. אם גם הניסיון הבא ייכשל — המנוי יושעה והגישה תיפסק.
+          PayPal ינסה שוב באופן אוטומטי. אם גם הניסיון הבא ייכשל, המנוי יושעה והגישה תיפסק.
         </div>
       </div>
       <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
@@ -5489,7 +5489,7 @@ async function sendPaymentFailedEmail(args: {
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: '⚠ עדכון אמצעי תשלום נדרש — ניהול הורדות פלוס',
+    subject: '⚠ עדכון אמצעי תשלום נדרש · ניהול הורדות פלוס',
     html,
   })
 }
@@ -5533,7 +5533,7 @@ async function sendRenewalEmail(args: {
     heading: '✓ המנוי שלך חודש',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
-        החיוב התקופתי עבור <strong>ניהול הורדות פלוס Pro</strong> בוצע בהצלחה, והמנוי ה${planLabel} שלך חודש אוטומטית. אין צורך לעשות דבר — הגישה ממשיכה ברצף מלא.
+        החיוב התקופתי עבור <strong>ניהול הורדות פלוס Pro</strong> בוצע בהצלחה, והמנוי ה${planLabel} שלך חודש אוטומטית. אין צורך לעשות דבר, הגישה ממשיכה ברצף מלא.
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:18px;margin:0 0 22px;">
         <div style="font-size:13px;line-height:1.85;color:#C9BFA8;">
@@ -5541,7 +5541,7 @@ async function sendRenewalEmail(args: {
             ✓ <strong>חויבת ב-${args.price} ${symbol}</strong> עבור ה${cycleWord} הקרוב
           </div>
           <div>
-            ✓ <strong>המנוי ה${planLabel} חודש</strong> — הגישה נמשכת ללא הפסקה
+            ✓ <strong>המנוי ה${planLabel} חודש</strong>, הגישה נמשכת ללא הפסקה
           </div>
         </div>
       </div>
@@ -5552,7 +5552,7 @@ async function sendRenewalEmail(args: {
       </div>
       <h3 style="font-size:14px;margin:0 0 8px;color:#F5EFE6;font-weight:600;">המפתח שלך</h3>
       <p style="font-size:12px;line-height:1.6;margin:0 0 10px;color:#8B8170;">
-        אותו מפתח נשאר — אין צורך להזין משהו חדש בתוכנה.
+        אותו מפתח נשאר, אין צורך להזין משהו חדש בתוכנה.
       </p>
       <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:16px;margin:0 0 22px;">
         <div dir="ltr" style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:18px;color:#D4A574;letter-spacing:0.08em;font-weight:700;">${args.key}</div>
@@ -5568,7 +5568,7 @@ async function sendRenewalEmail(args: {
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: `✓ המנוי ה${planLabel} שלך חודש — ניהול הורדות פלוס`,
+    subject: `✓ המנוי ה${planLabel} שלך חודש · ניהול הורדות פלוס`,
     html,
   })
 }
@@ -5733,7 +5733,7 @@ async function handleSignupRequestCode(req: VercelRequest, res: VercelResponse) 
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: email,
-    subject: `קוד אימות: ${code} — ניהול הורדות פלוס`,
+    subject: `קוד אימות: ${code} · ניהול הורדות פלוס`,
     html,
     text: `קוד האימות שלך: ${code}\nתקף ל-15 דקות.`,
   })
@@ -5795,7 +5795,7 @@ async function handleSignupVerifyCode(req: VercelRequest, res: VercelResponse) {
   >(async (txn) => {
     const snap = await txn.get(ref)
     if (!snap.exists) {
-      return { ok: false, status: 400, error: 'קוד פג תוקף — בקש קוד חדש' }
+      return { ok: false, status: 400, error: 'קוד פג תוקף. בקש קוד חדש' }
     }
     const data = snap.data() as {
       email?: string
@@ -5814,7 +5814,7 @@ async function handleSignupVerifyCode(req: VercelRequest, res: VercelResponse) {
     }
     if (typeof data.expiresAt !== 'number' || data.expiresAt < Date.now()) {
       txn.delete(ref)
-      return { ok: false, status: 400, error: 'קוד פג תוקף — בקש קוד חדש' }
+      return { ok: false, status: 400, error: 'קוד פג תוקף. בקש קוד חדש' }
     }
     if (data.codeHash !== submittedHash) {
       txn.update(ref, { attempts: attempts + 1 })
@@ -6002,14 +6002,14 @@ async function handleVerifyExistingRequestCode(
         <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#D4A574;">${code}</div>
       </div>
       <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
-        הקוד תקף ל-15 דקות. אם לא ביקשת אותו, יש לפנות לתמיכה — ייתכן שמישהו מנסה להיכנס לחשבון שלך.
+        הקוד תקף ל-15 דקות. אם לא ביקשת אותו, יש לפנות לתמיכה, ייתכן שמישהו מנסה להיכנס לחשבון שלך.
       </p>
     `,
   })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: email,
-    subject: `קוד אימות: ${code} — ניהול הורדות פלוס`,
+    subject: `קוד אימות: ${code} · ניהול הורדות פלוס`,
     html,
     text: `קוד אימות לחשבון שלך: ${code}\nתקף ל-15 דקות.`,
   })
@@ -6057,7 +6057,7 @@ async function handleVerifyExistingConfirmCode(
   >(async (txn) => {
     const snap = await txn.get(ref)
     if (!snap.exists) {
-      return { ok: false, status: 400, error: 'קוד פג תוקף — בקש קוד חדש' }
+      return { ok: false, status: 400, error: 'קוד פג תוקף. בקש קוד חדש' }
     }
     const data = snap.data() as {
       email?: string
@@ -6075,7 +6075,7 @@ async function handleVerifyExistingConfirmCode(
       return {
         ok: false,
         status: 400,
-        error: 'הקוד לא משוייך לחשבון הזה — בקש קוד חדש',
+        error: 'הקוד לא משוייך לחשבון הזה. בקש קוד חדש',
       }
     }
     const attempts = typeof data.attempts === 'number' ? data.attempts : 0
@@ -6089,7 +6089,7 @@ async function handleVerifyExistingConfirmCode(
     }
     if (typeof data.expiresAt !== 'number' || data.expiresAt < Date.now()) {
       txn.delete(ref)
-      return { ok: false, status: 400, error: 'קוד פג תוקף — בקש קוד חדש' }
+      return { ok: false, status: 400, error: 'קוד פג תוקף. בקש קוד חדש' }
     }
     if (data.codeHash !== submittedHash) {
       txn.update(ref, { attempts: attempts + 1 })
@@ -6255,7 +6255,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
   switch (kind) {
     case 'welcome-subscription':
       return {
-        subject: '[בדיקה] המנוי שלך פעיל — ניהול הורדות פלוס Pro',
+        subject: '[בדיקה] המנוי שלך פעיל · ניהול הורדות פלוס Pro',
         html: renderEmail({
           heading: 'ברוך הבא ל-Pro 🎉',
           contentHtml: `
@@ -6281,7 +6281,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'pro-activated':
       return {
-        subject: '[בדיקה] ✓ החשבון שלך פעיל — ניהול הורדות פלוס Pro',
+        subject: '[בדיקה] ✓ החשבון שלך פעיל · ניהול הורדות פלוס Pro',
         html: renderEmail({
           heading: '✓ החשבון שלך עכשיו Pro',
           contentHtml: `
@@ -6315,7 +6315,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'cancellation':
       return {
-        subject: '[בדיקה] אישור ביטול מנוי — ניהול הורדות פלוס',
+        subject: '[בדיקה] אישור ביטול מנוי · ניהול הורדות פלוס',
         html: renderEmail({
           heading: 'המנוי שלך בוטל',
           contentHtml: `
@@ -6330,7 +6330,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
               </div>
             </div>
             <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
-              <strong>אין החזר על תקופות ששולמו</strong> — מאחר שמדובר במוצר דיגיטלי שניתן לשימוש מיידי, אין מדיניות החזרים על תקופות שכבר חויבו ושולמו.
+              <strong>אין החזר על תקופות ששולמו</strong>. מאחר שמדובר במוצר דיגיטלי שניתן לשימוש מיידי, אין מדיניות החזרים על תקופות שכבר חויבו ושולמו.
             </p>
             <p style="font-size:12px;line-height:1.7;margin:18px 0 0;color:#C9BFA8;">
               משנים את דעתכם? אפשר להירשם מחדש בכל עת ב-
@@ -6341,7 +6341,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'verify-signup':
       return {
-        subject: '[בדיקה] קוד אימות: 123456 — ניהול הורדות פלוס',
+        subject: '[בדיקה] קוד אימות: 123456 · ניהול הורדות פלוס',
         html: renderEmail({
           heading: 'קוד האימות שלך',
           contentHtml: `
@@ -6377,7 +6377,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'reset-password':
       return {
-        subject: '[בדיקה] איפוס סיסמה — ניהול הורדות פלוס',
+        subject: '[בדיקה] איפוס סיסמה · ניהול הורדות פלוס',
         html: renderEmail({
           heading: 'איפוס סיסמה',
           contentHtml: `
@@ -6460,9 +6460,9 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'annual-report':
       return {
-        subject: '[בדיקה] סיכום חיובים שנתי — 2025',
+        subject: '[בדיקה] סיכום חיובים שנתי · 2025',
         html: renderEmail({
-          heading: 'סיכום חיובים שנתי — 2025',
+          heading: 'סיכום חיובים שנתי · 2025',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
               [תצוגת בדיקה] ריכוז כל החיובים שבוצעו על המנוי שלך במהלך 2025.
@@ -6488,7 +6488,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'payment-failed':
       return {
-        subject: '[בדיקה] ⚠️ חיוב המנוי נכשל — נדרשת פעולה',
+        subject: '[בדיקה] ⚠️ חיוב המנוי נכשל · נדרשת פעולה',
         html: renderEmail({
           heading: '⚠️ לא הצלחנו לחייב את המנוי',
           contentHtml: `
@@ -6508,7 +6508,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'plan-switch':
       return {
-        subject: '[בדיקה] ⬆️ עברת למסלול שנתי — ניהול הורדות פלוס',
+        subject: '[בדיקה] ⬆️ עברת למסלול שנתי · ניהול הורדות פלוס',
         html: renderEmail({
           heading: '⬆️ עברת למסלול שנתי',
           contentHtml: `
@@ -6529,9 +6529,9 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'purge-warning-subscription':
       return {
-        subject: '[בדיקה] ⚠️ הגישה הסתיימה — סבבי התיקונים יימחקו בעוד 14 ימים',
+        subject: '[בדיקה] ⚠️ הגישה הסתיימה · סבבי התיקונים יימחקו בעוד 14 ימים',
         html: renderEmail({
-          heading: '⚠️ הגישה הסתיימה — סבבי התיקונים יימחקו בקרוב',
+          heading: '⚠️ הגישה הסתיימה · סבבי התיקונים יימחקו בקרוב',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
               [תצוגת בדיקה] המנוי שלך ל-<strong>ניהול הורדות פלוס</strong> הסתיים, ואין יותר גישה לסבבי התיקונים שהעלית.
@@ -6545,16 +6545,16 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
               </td></tr>
             </table>
             <p style="font-size:12px;margin:0;color:#5C5444;">
-              לא רוצים להמשיך? אין צורך לעשות דבר — סבבי התיקונים יימחקו אוטומטית בתאריך הנ"ל.
+              לא רוצים להמשיך? אין צורך לעשות דבר, סבבי התיקונים יימחקו אוטומטית בתאריך הנ"ל.
             </p>
           `,
         }),
       }
     case 'purge-warning-trial':
       return {
-        subject: '[בדיקה] ⚠️ הניסיון הסתיים — סבבי התיקונים יימחקו בעוד 14 ימים',
+        subject: '[בדיקה] ⚠️ הניסיון הסתיים · סבבי התיקונים יימחקו בעוד 14 ימים',
         html: renderEmail({
-          heading: '⚠️ הגישה הסתיימה — סבבי התיקונים יימחקו בקרוב',
+          heading: '⚠️ הגישה הסתיימה · סבבי התיקונים יימחקו בקרוב',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
               [תצוגת בדיקה] תקופת הניסיון שלך ל-<strong>ניהול הורדות פלוס</strong> הסתיימה, ואין יותר גישה לסבבי התיקונים שהעלית.
@@ -6568,7 +6568,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
               </td></tr>
             </table>
             <p style="font-size:12px;margin:0;color:#5C5444;">
-              לא רוצים להמשיך? אין צורך לעשות דבר — סבבי התיקונים יימחקו אוטומטית בתאריך הנ"ל.
+              לא רוצים להמשיך? אין צורך לעשות דבר, סבבי התיקונים יימחקו אוטומטית בתאריך הנ"ל.
             </p>
           `,
         }),
@@ -6650,15 +6650,15 @@ async function handleAdminTestSumit(req: VercelRequest, res: VercelResponse) {
   if (!sumitConfigured()) {
     return res.status(400).json({
       ok: false,
-      error: 'SUMIT לא מוגדר — חסר SUMIT_COMPANY_ID / SUMIT_API_KEY ב-env',
+      error: 'SUMIT לא מוגדר: חסר SUMIT_COMPANY_ID / SUMIT_API_KEY ב-env',
     })
   }
 
   const recipient = targetEmail || email
   const receipt = await issueSumitReceipt({
-    customerName: 'בדיקה — לקוח לדוגמה',
+    customerName: 'בדיקה · לקוח לדוגמה',
     customerEmail: recipient,
-    description: 'ניהול הורדות פלוס — מנוי חודשי (בדיקה)',
+    description: 'ניהול הורדות פלוס · מנוי חודשי (בדיקה)',
     amount: 9,
     currency: 'ILS',
   })
@@ -6673,7 +6673,7 @@ async function handleAdminTestSumit(req: VercelRequest, res: VercelResponse) {
         url: receipt.url,
         amount: 9,
         currency: 'ILS',
-        description: 'ניהול הורדות פלוס — מנוי חודשי (בדיקה)',
+        description: 'ניהול הורדות פלוס · מנוי חודשי (בדיקה)',
         draft: receipt.draft,
       })
       emailed = true
@@ -6691,7 +6691,7 @@ async function handleAdminTestSumit(req: VercelRequest, res: VercelResponse) {
           email: recipient,
           amount: 9,
           currency: 'ILS',
-          description: 'ניהול הורדות פלוס — מנוי חודשי (בדיקה)',
+          description: 'ניהול הורדות פלוס · מנוי חודשי (בדיקה)',
           documentNumber: receipt.documentNumber ?? null,
           url: receipt.url,
           draft: receipt.draft,
@@ -9037,7 +9037,7 @@ async function handleSyscheckReport(req: VercelRequest, res: VercelResponse) {
   }
   // Single-use: once a check has been reported the link is dead.
   if (data.used || data.status === 'done') {
-    return res.status(409).json({ ok: false, error: 'הקוד כבר נוצל — בקש קישור חדש' })
+    return res.status(409).json({ ok: false, error: 'הקוד כבר נוצל. בקש קישור חדש' })
   }
   // Cap the stored payload defensively (results is a small array).
   const results = Array.isArray(body.results) ? body.results.slice(0, 60) : []
@@ -9942,8 +9942,8 @@ async function handleAdminSetAppConfig(
     primeKillCache(body.killSwitch)
     await sendTelegramAlert(
       body.killSwitch
-        ? '🟠 מצב תחזוקה (Kill-switch) הופעל ידנית — האתר והתוכנה חסומים למשתמשים.'
-        : '✅ מצב תחזוקה (Kill-switch) כובה — השירות חזר לפעול.',
+        ? '🟠 מצב תחזוקה (Kill-switch) הופעל ידנית. האתר והתוכנה חסומים למשתמשים.'
+        : '✅ מצב תחזוקה (Kill-switch) כובה. השירות חזר לפעול.',
     )
   }
   // If the backup cadence changed, push the matching schedule to the
@@ -11534,7 +11534,7 @@ async function handleAdminUploadPopupImage(
   if (buf.length > 4 * 1024 * 1024) {
     return res
       .status(400)
-      .json({ ok: false, error: 'התמונה גדולה מדי — מקסימום 4MB' })
+      .json({ ok: false, error: 'התמונה גדולה מדי. מקסימום 4MB' })
   }
   const contentType = m ? m[1] : 'image/png'
   const ext = (contentType.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '')
@@ -11706,7 +11706,7 @@ async function handleSubmitContact(req: VercelRequest, res: VercelResponse) {
   if (contactThrottled(ip)) {
     return res
       .status(429)
-      .json({ ok: false, error: 'יותר מדי פניות — נסו שוב מאוחר יותר' })
+      .json({ ok: false, error: 'יותר מדי פניות. נסו שוב מאוחר יותר' })
   }
   const name = String(b.name || '').trim().slice(0, 120)
   const email = String(b.email || '').trim().toLowerCase().slice(0, 200)
@@ -11828,7 +11828,7 @@ async function sendContactReplyEmail(args: {
       ${
         args.originalMessage
           ? `<div style="font-size:12px;color:#8B8170;border-top:1px solid rgba(139,129,112,0.25);padding-top:14px;">
-               <div style="margin-bottom:6px;">הפנייה המקורית שלך${args.originalSubject ? ' — ' + esc(args.originalSubject) : ''}:</div>
+               <div style="margin-bottom:6px;">הפנייה המקורית שלך${args.originalSubject ? ': ' + esc(args.originalSubject) : ''}:</div>
                <div style="color:#9A8F7A;line-height:1.7;">${origHtml}</div>
              </div>`
           : ''
@@ -11842,7 +11842,7 @@ async function sendContactReplyEmail(args: {
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
     replyTo: user,
-    subject: `תשובה לפנייתך — ניהול הורדות פלוס${args.originalSubject ? ' · ' + args.originalSubject : ''}`,
+    subject: `תשובה לפנייתך · ניהול הורדות פלוס${args.originalSubject ? ' · ' + args.originalSubject : ''}`,
     html,
   })
 }
@@ -11948,14 +11948,14 @@ async function handleAdmin2faRequest(req: VercelRequest, res: VercelResponse) {
         <div style="font-size:36px;letter-spacing:8px;font-weight:700;font-family:ui-monospace,monospace;color:#D4A574;">${code}</div>
       </div>
       <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
-        הקוד תקף ל-10 דקות. אם זה לא אתה — מישהו יודע את הסיסמה שלך; החלף אותה מיד.
+        הקוד תקף ל-10 דקות. אם זה לא אתה, מישהו יודע את הסיסמה שלך; החלף אותה מיד.
       </p>
     `,
   })
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: email,
-    subject: `קוד כניסה לאדמין: ${code} — ניהול הורדות פלוס`,
+    subject: `קוד כניסה לאדמין: ${code} · ניהול הורדות פלוס`,
     html,
     text: `קוד הכניסה לפאנל הניהול: ${code}\nתקף ל-10 דקות.`,
   })
@@ -12430,7 +12430,7 @@ async function handleAdminCreateReferral(
     if (taken) {
       return res
         .status(409)
-        .json({ ok: false, error: 'הקוד הזה כבר תפוס — בחרו קוד אחר' })
+        .json({ ok: false, error: 'הקוד הזה כבר תפוס. בחרו קוד אחר' })
     }
     code = requestedCode
   } else {
@@ -12860,7 +12860,7 @@ async function handleAdminCasualReport(
       at: r.at,
       email: r.email,
       name: r.name,
-      description: 'ניהול הורדות פלוס — מנוי',
+      description: 'ניהול הורדות פלוס · מנוי',
       currency: r.currency,
       gross: round2(r.gross),
       vat: round2(r.gross - net),

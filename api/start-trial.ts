@@ -114,7 +114,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.warn('start-trial: token verification failed', err)
       return res
         .status(401)
-        .json({ ok: false, error: 'אימות נכשל — התחברו מחדש ונסו שוב' })
+        .json({ ok: false, error: 'אימות נכשל. התחברו מחדש ונסו שוב' })
     }
 
     const uid = decoded.uid

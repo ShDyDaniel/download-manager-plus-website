@@ -613,7 +613,7 @@ function UserRow({
           <button
             type="button"
             onClick={() => onOpenStorage(user.uid, user.email, user.name)}
-            title="הצג קבצי אחסון — לחץ לצפייה ומחיקה"
+            title="הצג קבצי אחסון · לחץ לצפייה ומחיקה"
             className="flex w-full items-center gap-2 rounded-md py-0.5 text-right transition-opacity hover:opacity-80"
           >
             <HardDrive
@@ -742,7 +742,7 @@ function UserRow({
             <div className="space-y-1">
               <div className="font-semibold">מחיקת משתמש לצמיתות</div>
               <p className="text-[11px] leading-relaxed text-fg-muted">
-                פעולה זו תמחק את המשתמש ואת כל המידע שלו מכל המערכות — חשבון,
+                פעולה זו תמחק את המשתמש ואת כל המידע שלו מכל המערכות: חשבון,
                 מפתחות ומנויים, סבבי תיקונים והקבצים שלהם, טביעות ניסיון
                 והחשבון עצמו. מנוי פעיל בפייפאל יבוטל. רשומות מס נשמרות כחוק.
                 אי אפשר לבטל.
@@ -1136,7 +1136,7 @@ function UserStorageModal({
                                 type="button"
                                 onClick={() => del(it, true)}
                                 disabled={isDeleting}
-                                title="מוחק לגמרי — גם מהתוכנה של המשתמש, בלי להשאיר רשומה ריקה"
+                                title="מוחק לגמרי · גם מהתוכנה של המשתמש, בלי להשאיר רשומה ריקה"
                                 className="flex items-center gap-1 rounded-md bg-destructive px-2.5 py-1 text-[11px] font-medium text-white hover:bg-destructive/90 disabled:opacity-60"
                               >
                                 {isDeleting ? (

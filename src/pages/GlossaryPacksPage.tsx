@@ -48,7 +48,7 @@ export function GlossaryPacksPage() {
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-lg leading-relaxed text-muted-foreground">
             מנוע תמלול גנרי לא מכיר את המונחים של התחום שלכם, ולכן הוא מנחש
-            אותם לפי הצליל — ושם נופלות רוב השגיאות. חבילה היא רשימה מתוחזקת
+            אותם לפי הצליל, ושם נופלות רוב השגיאות. חבילה היא רשימה מתוחזקת
             של שמות ומונחים; הפעלה אחת בתוכנה, וכל התמלולים הבאים מכירים אותם.
           </p>
         </motion.div>
@@ -138,7 +138,7 @@ export function GlossaryPacksPage() {
           <ol className="mt-4 space-y-3 text-sm text-muted-foreground">
             {[
               'פותחים בתוכנה את הטאב "תמלול חכם".',
-              'לוחצים כאן על "הוספה לתוכנה" — או, בתוך התוכנה, על "מתקדם" ואז על הכפתור "קטגוריה".',
+              'לוחצים כאן על "הוספה לתוכנה", או, בתוך התוכנה, על "מתקדם" ואז על הכפתור "קטגוריה".',
               'הקטגוריה מופיעה כתגית אחת במילון האישי, בלי למלא אותו במאות מונחים.',
             ].map((step, i) => (
               <li key={i} className="flex gap-3">
@@ -152,7 +152,7 @@ export function GlossaryPacksPage() {
           <p className="mt-4 flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
             <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
             הקטגוריות מתעדכנות מהשרת. כשמונח נוסף או מתוקן ברשימה, הוא מגיע
-            אליכם אוטומטית — בלי להוסיף את הקטגוריה מחדש.
+            אליכם אוטומטית, בלי להוסיף את הקטגוריה מחדש.
           </p>
         </div>
 

@@ -106,7 +106,7 @@ function SignedOutOauthSuccess() {
         </div>
         <h1 className="mb-3 text-xl font-medium text-fg">ה-Drive מחובר</h1>
         <p className="text-sm leading-relaxed text-fg-muted">
-          אפשר לסגור את החלון הזה ולחזור לחלון של סבבי התיקונים — הוא
+          אפשר לסגור את החלון הזה ולחזור לחלון של סבבי התיקונים. הוא
           יזהה את החיבור תוך שניות.
         </p>
       </div>
