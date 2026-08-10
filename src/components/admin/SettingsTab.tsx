@@ -30,6 +30,13 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Switch } from '@/components/ui/Switch'
 import { cn } from '@/lib/cn'
+import {
+  BlockBuilder,
+  blocksToHtml,
+  ensureFontsLoaded,
+  newBlockId,
+  type Block,
+} from './blockBuilder'
 
 /**
  * Admin → Settings (web). Beta mode, plan mode, terms + privacy
@@ -772,11 +779,49 @@ function popupDriveDirect(url: string): string {
   return u
 }
 
+/** Build the editor's block list from a stored popup. Prefers the saved
+ *  `blocksJson`; falls back to migrating a legacy title/body popup into a
+ *  heading + paragraph so nothing is lost when moving to the rich builder. */
+function loadBlocks(
+  blocksJson?: string,
+  title?: string,
+  body?: string,
+): Block[] {
+  try {
+    if (blocksJson) {
+      const parsed = JSON.parse(blocksJson) as Block[]
+      if (Array.isArray(parsed) && parsed.length) {
+        // Fresh ids so React keys never collide across reloads.
+        return parsed.map((b) => ({ ...b, id: newBlockId() }) as Block)
+      }
+    }
+  } catch {
+    /* fall through to legacy migration */
+  }
+  const seed: Block[] = []
+  if (title && title.trim())
+    seed.push({ id: newBlockId(), type: 'heading', text: title.trim() })
+  if (body && body.trim())
+    seed.push({
+      id: newBlockId(),
+      type: 'paragraph',
+      html: body
+        .trim()
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\n/g, '<br/>'),
+    })
+  return seed
+}
+
 function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [loading, setLoading] = useState(true)
   const [enabled, setEnabled] = useState(false)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
+  // Rich content — the same visual block builder the newsletter uses.
+  const [blocks, setBlocks] = useState<Block[]>([])
   const [imageSource, setImageSource] = useState<'none' | 'r2' | 'drive'>('none')
   const [imageKey, setImageKey] = useState('')
   const [driveUrl, setDriveUrl] = useState('')
@@ -791,6 +836,7 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
+    ensureFontsLoaded()
     void (async () => {
       try {
         const r = await fetch('/api/paypal?action=get-popup', {
@@ -810,6 +856,7 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
             target?: 'web' | 'desktop' | 'both'
             size?: 'small' | 'medium' | 'large'
             linkUrl?: string
+            blocksJson?: string
           }
         }
         const p = j.popup || {}
@@ -823,6 +870,10 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
         if (p.target) setTarget(p.target)
         if (p.size) setSize(p.size)
         setLinkUrl(p.linkUrl || '')
+        // Rich content: prefer the saved blocks; else migrate an older
+        // title/body popup into an equivalent heading + paragraph so it
+        // stays editable in the new builder.
+        setBlocks(loadBlocks(p.blocksJson, p.title, p.body))
       } catch {
         /* ignore */
       } finally {
@@ -874,6 +925,11 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
         enabled,
         title: title.trim(),
         body: body.trim(),
+        // Rich content: the source of truth for editing (blocksJson) plus
+        // the pre-rendered HTML the popup actually displays (bodyHtml), so
+        // consumers never need the block model itself.
+        blocksJson: JSON.stringify(blocks),
+        bodyHtml: blocksToHtml(blocks),
         imageSource,
         imageKey,
         driveUrl: driveUrl.trim(),
@@ -899,6 +955,11 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
       : imageSource === 'drive'
         ? popupDriveDirect(driveUrl)
         : ''
+
+  // Rendered content for the live preview — identical to what the popup
+  // will actually display. The Google-fonts link is injected once so
+  // custom font choices render true here too.
+  const contentHtml = blocksToHtml(blocks)
 
   const SOURCES = [
     { v: 'none', label: 'בלי תמונה' },
@@ -986,27 +1047,17 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
             )}
           </div>
 
-          {/* Title + body */}
+          {/* Content — the same visual block builder used for emails:
+              styled text, headings, buttons, links, images, dividers. */}
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">
-              כותרת (אפשר להשאיר ריק)
-            </label>
-            <Input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="כותרת הפופאפ"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">
-              טקסט (אפשר להשאיר ריק)
-            </label>
-            <textarea
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              rows={3}
-              placeholder="טקסט שמופיע מתחת לכותרת"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-fg outline-none focus:border-primary"
+            <div className="mb-1.5 text-xs text-muted-foreground">
+              תוכן הפופאפ (טקסט מעוצב, כותרות, כפתורים, קישורים, תמונות)
+            </div>
+            <BlockBuilder
+              blocks={blocks}
+              onBlocksChange={setBlocks}
+              disabled={saving}
+              emptyHint="עדיין אין תוכן. הוסיפו בלוק ראשון מהכפתורים למטה."
             />
           </div>
 
@@ -1077,10 +1128,11 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
             </div>
           </div>
 
-          {/* Live preview */}
+          {/* Live preview — exactly how the popup card will look. The dark
+              surface matches the real popup so brand colours read true. */}
           <div>
             <div className="mb-1.5 text-xs text-muted-foreground">תצוגה מקדימה</div>
-            <div className="overflow-hidden rounded-xl border border-border bg-background">
+            <div className="overflow-hidden rounded-xl border border-border bg-[#2A211A]">
               {previewImg ? (
                 <img
                   src={previewImg}
@@ -1088,19 +1140,14 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
                   className="max-h-48 w-full object-contain"
                 />
               ) : null}
-              {(title || body) && (
-                <div className="p-4 text-center">
-                  {title && (
-                    <div className="text-base font-bold text-fg">{title}</div>
-                  )}
-                  {body && (
-                    <div className="mt-1 text-sm text-fg-muted whitespace-pre-line">
-                      {body}
-                    </div>
-                  )}
-                </div>
-              )}
-              {!previewImg && !title && !body && (
+              {contentHtml ? (
+                <div
+                  dir="rtl"
+                  className="p-5"
+                  dangerouslySetInnerHTML={{ __html: contentHtml }}
+                />
+              ) : null}
+              {!previewImg && !contentHtml && (
                 <div className="p-6 text-center text-xs text-fg-faint">
                   אין תוכן עדיין
                 </div>

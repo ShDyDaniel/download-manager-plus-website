@@ -9,11 +9,27 @@ interface Popup {
   id: string
   title: string
   body: string
+  /** Rich content rendered from the admin block builder (styled text,
+   *  headings, buttons, links, images). Preferred over title/body. */
+  bodyHtml?: string
   imageUrl: string
   frequency: 'always' | 'daily' | 'once'
   target: 'web' | 'desktop' | 'both'
   size?: 'small' | 'medium' | 'large'
   linkUrl?: string
+}
+
+/** Google-fonts link so the block builder's font choices render on the
+ *  popup too. Injected once, lazily. */
+let popupFontsInjected = false
+function ensurePopupFonts() {
+  if (popupFontsInjected || typeof document === 'undefined') return
+  popupFontsInjected = true
+  const link = document.createElement('link')
+  link.rel = 'stylesheet'
+  link.href =
+    'https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&family=Assistant:wght@400;600;700&family=Heebo:wght@400;700&family=Varela+Round&family=Secular+One&family=Frank+Ruhl+Libre:wght@400;500;700&family=Suez+One&family=Bellefair&family=Miriam+Libre:wght@400;700&family=Alef:wght@400;700&display=swap'
+  document.head.appendChild(link)
 }
 
 const SIZE_MAX_W: Record<'small' | 'medium' | 'large', string> = {
@@ -25,7 +41,7 @@ const SIZE_MAX_W: Record<'small' | 'medium' | 'large', string> = {
 function shouldShow(p: Popup): boolean {
   if (!p.enabled || !p.id) return false
   if (p.target !== 'web' && p.target !== 'both') return false
-  if (!p.title && !p.body && !p.imageUrl) return false
+  if (!p.title && !p.body && !p.bodyHtml && !p.imageUrl) return false
   try {
     if (p.frequency === 'always') return true
     const key = `dmplus.popup.${p.id}`
@@ -55,6 +71,7 @@ export function SitePopup() {
   const [open, setOpen] = useState(false)
 
   useEffect(() => {
+    ensurePopupFonts()
     let alive = true
     void (async () => {
       try {
@@ -81,7 +98,7 @@ export function SitePopup() {
   }, [])
 
   if (!open || !popup) return null
-  const { title, body, imageUrl, linkUrl } = popup
+  const { title, body, bodyHtml, imageUrl, linkUrl } = popup
   const maxW = SIZE_MAX_W[popup.size || 'medium']
   const isExternal = /^https?:\/\//i.test(linkUrl || '')
   const img = imageUrl ? (
@@ -123,15 +140,23 @@ export function SitePopup() {
         ) : (
           img
         )}
-        {(title || body) && (
-          <div className="p-5 text-center">
-            {title && <div className="text-lg font-bold text-fg">{title}</div>}
-            {body && (
-              <div className="mt-2 whitespace-pre-line text-sm leading-relaxed text-fg-muted">
-                {body}
-              </div>
-            )}
-          </div>
+        {bodyHtml ? (
+          <div
+            dir="rtl"
+            className="p-5"
+            dangerouslySetInnerHTML={{ __html: bodyHtml }}
+          />
+        ) : (
+          (title || body) && (
+            <div className="p-5 text-center">
+              {title && <div className="text-lg font-bold text-fg">{title}</div>}
+              {body && (
+                <div className="mt-2 whitespace-pre-line text-sm leading-relaxed text-fg-muted">
+                  {body}
+                </div>
+              )}
+            </div>
+          )
         )}
       </div>
     </div>

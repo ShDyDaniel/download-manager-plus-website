@@ -11491,6 +11491,8 @@ async function handleGetPopup(req: VercelRequest, res: VercelResponse) {
         id: String(d.id || ''),
         title,
         body: String(d.body || ''),
+        blocksJson: String(d.blocksJson || ''),
+        bodyHtml: String(d.bodyHtml || ''),
         imageUrl,
         imageSource,
         driveUrl,
@@ -11559,6 +11561,8 @@ async function handleAdminSetPopup(req: VercelRequest, res: VercelResponse) {
     enabled?: boolean
     title?: string
     body?: string
+    blocksJson?: string
+    bodyHtml?: string
     imageSource?: string
     imageKey?: string
     driveUrl?: string
@@ -11571,6 +11575,9 @@ async function handleAdminSetPopup(req: VercelRequest, res: VercelResponse) {
     enabled: b.enabled === true,
     title: String(b.title || '').slice(0, 300),
     body: String(b.body || '').slice(0, 3000),
+    // Rich content: the block source (for editing) + rendered HTML (shown).
+    blocksJson: String(b.blocksJson || '').slice(0, 60000),
+    bodyHtml: String(b.bodyHtml || '').slice(0, 60000),
     imageSource: ['none', 'r2', 'drive'].includes(String(b.imageSource))
       ? b.imageSource
       : 'none',
