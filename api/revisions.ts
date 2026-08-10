@@ -7616,6 +7616,205 @@ async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+ *  Free-tier transcription weekly quota
+ *
+ *  Transcription runs entirely on the user's machine, so enforcement is
+ *  best-effort — but the ACCOUNTING is server-side and server-timed, so
+ *  casual bypass (clock change, localStorage edit, reinstall) doesn't
+ *  work. Pro users are unlimited. Free users get `freeTranscriptionWeeklySec`
+ *  (appConfig/global, default 300s = 5 min) per rolling 7-day window.
+ *
+ *  Flow: the client asks for a GRANT of up to N seconds (reserved
+ *  immediately), transcribes at most that, then SETTLES with the actual
+ *  seconds used — unused seconds are refunded (e.g. a canceled run).
+ *  A grant doc bounds the refund so a client can't "refund" more than it
+ *  received. Reserved-but-never-settled seconds free up on the next weekly
+ *  roll (≤7 days) — acceptable for a free tier.
+ * ───────────────────────────────────────────────────────────────────── */
+const TRANSCRIPTION_WEEK_MS = 7 * 24 * 60 * 60 * 1000
+const DEFAULT_FREE_TRANSCRIPTION_SEC = 300
+
+async function freeWeeklyTranscriptionSec(): Promise<number> {
+  try {
+    const snap = await getDb().collection('appConfig').doc('global').get()
+    const v = snap.exists
+      ? Number((snap.data() as Record<string, unknown>)?.freeTranscriptionWeeklySec)
+      : NaN
+    if (Number.isFinite(v) && v >= 0) return Math.floor(v)
+  } catch {
+    /* fall through to default */
+  }
+  return DEFAULT_FREE_TRANSCRIPTION_SEC
+}
+
+/** Load the quota window and roll it if the 7-day window has lapsed. */
+function rollQuotaWindow(
+  data: Record<string, unknown> | null | undefined,
+  now: number,
+): { weekStart: number; usedSec: number } {
+  const weekStart = Number(data?.weekStart) || 0
+  const usedSec = Number(data?.usedSec) || 0
+  if (!weekStart || now - weekStart >= TRANSCRIPTION_WEEK_MS) {
+    return { weekStart: now, usedSec: 0 }
+  }
+  return { weekStart, usedSec }
+}
+
+// action=transcription-quota-status  → remaining seconds + reset time (read-only)
+async function handleTranscriptionQuotaStatus(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const limitSec = await freeWeeklyTranscriptionSec()
+  let pro = false
+  try {
+    pro = await isUserPro(verified.uid, verified.email)
+  } catch {
+    // Couldn't determine — show the free view rather than block a status read.
+    pro = false
+  }
+  if (pro) {
+    return res
+      .status(200)
+      .json({ ok: true, pro: true, remainingSec: null, limitSec, resetAt: null })
+  }
+  const now = Date.now()
+  const snap = await getDb().collection('transcriptionQuota').doc(verified.uid).get()
+  const { weekStart, usedSec } = rollQuotaWindow(
+    snap.exists ? (snap.data() as Record<string, unknown>) : null,
+    now,
+  )
+  return res.status(200).json({
+    ok: true,
+    pro: false,
+    remainingSec: Math.max(0, limitSec - usedSec),
+    limitSec,
+    resetAt: weekStart + TRANSCRIPTION_WEEK_MS,
+  })
+}
+
+// action=transcription-quota-grant  Body: { requestedSec } → reserve up to N seconds
+async function handleTranscriptionQuotaGrant(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const body = (req.body || {}) as { requestedSec?: number }
+  const requestedSec = Math.max(0, Math.ceil(Number(body.requestedSec) || 0))
+  if (requestedSec <= 0) {
+    return res.status(400).json({ ok: false, error: 'bad-duration' })
+  }
+  let pro: boolean
+  try {
+    pro = await isUserPro(verified.uid, verified.email)
+  } catch {
+    return res
+      .status(503)
+      .json({ ok: false, error: 'לא הצלחנו לאמת את המנוי כרגע. נסו שוב בעוד רגע.' })
+  }
+  const limitSec = await freeWeeklyTranscriptionSec()
+  if (pro) {
+    return res.status(200).json({
+      ok: true,
+      pro: true,
+      allowedSec: requestedSec,
+      remainingSec: null,
+      resetAt: null,
+      grantId: null,
+    })
+  }
+
+  const db = getDb()
+  const now = Date.now()
+  const ref = db.collection('transcriptionQuota').doc(verified.uid)
+  const grantId = crypto.randomBytes(16).toString('hex')
+
+  const out = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref)
+    const { weekStart, usedSec } = rollQuotaWindow(
+      snap.exists ? (snap.data() as Record<string, unknown>) : null,
+      now,
+    )
+    const remaining = Math.max(0, limitSec - usedSec)
+    const grantSec = Math.min(requestedSec, remaining)
+    if (grantSec <= 0) {
+      // Persist the (possibly rolled) window so resetAt is stable, no grant.
+      tx.set(ref, { weekStart, usedSec, updatedAt: now }, { merge: true })
+      return { grantSec: 0, weekStart, remainingSec: remaining, grantId: null as string | null }
+    }
+    const newUsed = usedSec + grantSec
+    tx.set(ref, { weekStart, usedSec: newUsed, updatedAt: now }, { merge: true })
+    tx.set(db.collection('transcriptionGrants').doc(grantId), {
+      uid: verified.uid,
+      grantSec,
+      weekStart,
+      createdAt: now,
+    })
+    return {
+      grantSec,
+      weekStart,
+      remainingSec: Math.max(0, limitSec - newUsed),
+      grantId,
+    }
+  })
+
+  return res.status(200).json({
+    ok: true,
+    pro: false,
+    allowedSec: out.grantSec,
+    remainingSec: out.remainingSec,
+    resetAt: out.weekStart + TRANSCRIPTION_WEEK_MS,
+    grantId: out.grantId,
+    limitSec,
+  })
+}
+
+// action=transcription-quota-settle  Body: { grantId, actualSec } → refund unused
+async function handleTranscriptionQuotaSettle(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const body = (req.body || {}) as { grantId?: string; actualSec?: number }
+  const grantId = String(body.grantId || '').trim()
+  // No/invalid grant → nothing to settle (idempotent, e.g. a Pro run).
+  if (!/^[a-f0-9]{16,64}$/.test(grantId)) return res.status(200).json({ ok: true })
+  const actualReq = Math.max(0, Math.floor(Number(body.actualSec) || 0))
+
+  const db = getDb()
+  const now = Date.now()
+  const grantRef = db.collection('transcriptionGrants').doc(grantId)
+  const quotaRef = db.collection('transcriptionQuota').doc(verified.uid)
+
+  await db.runTransaction(async (tx) => {
+    const gsnap = await tx.get(grantRef)
+    if (!gsnap.exists) return
+    const g = gsnap.data() as Record<string, unknown>
+    if (String(g.uid) !== verified.uid) return
+    const grantSec = Number(g.grantSec) || 0
+    const actual = Math.min(actualReq, grantSec)
+    const refund = grantSec - actual
+    // All reads before any writes (Firestore transaction rule).
+    const qsnap = refund > 0 ? await tx.get(quotaRef) : null
+    tx.delete(grantRef)
+    if (refund > 0 && qsnap?.exists) {
+      const qd = qsnap.data() as Record<string, unknown>
+      // Only refund if the window hasn't rolled since the grant.
+      if (Number(qd.weekStart) === Number(g.weekStart)) {
+        const usedSec = Math.max(0, (Number(qd.usedSec) || 0) - refund)
+        tx.set(quotaRef, { usedSec, updatedAt: now }, { merge: true })
+      }
+    }
+  })
+
+  return res.status(200).json({ ok: true })
+}
+
 
 // ─────────────────────────────────────────────────────────────────────
 // action=glossary-packs  →  חבילות-מונחים לתמלול (קטלוג + תוכן).
@@ -8073,6 +8272,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleSrtBulk(req, res)
       case 'srt-collect':
         return await handleSrtCollect(req, res)
+      case 'transcription-quota-status':
+        return await handleTranscriptionQuotaStatus(req, res)
+      case 'transcription-quota-grant':
+        return await handleTranscriptionQuotaGrant(req, res)
+      case 'transcription-quota-settle':
+        return await handleTranscriptionQuotaSettle(req, res)
       case 'drive-import-init':
         return await handleDriveImportInit(req, res)
       case 'drive-import-auth':

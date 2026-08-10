@@ -237,6 +237,10 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [trialGb, setTrialGb] = useState('')
   const [storageBusy, setStorageBusy] = useState(false)
   const [storageMsg, setStorageMsg] = useState('')
+  // Free-tier weekly transcription quota, edited in MINUTES.
+  const [freeTtransMin, setFreeTransMin] = useState('')
+  const [transBusy, setTransBusy] = useState(false)
+  const [transMsg, setTransMsg] = useState('')
 
   useEffect(() => {
     void (async () => {
@@ -246,12 +250,15 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
           logsPassword?: string
           proStorageGb?: number
           trialStorageGb?: number
+          freeTranscriptionWeeklySec?: number
         }>('admin-get-app-config')
         setBeta(r.betaMode)
         setLogsPw(r.logsPassword || '')
         if (typeof r.proStorageGb === 'number') setProGb(String(r.proStorageGb))
         if (typeof r.trialStorageGb === 'number')
           setTrialGb(String(r.trialStorageGb))
+        if (typeof r.freeTranscriptionWeeklySec === 'number')
+          setFreeTransMin(String(Math.round(r.freeTranscriptionWeeklySec / 60)))
       } catch (e) {
         onErr(e)
       } finally {
@@ -304,6 +311,29 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
       setStorageMsg(err.message || 'שמירה נכשלה')
     } finally {
       setStorageBusy(false)
+    }
+  }
+
+  async function saveFreeTranscription() {
+    const min = parseFloat(freeTtransMin)
+    if (!Number.isFinite(min) || min < 0 || min > 1440) {
+      setTransMsg('יש להזין מספר דקות בין 0 ל-1440')
+      return
+    }
+    setTransBusy(true)
+    setTransMsg('')
+    try {
+      await adminApi('admin-set-app-config', {
+        freeTranscriptionWeeklySec: Math.round(min * 60),
+      })
+      setTransMsg('נשמר ✓')
+      setTimeout(() => setTransMsg(''), 2500)
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setTransMsg(err.message || 'שמירה נכשלה')
+    } finally {
+      setTransBusy(false)
     }
   }
 
@@ -482,6 +512,50 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
           </Button>
         </div>
         {storageMsg && <div className="text-xs text-success">{storageMsg}</div>}
+      </div>
+
+      {/* Free-tier weekly transcription quota (minutes) */}
+      <div className="space-y-3 rounded-2xl border border-border bg-card p-4 text-right">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary shadow-md shadow-primary/40">
+            <Sparkles className="h-5 w-5 text-white" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-bold text-foreground">
+              מכסת תמלול חינם (דקות לשבוע)
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              כמה דקות תמלול מקבל משתמש חינמי בכל חלון של שבעה ימים. משתמשי Pro
+              ללא הגבלה. השינוי חל מיד. אפס = חסום לגמרי לחינמיים.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-end gap-4">
+          <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+            דקות לשבוע
+            <div className="flex items-center gap-1.5">
+              <Input
+                type="number"
+                min="0"
+                step="1"
+                value={freeTtransMin}
+                onChange={(e) => setFreeTransMin(e.target.value)}
+                className="w-28"
+                dir="ltr"
+              />
+              <span className="text-xs text-muted-foreground">דק׳</span>
+            </div>
+          </label>
+          <Button onClick={saveFreeTranscription} disabled={transBusy} size="sm">
+            {transBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Save className="h-3.5 w-3.5" />
+            )}
+            שמור
+          </Button>
+        </div>
+        {transMsg && <div className="text-xs text-success">{transMsg}</div>}
       </div>
     </>
   )

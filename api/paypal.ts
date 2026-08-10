@@ -9738,6 +9738,7 @@ async function handleAdminGetAppConfig(
     backupNotify?: boolean
     syncTelemetryDisabled?: boolean
     clientLogsDisabled?: boolean
+    freeTranscriptionWeeklySec?: number
   }
   // Sensitive fields (logs password + storage quotas) now live in the
   // admin-only adminConfig/global (clients can't read it). Prefer those;
@@ -9796,6 +9797,12 @@ async function handleAdminGetAppConfig(
     backupNotify: d.backupNotify === true,
     syncTelemetryDisabled: d.syncTelemetryDisabled === true,
     clientLogsDisabled: d.clientLogsDisabled === true,
+    // Free-tier weekly transcription quota, in seconds (default 5 min).
+    freeTranscriptionWeeklySec:
+      typeof d.freeTranscriptionWeeklySec === 'number' &&
+      d.freeTranscriptionWeeklySec >= 0
+        ? Math.floor(d.freeTranscriptionWeeklySec)
+        : 300,
   })
 }
 
@@ -9821,6 +9828,7 @@ async function handleAdminSetAppConfig(
     backupNotify?: boolean
     syncTelemetryDisabled?: boolean
     clientLogsDisabled?: boolean
+    freeTranscriptionWeeklySec?: number
   }
   const patch: Record<string, unknown> = {}
   // Sensitive fields go to the admin-only adminConfig/global, NOT the
@@ -9834,6 +9842,17 @@ async function handleAdminSetAppConfig(
   }
   if (typeof body.clientLogsDisabled === 'boolean') {
     patch.clientLogsDisabled = body.clientLogsDisabled
+  }
+  // Free-tier weekly transcription quota (seconds). 0 … 24h. Client-readable
+  // (appConfig/global) — the desktop quota endpoint reads it.
+  if (body.freeTranscriptionWeeklySec !== undefined) {
+    const s = Number(body.freeTranscriptionWeeklySec)
+    if (!Number.isFinite(s) || s < 0 || s > 86400) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'מכסת תמלול לא תקינה (0–86400 שניות)' })
+    }
+    patch.freeTranscriptionWeeklySec = Math.floor(s)
   }
   if (body.planMode === 'hybrid' || body.planMode === 'subscription') {
     patch.planMode = body.planMode
