@@ -13,10 +13,12 @@ import {
   Minus,
   Download,
   FilterX,
+  Waves,
 } from 'lucide-react'
 import { getAdminIdToken, getStepUpToken, clearStepUpToken } from '../../lib/adminApi'
 import { Portal } from '@/components/ui/Portal'
 import { buildZip } from '@/lib/zip'
+import SyncTelemetryPanel from './SyncTelemetryPanel'
 
 /**
  * טאב "תמלול" — שני חלקים:
@@ -136,7 +138,7 @@ export default function TranscriptionTab({
 }: {
   onAuthExpired: () => void
 }) {
-  const [view, setView] = useState<'files' | 'packs'>('files')
+  const [view, setView] = useState<'files' | 'packs' | 'sync'>('files')
   const [error, setError] = useState('')
   const handleErr = useCallback(
     (e: unknown) => {
@@ -154,6 +156,7 @@ export default function TranscriptionTab({
           [
             ['files', 'קבצים שנאספו', FileText],
             ['packs', 'קטגוריות מונחים', Layers],
+            ['sync', 'סנכרון אוטומטי', Waves],
           ] as const
         ).map(([k, label, Icon]) => (
           <button
@@ -183,8 +186,10 @@ export default function TranscriptionTab({
 
       {view === 'files' ? (
         <FilesView onError={handleErr} />
-      ) : (
+      ) : view === 'packs' ? (
         <PacksView onError={handleErr} />
+      ) : (
+        <SyncTelemetryPanel onAuthExpired={onAuthExpired} />
       )}
     </div>
   )

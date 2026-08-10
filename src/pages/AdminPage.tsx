@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { onAuthStateChanged } from 'firebase/auth'
 import {
-  Captions,
+  Database,
   LayoutDashboard,
   Users as UsersIcon,
   Key as KeyIcon,
@@ -96,7 +96,7 @@ const TABS: { key: AdminTabKey; label: string; icon: LucideIcon }[] = [
   { key: 'referrals', label: 'שותפים', icon: Share2 },
   { key: 'updates', label: 'עדכונים', icon: DownloadCloud },
   { key: 'feedback', label: 'פניות', icon: MessageSquare },
-  { key: 'transcription', label: 'תמלול', icon: Captions },
+  { key: 'transcription', label: 'נתונים משותפים', icon: Database },
   { key: 'backup', label: 'גיבוי', icon: DatabaseBackup },
   { key: 'logs', label: 'לוגים', icon: ScrollText },
   { key: 'prices', label: 'מחירים', icon: Ticket },

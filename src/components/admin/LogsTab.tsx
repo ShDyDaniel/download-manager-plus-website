@@ -10,12 +10,9 @@ import {
   Trash2,
   Users,
   Hash,
-  Download,
-  Waves,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
-import { buildZip, type ZipEntry } from '../../lib/zip'
 import { Switch } from '@/components/ui/Switch'
 
 interface ErrorRow {
@@ -186,32 +183,14 @@ export default function LogsTab({
     }
   }
 
-  // ── Audio-sync telemetry export (opt-in data from users, for engine tuning) ──
-  // The data (per-sync events + gzipped acoustic fingerprints) lives in R2, not
-  // Firestore. The server returns a MANIFEST: every object's key + a 6-hour
-  // presigned download URL. We save that manifest as JSON — hand it to Claude,
-  // which fetches every file from the links and analyzes the dataset.
-  const [telDl, setTelDl] = useState(false)
-  const [telClr, setTelClr] = useState(false)
-  const [telInfo, setTelInfo] = useState('')
-  // Global ingestion pause — null until admin-get-app-config answers.
-  const [telPaused, setTelPaused] = useState<boolean | null>(null)
-  const [telPausing, setTelPausing] = useState(false)
-  // Global error-log collection kill-switch (separate from telemetry).
+  // Global error-log collection kill-switch. (Sync-telemetry — the opt-in
+  // shared data — moved to the "נתונים משותפים" tab; this tab is errors only.)
   const [logsOff, setLogsOff] = useState<boolean | null>(null)
   const [logsBusy, setLogsBusy] = useState(false)
   useEffect(() => {
-    adminApi<{ syncTelemetryDisabled?: boolean; clientLogsDisabled?: boolean }>(
-      'admin-get-app-config',
-    )
-      .then((c) => {
-        setTelPaused(c.syncTelemetryDisabled === true)
-        setLogsOff(c.clientLogsDisabled === true)
-      })
-      .catch(() => {
-        setTelPaused(null)
-        setLogsOff(null)
-      })
+    adminApi<{ clientLogsDisabled?: boolean }>('admin-get-app-config')
+      .then((c) => setLogsOff(c.clientLogsDisabled === true))
+      .catch(() => setLogsOff(null))
   }, [])
 
   async function toggleLogsOff(next: boolean) {
@@ -224,138 +203,6 @@ export default function LogsTab({
       handleErr(e)
     } finally {
       setLogsBusy(false)
-    }
-  }
-
-  async function toggleTelemetryPaused(next: boolean) {
-    setTelPausing(true)
-    setError('')
-    try {
-      await adminApi('admin-set-app-config', { syncTelemetryDisabled: next })
-      setTelPaused(next)
-    } catch (e) {
-      handleErr(e)
-    } finally {
-      setTelPausing(false)
-    }
-  }
-
-  async function downloadSyncTelemetry() {
-    setTelDl(true)
-    setError('')
-    setTelInfo('')
-    try {
-      const r = await adminApi<{
-        events: { key: string; url: string; size: number }[]
-        fingerprints: { hash: string; url: string; size: number }[]
-        timelines: { key: string; url: string; size: number }[]
-        count: number
-        fingerprintCount: number
-        timelineCount: number
-        truncated: boolean
-        urlTtlSeconds: number
-        exportedAt: string
-      }>('admin-sync-telemetry-export', {})
-
-      // Pull every object straight from R2 (CORS allows GET from the
-      // site origin) and pack ONE zip: events/ + timelines/ (gunzipped
-      // back to readable .xml) + fingerprints/ (kept .bin.gz) + the
-      // manifest itself.
-      const canGunzip = typeof DecompressionStream !== 'undefined'
-      const jobs = [
-        ...r.events.map((e) => ({
-          url: e.url,
-          path: e.key.replace(/^sync-telemetry\//, ''),
-          gunzip: false,
-        })),
-        ...r.timelines.map((t) => {
-          const base = t.key
-            .replace(/^sync-telemetry\/timelines\//, '')
-            .replace(/\.gz$/, '')
-          return canGunzip
-            ? { url: t.url, path: `timelines/${base}`, gunzip: true }
-            : { url: t.url, path: `timelines/${base}.gz`, gunzip: false }
-        }),
-        ...r.fingerprints.map((f) => ({
-          url: f.url,
-          path: `fingerprints/${f.hash}.bin.gz`,
-          gunzip: false,
-        })),
-      ]
-
-      const entries: ZipEntry[] = []
-      let done = 0
-      let skipped = 0
-      const queue = [...jobs]
-      // 4 parallel fetches — fingerprint blobs can be several MB each.
-      await Promise.all(
-        Array.from({ length: 4 }, async () => {
-          for (;;) {
-            const job = queue.shift()
-            if (!job) return
-            try {
-              const resp = await fetch(job.url)
-              if (!resp.ok) throw new Error(String(resp.status))
-              let data: Uint8Array
-              if (job.gunzip && resp.body) {
-                const ds = resp.body.pipeThrough(new DecompressionStream('gzip'))
-                data = new Uint8Array(await new Response(ds).arrayBuffer())
-              } else {
-                data = new Uint8Array(await resp.arrayBuffer())
-              }
-              entries.push({ name: job.path, data })
-            } catch {
-              // Object vanished (reset mid-export) or mid-upload — skip.
-              skipped += 1
-            }
-            done += 1
-            setTelInfo(`מוריד ${done}/${jobs.length} קבצים…`)
-          }
-        }),
-      )
-      entries.sort((a, b) => a.name.localeCompare(b.name))
-      entries.push({
-        name: 'manifest.json',
-        data: new TextEncoder().encode(JSON.stringify(r, null, 2)),
-      })
-
-      const blob = buildZip(entries)
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `dmplus-sync-telemetry-${new Date().toISOString().slice(0, 10)}.zip`
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      URL.revokeObjectURL(url)
-      setTelInfo(
-        `${r.count} סנכרונים · ${r.fingerprintCount} טביעות אצבע · ${r.timelineCount ?? 0} קבצי טיימליין · ירדו כקובץ ZIP אחד` +
-          (skipped ? ` (${skipped} קבצים דולגו, ייתכן שהעלאה רצה ברקע)` : ''),
-      )
-    } catch (e) {
-      handleErr(e)
-    } finally {
-      setTelDl(false)
-    }
-  }
-
-  const clearSyncTelemetry = async () => {
-    if (
-      !window.confirm(
-        'לאפס את כל נתוני הסנכרון שנאספו? כל האירועים, טביעות האצבע וקבצי הטיימליין יימחקו לצמיתות מהאחסון.',
-      )
-    )
-      return
-    setTelClr(true)
-    setError('')
-    setTelInfo('')
-    try {
-      const r = await adminApi<{ deleted: number }>('admin-sync-telemetry-clear', {})
-      setTelInfo(`נמחקו ${r.deleted} קבצים. המערכת נקייה ומוכנה לאיסוף חדש`)
-    } catch (e) {
-      handleErr(e)
-    } finally {
-      setTelClr(false)
     }
   }
 
@@ -424,68 +271,6 @@ export default function LogsTab({
         </div>
       )}
 
-      {/* Audio-sync telemetry — opt-in data uploaded by users after each sync,
-          for tuning the engine. Stored in R2 (events + gzipped fingerprints).
-          The button downloads a MANIFEST with 6-hour presigned links to every
-          file, to hand off for analysis. */}
-      <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-primary/20 bg-primary/[0.04] px-5 py-4">
-        <Waves className="h-5 w-5 shrink-0 text-primary" />
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-fg">נתוני סנכרון אוטומטי</div>
-          <div className="text-xs text-fg-muted">
-            נתונים אנונימיים שמשתמשים שאישרו שולחים בסוף כל סנכרון. כל מועמד
-            והציונים שלו, ההקשר, טביעות האצבע האקוסטיות, ומבנה הטיימליין של
-            הקלט והפלט (מעוקר, ללא מדיה או שמות קבצים). ההורדה היא קובץ ZIP
-            אחד עם כל הקבצים מסודרים בתיקיות.
-          </div>
-          <label className="mt-2 flex w-fit cursor-pointer items-center gap-2">
-            <Switch
-              checked={telPaused === true}
-              onCheckedChange={(v) => toggleTelemetryPaused(v)}
-              disabled={telPaused === null || telPausing}
-            />
-            <span
-              className={
-                'text-xs ' +
-                (telPaused ? 'font-medium text-rose-400' : 'text-fg-muted')
-              }
-            >
-              {telPaused
-                ? 'קליטת נתונים מושבתת · משתמשים לא מעלים שום דבר חדש'
-                : 'השבתת קליטה · עצירת כל ההעלאות מהמשתמשים'}
-            </span>
-          </label>
-          {telInfo && (
-            <div className="mt-1 text-xs font-medium text-primary">{telInfo}</div>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={downloadSyncTelemetry}
-          disabled={telDl}
-          className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
-        >
-          {telDl ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Download className="h-3.5 w-3.5" />
-          )}
-          {telDl ? 'מוריד…' : 'הורדת הכל (ZIP)'}
-        </button>
-        <button
-          type="button"
-          onClick={clearSyncTelemetry}
-          disabled={telClr}
-          className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-rose-500/40 bg-rose-500/10 px-4 py-2 text-xs font-semibold text-rose-400 transition-colors hover:bg-rose-500/20 disabled:opacity-60"
-        >
-          {telClr ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Trash2 className="h-3.5 w-3.5" />
-          )}
-          {telClr ? 'מוחק…' : 'איפוס כל הנתונים'}
-        </button>
-      </div>
 
       {/* Summary + filter */}
       {errors && (
