@@ -929,7 +929,7 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
         // the pre-rendered HTML the popup actually displays (bodyHtml), so
         // consumers never need the block model itself.
         blocksJson: JSON.stringify(blocks),
-        bodyHtml: blocksToHtml(blocks),
+        bodyHtml: blocksToHtml(blocks, { fullWidthImages: true }),
         imageSource,
         imageKey,
         driveUrl: driveUrl.trim(),
@@ -959,7 +959,7 @@ function PopupCard({ onErr }: { onErr: (e: unknown) => void }) {
   // Rendered content for the live preview — identical to what the popup
   // will actually display. The Google-fonts link is injected once so
   // custom font choices render true here too.
-  const contentHtml = blocksToHtml(blocks)
+  const contentHtml = blocksToHtml(blocks, { fullWidthImages: true })
 
   const SOURCES = [
     { v: 'none', label: 'בלי תמונה' },

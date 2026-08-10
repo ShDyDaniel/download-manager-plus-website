@@ -178,7 +178,13 @@ function wrapAlign(inner: string, align?: Align): string {
   return `<div style="text-align:${align || 'right'};">${inner}</div>`
 }
 
-export function blockToHtml(b: Block): string {
+/** אפשרויות רינדור. `fullWidthImages` — לפופאפ: התמונות ממלאות את כל רוחב
+ *  הכרטיס (100%) במקום להיות מוגבלות ל-468px כמו במייל. */
+export interface RenderOpts {
+  fullWidthImages?: boolean
+}
+
+export function blockToHtml(b: Block, opts?: RenderOpts): string {
   switch (b.type) {
     case 'paragraph': {
       // text-align-last כדי שגם השורה האחרונה/הבודדת תימתח מקצה לקצה.
@@ -212,6 +218,15 @@ export function blockToHtml(b: Block): string {
     case 'image': {
       const src = driveImgSrc(b.driveLink)
       if (!src) return ''
+      // בפופאפ התמונה בורחת מעבר לריפוד-הכרטיס (p-5 = 20px) ונצמדת לקצוות
+      // — בדיוק כמו תמונת-הכותרת המקורית שמילאה את כל רוחב הפופאפ. פינות
+      // הכרטיס (overflow-hidden) גוזרות אותה יפה. margin שלילי אופקי בלבד,
+      // כדי לא למשוך תוכן מעליה/מתחתיה.
+      if (opts?.fullWidthImages) {
+        return `<img src="${src}" alt="${esc(
+          b.alt,
+        )}" style="display:block;width:calc(100% + 40px);max-width:none;height:auto;margin:0 -20px 18px;border-radius:0;"/>`
+      }
       return wrapAlign(
         `<img src="${src}" alt="${esc(
           b.alt,
@@ -226,8 +241,11 @@ export function blockToHtml(b: Block): string {
   }
 }
 
-export function blocksToHtml(blocks: Block[]): string {
-  return blocks.map(blockToHtml).filter(Boolean).join('\n')
+export function blocksToHtml(blocks: Block[], opts?: RenderOpts): string {
+  return blocks
+    .map((b) => blockToHtml(b, opts))
+    .filter(Boolean)
+    .join('\n')
 }
 
 /* סוגי הבלוקים בסרגל ההוספה. */
