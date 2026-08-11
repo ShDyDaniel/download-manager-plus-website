@@ -159,29 +159,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       resetLink = await auth.generatePasswordResetLink(email)
     } catch (err) {
-      // Email not registered — don't leak that fact to the caller.
-      // Same response shape as a successful send: an attacker
-      // probing the endpoint can't tell which addresses exist.
-      // The legitimate user gets nothing, but their next attempt
-      // (with the correct address) succeeds. We log so we can spot
-      // abuse later.
+      // We couldn't generate a reset link. Almost always this is because
+      // the email isn't registered — Firebase usually throws
+      // auth/user-not-found, but for some accounts it surfaces a generic
+      // internal error instead ("Unable to create the email action link"
+      // / "INTERNAL ASSERT FAILED"), which used to fall through to the 500
+      // branch and leak that raw English string to the app.
+      //
+      // NEVER leak the reason to the caller: whether the address exists,
+      // and whatever Firebase's internal error was, would both let an
+      // attacker probe accounts or see a scary technical message. Return
+      // the SAME 200 as a real send for *any* link-generation failure; a
+      // legitimate user simply retries. We log the details for ourselves.
       const code = (err as { code?: string }).code || ''
-      if (
-        code === 'auth/user-not-found' ||
-        code === 'auth/email-not-found'
-      ) {
-        console.warn('reset-password: no user for', email)
-        return res.status(200).json({ ok: true })
-      }
-      throw err
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn('reset-password: could not generate link for', email, code, msg)
+      return res.status(200).json({ ok: true })
     }
 
     await sendResetEmail(email, resetLink)
     return res.status(200).json({ ok: true })
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
+    // Genuine server failure (SMTP down, Firebase init, etc.). Log the raw
+    // reason for us, but never surface the technical English string to the
+    // app — return a Hebrew message the client can show as-is.
     console.error('reset-password handler failed', err)
-    return res.status(500).json({ ok: false, error: message })
+    return res
+      .status(500)
+      .json({ ok: false, error: 'שליחת המייל נכשלה. נסו שוב מאוחר יותר.' })
   }
 }
 
