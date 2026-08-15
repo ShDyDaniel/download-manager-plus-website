@@ -6324,6 +6324,10 @@ async function handleUpdateNoteStatus(req: VercelRequest, res: VercelResponse) {
     noteId?: string
     status?: NoteStatus
     editorResponse?: string
+    // Free editor note, independent of status. Only touched when the
+    // caller explicitly sends the field (a status-only update leaves
+    // any existing note intact); '' clears it.
+    editorNote?: string
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -6368,14 +6372,21 @@ async function handleUpdateNoteStatus(req: VercelRequest, res: VercelResponse) {
   if (!noteSnap.exists) {
     return res.status(404).json({ ok: false, error: 'התיקון לא נמצא' })
   }
-  await noteRef.update({
+  const update: Record<string, unknown> = {
     status,
     // Clear the response when moving BACK to new/resolved — keeps
     // stale question/reason text from haunting a note the editor
     // re-classified.
     editorResponse,
     updatedAt: Date.now(),
-  })
+  }
+  // Only touch editorNote when the caller sent it — a plain status
+  // change must not wipe an existing note. Empty string → null (clear).
+  if (body.editorNote !== undefined) {
+    const trimmed = String(body.editorNote).trim().slice(0, 2000)
+    update.editorNote = trimmed || null
+  }
+  await noteRef.update(update)
   return res.status(200).json({ ok: true })
 }
 

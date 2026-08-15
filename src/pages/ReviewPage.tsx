@@ -27,6 +27,7 @@ import {
   RefreshCw,
   Maximize2,
   Minimize2,
+  StickyNote,
 } from 'lucide-react'
 
 /**
@@ -156,6 +157,11 @@ interface Note {
    *  (the clarifying question) or 'not-possible' (why it can't be
    *  done). Cleared when status moves back to new/resolved. */
   editorResponse?: string | null
+  /** Free editor note the editor can attach to ANY note regardless
+   *  of its status ("added a lower-third here", "check the audio").
+   *  Client-visible. Independent of editorResponse — a note can carry
+   *  both a status-tied response and a general editor note. */
+  editorNote?: string | null
   createdAt: number
 }
 
@@ -1720,7 +1726,11 @@ function ReviewWorkspace({
     if (!v) return
     if (!v.paused) v.pause()
     setComposer({
-      timeSeconds: Math.max(0, Math.floor(v.currentTime)),
+      // Keep the sub-second fraction (no Math.floor) so two notes
+      // placed in the same second get distinct timestamps and each
+      // seeks back to its exact frame. The mm:ss label still floors
+      // for display — this precision only affects sorting + seeking.
+      timeSeconds: Math.max(0, v.currentTime),
       screenshotDataUrl: null,
       audioBlob: null,
     })
@@ -1734,7 +1744,11 @@ function ReviewWorkspace({
     if (!v.paused) v.pause()
     const data = captureFrame(v)
     setComposer({
-      timeSeconds: Math.max(0, Math.floor(v.currentTime)),
+      // Keep the sub-second fraction (no Math.floor) so two notes
+      // placed in the same second get distinct timestamps and each
+      // seeks back to its exact frame. The mm:ss label still floors
+      // for display — this precision only affects sorting + seeking.
+      timeSeconds: Math.max(0, v.currentTime),
       screenshotDataUrl: data,
       audioBlob: null,
     })
@@ -1968,6 +1982,51 @@ function ReviewWorkspace({
     } catch (err) {
       setNotes(previous)
       console.warn('[review] update-note-status network failure:', err)
+    }
+  }
+
+  /** Owner-side: attach (or clear) a free editor note on a note
+   *  WITHOUT touching its status. Reuses the update-note-status
+   *  endpoint, sending the note's CURRENT status unchanged plus the
+   *  editorNote field. Empty string clears the note. Optimistic with
+   *  rollback, same 401 handling as applyOwnerStatus. */
+  async function applyEditorNote(noteId: string, editorNote: string) {
+    if (!ownerIdToken) return
+    const current = notes.find((n) => n.id === noteId)
+    if (!current) return
+    const previous = notes
+    const trimmed = editorNote.trim()
+    setNotes((prev) =>
+      prev.map((n) =>
+        n.id === noteId ? { ...n, editorNote: trimmed || null } : n,
+      ),
+    )
+    try {
+      const r = await fetch(`${API}?action=update-note-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idToken: ownerIdToken,
+          projectId: project.projectId,
+          noteId,
+          status: current.status,
+          editorResponse: current.editorResponse ?? undefined,
+          editorNote: trimmed,
+        }),
+      })
+      if (r.status === 401) {
+        setNotes(previous)
+        onOwnerSessionInvalid()
+        return
+      }
+      const json = (await r.json()) as { ok: boolean; error?: string }
+      if (!json.ok) {
+        setNotes(previous)
+        console.warn('[review] editor-note update failed:', json.error)
+      }
+    } catch (err) {
+      setNotes(previous)
+      console.warn('[review] editor-note network failure:', err)
     }
   }
 
@@ -2341,6 +2400,9 @@ function ReviewWorkspace({
                     onApplyStatus={(status, response) =>
                       void applyOwnerStatus(note.id, status, response)
                     }
+                    onApplyNote={(editorNote) =>
+                      void applyEditorNote(note.id, editorNote)
+                    }
                   />
                 ))}
             </ul>
@@ -2543,6 +2605,7 @@ function NoteItem({
   onExpandImage,
   onDelete,
   onApplyStatus,
+  onApplyNote,
 }: {
   note: Note
   /** True when the current viewer's email matches the note's
@@ -2567,6 +2630,9 @@ function NoteItem({
     status: 'new' | 'resolved' | 'question' | 'not-possible',
     editorResponse?: string,
   ) => void
+  /** Owner-side: save a free editor note (client-visible) without
+   *  changing status. No-op in viewer mode. */
+  onApplyNote: (editorNote: string) => void
 }) {
   const isGeneral = note.timeSeconds === null || note.timeSeconds === undefined
   const mm = isGeneral ? 0 : Math.floor((note.timeSeconds as number) / 60)
@@ -2684,9 +2750,24 @@ function NoteItem({
             <MessageSquare className="h-4 w-4" />
           </div>
         )}
-        <div className="min-w-0 flex-1">
+        <div
+          className={
+            'min-w-0 flex-1 ' + (isGeneral ? '' : 'cursor-pointer')
+          }
+          // Clicking anywhere in the note body (but NOT the thumbnail
+          // on the right, which is a separate sibling and opens the
+          // lightbox) seeks the video to this note's moment. Inner
+          // controls — the status menu, trash, audio scrubber, delete
+          // confirm — stopPropagation so they keep their own action.
+          // General notes have no time, so no seek.
+          onClick={
+            isGeneral
+              ? undefined
+              : () => onSeek(note.timeSeconds as number)
+          }
+        >
           <div className="mb-0.5 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5">
+            <div className="flex shrink-0 items-center gap-1.5">
               {isGeneral ? (
                 // General notes have no associated time — render a
                 // static "כללי" pill so the viewer knows the comment
@@ -2725,11 +2806,18 @@ function NoteItem({
                   website without opening the desktop app; in viewer
                   mode it stays read-only. */}
               {isOwnerMode ? (
-                <OwnerStatusMenu
-                  status={note.status}
-                  currentResponse={note.editorResponse || ''}
-                  onApply={onApplyStatus}
-                />
+                // Wrapper stops row-seek: the menu, its dropdown and
+                // its modal all live in this subtree, so a click here
+                // must not bubble up to the note's seek handler.
+                <div onClick={(e) => e.stopPropagation()}>
+                  <OwnerStatusMenu
+                    status={note.status}
+                    currentResponse={note.editorResponse || ''}
+                    currentNote={note.editorNote || ''}
+                    onApply={onApplyStatus}
+                    onApplyNote={onApplyNote}
+                  />
+                </div>
               ) : (
                 <>
                   {resolved && (
@@ -2762,10 +2850,14 @@ function NoteItem({
                 </>
               )}
             </div>
-            <div className="flex items-center gap-1">
+            {/* min-w-0 lets the email truncate instead of pushing the
+                left group (timestamp + owner dropdown) — without it a
+                long submitter address collides with / covers the
+                editor's status menu in owner mode. */}
+            <div className="flex min-w-0 items-center justify-end gap-1">
               <span
                 dir="ltr"
-                className="truncate text-[10px] text-fg-muted/80"
+                className="min-w-0 truncate text-[10px] text-fg-muted/80"
                 title={note.viewerEmail}
               >
                 {note.viewerEmail}
@@ -2776,7 +2868,10 @@ function NoteItem({
               {isOwn && !confirming && (
                 <button
                   type="button"
-                  onClick={() => setConfirming(true)}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setConfirming(true)
+                  }}
                   aria-label="מחיקת התיקון"
                   title="מחיקת התיקון"
                   className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-muted/40 opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
@@ -2801,6 +2896,7 @@ function NoteItem({
               controls
               src={audioUrl}
               preload="metadata"
+              onClick={(e) => e.stopPropagation()}
               className={
                 'mt-1.5 block h-8 w-full rounded-md ' +
                 (resolved ? 'opacity-60' : '')
@@ -2828,11 +2924,29 @@ function NoteItem({
               </div>
             </div>
           )}
+          {/* Free editor note — shown to everyone regardless of the
+              note's status. Distinct primary tint so it reads as the
+              editor speaking, separate from the status-tied response
+              above and from the client's own note text. */}
+          {note.editorNote && (
+            <div className="mt-2 rounded-md border-r-2 border-primary/60 bg-primary/[0.05] px-2 py-1.5 text-[11px] leading-relaxed text-primary/90">
+              <div className="mb-0.5 flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide opacity-70">
+                <StickyNote className="h-2.5 w-2.5" />
+                הערת העורך
+              </div>
+              <div className="whitespace-pre-wrap break-words">
+                {note.editorNote}
+              </div>
+            </div>
+          )}
           {/* Confirm strip — appears below the text only when the
               viewer clicked the trash. Keeps the destructive flow
               from triggering on a single accidental click. */}
           {confirming && (
-            <div className="mt-2 flex items-center justify-between gap-2 rounded border border-destructive/30 bg-destructive/10 px-2 py-1.5">
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="mt-2 flex items-center justify-between gap-2 rounded border border-destructive/30 bg-destructive/10 px-2 py-1.5"
+            >
               <span className="text-[10px] text-destructive">
                 למחוק את התיקון?
               </span>
@@ -3288,16 +3402,24 @@ type NoteStatusValue = 'new' | 'resolved' | 'question' | 'not-possible'
 function OwnerStatusMenu({
   status,
   currentResponse,
+  currentNote,
   onApply,
+  onApplyNote,
 }: {
   status: NoteStatusValue
   currentResponse: string
+  currentNote: string
   onApply: (status: NoteStatusValue, response?: string) => void
+  onApplyNote: (editorNote: string) => void
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [responseModal, setResponseModal] = useState<
     null | { kind: 'question' | 'not-possible' }
   >(null)
+  // Separate from responseModal — the editor note is status-agnostic,
+  // so it gets its own editor rather than piggy-backing on the
+  // question/not-possible response flow.
+  const [noteModalOpen, setNoteModalOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -3389,6 +3511,20 @@ function OwnerStatusMenu({
               tone="red"
               onClick={() => pick('not-possible')}
             />
+            {/* Editor note — status-agnostic, so it sits below the
+                four status choices behind a thin divider. Label
+                reflects whether a note already exists. */}
+            <div className="my-0.5 border-t border-white/5" />
+            <OwnerMenuItem
+              label={currentNote ? 'עריכת הערת עורך' : 'הוספת הערת עורך'}
+              icon={StickyNote}
+              active={!!currentNote}
+              tone="muted"
+              onClick={() => {
+                setMenuOpen(false)
+                setNoteModalOpen(true)
+              }}
+            />
           </div>
         )}
       </div>
@@ -3401,6 +3537,18 @@ function OwnerStatusMenu({
             onSave={(text) => {
               setResponseModal(null)
               onApply(responseModal.kind, text)
+            }}
+          />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {noteModalOpen && (
+          <OwnerNoteModal
+            initial={currentNote}
+            onCancel={() => setNoteModalOpen(false)}
+            onSave={(text) => {
+              setNoteModalOpen(false)
+              onApplyNote(text)
             }}
           />
         )}
@@ -3537,6 +3685,101 @@ function OwnerResponseModal({
             onClick={() => onSave(text.trim())}
             disabled={!text.trim()}
             className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-bg transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-primary/40"
+          >
+            <Check className="h-4 w-4" />
+            שמירה
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Editor note modal — a free, status-agnostic note the editor can
+ *  attach to any revision (client-visible). Unlike OwnerResponseModal
+ *  this allows an empty submit: clearing the field and saving removes
+ *  the note (server treats '' as null). Primary tint to match the
+ *  "הערת העורך" block in the note card.
+ * ────────────────────────────────────────────────────────────── */
+function OwnerNoteModal({
+  initial,
+  onCancel,
+  onSave,
+}: {
+  initial: string
+  onCancel: () => void
+  onSave: (text: string) => void
+}) {
+  const [text, setText] = useState(initial)
+  const hadNote = initial.trim().length > 0
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 px-4 py-6 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 8 }}
+        transition={{ duration: 0.18 }}
+        className="w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-bg shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-white/5 px-5 py-4">
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-primary">
+              הערת העורך
+            </div>
+            <div className="mt-1 text-sm font-medium text-fg">
+              {hadNote ? 'עריכת ההערה על התיקון' : 'הוספת הערה על התיקון'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label="סגירה"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-muted hover:bg-white/5 hover:text-fg"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="space-y-3 p-5">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            autoFocus
+            rows={4}
+            placeholder="לדוגמה: הוספתי כאן כותרת תחתונה, תעדכנו אם צריך לשנות."
+            className="block w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5 text-sm text-fg placeholder:text-fg-muted/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
+          />
+          <p className="text-[11px] leading-relaxed text-fg-muted">
+            ההערה תוצג ללקוח מתחת לתיקון, ללא קשר לסטטוס. השארת השדה ריק
+            תסיר את ההערה.
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-white/5 bg-white/[0.015] px-5 py-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg px-3 py-2 text-sm text-fg-muted transition-colors hover:bg-white/5 hover:text-fg"
+          >
+            ביטול
+          </button>
+          <button
+            type="button"
+            onClick={() => onSave(text.trim())}
+            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-bg transition-colors hover:bg-primary/90"
           >
             <Check className="h-4 w-4" />
             שמירה
