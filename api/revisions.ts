@@ -7065,9 +7065,23 @@ async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
         devices?: string[]
         samples?: unknown[]
         firstSeenAt?: string
+        platforms?: Record<string, number>
+        devicesByPlatform?: Record<string, string[]>
       }
       const devices = new Set<string>(Array.isArray(prev.devices) ? prev.devices : [])
       devices.add(deviceId)
+      // Per-OS aggregates so the admin export can say how many times AND
+      // from how many distinct devices each error hit each platform —
+      // this whole upload is from one device on one platform.
+      const platforms: Record<string, number> = { ...(prev.platforms || {}) }
+      platforms[platform] = (platforms[platform] || 0) + g.count
+      const devicesByPlatform: Record<string, string[]> = {}
+      for (const [k, v] of Object.entries(prev.devicesByPlatform || {})) {
+        devicesByPlatform[k] = Array.isArray(v) ? [...v] : []
+      }
+      const dset = new Set<string>(devicesByPlatform[platform] || [])
+      dset.add(deviceId)
+      devicesByPlatform[platform] = Array.from(dset).slice(0, 200)
       const fresh = g.samples.map((s) => ({
         at: s.at || now,
         deviceId,
@@ -7091,6 +7105,8 @@ async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
         lastSeenAt: now,
         lastVersion: appVersion,
         lastPlatform: platform,
+        platforms,
+        devicesByPlatform,
       }
       if (!snap.exists) patch.resolved = false // never un-resolve on re-ingest
       tx.set(ref, patch, { merge: true })

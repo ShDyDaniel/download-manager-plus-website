@@ -10,6 +10,7 @@ import {
   Trash2,
   Users,
   Hash,
+  Download,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
@@ -80,6 +81,7 @@ export default function LogsTab({
   const [refreshing, setRefreshing] = useState(false)
   const [showResolved, setShowResolved] = useState(false)
   const [clearing, setClearing] = useState(false)
+  const [downloading, setDownloading] = useState(false)
   const [busyKey, setBusyKey] = useState('')
   const [busyAction, setBusyAction] = useState<'resolve' | 'delete' | ''>('')
 
@@ -183,6 +185,104 @@ export default function LogsTab({
     }
   }
 
+  /** Download a full, self-contained error report as JSON — every error
+   *  with its per-OS breakdown (how many times + how many devices from
+   *  Windows vs macOS), when it was first/last seen, and a sample of the
+   *  individual occurrences (each with its own timestamp, OS, version,
+   *  device + stack). Built so it can be handed off for analysis. */
+  async function downloadReport() {
+    setDownloading(true)
+    setError('')
+    try {
+      type ExportOcc = {
+        at?: string
+        platform?: string
+        appVersion?: string
+        deviceId?: string
+        email?: string
+        message?: string
+        stack?: string
+        context?: unknown
+      }
+      type ExportErr = {
+        fingerprint: string
+        level: string
+        message: string
+        count: number
+        deviceCount: number
+        firstSeenAt: string | null
+        lastSeenAt: string | null
+        lastVersion: string
+        resolved: boolean
+        platforms?: Record<string, number>
+        deviceCountByPlatform?: Record<string, number>
+        occurrences?: ExportOcc[]
+      }
+      const data = await adminApi<{
+        generatedAt: string
+        totalErrors: number
+        openErrors: number
+        errors: ExportErr[]
+      }>('admin-export-client-errors')
+
+      const osName = (p?: string) =>
+        p === 'darwin'
+          ? 'macOS'
+          : p === 'win32'
+            ? 'Windows'
+            : p || 'לא ידוע'
+
+      const report = {
+        generatedAt: data.generatedAt,
+        totalErrors: data.totalErrors,
+        openErrors: data.openErrors,
+        errors: (data.errors || []).map((e) => ({
+          message: e.message,
+          level: e.level,
+          status: e.resolved ? 'טופל' : 'פתוח',
+          totalOccurrences: e.count,
+          deviceCount: e.deviceCount,
+          byOS: Object.fromEntries(
+            Object.entries(e.platforms || {}).map(([k, v]) => [
+              osName(k),
+              { occurrences: v, devices: (e.deviceCountByPlatform || {})[k] || 0 },
+            ]),
+          ),
+          firstSeenAt: e.firstSeenAt,
+          lastSeenAt: e.lastSeenAt,
+          lastVersion: e.lastVersion,
+          fingerprint: e.fingerprint,
+          occurrences: (e.occurrences || []).map((s) => ({
+            at: s.at,
+            os: osName(s.platform),
+            appVersion: s.appVersion,
+            deviceId: s.deviceId,
+            email: s.email,
+            message: s.message,
+            stack: s.stack,
+            context: s.context ?? null,
+          })),
+        })),
+      }
+
+      const blob = new Blob([JSON.stringify(report, null, 2)], {
+        type: 'application/json',
+      })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `dmplus-errors-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setDownloading(false)
+    }
+  }
+
   // Global error-log collection kill-switch. (Sync-telemetry — the opt-in
   // shared data — moved to the "נתונים משותפים" tab; this tab is errors only.)
   const [logsOff, setLogsOff] = useState<boolean | null>(null)
@@ -247,6 +347,22 @@ export default function LogsTab({
             />{' '}
             {refreshing ? 'מרענן…' : 'רענן'}
           </button>
+          {(errors?.length || 0) > 0 && (
+            <button
+              type="button"
+              onClick={downloadReport}
+              disabled={downloading}
+              title="הורדת קובץ מפורט עם כל השגיאות (מכשירים, מערכת הפעלה וזמנים)"
+              className="flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-60"
+            >
+              {downloading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Download className="h-3.5 w-3.5" />
+              )}
+              {downloading ? 'מכין…' : 'הורדת דוח'}
+            </button>
+          )}
           {(errors?.length || 0) > 0 && (
             <button
               type="button"

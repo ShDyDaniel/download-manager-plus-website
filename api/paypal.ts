@@ -1885,6 +1885,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminRestoreBackup(req, res)
       case 'admin-list-client-errors':
         return await handleAdminListClientErrors(req, res)
+      case 'admin-export-client-errors':
+        return await handleAdminExportClientErrors(req, res)
       case 'admin-get-client-error':
         return await handleAdminGetClientError(req, res)
       case 'admin-resolve-client-error':
@@ -10656,6 +10658,59 @@ async function handleAdminListClientErrors(
     )
   const open = errors.filter((e) => !e.resolved).length
   return res.status(200).json({ ok: true, errors, count: errors.length, open })
+}
+
+/** Full dump of EVERY error group with per-OS breakdown + occurrence
+ *  samples — powers the admin "download error report" button. One call,
+ *  everything, so the downloaded file is self-contained for analysis. */
+async function handleAdminExportClientErrors(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const snap = await getDb().collection('clientErrors').get()
+  const errors = snap.docs
+    .map((d) => {
+      const x = d.data() as Record<string, unknown>
+      const platforms = (x.platforms as Record<string, number>) || {}
+      const devicesByPlatform =
+        (x.devicesByPlatform as Record<string, string[]>) || {}
+      const deviceCountByPlatform: Record<string, number> = {}
+      for (const [k, v] of Object.entries(devicesByPlatform)) {
+        deviceCountByPlatform[k] = Array.isArray(v) ? v.length : 0
+      }
+      const samples = Array.isArray(x.samples) ? x.samples : []
+      return {
+        fingerprint: d.id,
+        level: x.level || 'error',
+        message: x.message || '',
+        count: x.count || 0,
+        deviceCount: x.deviceCount || 0,
+        firstSeenAt: x.firstSeenAt || null,
+        lastSeenAt: x.lastSeenAt || null,
+        lastVersion: x.lastVersion || '?',
+        lastPlatform: x.lastPlatform || '?',
+        resolved: x.resolved === true,
+        // Per-OS: how many times (occurrences) + how many distinct devices.
+        platforms,
+        deviceCountByPlatform,
+        // Rolling sample of individual occurrences (each carries at /
+        // platform / appVersion / deviceId / email / stack / context).
+        occurrences: samples,
+      }
+    })
+    .sort((a, b) =>
+      String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')),
+    )
+  return res.status(200).json({
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    totalErrors: errors.length,
+    openErrors: errors.filter((e) => !e.resolved).length,
+    errors,
+  })
 }
 
 /** Full detail for one error group, including sample occurrences. */
