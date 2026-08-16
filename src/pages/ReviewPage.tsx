@@ -3413,6 +3413,9 @@ function OwnerStatusMenu({
   onApplyNote: (editorNote: string) => void
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
+  // Flip the popover upward when the pill sits low in the viewport so it
+  // isn't clipped off the bottom (notes near the end of a long list).
+  const [menuUp, setMenuUp] = useState(false)
   const [responseModal, setResponseModal] = useState<
     null | { kind: 'question' | 'not-possible' }
   >(null)
@@ -3421,6 +3424,15 @@ function OwnerStatusMenu({
   // question/not-possible response flow.
   const [noteModalOpen, setNoteModalOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+
+  function toggleMenu() {
+    if (!menuOpen) {
+      const rect = menuRef.current?.getBoundingClientRect()
+      const spaceBelow = rect ? window.innerHeight - rect.bottom : 999
+      setMenuUp(spaceBelow < 250)
+    }
+    setMenuOpen((v) => !v)
+  }
 
   useEffect(() => {
     if (!menuOpen) return
@@ -3470,7 +3482,7 @@ function OwnerStatusMenu({
       <div className="relative" ref={menuRef}>
         <button
           type="button"
-          onClick={() => setMenuOpen((v) => !v)}
+          onClick={toggleMenu}
           title="שינוי סטטוס תיקון"
           className={
             'inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-medium whitespace-nowrap transition-colors ' +
@@ -3482,7 +3494,12 @@ function OwnerStatusMenu({
           <span aria-hidden className="opacity-60">▾</span>
         </button>
         {menuOpen && (
-          <div className="absolute left-0 top-full z-30 mt-1 w-40 overflow-hidden rounded-lg border border-white/10 bg-bg shadow-2xl">
+          <div
+            className={
+              'absolute left-0 z-30 w-40 overflow-hidden rounded-lg border border-white/10 bg-bg shadow-2xl ' +
+              (menuUp ? 'bottom-full mb-1' : 'top-full mt-1')
+            }
+          >
             <OwnerMenuItem
               label="חדש"
               icon={Plus}
