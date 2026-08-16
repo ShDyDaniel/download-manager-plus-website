@@ -6832,23 +6832,15 @@ function normalizeErrMessage(msg: string): string {
     .trim()
     .slice(0, 300)
 }
-function stackSignature(stack: string): string {
-  if (!stack) return ''
-  const frames = String(stack)
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.startsWith('at ') || /:\d+:\d+/.test(l))
-    .slice(0, 3)
-    .map((l) =>
-      l
-        .replace(/:\d+:\d+/g, '') // strip line:col
-        .replace(/([A-Za-z]:\\|\/)[^\s)]+[\\/]/g, '') // strip dir paths
-        .replace(/\?[^\s):]+/g, ''), // strip query strings
-    )
-  return frames.join(' | ').slice(0, 400)
-}
-function errorFingerprint(level: string, message: string, stack: string): string {
-  const basis = `${level}::${normalizeErrMessage(message)}::${stackSignature(stack)}`
+// Fingerprint on LEVEL + normalized MESSAGE only — deliberately NOT the
+// stack. The same logical error must land in ONE row no matter which
+// machine, user, or app version produced it; obfuscated builds rename
+// bundle files and functions between versions, so a stack-based signature
+// split identical errors (e.g. two "[transcription:transcribe] aborted"
+// rows from v1.9.292 and v1.9.294). The normalized message is descriptive
+// enough (every log is prefixed with [source:action]) to group cleanly.
+function errorFingerprint(level: string, message: string): string {
+  const basis = `${level}::${normalizeErrMessage(message)}`
   return crypto.createHash('sha1').update(basis).digest('hex').slice(0, 24)
 }
 
@@ -7047,7 +7039,7 @@ async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
     const message = String(e.message || '').slice(0, 1000)
     const stack = String(e.stack || '').slice(0, 4000)
     if (!message && !stack) continue
-    const fp = errorFingerprint(level, message, stack)
+    const fp = errorFingerprint(level, message)
     let g = groups.get(fp)
     if (!g) {
       g = { level, message, samples: [], count: 0 }
