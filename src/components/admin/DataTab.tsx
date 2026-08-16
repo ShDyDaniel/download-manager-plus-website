@@ -402,38 +402,36 @@ export default function DataTab({
                 const N = daySeries.length
                 const SLOT = 20
                 const W = N * SLOT
-                const PLOT = 132 // bar area height
-                const H = PLOT + 20 // + room for date labels
+                const PLOT = 140
+                // Newest day on the left to match the RTL date row below.
+                const ordered = [...daySeries].reverse()
                 return (
-                  <svg
-                    viewBox={`0 0 ${W} ${H}`}
-                    preserveAspectRatio="none"
-                    style={{ width: '100%', height: 168 }}
-                    role="img"
-                  >
-                    <defs>
-                      <linearGradient id="barGrad" x1="0" y1="1" x2="0" y2="0">
-                        <stop offset="0%" stopColor="#B8794F" stopOpacity="0.7" />
-                        <stop offset="100%" stopColor="#D9A066" stopOpacity="0.95" />
-                      </linearGradient>
-                    </defs>
-                    {daySeries.map((d, i) => {
-                      // daySeries is oldest→newest; place newest at the left.
-                      const slot = N - 1 - i
-                      const x = slot * SLOT
-                      const barH =
-                        d.total > 0
-                          ? Math.max(3, (d.total / dayMax) * (PLOT - 4))
-                          : 1
-                      const y = PLOT - barH
-                      const valueLabel = dayMetricIsTime
-                        ? fmtDuration(d.total)
-                        : `${d.total.toLocaleString('he-IL')} כניסות`
-                      return (
-                        <g key={d.date}>
+                  <div>
+                    <svg
+                      viewBox={`0 0 ${W} ${PLOT}`}
+                      preserveAspectRatio="none"
+                      style={{ width: '100%', height: 140 }}
+                      role="img"
+                    >
+                      <defs>
+                        <linearGradient id="barGrad" x1="0" y1="1" x2="0" y2="0">
+                          <stop offset="0%" stopColor="#B8794F" stopOpacity="0.7" />
+                          <stop offset="100%" stopColor="#D9A066" stopOpacity="0.95" />
+                        </linearGradient>
+                      </defs>
+                      {ordered.map((d, slot) => {
+                        const barH =
+                          d.total > 0
+                            ? Math.max(3, (d.total / dayMax) * (PLOT - 4))
+                            : 1
+                        const valueLabel = dayMetricIsTime
+                          ? fmtDuration(d.total)
+                          : `${d.total.toLocaleString('he-IL')} כניסות`
+                        return (
                           <rect
-                            x={x + 3}
-                            y={y}
+                            key={d.date}
+                            x={slot * SLOT + 3}
+                            y={PLOT - barH}
                             width={SLOT - 6}
                             height={barH}
                             rx={2}
@@ -441,19 +439,20 @@ export default function DataTab({
                           >
                             <title>{`${d.date}: ${valueLabel}`}</title>
                           </rect>
-                          <text
-                            x={x + SLOT / 2}
-                            y={H - 6}
-                            textAnchor="middle"
-                            fontSize="7"
-                            fill="#8B8170"
-                          >
-                            {d.date.slice(5)}
-                          </text>
-                        </g>
-                      )
-                    })}
-                  </svg>
+                        )
+                      })}
+                    </svg>
+                    <div className="mt-1.5 flex gap-1.5">
+                      {ordered.map((d) => (
+                        <div
+                          key={d.date}
+                          className="flex-1 text-center text-[10px] tabular-nums text-fg-muted"
+                        >
+                          {d.date.slice(5)}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )
               })()
             ) : (
