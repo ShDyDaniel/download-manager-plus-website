@@ -161,14 +161,18 @@ export default function DataTab({
   for (const s of stats ?? []) {
     const visits = s.total ?? 0
     totalCounts += visits
-    if (s.date >= cutoff7) active7.add(s.uid)
-    dayTotals.set(s.date, (dayTotals.get(s.date) ?? 0) + visits)
-    for (const [t, n] of Object.entries(s.counts ?? {}))
-      tabCounts.set(t, (tabCounts.get(t) ?? 0) + n)
     const secs = s.seconds ?? {}
     const docSecs =
       s.totalSeconds ?? Object.values(secs).reduce((a, n) => a + n, 0)
     totalSeconds += docSecs
+    if (s.date >= cutoff7) active7.add(s.uid)
+    // Daily graph = engagement TIME per day (seconds), NOT visit-counts:
+    // time-heavy tabs (e.g. timetrack) accrue hours with almost no tab
+    // switches, so a counts-based graph looked empty despite real usage.
+    const dayKey = String(s.date).slice(0, 10)
+    dayTotals.set(dayKey, (dayTotals.get(dayKey) ?? 0) + docSecs)
+    for (const [t, n] of Object.entries(s.counts ?? {}))
+      tabCounts.set(t, (tabCounts.get(t) ?? 0) + n)
     for (const [t, n] of Object.entries(secs))
       tabSeconds.set(t, (tabSeconds.get(t) ?? 0) + n)
     const cur =
@@ -345,38 +349,45 @@ export default function DataTab({
             </div>
             {/* Explicit PIXEL heights — percentage heights inside nested
                 flex boxes don't resolve reliably, which left the bars at 0.
-                A fixed plot height + px bar heights always render. */}
-            <div
-              className="flex items-end gap-1.5"
-              style={{ direction: 'rtl', height: 168 }}
-            >
-              {daySeries.map((d) => {
-                const barPx =
-                  d.total > 0
-                    ? Math.max(6, Math.round((d.total / dayMax) * 140))
-                    : 2
-                return (
-                  <div
-                    key={d.date}
-                    className="group flex flex-1 flex-col items-center justify-end gap-1.5"
-                    title={`${d.date}: ${d.total.toLocaleString('he-IL')} כניסות`}
-                  >
+                A fixed plot height + px bar heights always render. Bars show
+                engagement TIME per day. */}
+            {dayMax > 0 ? (
+              <div
+                className="flex items-end gap-1.5"
+                style={{ direction: 'rtl', height: 168 }}
+              >
+                {daySeries.map((d) => {
+                  const barPx =
+                    d.total > 0
+                      ? Math.max(6, Math.round((d.total / dayMax) * 140))
+                      : 2
+                  return (
                     <div
-                      className={
-                        'w-full rounded-t transition-all ' +
-                        (d.total > 0
-                          ? 'bg-gradient-to-t from-primary/80 to-accent/80'
-                          : 'bg-white/5')
-                      }
-                      style={{ height: `${barPx}px` }}
-                    />
-                    <div className="text-[10px] tabular-nums text-fg-muted">
-                      {d.date.slice(5)}
+                      key={d.date}
+                      className="group flex flex-1 flex-col items-center justify-end gap-1.5"
+                      title={`${d.date}: ${fmtDuration(d.total)}`}
+                    >
+                      <div
+                        className={
+                          'w-full rounded-t transition-all ' +
+                          (d.total > 0
+                            ? 'bg-gradient-to-t from-primary/80 to-accent/80'
+                            : 'bg-white/5')
+                        }
+                        style={{ height: `${barPx}px` }}
+                      />
+                      <div className="text-[10px] tabular-nums text-fg-muted">
+                        {d.date.slice(5)}
+                      </div>
                     </div>
-                  </div>
-                )
-              })}
-            </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="flex h-40 items-center justify-center text-sm text-fg-muted">
+                אין נתוני פעילות ב-14 הימים האחרונים
+              </div>
+            )}
           </div>
 
           {/* Per-user table */}
