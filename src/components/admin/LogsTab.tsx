@@ -11,6 +11,7 @@ import {
   Users,
   Hash,
   Download,
+  DownloadCloud,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
@@ -82,6 +83,8 @@ export default function LogsTab({
   const [showResolved, setShowResolved] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const [pulling, setPulling] = useState(false)
+  const [pullMsg, setPullMsg] = useState('')
   const [busyKey, setBusyKey] = useState('')
   const [busyAction, setBusyAction] = useState<'resolve' | 'delete' | ''>('')
 
@@ -283,6 +286,25 @@ export default function LogsTab({
     }
   }
 
+  /** Ask all clients to upload their logs now. Connected desktops pick it up
+   *  within ~a minute (they poll the flag) and clear their local file after
+   *  uploading; offline ones do it on their next launch. */
+  async function requestPull() {
+    setPulling(true)
+    setError('')
+    setPullMsg('')
+    try {
+      await adminApi('admin-request-log-pull')
+      setPullMsg(
+        'נשלחה בקשה. לקוחות מחוברים ימשכו את הלוגים בדקות הקרובות (השאר בכניסה הבאה). רעננו בעוד כדקה כדי לראות אותם.',
+      )
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setPulling(false)
+    }
+  }
+
   // Global error-log collection kill-switch. (Sync-telemetry — the opt-in
   // shared data — moved to the "נתונים משותפים" tab; this tab is errors only.)
   const [logsOff, setLogsOff] = useState<boolean | null>(null)
@@ -338,6 +360,20 @@ export default function LogsTab({
         <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
+            onClick={requestPull}
+            disabled={pulling}
+            title="לבקש מכל הלקוחות להעלות עכשיו את הלוגים שלהם (מחוברים — מיד, השאר בכניסה הבאה)"
+            className="flex items-center gap-1.5 whitespace-nowrap rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15 disabled:opacity-60"
+          >
+            {pulling ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <DownloadCloud className="h-3.5 w-3.5" />
+            )}
+            {pulling ? 'שולח בקשה…' : 'משיכת לוגים עכשיו'}
+          </button>
+          <button
+            type="button"
             onClick={() => load(true)}
             disabled={refreshing}
             className="flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-60"
@@ -384,6 +420,12 @@ export default function LogsTab({
       {error && (
         <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <AlertTriangle className="h-4 w-4" /> {error}
+        </div>
+      )}
+
+      {pullMsg && (
+        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-primary">
+          <DownloadCloud className="h-4 w-4 shrink-0" /> {pullMsg}
         </div>
       )}
 

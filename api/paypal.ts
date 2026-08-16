@@ -1895,6 +1895,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminDeleteClientError(req, res)
       case 'admin-clear-client-errors':
         return await handleAdminClearClientErrors(req, res)
+      case 'admin-request-log-pull':
+        return await handleAdminRequestLogPull(req, res)
       case 'admin-sync-telemetry-export':
         return await handleAdminSyncTelemetryExport(req, res)
       case 'admin-sync-telemetry-clear':
@@ -10781,6 +10783,25 @@ async function handleAdminClearClientErrors(
     await batch.commit()
   }
   return res.status(200).json({ ok: true, deleted })
+}
+
+/** Request an immediate log pull from all clients. Stamps
+ *  appConfig/global.logsPullRequestedAt with the server time; connected
+ *  desktops (which poll this flag) upload their logs within ~a minute and
+ *  clear their local file, and any others do so on their next launch. */
+async function handleAdminRequestLogPull(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const requestedAt = Date.now()
+  await getDb()
+    .collection('appConfig')
+    .doc('global')
+    .set({ logsPullRequestedAt: requestedAt }, { merge: true })
+  return res.status(200).json({ ok: true, requestedAt })
 }
 
 /* ── Audio-sync telemetry (opt-in, for engine tuning) — R2 edition ──────────

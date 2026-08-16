@@ -7116,6 +7116,27 @@ async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
   return res.status(200).json({ ok: true, ingested, groups: sorted.length })
 }
 
+/** Lightweight signal the desktop polls: when an admin clicks "משיכת לוגים
+ *  עכשיו", appConfig/global.logsPullRequestedAt is stamped with the server
+ *  time. A client whose stored "last handled" is older uploads its logs
+ *  immediately (which also clears its local file). Auth-gated but returns
+ *  only a timestamp — nothing sensitive. */
+async function handleClientLogPullFlag(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  let requestedAt = 0
+  try {
+    const cfg = await getDb().collection('appConfig').doc('global').get()
+    if (cfg.exists) {
+      const v = (cfg.data() as { logsPullRequestedAt?: number }).logsPullRequestedAt
+      if (typeof v === 'number' && Number.isFinite(v)) requestedAt = v
+    }
+  } catch {
+    /* config unreadable → treat as no request */
+  }
+  return res.status(200).json({ ok: true, requestedAt })
+}
+
 /* ──────────────────────────────────────────────────────────────
  *  AI proxy (price-quote advisor) — Google Gemini, server-side.
  *
@@ -8367,6 +8388,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminUsage(req, res)
       case 'client-log-ingest':
         return await handleClientLogIngest(req, res)
+      case 'client-log-pull-flag':
+        return await handleClientLogPullFlag(req, res)
       case 'sync-telemetry-init':
         return await handleSyncTelemetryInit(req, res)
       case 'verify-logs-password':
