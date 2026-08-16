@@ -394,44 +394,68 @@ export default function DataTab({
                 ))}
               </select>
             </div>
-            {/* Explicit PIXEL heights — percentage heights inside nested
-                flex boxes don't resolve reliably, which left the bars at 0.
-                A fixed plot height + px bar heights always render. */}
+            {/* SVG chart — absolute coordinates, immune to the flex/percent
+                height quirks that kept collapsing the bars. Newest day on the
+                left to match the RTL date order. */}
             {dayHasData ? (
-              <div
-                className="flex items-end gap-1.5"
-                style={{ direction: 'rtl', height: 168 }}
-              >
-                {daySeries.map((d) => {
-                  const barPx =
-                    d.total > 0
-                      ? Math.max(6, Math.round((d.total / dayMax) * 140))
-                      : 2
-                  const valueLabel = dayMetricIsTime
-                    ? fmtDuration(d.total)
-                    : `${d.total.toLocaleString('he-IL')} כניסות`
-                  return (
-                    <div
-                      key={d.date}
-                      className="group flex flex-1 flex-col items-center justify-end gap-1.5"
-                      title={`${d.date}: ${valueLabel}`}
-                    >
-                      <div
-                        className={
-                          'w-full rounded-t transition-all ' +
-                          (d.total > 0
-                            ? 'bg-gradient-to-t from-primary/80 to-accent/80'
-                            : 'bg-white/5')
-                        }
-                        style={{ height: `${barPx}px` }}
-                      />
-                      <div className="text-[10px] tabular-nums text-fg-muted">
-                        {d.date.slice(5)}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
+              (() => {
+                const N = daySeries.length
+                const SLOT = 20
+                const W = N * SLOT
+                const PLOT = 132 // bar area height
+                const H = PLOT + 20 // + room for date labels
+                return (
+                  <svg
+                    viewBox={`0 0 ${W} ${H}`}
+                    preserveAspectRatio="none"
+                    style={{ width: '100%', height: 168 }}
+                    role="img"
+                  >
+                    <defs>
+                      <linearGradient id="barGrad" x1="0" y1="1" x2="0" y2="0">
+                        <stop offset="0%" stopColor="#B8794F" stopOpacity="0.7" />
+                        <stop offset="100%" stopColor="#D9A066" stopOpacity="0.95" />
+                      </linearGradient>
+                    </defs>
+                    {daySeries.map((d, i) => {
+                      // daySeries is oldest→newest; place newest at the left.
+                      const slot = N - 1 - i
+                      const x = slot * SLOT
+                      const barH =
+                        d.total > 0
+                          ? Math.max(3, (d.total / dayMax) * (PLOT - 4))
+                          : 1
+                      const y = PLOT - barH
+                      const valueLabel = dayMetricIsTime
+                        ? fmtDuration(d.total)
+                        : `${d.total.toLocaleString('he-IL')} כניסות`
+                      return (
+                        <g key={d.date}>
+                          <rect
+                            x={x + 3}
+                            y={y}
+                            width={SLOT - 6}
+                            height={barH}
+                            rx={2}
+                            fill={d.total > 0 ? 'url(#barGrad)' : '#ffffff14'}
+                          >
+                            <title>{`${d.date}: ${valueLabel}`}</title>
+                          </rect>
+                          <text
+                            x={x + SLOT / 2}
+                            y={H - 6}
+                            textAnchor="middle"
+                            fontSize="7"
+                            fill="#8B8170"
+                          >
+                            {d.date.slice(5)}
+                          </text>
+                        </g>
+                      )
+                    })}
+                  </svg>
+                )
+              })()
             ) : (
               <div className="flex h-40 items-center justify-center text-sm text-fg-muted">
                 אין נתונים ב-14 הימים האחרונים עבור הבחירה הזו
