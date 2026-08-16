@@ -2885,7 +2885,10 @@ function NoteItem({
             <p
               className={
                 'whitespace-pre-wrap break-words text-xs leading-relaxed ' +
-                (resolved ? 'text-fg/60 line-through decoration-fg/30' : 'text-fg')
+                // No strikethrough on resolved notes — the viewer still
+                // needs to read the original request. Status shows via the
+                // badge + card tint, not by crossing out the text.
+                (resolved ? 'text-fg/75' : 'text-fg')
               }
             >
               {note.text}
