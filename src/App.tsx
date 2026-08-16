@@ -22,26 +22,54 @@ import {
   A11Y_MOTION_EVENT,
   readStopMotion,
 } from './components/AccessibilityWidget'
-import { BuyPage } from './pages/BuyPage'
-import ContactPage from './pages/ContactPage'
-import AccountPage from './pages/AccountPage'
-import AuthActionPage from './pages/AuthActionPage'
-import { ReviewPage } from './pages/ReviewPage'
-import { DeliveryPage } from './pages/DeliveryPage'
-import { RevisionsPage } from './pages/RevisionsPage'
-import { DeliveriesPage } from './pages/DeliveriesPage'
-import { SyncLandingPage } from './pages/SyncLandingPage'
-import { GlossaryPacksPage } from './pages/GlossaryPacksPage'
-import { CollabLandingPage } from './pages/CollabLandingPage'
-import DrivePickerPage from './pages/DrivePickerPage'
-import PartnerPage from './pages/PartnerPage'
-import DeviceCheckPage from './pages/DeviceCheckPage'
-import SystemCheckPage from './pages/SystemCheckPage'
-import TrialActivatePage from './pages/TrialActivatePage'
-import InstallPage from './pages/InstallPage'
-// Lazy — AdminPage pulls in Firebase Auth (signInWithEmailAndPassword).
-// Keeping it out of the main bundle means visitors who never open
-// /admin don't download the Firebase weight.
+// Route pages are lazy-loaded so the initial bundle — the marketing
+// home page — doesn't ship the code for /buy, /account, /revisions,
+// the admin panel, and the desktop-handoff surfaces. Each page becomes
+// its own chunk fetched on first navigation to it. The home route's
+// own sections (Hero, Features, …) stay statically imported below so
+// the landing page paints with no extra round-trip. Named-export pages
+// are unwrapped to a `default` for React.lazy.
+const BuyPage = lazy(() =>
+  import('./pages/BuyPage').then((m) => ({ default: m.BuyPage })),
+)
+const ContactPage = lazy(() => import('./pages/ContactPage'))
+const AccountPage = lazy(() => import('./pages/AccountPage'))
+const AuthActionPage = lazy(() => import('./pages/AuthActionPage'))
+const ReviewPage = lazy(() =>
+  import('./pages/ReviewPage').then((m) => ({ default: m.ReviewPage })),
+)
+const DeliveryPage = lazy(() =>
+  import('./pages/DeliveryPage').then((m) => ({ default: m.DeliveryPage })),
+)
+const RevisionsPage = lazy(() =>
+  import('./pages/RevisionsPage').then((m) => ({ default: m.RevisionsPage })),
+)
+const DeliveriesPage = lazy(() =>
+  import('./pages/DeliveriesPage').then((m) => ({ default: m.DeliveriesPage })),
+)
+const SyncLandingPage = lazy(() =>
+  import('./pages/SyncLandingPage').then((m) => ({
+    default: m.SyncLandingPage,
+  })),
+)
+const GlossaryPacksPage = lazy(() =>
+  import('./pages/GlossaryPacksPage').then((m) => ({
+    default: m.GlossaryPacksPage,
+  })),
+)
+const CollabLandingPage = lazy(() =>
+  import('./pages/CollabLandingPage').then((m) => ({
+    default: m.CollabLandingPage,
+  })),
+)
+const DrivePickerPage = lazy(() => import('./pages/DrivePickerPage'))
+const PartnerPage = lazy(() => import('./pages/PartnerPage'))
+const DeviceCheckPage = lazy(() => import('./pages/DeviceCheckPage'))
+const SystemCheckPage = lazy(() => import('./pages/SystemCheckPage'))
+const TrialActivatePage = lazy(() => import('./pages/TrialActivatePage'))
+const InstallPage = lazy(() => import('./pages/InstallPage'))
+// AdminPage also pulls in Firebase Auth (signInWithEmailAndPassword),
+// so keeping it lazy keeps that weight off every non-admin visitor.
 const AdminPage = lazy(() => import('./pages/AdminPage'))
 
 // Top-level layout. The marketing site is the default route (`/`);
@@ -222,6 +250,7 @@ function AnimatedRoutes() {
         exit={{ opacity: 0, y: -8 }}
         transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
       >
+        <Suspense fallback={null}>
         <Routes location={location}>
           <Route
             path="/"
@@ -277,6 +306,7 @@ function AnimatedRoutes() {
             element={<Navigate to="/account" replace />}
           />
         </Routes>
+        </Suspense>
       </motion.div>
     </AnimatePresence>
   )
