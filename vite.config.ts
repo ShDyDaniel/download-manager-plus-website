@@ -19,4 +19,31 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Pin the big, rarely-changing framework libs into their own
+        // stable-hashed chunk. App code changes on nearly every deploy,
+        // which re-hashes whatever chunk it lives in and forces a
+        // re-download; keeping React + Router + framer-motion in a
+        // separate `vendor` chunk means a returning visitor keeps the
+        // cached copy across deploys that only touched app code.
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (
+              id.includes('/react/') ||
+              id.includes('/react-dom/') ||
+              id.includes('/react-router') ||
+              id.includes('/scheduler/') ||
+              id.includes('/framer-motion/') ||
+              id.includes('/motion-dom/') ||
+              id.includes('/motion-utils/')
+            ) {
+              return 'vendor'
+            }
+          }
+        },
+      },
+    },
+  },
 })
