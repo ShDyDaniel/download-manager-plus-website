@@ -343,32 +343,33 @@ export default function DataTab({
             <div className="mb-3 text-sm font-medium text-fg">
               פעילות יומית (14 ימים אחרונים)
             </div>
+            {/* Explicit PIXEL heights — percentage heights inside nested
+                flex boxes don't resolve reliably, which left the bars at 0.
+                A fixed plot height + px bar heights always render. */}
             <div
-              className="flex h-40 items-stretch gap-1.5"
-              style={{ direction: 'rtl' }}
+              className="flex items-end gap-1.5"
+              style={{ direction: 'rtl', height: 168 }}
             >
               {daySeries.map((d) => {
-                const pct = (d.total / dayMax) * 100
-                const h = d.total > 0 ? `${Math.max(pct, 4)}%` : '2%'
+                const barPx =
+                  d.total > 0
+                    ? Math.max(6, Math.round((d.total / dayMax) * 140))
+                    : 2
                 return (
                   <div
                     key={d.date}
-                    className="group flex h-full flex-1 flex-col items-center gap-1.5"
+                    className="group flex flex-1 flex-col items-center justify-end gap-1.5"
                     title={`${d.date}: ${d.total.toLocaleString('he-IL')} כניסות`}
                   >
-                    {/* flex-1 gives this a resolved height (the column fills
-                        h-40 via items-stretch), so the bar's % height works. */}
-                    <div className="flex w-full flex-1 items-end">
-                      <div
-                        className={
-                          'w-full rounded-t transition-all ' +
-                          (d.total > 0
-                            ? 'bg-gradient-to-t from-primary/80 to-accent/80'
-                            : 'bg-white/5')
-                        }
-                        style={{ height: h }}
-                      />
-                    </div>
+                    <div
+                      className={
+                        'w-full rounded-t transition-all ' +
+                        (d.total > 0
+                          ? 'bg-gradient-to-t from-primary/80 to-accent/80'
+                          : 'bg-white/5')
+                      }
+                      style={{ height: `${barPx}px` }}
+                    />
                     <div className="text-[10px] tabular-nums text-fg-muted">
                       {d.date.slice(5)}
                     </div>
