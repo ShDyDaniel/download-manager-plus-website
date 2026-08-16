@@ -10785,23 +10785,22 @@ async function handleAdminClearClientErrors(
   return res.status(200).json({ ok: true, deleted })
 }
 
-/** Request an immediate log pull from all clients. Stamps
- *  appConfig/global.logsPullRequestedAt with the server time; connected
- *  desktops (which poll this flag) upload their logs within ~a minute and
- *  clear their local file, and any others do so on their next launch. */
+/** Broadcast a "upload your error log now" command to online clients — the
+ *  SAME realtime-doc pattern as the usage pull (handleAdminIssueUsagePull):
+ *  one write to appConfig/logPullCommand; connected desktops listening via
+ *  onSnapshot react once (no polling), upload their logs and clear the local
+ *  file. Offline clients pick it up on their next launch (first snapshot). */
 async function handleAdminRequestLogPull(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdmin2FA(req))) {
-    return res.status(403).json({ ok: false, error: 'forbidden' })
-  }
-  const requestedAt = Date.now()
+  const admin = await verifyAdmin2FA(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
   await getDb()
     .collection('appConfig')
-    .doc('global')
-    .set({ logsPullRequestedAt: requestedAt }, { merge: true })
-  return res.status(200).json({ ok: true, requestedAt })
+    .doc('logPullCommand')
+    .set({ issuedAt: new Date().toISOString(), issuedBy: 'admin' })
+  return res.status(200).json({ ok: true })
 }
 
 /* ── Audio-sync telemetry (opt-in, for engine tuning) — R2 edition ──────────

@@ -296,7 +296,7 @@ export default function LogsTab({
     try {
       await adminApi('admin-request-log-pull')
       setPullMsg(
-        'נשלחה בקשה. לקוחות מחוברים ימשכו את הלוגים בדקות הקרובות (השאר בכניסה הבאה). רעננו בעוד כדקה כדי לראות אותם.',
+        'נשלחה בקשה. לקוחות מחוברים מעלים את הלוגים עכשיו (השאר בכניסה הבאה). רעננו בעוד כמה שניות.',
       )
     } catch (e) {
       handleErr(e)
@@ -362,7 +362,7 @@ export default function LogsTab({
             type="button"
             onClick={requestPull}
             disabled={pulling}
-            title="לבקש מכל הלקוחות להעלות עכשיו את הלוגים שלהם (מחוברים — מיד, השאר בכניסה הבאה)"
+            title="שולח פקודה אחת לכל הלקוחות המחוברים להעלות עכשיו את הלוגים (השאר — בכניסה הבאה)"
             className="flex items-center gap-1.5 whitespace-nowrap rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15 disabled:opacity-60"
           >
             {pulling ? (
