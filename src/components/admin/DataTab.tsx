@@ -76,6 +76,9 @@ export default function DataTab({
   const [pulling, setPulling] = useState(false)
   const [pullMsg, setPullMsg] = useState<string | null>(null)
   const [selectedUid, setSelectedUid] = useState<string | null>(null)
+  // What the daily graph plots: '__all_sec' = total engagement time,
+  // '__counts' = total visits, or a specific tab id (that tab's time).
+  const [dayMetric, setDayMetric] = useState<string>('__all_sec')
 
   function handleErr(e: unknown) {
     const err = e as Error & { code?: string }
@@ -148,7 +151,13 @@ export default function DataTab({
       secByTab: Map<string, number>
     }
   >()
-  const dayTotals = new Map<string, number>()
+  // Per-day aggregates for the daily graph: total engagement seconds, total
+  // visit-counts, and seconds broken down by tab — so the selector can switch
+  // between general usage, visits, or a single tab.
+  const dayAgg = new Map<
+    string,
+    { sec: number; counts: number; secByTab: Map<string, number> }
+  >()
   let totalCounts = 0
   let totalSeconds = 0
   const cutoff7 = (() => {
@@ -166,11 +175,15 @@ export default function DataTab({
       s.totalSeconds ?? Object.values(secs).reduce((a, n) => a + n, 0)
     totalSeconds += docSecs
     if (s.date >= cutoff7) active7.add(s.uid)
-    // Daily graph = engagement TIME per day (seconds), NOT visit-counts:
-    // time-heavy tabs (e.g. timetrack) accrue hours with almost no tab
-    // switches, so a counts-based graph looked empty despite real usage.
     const dayKey = String(s.date).slice(0, 10)
-    dayTotals.set(dayKey, (dayTotals.get(dayKey) ?? 0) + docSecs)
+    const day =
+      dayAgg.get(dayKey) ??
+      { sec: 0, counts: 0, secByTab: new Map<string, number>() }
+    day.sec += docSecs
+    day.counts += visits
+    for (const [t, n] of Object.entries(secs))
+      day.secByTab.set(t, (day.secByTab.get(t) ?? 0) + n)
+    dayAgg.set(dayKey, day)
     for (const [t, n] of Object.entries(s.counts ?? {}))
       tabCounts.set(t, (tabCounts.get(t) ?? 0) + n)
     for (const [t, n] of Object.entries(secs))
@@ -193,15 +206,36 @@ export default function DataTab({
   const maxTabCount = Math.max(1, ...tabIds.map((t) => tabCounts.get(t) ?? 0))
   const maxTabSeconds = Math.max(1, ...tabIds.map((t) => tabSeconds.get(t) ?? 0))
 
-  // Last-14-days daily totals, oldest on the right (RTL reading).
+  // Graph metric options: general usage (time), visits (counts), or a
+  // specific tab (that tab's time).
+  const dayMetricOptions = [
+    { v: '__all_sec', label: 'שימוש כללי' },
+    { v: '__counts', label: 'מספר כניסות' },
+    ...tabIds.map((t) => ({ v: t, label: TAB_LABELS[t] ?? t })),
+  ]
+  // Fall back to general usage if the selected tab has no data at all.
+  const dayMetricIsTime = dayMetric !== '__counts'
+
+  // Last-14-days daily series for the selected metric, oldest on the right.
   const daySeries: { date: string; total: number }[] = []
   for (let i = 13; i >= 0; i--) {
     const d = new Date()
     d.setDate(d.getDate() - i)
     const iso = d.toISOString().slice(0, 10)
-    daySeries.push({ date: iso, total: dayTotals.get(iso) ?? 0 })
+    const agg = dayAgg.get(iso)
+    let total = 0
+    if (agg) {
+      total =
+        dayMetric === '__counts'
+          ? agg.counts
+          : dayMetric === '__all_sec'
+            ? agg.sec
+            : agg.secByTab.get(dayMetric) ?? 0
+    }
+    daySeries.push({ date: iso, total })
   }
   const dayMax = Math.max(1, ...daySeries.map((d) => d.total))
+  const dayHasData = daySeries.some((d) => d.total > 0)
 
   const userRows = [...userRollup.entries()]
     .map(([uid, r]) => {
@@ -342,16 +376,28 @@ export default function DataTab({
             )}
           </div>
 
-          {/* Daily activity — last 14 days */}
+          {/* Daily activity — last 14 days, metric chosen via the selector */}
           <div className="rounded-2xl border border-border bg-card p-5">
-            <div className="mb-3 text-sm font-medium text-fg">
-              פעילות יומית (14 ימים אחרונים)
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-medium text-fg">
+                פעילות יומית (14 ימים אחרונים)
+              </div>
+              <select
+                value={dayMetric}
+                onChange={(e) => setDayMetric(e.target.value)}
+                className="rounded-md border border-border bg-background px-2 py-1 text-xs text-fg focus:border-primary/40 focus:outline-none"
+              >
+                {dayMetricOptions.map((o) => (
+                  <option key={o.v} value={o.v}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
             </div>
             {/* Explicit PIXEL heights — percentage heights inside nested
                 flex boxes don't resolve reliably, which left the bars at 0.
-                A fixed plot height + px bar heights always render. Bars show
-                engagement TIME per day. */}
-            {dayMax > 0 ? (
+                A fixed plot height + px bar heights always render. */}
+            {dayHasData ? (
               <div
                 className="flex items-end gap-1.5"
                 style={{ direction: 'rtl', height: 168 }}
@@ -361,11 +407,14 @@ export default function DataTab({
                     d.total > 0
                       ? Math.max(6, Math.round((d.total / dayMax) * 140))
                       : 2
+                  const valueLabel = dayMetricIsTime
+                    ? fmtDuration(d.total)
+                    : `${d.total.toLocaleString('he-IL')} כניסות`
                   return (
                     <div
                       key={d.date}
                       className="group flex flex-1 flex-col items-center justify-end gap-1.5"
-                      title={`${d.date}: ${fmtDuration(d.total)}`}
+                      title={`${d.date}: ${valueLabel}`}
                     >
                       <div
                         className={
@@ -385,7 +434,7 @@ export default function DataTab({
               </div>
             ) : (
               <div className="flex h-40 items-center justify-center text-sm text-fg-muted">
-                אין נתוני פעילות ב-14 הימים האחרונים
+                אין נתונים ב-14 הימים האחרונים עבור הבחירה הזו
               </div>
             )}
           </div>
