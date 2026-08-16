@@ -60,9 +60,8 @@ import {
   deleteRound,
   disconnectDrive,
   fetchDriveAccessToken,
-  fetchDriveIntegration,
   fetchDriveStorage,
-  fetchStorageBackend,
+  fetchOAuthStatus,
   fetchStorageState,
   importDriveLinkToR2,
   fetchNoteMediaAsObjectUrl,
@@ -283,10 +282,10 @@ export function RevisionsWorkspace() {
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const [d, b] = await Promise.all([
-        fetchDriveIntegration(),
-        fetchStorageBackend(),
-      ])
+      // ONE oauth-status request returns both the Drive integration and
+      // the storage backend (was two separate POSTs — the main driver of
+      // /api/revisions request volume).
+      const { drive: d, backend: b } = await fetchOAuthStatus()
       if (!cancelled) {
         setDrive(d)
         setBackend(b)
@@ -406,10 +405,13 @@ function ConnectDriveEmptyState({
   // Active polling — only while waitingForOAuth, as a last-ditch
   // fallback if all the event-based mechanisms above somehow miss
   // the connection signal. Capped at 5 minutes so the polling
-  // dies if the user abandons the flow.
+  // dies if the user abandons the flow. Interval kept deliberately
+  // slow (8s): OAuth completion is normally caught instantly by the
+  // event listeners above, so this only exists for the rare miss —
+  // no need to hammer oauth-status every 2s.
   useEffect(() => {
     if (!waitingForOAuth) return
-    const interval = window.setInterval(() => onRequestRefresh(), 2000)
+    const interval = window.setInterval(() => onRequestRefresh(), 8000)
     const timeout = window.setTimeout(
       () => {
         setWaitingForOAuth(false)

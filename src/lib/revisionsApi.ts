@@ -231,6 +231,43 @@ export async function fetchDriveIntegration(): Promise<DriveIntegration | null> 
   }
 }
 
+/** Combined oauth-status read. The `oauth-status` endpoint returns BOTH
+ *  the Drive-connection fields and the storage backend in one payload,
+ *  so fetching them together in a single request halves the poll
+ *  traffic vs calling fetchDriveIntegration + fetchStorageBackend
+ *  separately (each was its own `oauth-status` POST — the dominant
+ *  driver of /api/revisions request volume). */
+export async function fetchOAuthStatus(): Promise<{
+  drive: DriveIntegration | null
+  backend: 'r2' | 'drive'
+}> {
+  try {
+    const r = await postAction<{
+      ok: true
+      connected: boolean
+      email?: string
+      scope?: string
+      connectedAt?: number
+      lastUsedAt?: number
+      storageBackend?: string
+    }>('oauth-status', authBody())
+    const drive: DriveIntegration | null =
+      r.connected && r.email
+        ? {
+            connected: true,
+            email: r.email,
+            scope: r.scope || '',
+            connectedAt: r.connectedAt || 0,
+            lastUsedAt: r.lastUsedAt || 0,
+          }
+        : null
+    return { drive, backend: r.storageBackend === 'drive' ? 'drive' : 'r2' }
+  } catch (err) {
+    console.warn('[revisionsApi] fetchOAuthStatus failed:', err)
+    return { drive: null, backend: 'r2' }
+  }
+}
+
 /** URL the browser should navigate to to start the OAuth flow.
  *  We use `source=web` so the server-side callback knows to
  *  302-redirect back to /revisions?oauth=connected on success
