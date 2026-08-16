@@ -7425,35 +7425,27 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ── Vercel invocation counter (self-metered) — twin of api/paypal.ts.
- *  Every call to this endpoint is one Vercel function invocation. We
- *  count in memory and flush to metrics/vercelUsage only in batches
- *  (a few writes/day), so it costs effectively nothing. */
-let vcPendingRev = 0
-let vcLastFlushTsRev = Date.now()
-const VC_FLUSH_THRESHOLD_REV = 200
-const VC_FLUSH_WINDOW_MS_REV = 2 * 60 * 60 * 1000
+ *  SAMPLED, not in-memory batched: cold starts mean an in-memory tail never
+ *  survives to flush (the counter stayed ~0). Each request writes with
+ *  probability VC_SAMPLE_REV, incrementing by 1/VC_SAMPLE_REV, so the
+ *  expected total matches the real invocation count at a fraction of the
+ *  write cost. Best-effort. */
+const VC_SAMPLE_REV = 0.2
+const VC_INC_REV = Math.round(1 / VC_SAMPLE_REV)
 function recordVercelInvocation(): void {
-  vcPendingRev += 1
-  const now = Date.now()
-  if (
-    vcPendingRev < VC_FLUSH_THRESHOLD_REV &&
-    now - vcLastFlushTsRev < VC_FLUSH_WINDOW_MS_REV
-  )
-    return
-  const n = vcPendingRev
-  vcPendingRev = 0
-  vcLastFlushTsRev = now
+  if (Math.random() >= VC_SAMPLE_REV) return
   const month = new Date().toISOString().slice(0, 7)
   getDb()
     .collection('metrics')
     .doc('vercelUsage')
     .set(
-      { counts: { [month]: FieldValue.increment(n) }, updatedAt: now },
+      {
+        counts: { [month]: FieldValue.increment(VC_INC_REV) },
+        updatedAt: Date.now(),
+      },
       { merge: true },
     )
-    .catch(() => {
-      vcPendingRev += n
-    })
+    .catch(() => {})
 }
 
 /** Read this month's self-metered Vercel invocation count for the

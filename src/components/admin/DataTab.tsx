@@ -343,23 +343,28 @@ export default function DataTab({
             <div className="mb-3 text-sm font-medium text-fg">
               פעילות יומית (14 ימים אחרונים)
             </div>
-            <div className="flex h-40 items-end gap-1.5" style={{ direction: 'rtl' }}>
+            <div
+              className="flex h-40 items-stretch gap-1.5"
+              style={{ direction: 'rtl' }}
+            >
               {daySeries.map((d) => {
                 const pct = (d.total / dayMax) * 100
                 const h = d.total > 0 ? `${Math.max(pct, 4)}%` : '2%'
                 return (
                   <div
                     key={d.date}
-                    className="group relative flex flex-1 flex-col items-center gap-1.5"
+                    className="group flex h-full flex-1 flex-col items-center gap-1.5"
                     title={`${d.date}: ${d.total.toLocaleString('he-IL')} כניסות`}
                   >
-                    <div className="relative flex h-full w-full items-end">
+                    {/* flex-1 gives this a resolved height (the column fills
+                        h-40 via items-stretch), so the bar's % height works. */}
+                    <div className="flex w-full flex-1 items-end">
                       <div
                         className={
                           'w-full rounded-t transition-all ' +
                           (d.total > 0
                             ? 'bg-gradient-to-t from-primary/80 to-accent/80'
-                            : 'bg-card')
+                            : 'bg-white/5')
                         }
                         style={{ height: h }}
                       />

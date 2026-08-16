@@ -1614,29 +1614,26 @@ async function handleAdminPageViews(req: VercelRequest, res: VercelResponse) {
  *  restored so the next request retries. Slightly under-counts (the
  *  unflushed in-memory tail), which is fine for a rough gauge.
  *  See the twin copy in api/revisions.ts. */
-let vcPending = 0
-let vcLastFlushTs = Date.now()
-const VC_FLUSH_THRESHOLD = 200
-const VC_FLUSH_WINDOW_MS = 2 * 60 * 60 * 1000
+// In-memory batching is useless on Vercel: at low traffic each request runs in
+// a FRESH instance (cold start), so an accumulated in-memory tail never
+// survives to flush — the counter stayed ~0. Instead SAMPLE: each request
+// writes with probability VC_SAMPLE, incrementing by 1/VC_SAMPLE, so the
+// EXPECTED total equals the real invocation count regardless of instance
+// churn — at ~VC_SAMPLE of the write cost, and never hotspotting the doc at
+// the full request rate. Best-effort; a skipped/failed write just rounds off.
+const VC_SAMPLE = 0.2
+const VC_INC = Math.round(1 / VC_SAMPLE)
 function recordVercelInvocation(): void {
-  vcPending += 1
-  const now = Date.now()
-  if (vcPending < VC_FLUSH_THRESHOLD && now - vcLastFlushTs < VC_FLUSH_WINDOW_MS)
-    return
-  const n = vcPending
-  vcPending = 0
-  vcLastFlushTs = now
+  if (Math.random() >= VC_SAMPLE) return
   const month = new Date().toISOString().slice(0, 7)
   getDb()
     .collection('metrics')
     .doc('vercelUsage')
     .set(
-      { counts: { [month]: FieldValue.increment(n) }, updatedAt: now },
+      { counts: { [month]: FieldValue.increment(VC_INC) }, updatedAt: Date.now() },
       { merge: true },
     )
-    .catch(() => {
-      vcPending += n
-    })
+    .catch(() => {})
 }
 
 /* ─────────────────────────────────────────────────────────────
