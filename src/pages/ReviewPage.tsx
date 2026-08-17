@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
+import { VoiceNotePlayer } from '../components/VoiceNotePlayer'
 import {
   Loader2,
   Lock,
@@ -2894,18 +2895,7 @@ function NoteItem({
               {note.text}
             </p>
           )}
-          {audioUrl && (
-            <audio
-              controls
-              src={audioUrl}
-              preload="metadata"
-              onClick={(e) => e.stopPropagation()}
-              className={
-                'mt-1.5 block h-8 w-full rounded-md ' +
-                (resolved ? 'opacity-60' : '')
-              }
-            />
-          )}
+          {audioUrl && <VoiceNotePlayer src={audioUrl} dimmed={resolved} />}
           {/* Editor response — the question or "can't do" reason.
               Sits visually distinct from the original note text
               (light border + label) so the viewer immediately sees
@@ -3322,14 +3312,8 @@ function AudioRecorder({
   // Done state — preview the recorded audio + clear button.
   if (blob && previewUrl) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/[0.04] px-3 py-2">
-        <Mic className="h-4 w-4 shrink-0 text-primary" />
-        <audio
-          controls
-          src={previewUrl}
-          className="h-8 flex-1"
-          preload="metadata"
-        />
+      <div className="flex items-center gap-2">
+        <VoiceNotePlayer src={previewUrl} className="mt-0 flex-1" />
         <button
           type="button"
           onClick={clear}

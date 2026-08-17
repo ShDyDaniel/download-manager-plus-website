@@ -33,6 +33,7 @@ const MAX_UPLOAD_BYTES = Number.POSITIVE_INFINITY
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { VoiceNotePlayer } from './VoiceNotePlayer'
 import {
   Copy,
   ExternalLink,
@@ -2903,13 +2904,7 @@ function NoteCard({
       )}
 
       {/* Audio */}
-      {audioUrl && (
-        <audio
-          controls
-          src={audioUrl}
-          className="mt-3 w-full"
-        />
-      )}
+      {audioUrl && <VoiceNotePlayer src={audioUrl} className="mt-3" />}
 
       {/* Existing editor response (status = question / not-possible) */}
       {note.editorResponse && !editingResponse && (
