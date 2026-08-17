@@ -3956,7 +3956,11 @@ const NOTE_MEDIA_MAX_BASE64 = 5 * 1024 * 1024 // 5 MB encoded
 // neither legitimately approaches these numbers, but we leave headroom so
 // a 4K annotated frame or a few-minute clip never gets cut off.
 const NOTE_MEDIA_IMAGE_MAX = 3 * 1024 * 1024 // 3 MB — annotated JPEG/PNG frame
-const NOTE_MEDIA_AUDIO_MAX = 12 * 1024 * 1024 // 12 MB — several minutes of Opus/AAC
+// Voice notes are hard-capped at 90s in the recorder UI (AUDIO_MAX_SECONDS
+// in ReviewPage). 90s of Opus/AAC is ~1.4-2.1 MB; even a high-bitrate
+// (~320 kbps) browser tops out near 3.6 MB. 4 MB leaves headroom so a
+// legitimate 90s clip is never cut, while blocking anything larger.
+const NOTE_MEDIA_AUDIO_MAX = 4 * 1024 * 1024 // 4 MB — a full 90s recording + margin
 function noteMediaCap(kind: 'image' | 'audio'): number {
   return kind === 'image' ? NOTE_MEDIA_IMAGE_MAX : NOTE_MEDIA_AUDIO_MAX
 }
