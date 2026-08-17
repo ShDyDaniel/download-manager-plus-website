@@ -105,7 +105,7 @@ export function Hero() {
             className="mb-8 inline-flex items-center"
           >
             <img
-              src="/icon.png"
+              src="/icon.png?v=2"
               alt="לוגו ניהול הורדות פלוס"
               className="h-10 w-10 rounded-[10px]"
               style={{
