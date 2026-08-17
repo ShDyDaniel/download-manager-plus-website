@@ -418,19 +418,85 @@ async function r2PresignGet(key: string, ttl = 60 * 60): Promise<string> {
 
 // Presign a one-shot PUT so the browser uploads note media (screenshots
 // / voice notes) STRAIGHT to R2 — zero bytes through Vercel, same as the
-// video multipart parts. We deliberately sign only Bucket+Key: the
-// browser still sends Content-Type + Content-Length as unsigned headers
-// and R2 stores them, so we avoid signed-header mismatches (e.g. an
+// video multipart parts. Content-Type stays UNSIGNED (the browser sends
+// it and R2 stores it) so we avoid signed-header mismatches (e.g. an
 // `audio/webm;codecs=opus` blob type vs a stripped `audio/webm`).
+//
+// SIZE ENFORCEMENT: when `contentLength` is passed we bind it INTO the
+// signature. Every client that uses these URLs sends Content-Length
+// automatically (= the blob / part byte count), so R2 REJECTS any PUT
+// whose real size differs from the signed value. This upgrades the
+// client-declared size check at the call site into a hard, R2-enforced
+// ceiling — a caller can no longer declare "1 byte", receive a URL, and
+// then stream gigabytes into an un-quotaed prefix. Omit it to keep the
+// legacy Bucket+Key-only behaviour (used where a post-upload HEAD
+// backstop already measures the real size, e.g. multipart video).
 async function r2PresignPut(
   key: string,
   ttl = R2_PRESIGN_TTL,
+  contentLength?: number,
 ): Promise<string> {
-  return getSignedUrl(
-    getR2(),
-    new PutObjectCommand({ Bucket: R2_BUCKET, Key: key }),
-    { expiresIn: ttl },
-  )
+  const input: {
+    Bucket: string
+    Key: string
+    ContentLength?: number
+  } = { Bucket: R2_BUCKET, Key: key }
+  if (typeof contentLength === 'number' && Number.isFinite(contentLength) && contentLength > 0) {
+    input.ContentLength = Math.floor(contentLength)
+  }
+  return getSignedUrl(getR2(), new PutObjectCommand(input), { expiresIn: ttl })
+}
+
+// First-bytes content sniffer. We NEVER trust a client's declared
+// content-type or file extension for uploaded media — a reviewer could
+// rename a 10 GB video to `frame.jpg`. After an object lands in R2 we
+// read its header bytes and confirm the real format matches what we
+// expect; a mismatch means the object is deleted and the request
+// rejected. Recognises the formats a browser <canvas>/MediaRecorder or
+// a normal screenshot/recording actually produce.
+function sniffMediaCategory(b: Buffer): 'image' | 'audio' | 'other' {
+  if (!b || b.length < 4) return 'other'
+  const ascii = (start: number, end: number) => b.toString('ascii', start, end)
+  // ── images ──
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image' // JPEG
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image' // PNG
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return 'image' // GIF8
+  if (b.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'image'
+  // ── audio / recorded blobs ──
+  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return 'audio' // WebM/Matroska (MediaRecorder default)
+  if (ascii(0, 4) === 'OggS') return 'audio'
+  if (b.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WAVE') return 'audio'
+  if (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) return 'audio' // MP3 with ID3
+  if (b[0] === 0xff && (b[1] & 0xe0) === 0xe0) return 'audio' // MP3 frame sync
+  // ISO-BMFF (MP4 / M4A): 'ftyp' box at bytes 4..8. Safari's
+  // MediaRecorder emits audio/mp4; a tiny mp4 video would also match,
+  // but the per-type size cap bounds that to a few seconds of footage.
+  if (b.length >= 12 && ascii(4, 8) === 'ftyp') return 'audio'
+  return 'other'
+}
+
+// Read the first `n` bytes of an R2 object (Range GET) so we can sniff
+// its real format without pulling the whole file. Empty buffer on any
+// failure (caller treats that as "unverifiable" → reject).
+async function r2GetHeadBytes(key: string, n = 16): Promise<Buffer> {
+  try {
+    const r = await getR2().send(
+      new GetObjectCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        Range: `bytes=0-${Math.max(1, n) - 1}`,
+      }),
+    )
+    const body = r.Body as unknown as {
+      transformToByteArray?: () => Promise<Uint8Array>
+    }
+    if (body?.transformToByteArray) {
+      return Buffer.from(await body.transformToByteArray())
+    }
+    return Buffer.alloc(0)
+  } catch {
+    return Buffer.alloc(0)
+  }
 }
 
 async function r2HeadSize(key: string): Promise<number> {
@@ -783,7 +849,21 @@ async function handleDriveImportInit(req: VercelRequest, res: VercelResponse) {
 
   // Storage-quota gate — same rule as the local-upload path.
   const { usedBytes, limitBytes } = await getStorageState(verified.uid)
-  if (meta.size > 0 && usedBytes + meta.size > limitBytes) {
+  // Require a KNOWN size. Drive reports a byte size for every real
+  // binary/video file; a missing/zero size means a Google-native doc
+  // (not a video) or an unreadable file. Previously a zero size SKIPPED
+  // the quota check entirely and the Worker would then stream the file
+  // into R2 with no size bound at all — the one hole in this path. Reject
+  // instead of importing blind.
+  if (!(meta.size > 0)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'bad-size',
+      message:
+        'לא הצלחנו לקבוע את גודל הקובץ. ודאו שמדובר בקובץ וידאו תקין ששותף כ"כל מי שיש לו את הקישור".',
+    })
+  }
+  if (usedBytes + meta.size > limitBytes) {
     return res.status(413).json({
       ok: false,
       error: 'quota',
@@ -3759,6 +3839,28 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
 
+  // Content + size verification for R2 note media. The blob was PUT
+  // straight to R2 (never through us), so before attaching the key to a
+  // note we prove the stored object is really an image/audio within the
+  // per-type cap — not a huge file or a video renamed to .jpg. A failure
+  // deletes the offending object and rejects the note. (The presigned
+  // URL already bound Content-Length, so an oversize object shouldn't
+  // exist; this is the authoritative backstop + the type gate.)
+  if (screenshotR2Key) {
+    const v = await verifyNoteMediaObject(screenshotR2Key, 'image')
+    if (!v.ok) {
+      await r2DeleteObject(screenshotR2Key)
+      return res.status(v.status).json({ ok: false, error: v.error })
+    }
+  }
+  if (audioR2Key) {
+    const v = await verifyNoteMediaObject(audioR2Key, 'audio')
+    if (!v.ok) {
+      await r2DeleteObject(audioR2Key)
+      return res.status(v.status).json({ ok: false, error: v.error })
+    }
+  }
+
   // Screenshot size sanity check — Firestore's 1 MB doc cap means
   // we can't store huge base64 blobs. Cap at ~500 KB encoded which
   // is plenty for a JPEG frame at moderate quality.
@@ -3843,11 +3945,58 @@ async function handleAddNote(req: VercelRequest, res: VercelResponse) {
  *  These caps also keep us under Vercel Hobby's ~4.5 MB body cap.
  * ────────────────────────────────────────────────────────────── */
 const NOTE_MEDIA_MAX_BASE64 = 5 * 1024 * 1024 // 5 MB encoded
-// Raw-byte cap for the direct-to-R2 path (note-media-upload-url). The
-// browser uploads the blob straight to R2, so there's no Vercel body
-// limit to worry about — this is just a sane abuse ceiling. 8 MB covers
-// a high-res screenshot or a couple minutes of Opus comfortably.
-const NOTE_MEDIA_MAX_BYTES = 8 * 1024 * 1024 // 8 MB raw
+// Per-TYPE raw-byte caps for the direct-to-R2 path (note-media-upload-url).
+// The browser uploads the blob straight to R2, so there is no Vercel body
+// limit in the way — these are the real abuse ceilings, and they are
+// enforced THREE ways: (1) rejected at presign if the declared size
+// exceeds the cap, (2) bound into the presigned URL's Content-Length so
+// R2 rejects a larger real upload, (3) re-measured (HEAD) + format-sniffed
+// when the note is submitted, deleting anything oversize or of the wrong
+// type. A screenshot is a still frame; a voice note is a short recording —
+// neither legitimately approaches these numbers, but we leave headroom so
+// a 4K annotated frame or a few-minute clip never gets cut off.
+const NOTE_MEDIA_IMAGE_MAX = 3 * 1024 * 1024 // 3 MB — annotated JPEG/PNG frame
+const NOTE_MEDIA_AUDIO_MAX = 12 * 1024 * 1024 // 12 MB — several minutes of Opus/AAC
+function noteMediaCap(kind: 'image' | 'audio'): number {
+  return kind === 'image' ? NOTE_MEDIA_IMAGE_MAX : NOTE_MEDIA_AUDIO_MAX
+}
+
+// Post-upload verification for a direct-to-R2 note-media object. Called
+// when the note is submitted (add-note), BEFORE the key is attached. The
+// bytes went browser → R2 without passing through us, so this is where we
+// prove they're legit: (a) the real stored size is within the per-type
+// cap, and (b) the real file header matches the expected image/audio
+// format (not a video/other renamed to .jpg). On any failure the caller
+// deletes the object and rejects the note. Returns ok:true only when both
+// checks pass.
+async function verifyNoteMediaObject(
+  key: string,
+  expected: 'image' | 'audio',
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const size = await r2HeadSize(key)
+  if (size <= 0) {
+    return { ok: false, status: 400, error: 'המדיה לא נמצאה' }
+  }
+  if (size > noteMediaCap(expected)) {
+    return {
+      ok: false,
+      status: 413,
+      error: expected === 'image' ? 'התמונה גדולה מדי' : 'ההקלטה ארוכה מדי',
+    }
+  }
+  const head = await r2GetHeadBytes(key, 16)
+  if (sniffMediaCategory(head) !== expected) {
+    return {
+      ok: false,
+      status: 415,
+      error:
+        expected === 'image'
+          ? 'הקובץ שהועלה אינו תמונה תקינה'
+          : 'הקובץ שהועלה אינו הקלטה תקינה',
+    }
+  }
+  return { ok: true }
+}
 
 /** Find-or-create the "קבצי תיקונים" subfolder inside the project's
  *  root Drive folder. Mirrors the desktop's ensureFolder helper but
@@ -4160,7 +4309,7 @@ async function handleNoteMediaUploadUrl(
   if (sizeBytes <= 0) {
     return res.status(400).json({ ok: false, error: 'sizeBytes חסר' })
   }
-  if (sizeBytes > NOTE_MEDIA_MAX_BYTES) {
+  if (sizeBytes > noteMediaCap(kind)) {
     return res.status(413).json({
       ok: false,
       error: kind === 'image' ? 'התמונה גדולה מדי' : 'ההקלטה ארוכה מדי',
@@ -4195,7 +4344,10 @@ async function handleNoteMediaUploadUrl(
         : 'webm'
   const key = buildNoteMediaKey(ownerUid, ext)
   try {
-    const url = await r2PresignPut(key)
+    // Bind the declared size into the URL: R2 rejects any PUT whose real
+    // Content-Length differs, so the 3/12 MB cap above can't be bypassed
+    // by declaring a small size and streaming a huge file.
+    const url = await r2PresignPut(key, R2_PRESIGN_TTL, sizeBytes)
     return res.status(200).json({ ok: true, url, key })
   } catch (e) {
     console.error('[note-media-upload-url] presign failed:', e)
@@ -6554,6 +6706,24 @@ async function handleDeliveryCreate(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ ok: false, error: 'אין סרטונים במסירה' })
   }
 
+  // Aggregate quota backstop. Each sizeBytes above is the REAL R2 object
+  // size, but delivery-upload-init only gated the client-DECLARED size —
+  // a caller could under-declare at init, PUT a large file, and land here
+  // over quota (delivery-create has no r2-upload-complete step, so this is
+  // its equivalent of that path's delete-if-over-quota backstop). Re-check
+  // the true total against the live quota; if it would exceed, delete the
+  // just-uploaded objects and reject rather than register an over-quota
+  // delivery.
+  const addedBytes = videos.reduce((s, v) => s + (Number(v.sizeBytes) || 0), 0)
+  const { usedBytes, limitBytes } = await getStorageState(verified.uid)
+  if (limitBytes > 0 && usedBytes + addedBytes > limitBytes) {
+    await Promise.all(videos.map((v) => r2DeleteObject(v.r2Key)))
+    return res.status(413).json({
+      ok: false,
+      error: 'אין מספיק שטח אחסון בחשבון עבור המסירה',
+    })
+  }
+
   const password = String(body.password || '')
   if (password && password.length < 4) {
     return res
@@ -6912,9 +7082,20 @@ async function handleVerifyLogsPassword(
  *           sync-telemetry/fingerprints/<sha256>.bin.gz
  * ──────────────────────────────────────────────────────────────────────────── */
 const TELE_PREFIX = 'sync-telemetry'
-const TELE_MAX_EVENT = 20_000_000 // 20 MB — events carry every candidate score
-const TELE_MAX_FP = 64_000_000 // 64 MB per fingerprint blob (a very long take)
-const TELE_MAX_FPS = 128 // cap fingerprints presigned per sync
+// Hard per-object ceilings for telemetry. This prefix is NOT counted
+// against any user's storage quota, so — unlike the video path — these
+// caps ARE the only size defence. They are enforced twice: rejected here
+// if the client-declared size exceeds them, AND bound into each presigned
+// PUT's Content-Length (below) so R2 rejects a larger real upload. The
+// old values (20 MB event / 64 MB fingerprint / 128 blobs = ~8 GB/sync)
+// were an unbounded-abuse ceiling; these are tightened to realistic sizes
+// with headroom. NOTE: fingerprint sizing should be recalibrated against
+// real staged samples — bump TELE_MAX_FP if a genuine long-take blob is
+// ever rejected in the logs.
+const TELE_MAX_EVENT = 4 * 1024 * 1024 // 4 MB — anonymized match-metrics JSON
+const TELE_MAX_FP = 32 * 1024 * 1024 // 32 MB per gzipped fingerprint blob
+const TELE_MAX_FPS = 64 // cap fingerprints presigned per sync
+const TELE_MAX_TIMELINE = 8 * 1024 * 1024 // 8 MB per gzipped timeline xml
 async function handleSyncTelemetryInit(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -6958,7 +7139,11 @@ async function handleSyncTelemetryInit(req: VercelRequest, res: VercelResponse) 
   const eventKey = marker
     ? `${TELE_PREFIX}/events/${date}/${syncId}-export.json`
     : `${TELE_PREFIX}/events/${date}/${syncId}.json`
-  const eventPut = { url: await r2PresignPut(eventKey), key: eventKey }
+  // Bind the declared size — R2 rejects a PUT of any other length.
+  const eventPut = {
+    url: await r2PresignPut(eventKey, R2_PRESIGN_TTL, eventSize),
+    key: eventKey,
+  }
 
   const fps = Array.isArray(body.fingerprints)
     ? body.fingerprints.slice(0, TELE_MAX_FPS)
@@ -6976,7 +7161,11 @@ async function handleSyncTelemetryInit(req: VercelRequest, res: VercelResponse) 
       skipped.push(hash)
       continue
     }
-    fingerprintPuts.push({ hash, url: await r2PresignPut(key), key })
+    fingerprintPuts.push({
+      hash,
+      url: await r2PresignPut(key, R2_PRESIGN_TTL, size),
+      key,
+    })
   }
 
   // Sanitized timeline xmls (input/output) — small gzips, keyed by syncId so
@@ -6988,9 +7177,13 @@ async function handleSyncTelemetryInit(req: VercelRequest, res: VercelResponse) 
       t?.kind === 'output' ? 'output' : t?.kind === 'input' ? 'input' : null
     if (!kind) continue
     const size = Number(t?.size || 0)
-    if (!(size > 0) || size > 8 * 1024 * 1024) continue
+    if (!(size > 0) || size > TELE_MAX_TIMELINE) continue
     const key = `${TELE_PREFIX}/timelines/${syncId}-${kind === 'input' ? 'in' : 'out'}.xml.gz`
-    timelinePuts.push({ kind, url: await r2PresignPut(key), key })
+    timelinePuts.push({
+      kind,
+      url: await r2PresignPut(key, R2_PRESIGN_TTL, size),
+      key,
+    })
   }
 
   return res
