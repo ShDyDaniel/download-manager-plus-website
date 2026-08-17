@@ -46,7 +46,7 @@ export function Footer() {
           <div>
             <div className="flex items-center gap-3">
               <img
-                src="./icon.png"
+                src="/icon.png"
                 alt=""
                 className="h-9 w-9 rounded-[10px]"
                 style={{
