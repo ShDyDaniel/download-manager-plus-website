@@ -17,6 +17,7 @@ import {
   Download,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
+import { buildZip } from '../../lib/zip'
 import { Button } from '@/components/ui/Button'
 import { Card } from './SettingsTab'
 
@@ -360,6 +361,48 @@ function RemoteCheckCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
   const results = doc?.results ?? []
   const failed = results.filter((r) => !r.ok)
 
+  // One-click: bundle EVERYTHING (machine details + checks + all logs + raw
+  // JSON) into a single .zip, so the whole report can be sent for review
+  // instead of eyeballing it tab-by-tab.
+  function downloadAll() {
+    if (!doc) return
+    const enc = new TextEncoder()
+    const entries: { name: string; data: Uint8Array }[] = []
+    const add = (name: string, content: string) =>
+      entries.push({ name, data: enc.encode(content) })
+
+    if (doc.meta && Object.keys(doc.meta).length)
+      add(
+        'פרטי-מכונה.txt',
+        Object.entries(doc.meta)
+          .map(([k, v]) => `${k}: ${String(v)}`)
+          .join('\n'),
+      )
+    add(
+      'בדיקות.txt',
+      results
+        .map(
+          (r) =>
+            `${r.ok ? '[תקין] ' : '[נכשל] '} ${r.label}${
+              r.detail ? `\n         ${r.detail}` : ''
+            }`,
+        )
+        .join('\n'),
+    )
+    for (const [name, content] of Object.entries(doc.logs ?? {}))
+      add(`logs/${name}`, content)
+    add('report.json', JSON.stringify(doc, null, 2))
+
+    const idRaw = String(doc.meta?.['מזהה מכשיר'] ?? '')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(0, 8)
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(buildZip(entries))
+    a.download = `dmplus-syscheck-${idRaw || 'report'}.zip`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
   return (
     <Card title="בדיקת מערכת מרחוק (תמיכה)">
       <p className="text-[11px] leading-relaxed text-fg-muted">
@@ -434,14 +477,24 @@ function RemoteCheckCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
                 <ShieldAlert className="h-4 w-4" /> {failed.length} רכיבים נכשלו מתוך {results.length}
               </>
             )}
-            <button
-              type="button"
-              onClick={() => link && void poll(link.code)}
-              className="ms-auto inline-flex items-center gap-1 text-[11px] font-normal opacity-70 hover:opacity-100"
-              title="רענן"
-            >
-              <RefreshCw className="h-3 w-3" /> רענן
-            </button>
+            <div className="ms-auto flex items-center gap-3">
+              <button
+                type="button"
+                onClick={downloadAll}
+                className="inline-flex items-center gap-1 text-[11px] font-medium text-accent opacity-90 hover:opacity-100"
+                title="הורדת כל הנתונים (פרטי מכונה + בדיקות + לוגים) כקובץ ZIP אחד"
+              >
+                <Download className="h-3 w-3" /> הורד הכול (ZIP)
+              </button>
+              <button
+                type="button"
+                onClick={() => link && void poll(link.code)}
+                className="inline-flex items-center gap-1 text-[11px] font-normal opacity-70 hover:opacity-100"
+                title="רענן"
+              >
+                <RefreshCw className="h-3 w-3" /> רענן
+              </button>
+            </div>
           </div>
 
           <div className="overflow-hidden rounded-xl border border-border">
