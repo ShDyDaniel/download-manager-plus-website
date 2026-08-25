@@ -244,33 +244,37 @@ export function ReviewVideoControls({
             {playing ? <Pause className="h-5 w-5" fill="currentColor" /> : <Play className="h-5 w-5" fill="currentColor" />}
           </CtrlBtn>
 
-          {/* ±15s skip — the "15" is shown on the button so it's obvious
-              what it does (not just a generic seek icon). */}
-          <button
-            type="button"
-            onClick={() => skip(-15)}
-            title="אחורה 15 שניות"
-            aria-label="אחורה 15 שניות"
-            className="inline-flex h-8 items-center gap-0.5 rounded-md px-1.5 text-white/85 transition-colors hover:bg-white/15 hover:text-white"
-          >
-            <Rewind className="h-5 w-5" />
-            <span className="font-sans text-[11px] font-medium leading-none tracking-tight">15 שנ׳</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => skip(15)}
-            title="קדימה 15 שניות"
-            aria-label="קדימה 15 שניות"
-            className="inline-flex h-8 items-center gap-0.5 rounded-md px-1.5 text-white/85 transition-colors hover:bg-white/15 hover:text-white"
-          >
-            <span className="font-sans text-[11px] font-medium leading-none tracking-tight">15 שנ׳</span>
-            <FastForward className="h-5 w-5" />
-          </button>
+          {/* ±15s skip — two buttons flanking one centered "15 שנ׳"
+              label, so the pair reads as a single control (mirrors the
+              frame group below). */}
+          <div className="flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => skip(-15)}
+              title="אחורה 15 שניות"
+              aria-label="אחורה 15 שניות"
+              className="inline-flex h-8 w-7 items-center justify-center rounded-md text-white/85 transition-colors hover:bg-white/15 hover:text-white"
+            >
+              <Rewind className="h-5 w-5" />
+            </button>
+            <span className="select-none font-sans text-[11px] font-medium leading-none tracking-tight text-white/80">
+              15 שנ׳
+            </span>
+            <button
+              type="button"
+              onClick={() => skip(15)}
+              title="קדימה 15 שניות"
+              aria-label="קדימה 15 שניות"
+              className="inline-flex h-8 w-7 items-center justify-center rounded-md text-white/85 transition-colors hover:bg-white/15 hover:text-white"
+            >
+              <FastForward className="h-5 w-5" />
+            </button>
+          </div>
 
-          {/* Single-frame step — a labelled group so it reads as "frame
-              back / forward", not another seek. Hidden on phones (sm:)
-              where the bar is tight and frame-nudging isn't practical. */}
-          <div className="hidden items-center gap-0.5 rounded-md sm:flex">
+          {/* Single-frame step — same shape (buttons flanking a label).
+              Hidden on phones (sm:) where the bar is tight and
+              frame-nudging isn't practical. */}
+          <div className="hidden items-center gap-0.5 sm:flex">
             <button
               type="button"
               onClick={() => stepFrame(-1)}
@@ -280,7 +284,9 @@ export function ReviewVideoControls({
             >
               <StepBack className="h-4 w-4" />
             </button>
-            <span className="select-none text-[9px] font-medium text-white/60">פריים</span>
+            <span className="select-none font-sans text-[11px] font-medium leading-none tracking-tight text-white/80">
+              פריים
+            </span>
             <button
               type="button"
               onClick={() => stepFrame(1)}
