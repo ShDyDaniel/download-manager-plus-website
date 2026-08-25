@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import {
   Play,
@@ -59,6 +59,31 @@ export function ReviewVideoControls({
   const [volume, setVolume] = useState(1)
   const [rate, setRate] = useState(1)
   const [scrubbing, setScrubbing] = useState(false)
+
+  // Auto-hide on touch devices: a tap reveals the bar for 3s, then it
+  // fades until the next tap — so on a phone it never sits over the video
+  // and gets in the way. On desktop (hover-capable) the bar stays put.
+  const isTouch = useMemo(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(hover: none)').matches,
+    [],
+  )
+  const [visible, setVisible] = useState(true)
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const show = useCallback(() => {
+    setVisible(true)
+    if (!isTouch) return
+    if (hideTimer.current) clearTimeout(hideTimer.current)
+    hideTimer.current = setTimeout(() => setVisible(false), 3000)
+  }, [isTouch])
+  useEffect(() => {
+    if (isTouch) show()
+    return () => {
+      if (hideTimer.current) clearTimeout(hideTimer.current)
+    }
+  }, [isTouch, show])
 
   // Mirror the <video> element's state into React so the bar re-renders.
   useEffect(() => {
@@ -193,24 +218,44 @@ export function ReviewVideoControls({
 
   return (
     <>
-      {/* Center play button when paused — big, obvious affordance. */}
-      {!playing && (
-        <button
-          type="button"
-          onClick={togglePlay}
-          aria-label="נגן"
-          className="absolute inset-0 z-10 flex items-center justify-center"
-        >
-          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur transition hover:bg-black/70">
+      {/* Tap surface over the video. On touch, a tap just reveals the
+          controls for 3s (playback is via the buttons); on desktop a click
+          toggles play like a normal player. */}
+      <button
+        type="button"
+        aria-label={isTouch ? 'הצגת פקדים' : playing ? 'השהיה' : 'נגן'}
+        onClick={() => (isTouch ? show() : togglePlay())}
+        tabIndex={-1}
+        className="absolute inset-0 z-10 cursor-default"
+      />
+
+      {/* Center play button when paused — big, obvious affordance. On touch
+          it follows the same auto-hide as the bar. */}
+      {!playing && (!isTouch || visible) && (
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+          <button
+            type="button"
+            onClick={() => {
+              togglePlay()
+              show()
+            }}
+            aria-label="נגן"
+            className="pointer-events-auto flex h-16 w-16 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur transition hover:bg-black/70"
+          >
             <Play className="h-7 w-7 translate-x-0.5" fill="currentColor" />
-          </span>
-        </button>
+          </button>
+        </div>
       )}
 
-      {/* Control bar — bottom overlay with a scrim so it reads over any frame. */}
+      {/* Control bar — bottom overlay with a scrim so it reads over any
+          frame. On touch it fades out 3s after the last interaction. */}
       <div
         dir="ltr"
-        className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1.5 bg-gradient-to-t from-black/80 via-black/45 to-transparent px-3 pb-2 pt-8"
+        onPointerDown={show}
+        className={
+          'absolute inset-x-0 bottom-0 z-30 flex flex-col gap-1.5 bg-gradient-to-t from-black/80 via-black/45 to-transparent px-3 pb-2 pt-8 transition-opacity duration-300 ' +
+          (visible ? 'opacity-100' : 'pointer-events-none opacity-0')
+        }
       >
         {/* Scrubber */}
         <div className="group relative flex h-3 items-center">
@@ -257,8 +302,12 @@ export function ReviewVideoControls({
             >
               <Rewind className="h-5 w-5" />
             </button>
-            <span className="select-none font-sans text-[11px] font-medium leading-none tracking-tight text-white/80">
-              15 שנ׳
+            <span
+              dir="ltr"
+              className="inline-flex select-none items-center gap-1 font-sans text-[11px] font-medium leading-none tracking-tight text-white/80"
+            >
+              <span>15</span>
+              <span>שנ׳</span>
             </span>
             <button
               type="button"

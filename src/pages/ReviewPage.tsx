@@ -2159,12 +2159,6 @@ function ReviewWorkspace({
                       ? { aspectRatio: `${project.videoWidth} / ${project.videoHeight}` }
                       : undefined
                   }
-                  onClick={() => {
-                    const v = videoRef.current
-                    if (!v) return
-                    if (v.paused) void v.play()
-                    else v.pause()
-                  }}
                   onContextMenu={(e) => e.preventDefault()}
                   className={`review-video block h-auto w-auto max-w-full ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`}
                 />
@@ -3007,12 +3001,13 @@ function NoteItem({
             )
           )}
 
-          {/* "Edited" marker + history disclosure. The marker shows to
-              everyone; the expandable history (what the note said before)
-              is offered to the editor and to the note's author. */}
+          {/* "Edited" marker + history disclosure. Everyone (including the
+              author) sees only a plain "נערך" tag; the expandable history —
+              what the note said BEFORE — is visible ONLY to the editor
+              (owner mode), never to the author or other viewers. */}
           {!editing && note.editedAt && (
             <div onClick={(e) => e.stopPropagation()} className="mt-1">
-              {hasHistory && (isOwnerMode || isOwn) ? (
+              {hasHistory && isOwnerMode ? (
                 <button
                   type="button"
                   onClick={() => setShowHistory((v) => !v)}
