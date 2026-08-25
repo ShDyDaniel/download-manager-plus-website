@@ -254,7 +254,7 @@ export function ReviewVideoControls({
             className="inline-flex h-8 items-center gap-0.5 rounded-md px-1.5 text-white/85 transition-colors hover:bg-white/15 hover:text-white"
           >
             <Rewind className="h-5 w-5" />
-            <span className="text-[10px] font-semibold tabular-nums">15</span>
+            <span className="font-sans text-[11px] font-medium leading-none tracking-tight">15 שנ׳</span>
           </button>
           <button
             type="button"
@@ -263,7 +263,7 @@ export function ReviewVideoControls({
             aria-label="קדימה 15 שניות"
             className="inline-flex h-8 items-center gap-0.5 rounded-md px-1.5 text-white/85 transition-colors hover:bg-white/15 hover:text-white"
           >
-            <span className="text-[10px] font-semibold tabular-nums">15</span>
+            <span className="font-sans text-[11px] font-medium leading-none tracking-tight">15 שנ׳</span>
             <FastForward className="h-5 w-5" />
           </button>
 
