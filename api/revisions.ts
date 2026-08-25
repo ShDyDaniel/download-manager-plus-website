@@ -5969,6 +5969,101 @@ async function handleDeleteNote(req: VercelRequest, res: VercelResponse) {
 }
 
 /* ──────────────────────────────────────────────────────────────
+ *  Action: edit-note  (public — the note's own author)
+ *
+ *  POST /api/revisions?action=edit-note
+ *  Body: { shareToken, passwordToken?, roundId?, noteId, viewerEmail, text }
+ *  Returns: { ok, editedAt }
+ *
+ *  Lets a reviewer edit the TEXT of a note THEY wrote (matched by
+ *  viewerEmail, exactly like delete-note). Every prior version is
+ *  preserved in a `history` array on the doc so the editor can see
+ *  what the note said before each edit. Blocked once the round is
+ *  locked — same freeze semantics as add/delete-note.
+ * ────────────────────────────────────────────────────────────── */
+async function handleEditNote(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    shareToken?: string
+    passwordToken?: string
+    roundId?: string
+    noteId?: string
+    viewerEmail?: string
+    text?: string
+  }
+  const shareToken = String(body.shareToken || '').trim()
+  const noteId = String(body.noteId || '').trim()
+  const viewerEmail = String(body.viewerEmail || '').trim().toLowerCase()
+  const text = String(body.text || '').trim()
+  if (!shareToken || !noteId || !viewerEmail) {
+    return res.status(400).json({ ok: false, error: 'חסרים פרטים' })
+  }
+  if (!text) {
+    // Editing to empty would leave a note with neither text nor a way
+    // to re-add its media — treat as invalid. To remove, use delete.
+    return res.status(400).json({ ok: false, error: 'הטקסט לא יכול להיות ריק' })
+  }
+
+  const resolved = await resolvePublicRound(
+    shareToken,
+    body.roundId,
+    body.passwordToken,
+  )
+  if (!resolved.ok) {
+    return res.status(resolved.status).json({ ok: false, error: resolved.error })
+  }
+  const { roundRef, roundData } = resolved
+  if (roundData.locked === true) {
+    return res.status(423).json({
+      ok: false,
+      error: 'הסבב סגור. אי אפשר לערוך תיקונים בשלב זה.',
+    })
+  }
+
+  const noteRef = roundRef.collection('notes').doc(noteId)
+  const noteSnap = await noteRef.get()
+  if (!noteSnap.exists) {
+    return res.status(404).json({ ok: false, error: 'התיקון לא נמצא' })
+  }
+  const note = noteSnap.data() as {
+    viewerEmail?: string
+    text?: string
+    editedAt?: number | null
+    createdAt?: number
+    history?: Array<{ text: string; at: number }>
+  }
+  if ((note.viewerEmail || '').toLowerCase() !== viewerEmail) {
+    return res.status(403).json({
+      ok: false,
+      error: 'ניתן לערוך רק תיקונים שאתם הוספתם',
+    })
+  }
+
+  const newText = text.slice(0, 2000)
+  const prevText = String(note.text || '')
+  // No-op edit (same text) — succeed without churning history.
+  if (newText === prevText) {
+    return res.status(200).json({ ok: true, editedAt: note.editedAt ?? null })
+  }
+
+  const now = Date.now()
+  // Preserve the version being replaced, stamped with when it was written
+  // (the last edit time, or the note's creation time for the original).
+  const prior = {
+    text: prevText,
+    at: note.editedAt ?? note.createdAt ?? now,
+  }
+  const history = Array.isArray(note.history) ? note.history.slice(-49) : []
+  history.push(prior)
+
+  await noteRef.update({
+    text: newText,
+    editedAt: now,
+    history,
+  })
+  return res.status(200).json({ ok: true, editedAt: now })
+}
+
+/* ──────────────────────────────────────────────────────────────
  *  Action: update-group  (auth required — owner only)
  *
  *  POST /api/revisions?action=update-group
@@ -8558,6 +8653,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleDeleteGroup(req, res)
       case 'delete-note':
         return await handleDeleteNote(req, res)
+      case 'edit-note':
+        return await handleEditNote(req, res)
       case 'update-project':
         return await handleUpdateProject(req, res)
       case 'update-group':

@@ -676,6 +676,11 @@ export interface OwnerNote {
    *  or 'not-possible'. */
   editorResponse?: string | null
   createdAt: number
+  /** Set once the author edited the note text at least once. */
+  editedAt?: number | null
+  /** Prior text versions (oldest→newest), each with when it was written.
+   *  Lets the editor see what a note said before the client edited it. */
+  history?: Array<{ text: string; at: number }> | null
 }
 
 /** Fetch all notes the client(s) left on this round. Sorted

@@ -1,5 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
-import { Pen, ArrowRight, Square, Undo2, Trash2 } from 'lucide-react'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import {
+  Pen,
+  ArrowRight,
+  Square,
+  Undo2,
+  Trash2,
+  ZoomIn,
+  ZoomOut,
+  Hand,
+  Maximize2,
+} from 'lucide-react'
 
 /**
  * Image annotation canvas — pen + arrow + rectangle on top of a
@@ -77,6 +87,81 @@ export function AnnotationCanvas({
   // mutating the committed history (cleaner undo semantics).
   const [draft, setDraft] = useState<Stroke | null>(null)
 
+  // ── Zoom + pan ──────────────────────────────────────────────
+  // Lets the reviewer zoom into a full-frame screenshot and mark
+  // small details precisely with the pen. The canvas keeps its
+  // NATURAL pixels; zoom/pan is a CSS transform on top, so drawing
+  // coordinates still map correctly (getBoundingClientRect already
+  // reflects the transform). transform-origin is center, so the
+  // pan range is symmetric: ±(baseSize·(zoom−1)/2).
+  const MIN_ZOOM = 1
+  const MAX_ZOOM = 6
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [panMode, setPanMode] = useState(false)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  // Live pointers (by id) — 2 = pinch-zoom, 1 in pan mode = drag-pan.
+  const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
+  const panStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null)
+  const pinchStartRef = useRef<{ dist: number; zoom: number } | null>(null)
+
+  /** Base displayed size of the canvas at zoom 1 (CSS px), derived
+   *  from the current rect ÷ current zoom. Used to clamp the pan so
+   *  the image can't be dragged off-screen. */
+  const clampPan = useCallback(
+    (p: { x: number; y: number }, z: number) => {
+      const canvas = canvasRef.current
+      if (!canvas || z <= 1) return { x: 0, y: 0 }
+      const rect = canvas.getBoundingClientRect()
+      const baseW = rect.width / z
+      const baseH = rect.height / z
+      const maxX = (baseW * (z - 1)) / 2
+      const maxY = (baseH * (z - 1)) / 2
+      return {
+        x: Math.max(-maxX, Math.min(maxX, p.x)),
+        y: Math.max(-maxY, Math.min(maxY, p.y)),
+      }
+    },
+    [],
+  )
+
+  const applyZoom = useCallback(
+    (next: number) => {
+      const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, next))
+      setZoom(z)
+      setPan((p) => clampPan(p, z))
+      if (z <= 1) setPanMode(false)
+    },
+    [clampPan],
+  )
+
+  const resetView = useCallback(() => {
+    setZoom(1)
+    setPan({ x: 0, y: 0 })
+    setPanMode(false)
+  }, [])
+
+  // Reset the view whenever a new image loads.
+  useEffect(() => {
+    setZoom(1)
+    setPan({ x: 0, y: 0 })
+    setPanMode(false)
+  }, [imageUrl])
+
+  // Wheel-to-zoom. Attached as a NON-passive native listener because
+  // React's onWheel is passive and can't call preventDefault (which we
+  // need so the page doesn't scroll while zooming the frame).
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      applyZoom(zoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [zoom, applyZoom])
+
   // Load the image once + size the canvas to its natural pixels.
   // Doing this in an effect (not directly in render) avoids a
   // flash of an empty canvas before the image decodes.
@@ -145,10 +230,33 @@ export function AnnotationCanvas({
     }
   }
 
+  /** Distance between the two live pointers (for pinch-zoom). */
+  function pinchDistance(): number {
+    const pts = [...pointersRef.current.values()]
+    if (pts.length < 2) return 0
+    return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+  }
+
   function handlePointerDown(e: React.PointerEvent) {
     if (!imageReady) return
     e.preventDefault()
     ;(e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId)
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+    // Two fingers → start a pinch-zoom, and abandon any draft stroke.
+    if (pointersRef.current.size === 2) {
+      pinchStartRef.current = { dist: pinchDistance(), zoom }
+      panStartRef.current = null
+      if (draft) setDraft(null)
+      return
+    }
+
+    // Pan mode (hand tool / zoomed) → this drag pans, doesn't draw.
+    if (panMode) {
+      panStartRef.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y }
+      return
+    }
+
     setDraft({
       tool,
       color: COLOR_HEX[color],
@@ -158,6 +266,27 @@ export function AnnotationCanvas({
   }
 
   function handlePointerMove(e: React.PointerEvent) {
+    // Keep the live pointer position current for pinch math.
+    if (pointersRef.current.has(e.pointerId)) {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    }
+
+    // Pinch-zoom (two pointers).
+    if (pointersRef.current.size >= 2 && pinchStartRef.current) {
+      const d = pinchDistance()
+      if (d > 0 && pinchStartRef.current.dist > 0) {
+        applyZoom(pinchStartRef.current.zoom * (d / pinchStartRef.current.dist))
+      }
+      return
+    }
+
+    // Drag-pan (hand tool).
+    if (panStartRef.current) {
+      const s = panStartRef.current
+      setPan(clampPan({ x: s.panX + (e.clientX - s.x), y: s.panY + (e.clientY - s.y) }, zoom))
+      return
+    }
+
     if (!draft) return
     const point = pointFromEvent(e)
     setDraft((cur) => {
@@ -170,7 +299,14 @@ export function AnnotationCanvas({
     })
   }
 
-  function handlePointerUp() {
+  function handlePointerUp(e?: React.PointerEvent) {
+    if (e) pointersRef.current.delete(e.pointerId)
+    // End pinch/pan gestures cleanly.
+    if (pointersRef.current.size < 2) pinchStartRef.current = null
+    if (panStartRef.current) {
+      panStartRef.current = null
+      return
+    }
     if (!draft) return
     // Discard zero-length strokes (a stray tap that didn't drag).
     // For pen we keep tiny strokes (dot annotations); for shape
@@ -261,10 +397,38 @@ export function AnnotationCanvas({
           <Trash2 className="h-3.5 w-3.5" />
         </ToolButton>
 
-        {strokes.length > 0 && (
-          <span className="mr-auto text-[10px] text-fg-muted">
-            {strokes.length} סימונים
-          </span>
+        {/* Zoom controls — zoom into the frame to mark small details
+            precisely. The hand tool pans while zoomed; wheel + pinch
+            also zoom. Pushed to the row's end. */}
+        <span className="mr-auto h-5 w-px bg-white/10" aria-hidden />
+        <ToolButton
+          label="הזזה (גרירה)"
+          active={panMode}
+          onClick={() => setPanMode((v) => !v)}
+          disabled={zoom <= 1}
+        >
+          <Hand className="h-3.5 w-3.5" />
+        </ToolButton>
+        <ToolButton label="הקטנה" onClick={() => applyZoom(zoom / 1.25)} disabled={zoom <= MIN_ZOOM}>
+          <ZoomOut className="h-3.5 w-3.5" />
+        </ToolButton>
+        <button
+          type="button"
+          onClick={resetView}
+          title="איפוס תצוגה"
+          aria-label="איפוס תצוגה"
+          disabled={zoom === 1 && pan.x === 0 && pan.y === 0}
+          className="min-w-[3rem] rounded-md px-1 text-center text-[11px] font-mono tabular-nums text-fg-muted transition-colors hover:bg-white/5 hover:text-fg disabled:opacity-40"
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+        <ToolButton label="הגדלה" onClick={() => applyZoom(zoom * 1.25)} disabled={zoom >= MAX_ZOOM}>
+          <ZoomIn className="h-3.5 w-3.5" />
+        </ToolButton>
+        {zoom > 1 && (
+          <ToolButton label="התאמה למסך" onClick={resetView}>
+            <Maximize2 className="h-3.5 w-3.5" />
+          </ToolButton>
         )}
       </div>
 
@@ -272,7 +436,10 @@ export function AnnotationCanvas({
           reads as "the thing being annotated". touch-action: none
           prevents the browser from interpreting the drag as a scroll
           gesture on mobile. */}
-      <div className="flex items-center justify-center rounded-lg border border-white/10 bg-black/40 p-1">
+      <div
+        ref={viewportRef}
+        className="relative flex max-h-[46vh] items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-black/40 p-1"
+      >
         <canvas
           ref={canvasRef}
           onPointerDown={handlePointerDown}
@@ -280,9 +447,23 @@ export function AnnotationCanvas({
           onPointerUp={handlePointerUp}
           onPointerLeave={handlePointerUp}
           onPointerCancel={handlePointerUp}
-          className="block max-h-[42vh] w-auto max-w-full cursor-crosshair touch-none"
-          style={{ touchAction: 'none' }}
+          className={
+            'block max-h-[42vh] w-auto max-w-full touch-none ' +
+            (panMode ? 'cursor-grab active:cursor-grabbing' : 'cursor-crosshair')
+          }
+          style={{
+            touchAction: 'none',
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transformOrigin: 'center',
+            transition: panStartRef.current || pinchStartRef.current ? 'none' : 'transform 0.08s ease-out',
+          }}
         />
+      </div>
+
+      {/* Hint line — strokes count + a zoom nudge when at 1×. */}
+      <div className="flex items-center justify-between px-0.5 text-[10px] text-fg-muted">
+        <span>{strokes.length > 0 ? `${strokes.length} סימונים` : ' '}</span>
+        <span>{zoom <= 1 ? 'גלגלת/צביטה לזום — כדי לסמן פרטים קטנים' : 'כלי היד להזזה'}</span>
       </div>
     </div>
   )

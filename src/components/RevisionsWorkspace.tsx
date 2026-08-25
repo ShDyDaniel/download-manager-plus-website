@@ -41,6 +41,7 @@ import {
   RefreshCw,
   Link2 as LinkIcon,
   HardDrive,
+  History,
   Lock,
   LockOpen,
   MessageSquare,
@@ -2769,6 +2770,8 @@ function NoteCard({
   const [editingResponse, setEditingResponse] = useState<
     null | 'question' | 'not-possible'
   >(null)
+  // Disclosure for the note's edit history (what the client wrote before).
+  const [showHistory, setShowHistory] = useState(false)
 
   // Fetch screenshot once on mount (or when the file id changes).
   useEffect(() => {
@@ -2888,6 +2891,46 @@ function NoteCard({
           <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-fg">
             {note.text}
           </p>
+          {/* Edit history — the client can revise a note; here the editor
+              sees that it was edited and can expand every prior version so
+              nothing the client originally wrote is lost. */}
+          {note.editedAt && (
+            <div className="mt-1.5">
+              {Array.isArray(note.history) && note.history.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setShowHistory((v) => !v)}
+                  className="inline-flex items-center gap-1 text-[11px] text-fg-muted transition-colors hover:text-fg"
+                >
+                  <History className="h-3 w-3" />
+                  נערך ·{' '}
+                  {note.history.length === 1
+                    ? 'גרסה קודמת אחת'
+                    : `${note.history.length} גרסאות קודמות`}
+                  {showHistory ? ' — הסתרה' : ' — הצגה'}
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[11px] text-fg-muted">
+                  <History className="h-3 w-3" />
+                  נערך
+                </span>
+              )}
+              {showHistory && Array.isArray(note.history) && (
+                <ol className="mt-1.5 space-y-1.5 border-r-2 border-border pr-3">
+                  {note.history.map((h, i) => (
+                    <li key={i} className="text-xs leading-relaxed text-fg-muted">
+                      <span className="whitespace-pre-wrap break-words">
+                        {h.text || '(ריק)'}
+                      </span>
+                      <span className="mr-1.5 text-fg-faint" dir="ltr">
+                        {formatDateLong(h.at)}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
         </div>
         <StatusBadge status={note.status} />
       </div>

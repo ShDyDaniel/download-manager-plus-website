@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
+import { ReviewVideoControls } from '../components/ReviewVideoControls'
 import { VoiceNotePlayer } from '../components/VoiceNotePlayer'
 import {
   Loader2,
@@ -26,9 +27,9 @@ import {
   FileVideo,
   Download as DownloadIcon,
   RefreshCw,
-  Maximize2,
-  Minimize2,
   StickyNote,
+  Pencil,
+  History,
 } from 'lucide-react'
 
 /**
@@ -164,6 +165,12 @@ interface Note {
    *  both a status-tied response and a general editor note. */
   editorNote?: string | null
   createdAt: number
+  /** Set once the author has edited the note's text at least once. */
+  editedAt?: number | null
+  /** Prior versions of the text, oldest→newest, each stamped with when
+   *  that version was written. The editor (and the author) can expand
+   *  this to see what the note said before each edit. */
+  history?: Array<{ text: string; at: number }> | null
 }
 
 type State =
@@ -1630,17 +1637,6 @@ function ReviewWorkspace({
   const playerWrapRef = useRef<HTMLDivElement>(null)
   const [isFs, setIsFs] = useState(false)
   const fsActive = isFs
-  // Element (wrapper) fullscreen is supported on desktop/Android/iPad — there we
-  // show OUR button (it fullscreens the wrapper so the watermark survives) and
-  // hide the native one. On iPhone it's unsupported, so we hide our button and
-  // keep the system's native video fullscreen button instead.
-  const supportsElementFs =
-    typeof document !== 'undefined' &&
-    Boolean(
-      document.fullscreenEnabled ||
-        (document as unknown as { webkitFullscreenEnabled?: boolean })
-          .webkitFullscreenEnabled,
-    )
   useEffect(() => {
     const onChange = () => setIsFs(Boolean(document.fullscreenElement))
     document.addEventListener('fullscreenchange', onChange)
@@ -1933,6 +1929,56 @@ function ReviewWorkspace({
     }
   }
 
+  /** Author edits the text of their own note. Optimistic: swap the text
+   *  in place (and stash the prior version into local history) so the UI
+   *  updates instantly; roll back on server error. Returns true on
+   *  success so the card can close its inline editor. */
+  async function editNote(noteId: string, newText: string): Promise<boolean> {
+    const text = newText.trim()
+    if (!text) return false
+    const previous = notes
+    const now = Date.now()
+    setNotes((prev) =>
+      prev.map((n) => {
+        if (n.id !== noteId) return n
+        if ((n.text || '') === text) return n
+        const prior = { text: n.text || '', at: n.editedAt ?? n.createdAt ?? now }
+        return {
+          ...n,
+          text,
+          editedAt: now,
+          history: [...(n.history || []), prior].slice(-50),
+        }
+      }),
+    )
+    try {
+      const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
+      const r = await fetch(`${API}?action=edit-note`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shareToken: token,
+          passwordToken,
+          roundId,
+          noteId,
+          viewerEmail,
+          text,
+        }),
+      })
+      const json = (await r.json()) as { ok: boolean; error?: string }
+      if (!json.ok) {
+        setNotes(previous)
+        console.warn('[review] edit-note failed:', json.error)
+        return false
+      }
+      return true
+    } catch (err) {
+      setNotes(previous)
+      console.warn('[review] edit-note network failure:', err)
+      return false
+    }
+  }
+
   /** Owner-side: change a note's workflow status. Optimistic
    *  update with rollback on error. When the server returns 401
    *  the cached idToken is stale — bubble that up so the parent
@@ -2089,11 +2135,13 @@ function ReviewWorkspace({
               {/* Video-box: shrinks to the video itself, so the watermark overlays
                   exactly the VIDEO (not the letterbox bars). Keeps the watermark
                   IDENTICAL windowed vs fullscreen. */}
-              <div className="relative flex max-w-full">
+              <div className="review-player group relative flex max-w-full">
                 <video
                   ref={videoRef}
                   src={streamUrl}
-                  controls
+                  // Native controls are replaced by our branded control bar
+                  // (ReviewVideoControls) — dark + copper, with ±15s skip,
+                  // playback speed and frame-stepping for precise review.
                   crossOrigin="anonymous"
                   playsInline
                   // Stream progressively: load just the header, then fetch the rest
@@ -2111,34 +2159,27 @@ function ReviewWorkspace({
                       ? { aspectRatio: `${project.videoWidth} / ${project.videoHeight}` }
                       : undefined
                   }
-                  // Disable Chrome's download menu (inconsistent + stream is
-                  // inline-disposition anyway). With a watermark on we also hide the
-                  // native fullscreen button and drive fullscreen ourselves so the
-                  // overlay survives (desktop/Android).
-                  controlsList={`nodownload${project.watermark && supportsElementFs ? ' nofullscreen' : ''}`}
+                  onClick={() => {
+                    const v = videoRef.current
+                    if (!v) return
+                    if (v.paused) void v.play()
+                    else v.pause()
+                  }}
                   onContextMenu={(e) => e.preventDefault()}
-                  className={`review-video block h-auto w-auto max-w-full ${project.watermark && supportsElementFs ? 'hide-native-fs' : ''} ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`}
+                  className={`review-video block h-auto w-auto max-w-full ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`}
                 />
                 {/* Watermark is per-project. Inside the video-box so it tracks the
                     video in every mode. */}
                 {project.watermark && <Watermark email={viewerEmail} />}
-                {/* Custom fullscreen toggle — only where element fullscreen works
-                    (desktop/Android/iPad), so the wrapper-fullscreen keeps the
-                    overlay. On iPhone we drop it and keep the native button. */}
-                {project.watermark && supportsElementFs && (
-                  <button
-                    type="button"
-                    onClick={toggleFullscreen}
-                    aria-label={fsActive ? 'יציאה ממסך מלא' : 'מסך מלא'}
-                    className="absolute top-3 left-3 z-10 rounded-lg bg-black/55 p-2 text-white/80 backdrop-blur transition hover:bg-black/75 hover:text-white"
-                  >
-                    {fsActive ? (
-                      <Minimize2 className="h-4 w-4" strokeWidth={2} />
-                    ) : (
-                      <Maximize2 className="h-4 w-4" strokeWidth={2} />
-                    )}
-                  </button>
-                )}
+                {/* Branded control bar — owns play/seek/skip/speed/frame/volume;
+                    fullscreen stays owned by the parent (wraps the watermark too).
+                    toggleFullscreen already falls back to native video FS on
+                    iPhone, so the FS button is always useful. */}
+                <ReviewVideoControls
+                  videoRef={videoRef}
+                  fsActive={fsActive}
+                  onToggleFullscreen={toggleFullscreen}
+                />
               </div>
             </div>
           </div>
@@ -2398,6 +2439,7 @@ function ReviewWorkspace({
                     onSeek={seekTo}
                     onExpandImage={(url) => setLightbox(url)}
                     onDelete={() => deleteNote(note.id)}
+                    onEdit={(text) => editNote(note.id, text)}
                     onApplyStatus={(status, response) =>
                       void applyOwnerStatus(note.id, status, response)
                     }
@@ -2605,6 +2647,7 @@ function NoteItem({
   onSeek,
   onExpandImage,
   onDelete,
+  onEdit,
   onApplyStatus,
   onApplyNote,
 }: {
@@ -2626,6 +2669,9 @@ function NoteItem({
   onSeek: (t: number) => void
   onExpandImage: (url: string) => void
   onDelete: () => void
+  /** Author-side: save an edited note text. Resolves true on success
+   *  (the card then closes its inline editor). */
+  onEdit: (text: string) => Promise<boolean>
   /** Owner-side status change handler. No-op in viewer mode. */
   onApplyStatus: (
     status: 'new' | 'resolved' | 'question' | 'not-possible',
@@ -2644,6 +2690,13 @@ function NoteItem({
   // click commits. Same pattern as the desktop ProjectCard. Inline
   // is a better fit than a modal for a sidebar full of small cards.
   const [confirming, setConfirming] = useState(false)
+  // Inline text editing (author only). editText seeds from the note.
+  const [editing, setEditing] = useState(false)
+  const [editText, setEditText] = useState(note.text || '')
+  const [savingEdit, setSavingEdit] = useState(false)
+  // Edit-history disclosure (editor + author).
+  const [showHistory, setShowHistory] = useState(false)
+  const hasHistory = Array.isArray(note.history) && note.history.length > 0
   const resolved = note.status === 'resolved'
   const isQuestion = note.status === 'question'
   const isNotPossible = note.status === 'not-possible'
@@ -2863,10 +2916,28 @@ function NoteItem({
               >
                 {note.viewerEmail}
               </span>
+              {/* Edit pencil — author only. Opens the inline editor
+                  seeded with the current text. Every save is versioned
+                  server-side so the editor can see prior wording. */}
+              {isOwn && !confirming && !editing && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setEditText(note.text || '')
+                    setEditing(true)
+                  }}
+                  aria-label="עריכת התיקון"
+                  title="עריכת התיקון"
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-muted/40 opacity-0 transition-all hover:bg-primary/10 hover:text-primary group-hover:opacity-100"
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+              )}
               {/* Trash icon — visible only on the viewer's own notes.
                   Opacity transition on hover keeps the panel quiet
                   by default and surfaces the action when needed. */}
-              {isOwn && !confirming && (
+              {isOwn && !confirming && !editing && (
                 <button
                   type="button"
                   onClick={(e) => {
@@ -2882,18 +2953,99 @@ function NoteItem({
               )}
             </div>
           </div>
-          {note.text && (
-            <p
-              className={
-                'whitespace-pre-wrap break-words text-xs leading-relaxed ' +
-                // No strikethrough on resolved notes — the viewer still
-                // needs to read the original request. Status shows via the
-                // badge + card tint, not by crossing out the text.
-                (resolved ? 'text-fg/75' : 'text-fg')
-              }
-            >
-              {note.text}
-            </p>
+          {editing ? (
+            <div onClick={(e) => e.stopPropagation()} className="mt-1">
+              <textarea
+                value={editText}
+                onChange={(e) => setEditText(e.target.value)}
+                dir="rtl"
+                rows={3}
+                autoFocus
+                className="w-full resize-y rounded-md border border-primary/40 bg-black/20 px-2 py-1.5 text-xs leading-relaxed text-fg focus:border-primary focus:outline-none"
+              />
+              <div className="mt-1 flex items-center justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditing(false)
+                    setEditText(note.text || '')
+                  }}
+                  disabled={savingEdit}
+                  className="rounded px-2 py-0.5 text-[10px] text-fg-muted hover:bg-white/5 disabled:opacity-50"
+                >
+                  ביטול
+                </button>
+                <button
+                  type="button"
+                  disabled={savingEdit || !editText.trim() || editText.trim() === (note.text || '')}
+                  onClick={async () => {
+                    setSavingEdit(true)
+                    const ok = await onEdit(editText)
+                    setSavingEdit(false)
+                    if (ok) setEditing(false)
+                  }}
+                  className="inline-flex items-center gap-1 rounded bg-primary/20 px-2 py-0.5 text-[10px] font-semibold text-primary hover:bg-primary/30 disabled:opacity-40"
+                >
+                  {savingEdit ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                  שמירה
+                </button>
+              </div>
+            </div>
+          ) : (
+            note.text && (
+              <p
+                className={
+                  'whitespace-pre-wrap break-words text-xs leading-relaxed ' +
+                  // No strikethrough on resolved notes — the viewer still
+                  // needs to read the original request. Status shows via the
+                  // badge + card tint, not by crossing out the text.
+                  (resolved ? 'text-fg/75' : 'text-fg')
+                }
+              >
+                {note.text}
+              </p>
+            )
+          )}
+
+          {/* "Edited" marker + history disclosure. The marker shows to
+              everyone; the expandable history (what the note said before)
+              is offered to the editor and to the note's author. */}
+          {!editing && note.editedAt && (
+            <div onClick={(e) => e.stopPropagation()} className="mt-1">
+              {hasHistory && (isOwnerMode || isOwn) ? (
+                <button
+                  type="button"
+                  onClick={() => setShowHistory((v) => !v)}
+                  className="inline-flex items-center gap-1 text-[9px] text-fg-muted/70 transition-colors hover:text-fg-muted"
+                >
+                  <History className="h-2.5 w-2.5" />
+                  נערך · {note.history!.length === 1 ? 'גרסה קודמת אחת' : `${note.history!.length} גרסאות קודמות`}
+                  {showHistory ? ' (הסתר)' : ' (הצג)'}
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[9px] text-fg-muted/60">
+                  <History className="h-2.5 w-2.5" />
+                  נערך
+                </span>
+              )}
+              {showHistory && hasHistory && (
+                <ol className="mt-1 space-y-1 border-r-2 border-white/10 pr-2">
+                  {note.history!.map((h, i) => (
+                    <li key={i} className="text-[10px] leading-relaxed text-fg-muted/80">
+                      <span className="whitespace-pre-wrap break-words">{h.text || '(ריק)'}</span>
+                      <span className="mr-1 text-fg-muted/50" dir="ltr">
+                        {new Date(h.at).toLocaleString('he-IL', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
           )}
           {audioUrl && <VoiceNotePlayer src={audioUrl} dimmed={resolved} />}
           {/* Editor response — the question or "can't do" reason.
