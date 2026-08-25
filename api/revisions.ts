@@ -7333,6 +7333,30 @@ async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
  * ────────────────────────────────────────────────────────────── */
 const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim()
 
+/* ── Multiple Gemini keys, tried IN ORDER (failover) ────────────────────
+ *  The free tier has a low daily request cap per key. To stretch it we
+ *  accept several keys and rotate to the next whenever one is rate-limited
+ *  (429), rejected (403), briefly down (5xx) or returns empty — so the
+ *  editor brain / advisor keeps working across the combined quota. Sources,
+ *  merged + de-duped in order:
+ *    • GEMINI_API_KEYS — comma/space/newline separated list (preferred)
+ *    • GEMINI_API_KEY, GEMINI_API_KEY_2 … _9 — individual vars
+ *  A genuinely malformed request (400) stops the rotation — another key
+ *  would choke on it too. */
+function geminiKeys(): string[] {
+  const out: string[] = []
+  const push = (v?: string) => {
+    for (const k of (v || '').split(/[\s,]+/)) {
+      const t = k.trim()
+      if (t && !out.includes(t)) out.push(t)
+    }
+  }
+  push(process.env.GEMINI_API_KEYS)
+  push(process.env.GEMINI_API_KEY)
+  for (let i = 2; i <= 9; i++) push(process.env[`GEMINI_API_KEY_${i}`])
+  return out
+}
+
 /* ── Free fallback provider (the "safety net") ──────────────────────────
  *  When Gemini hits its daily/rate cap (429), is briefly down (5xx),
  *  unreachable, or returns empty — we transparently fall back to a second,
@@ -7377,10 +7401,11 @@ async function callGemini(
   contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>,
   systemParts: string[],
   maxTokens: number,
+  temperature = 0.7,
 ): Promise<AiResult> {
   const genCfg: Record<string, unknown> = {
     maxOutputTokens: maxTokens,
-    temperature: 0.7,
+    temperature,
     // Disable "thinking" so gemini-2.5-flash never emits its internal
     // chain-of-thought as visible text (the user must only ever see the
     // final answer). Some model versions reject thinkingConfig with a
@@ -7478,6 +7503,7 @@ async function callGemini(
 async function callFallbackAi(
   messages: Array<{ role?: string; content?: string }>,
   maxTokens: number,
+  temperature = 0.7,
 ): Promise<AiResult> {
   if (!FALLBACK_AI_API_KEY) {
     console.error('[ai-fallback] skipped: FALLBACK_AI_API_KEY is not set')
@@ -7517,7 +7543,7 @@ async function callFallbackAi(
           // Keep output modest so input + output stay under Cerebras' free
           // 8192-token context cap.
           max_tokens: Math.min(maxTokens, 2048),
-          temperature: 0.7,
+          temperature,
         }),
       })
       const data = (await r.json().catch(() => null)) as {
@@ -7553,8 +7579,8 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
 
-  const apiKey = (process.env.GEMINI_API_KEY || '').trim()
-  if (!apiKey) {
+  const keys = geminiKeys()
+  if (keys.length === 0) {
     return res
       .status(200)
       .json({ ok: false, error: 'שירות ה-AI לא מוגדר בשרת' })
@@ -7563,8 +7589,15 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as {
     messages?: Array<{ role?: string; content?: string }>
     max_tokens?: number
+    temperature?: number
   }
   const messages = Array.isArray(body.messages) ? body.messages : []
+  // Optional temperature (deterministic callers — e.g. the editor brain —
+  // send 0). Clamped; defaults to the advisor's conversational 0.7.
+  const temperature =
+    typeof body.temperature === 'number'
+      ? Math.max(0, Math.min(2, body.temperature))
+      : 0.7
   // Generous output budget. gemini-2.5-flash can spend part of its output
   // allowance on internal "thinking"; a low ceiling left nothing for the
   // visible answer on longer chats (empty reply). Floor high so thinking +
@@ -7593,21 +7626,26 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ ok: false, error: 'no user message' })
   }
 
-  // Primary: Gemini (the smart model the user wants to stay on).
-  let result = await callGemini(apiKey, contents, systemParts, maxTokens)
-
-  // Safety net: any Gemini failure except a genuinely malformed request
-  // (400 — the backup would choke on it too) falls back to the free
-  // provider so the advisor never goes dark. Logged so the Vercel function
-  // logs show exactly what happened on both the primary and the fallback.
-  if (!result.ok) {
+  // Primary: Gemini (the smart model the user wants to stay on). Try each
+  // configured key in order — rotating to the next on a rate-limit / reject /
+  // outage / empty reply — until one answers. A genuine 400 (malformed
+  // request) stops the rotation: another key would fail identically.
+  let result: AiResult = { ok: false, status: 0, error: 'no gemini key attempted' }
+  for (let i = 0; i < keys.length; i++) {
+    result = await callGemini(keys[i], contents, systemParts, maxTokens, temperature)
+    if (result.ok) break
     console.error(
-      `[ai] gemini failed status=${result.status}: ${result.error.slice(0, 180)}`,
+      `[ai] gemini key #${i + 1}/${keys.length} failed status=${result.status}: ${result.error.slice(0, 160)}`,
     )
-    if (FALLBACK_AI_API_KEY && result.status !== 400) {
-      const fb = await callFallbackAi(messages, maxTokens)
-      if (fb.ok) result = fb
-    }
+    if (result.status === 400) break // malformed — don't waste the other keys
+  }
+
+  // Safety net: if every Gemini key failed (except on a genuine 400 — the
+  // backup would choke on it too) fall back to the free provider so the
+  // advisor never goes dark.
+  if (!result.ok && FALLBACK_AI_API_KEY && result.status !== 400) {
+    const fb = await callFallbackAi(messages, maxTokens, temperature)
+    if (fb.ok) result = fb
   }
 
   if (result.ok) {
