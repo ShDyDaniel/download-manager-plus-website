@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import { ReviewVideoControls } from '../components/ReviewVideoControls'
+import { renderNoteText, NoteFormatToolbar } from '../lib/noteFormat'
 import { VoiceNotePlayer } from '../components/VoiceNotePlayer'
 import {
   Loader2,
@@ -2687,6 +2688,7 @@ function NoteItem({
   // Inline text editing (author only). editText seeds from the note.
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState(note.text || '')
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null)
   const [savingEdit, setSavingEdit] = useState(false)
   // Edit-history disclosure (editor + author).
   const [showHistory, setShowHistory] = useState(false)
@@ -2949,7 +2951,14 @@ function NoteItem({
           </div>
           {editing ? (
             <div onClick={(e) => e.stopPropagation()} className="mt-1">
+              <NoteFormatToolbar
+                textareaRef={editTextareaRef}
+                value={editText}
+                onChange={setEditText}
+                className="mb-1"
+              />
               <textarea
+                ref={editTextareaRef}
                 value={editText}
                 onChange={(e) => setEditText(e.target.value)}
                 dir="rtl"
@@ -2999,7 +3008,7 @@ function NoteItem({
                   (resolved ? 'text-fg/75' : 'text-fg')
                 }
               >
-                {note.text}
+                {renderNoteText(note.text)}
               </p>
             )
           )}
@@ -3030,7 +3039,7 @@ function NoteItem({
                 <ol className="mt-1 space-y-1 border-r-2 border-white/10 pr-2">
                   {note.history!.map((h, i) => (
                     <li key={i} className="text-[10px] leading-relaxed text-fg-muted/80">
-                      <span className="whitespace-pre-wrap break-words">{h.text || '(ריק)'}</span>
+                      <span className="whitespace-pre-wrap break-words">{h.text ? renderNoteText(h.text) : '(ריק)'}</span>
                       <span className="mr-1 text-fg-muted/50" dir="ltr">
                         {new Date(h.at).toLocaleString('he-IL', {
                           day: '2-digit',
@@ -3215,6 +3224,7 @@ function NoteComposer({
     (url: string | null) => setAnnotatedDataUrl(url),
     [],
   )
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Wider modal when there's a screenshot — the annotation canvas
   // needs room to breathe. Text-only stays narrow (max-w-lg) so
@@ -3280,7 +3290,14 @@ function NoteComposer({
             <label className="mb-1.5 block text-[11px] text-fg-muted">
               מה צריך לתקן?
             </label>
+            <NoteFormatToolbar
+              textareaRef={composerTextareaRef}
+              value={text}
+              onChange={setText}
+              className="mb-1.5"
+            />
             <textarea
+              ref={composerTextareaRef}
               value={text}
               onChange={(e) => setText(e.target.value)}
               autoFocus={!screenshotDataUrl}

@@ -34,6 +34,7 @@ const MAX_UPLOAD_BYTES = Number.POSITIVE_INFINITY
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
+import { renderNoteText } from '../lib/noteFormat'
 import {
   Copy,
   ExternalLink,
@@ -2889,7 +2890,7 @@ function NoteCard({
             <span>{dateStr}</span>
           </div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-fg">
-            {note.text}
+            {renderNoteText(note.text)}
           </p>
           {/* Edit history — the client can revise a note; here the editor
               sees that it was edited and can expand every prior version so
@@ -2920,7 +2921,7 @@ function NoteCard({
                   {note.history.map((h, i) => (
                     <li key={i} className="text-xs leading-relaxed text-fg-muted">
                       <span className="whitespace-pre-wrap break-words">
-                        {h.text || '(ריק)'}
+                        {h.text ? renderNoteText(h.text) : '(ריק)'}
                       </span>
                       <span className="mr-1.5 text-fg-faint" dir="ltr">
                         {formatDateLong(h.at)}
