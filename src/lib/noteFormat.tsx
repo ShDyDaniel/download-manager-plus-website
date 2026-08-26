@@ -1,23 +1,25 @@
-import { useCallback, type ReactNode, type RefObject } from 'react'
-import { Bold, Highlighter } from 'lucide-react'
+import { useLayoutEffect, useRef, type ReactNode } from 'react'
 
 /**
- * Lightweight emphasis for revision-note text — the client can make a word
- * bold or highlight it so a correction reads clearer ("move **this** logo",
- * "the ==background== is too dark"). Stored as plain markers inside the
- * existing note `text` string, so nothing on the server / edit / history
- * path changes. Rendered here into safe React nodes (never innerHTML).
+ * Lightweight emphasis for revision-note text — the client can HIGHLIGHT a
+ * word so a correction reads clearer ("move the *logo*"). WhatsApp-style:
+ * wrap a word in a single asterisk on each side.
  *
- *   **word**   → bold
- *   ==word==   → highlight (marker pen)
+ *   *word*  → highlight (marker pen)
+ *
+ * Stored as plain markers inside the existing note `text` string, so nothing
+ * on the server / edit / history path changes. Rendered into safe React
+ * nodes (never innerHTML).
  */
 
-const TOKEN_RE = /(\*\*([\s\S]+?)\*\*)|(==([\s\S]+?)==)/g
+// One asterisk each side, same line, no asterisk inside.
+const TOKEN_RE = /\*([^*\n]+)\*/g
 
-/** Render note text with **bold** / ==highlight== markers as React nodes.
- *  Whitespace is preserved by the surrounding `whitespace-pre-wrap`. */
+/** Final rendered note text: `*x*` → highlighted `x` (asterisks removed),
+ *  like a sent WhatsApp message. Whitespace preserved by the parent
+ *  `whitespace-pre-wrap`. */
 export function renderNoteText(text: string): ReactNode {
-  if (!text || (!text.includes('**') && !text.includes('=='))) return text
+  if (!text || !text.includes('*')) return text
   const out: ReactNode[] = []
   let last = 0
   let k = 0
@@ -25,89 +27,140 @@ export function renderNoteText(text: string): ReactNode {
   TOKEN_RE.lastIndex = 0
   while ((m = TOKEN_RE.exec(text)) !== null) {
     if (m.index > last) out.push(text.slice(last, m.index))
-    if (m[2] != null) {
-      out.push(
-        <strong key={k++} className="font-bold text-fg">
-          {m[2]}
-        </strong>,
-      )
-    } else {
-      out.push(
-        <mark key={k++} className="rounded bg-amber-400/25 px-0.5 text-fg">
-          {m[4]}
-        </mark>,
-      )
-    }
+    out.push(
+      <mark key={k++} className="rounded bg-amber-400/25 px-0.5 text-fg">
+        {m[1]}
+      </mark>,
+    )
     last = TOKEN_RE.lastIndex
   }
   if (last < text.length) out.push(text.slice(last))
   return out
 }
 
-/** Formatting toolbar for a note <textarea>: select text → Bold / Highlight
- *  wraps the selection in markers. Also carries a one-line "how to" tip so
- *  it's obvious anywhere a note is written. */
-export function NoteFormatToolbar({
-  textareaRef,
+/** In-EDITOR markup: like renderNoteText but the asterisks stay visible and
+ *  dimmed (half-transparent), so while typing the user sees exactly what
+ *  they wrote AND the live highlight effect — the WhatsApp input look. */
+function renderInputMarkup(text: string): ReactNode {
+  const out: ReactNode[] = []
+  let last = 0
+  let k = 0
+  let m: RegExpExecArray | null
+  TOKEN_RE.lastIndex = 0
+  while ((m = TOKEN_RE.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index))
+    out.push(
+      <span key={k++}>
+        <span className="text-fg/35">*</span>
+        <mark className="rounded bg-amber-400/25 text-fg">{m[1]}</mark>
+        <span className="text-fg/35">*</span>
+      </span>,
+    )
+    last = TOKEN_RE.lastIndex
+  }
+  if (last < text.length) out.push(text.slice(last))
+  // A trailing newline needs a spacer line so the backdrop height matches
+  // the textarea's.
+  out.push('​')
+  return out
+}
+
+/**
+ * A textarea that shows the highlight live as you type. Implemented as a
+ * transparent <textarea> layered over a styled backdrop <div> that mirrors
+ * the text — the standard "highlight within a textarea" technique. The two
+ * layers share identical box metrics so the styled text sits exactly under
+ * the (transparent) real text; the caret stays visible.
+ */
+export function HighlightTextarea({
   value,
   onChange,
-  className,
+  rows = 4,
+  placeholder,
+  autoFocus,
+  compact,
+  dir = 'rtl',
 }: {
-  textareaRef: RefObject<HTMLTextAreaElement | null>
   value: string
   onChange: (next: string) => void
-  className?: string
+  rows?: number
+  placeholder?: string
+  autoFocus?: boolean
+  /** Smaller padding + text — used by the inline edit box. */
+  compact?: boolean
+  dir?: 'rtl' | 'ltr'
 }) {
-  const wrap = useCallback(
-    (marker: string) => {
-      const ta = textareaRef.current
-      const s = ta ? ta.selectionStart ?? value.length : value.length
-      const e = ta ? ta.selectionEnd ?? value.length : value.length
-      const sel = value.slice(s, e) || 'טקסט'
-      const next = value.slice(0, s) + marker + sel + marker + value.slice(e)
-      onChange(next)
-      // Re-select the inner text after React re-renders so a second click
-      // (or typing) lands where the user expects.
-      const innerStart = s + marker.length
-      const innerEnd = innerStart + sel.length
-      requestAnimationFrame(() => {
-        if (!ta) return
-        ta.focus()
-        try {
-          ta.setSelectionRange(innerStart, innerEnd)
-        } catch {
-          /* ignore */
-        }
-      })
-    },
-    [textareaRef, value, onChange],
-  )
+  const taRef = useRef<HTMLTextAreaElement>(null)
+  const backRef = useRef<HTMLDivElement>(null)
+
+  const syncScroll = () => {
+    if (backRef.current && taRef.current) {
+      backRef.current.scrollTop = taRef.current.scrollTop
+      backRef.current.scrollLeft = taRef.current.scrollLeft
+    }
+  }
+  useLayoutEffect(syncScroll, [value])
+
+  // Box metrics shared by BOTH layers so the styled text aligns under the
+  // transparent typed text.
+  const box =
+    'w-full resize-y rounded-lg border px-3 leading-relaxed ' +
+    (compact ? 'py-1.5 text-xs' : 'py-2.5 text-sm')
 
   return (
-    <div className={'flex flex-wrap items-center gap-1.5 ' + (className || '')}>
-      <button
-        type="button"
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={() => wrap('**')}
-        title="הדגשה מודגשת (בולד)"
-        className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[11px] font-medium text-fg-muted transition-colors hover:bg-white/[0.07] hover:text-fg"
+    <div className="relative">
+      <div
+        ref={backRef}
+        aria-hidden
+        dir={dir}
+        className={
+          box +
+          ' pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words border-transparent text-fg'
+        }
       >
-        <Bold className="h-3 w-3" />
-        מודגש
-      </button>
-      <button
-        type="button"
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={() => wrap('==')}
-        title="הדגשה בצבע (טוש)"
-        className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[11px] font-medium text-fg-muted transition-colors hover:bg-white/[0.07] hover:text-fg"
-      >
-        <Highlighter className="h-3 w-3" />
-        הדגשה
-      </button>
-      <span className="text-[10px] text-fg-muted/70">
-        סמנו מילה ולחצו כדי להבליט אותה
-      </span>
+        {renderInputMarkup(value)}
+      </div>
+      <textarea
+        ref={taRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onScroll={syncScroll}
+        rows={rows}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        dir={dir}
+        style={{ caretColor: 'var(--fg)' }}
+        className={
+          box +
+          ' relative block bg-transparent text-transparent placeholder:text-fg-muted/60' +
+          ' border-white/10 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20'
+        }
+      />
     </div>
+  )
+}
+
+/** One-line explanation of the highlight syntax, with a live example so the
+ *  effect is obvious. No button — the client just types the asterisks. */
+export function FormatHint({ className }: { className?: string }) {
+  return (
+    <p className={'text-[11px] leading-relaxed text-fg-muted ' + (className || '')}>
+      טיפ: עטפו מילה בכוכבית מכל צד כדי להדגיש אותה —{' '}
+      <span className="whitespace-nowrap">{renderInputMarkupInline('*ככה*')}</span>
+    </p>
+  )
+}
+
+/** Inline (no trailing spacer) variant of renderInputMarkup for the hint. */
+function renderInputMarkupInline(text: string): ReactNode {
+  const m = TOKEN_RE.exec(text)
+  TOKEN_RE.lastIndex = 0
+  if (!m) return text
+  return (
+    <>
+      <span className="text-fg/35">*</span>
+      <mark className="rounded bg-amber-400/25 text-fg">{m[1]}</mark>
+      <span className="text-fg/35">*</span>
+    </>
   )
 }

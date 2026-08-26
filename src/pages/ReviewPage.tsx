@@ -3,7 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import { ReviewVideoControls } from '../components/ReviewVideoControls'
-import { renderNoteText, NoteFormatToolbar } from '../lib/noteFormat'
+import { renderNoteText, HighlightTextarea, FormatHint } from '../lib/noteFormat'
 import { VoiceNotePlayer } from '../components/VoiceNotePlayer'
 import {
   Loader2,
@@ -2688,7 +2688,6 @@ function NoteItem({
   // Inline text editing (author only). editText seeds from the note.
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState(note.text || '')
-  const editTextareaRef = useRef<HTMLTextAreaElement>(null)
   const [savingEdit, setSavingEdit] = useState(false)
   // Edit-history disclosure (editor + author).
   const [showHistory, setShowHistory] = useState(false)
@@ -2951,21 +2950,14 @@ function NoteItem({
           </div>
           {editing ? (
             <div onClick={(e) => e.stopPropagation()} className="mt-1">
-              <NoteFormatToolbar
-                textareaRef={editTextareaRef}
+              <HighlightTextarea
                 value={editText}
                 onChange={setEditText}
-                className="mb-1"
-              />
-              <textarea
-                ref={editTextareaRef}
-                value={editText}
-                onChange={(e) => setEditText(e.target.value)}
-                dir="rtl"
                 rows={3}
                 autoFocus
-                className="w-full resize-y rounded-md border border-primary/40 bg-black/20 px-2 py-1.5 text-xs leading-relaxed text-fg focus:border-primary focus:outline-none"
+                compact
               />
+              <FormatHint className="mt-1" />
               <div className="mt-1 flex items-center justify-end gap-1.5">
                 <button
                   type="button"
@@ -3224,7 +3216,6 @@ function NoteComposer({
     (url: string | null) => setAnnotatedDataUrl(url),
     [],
   )
-  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Wider modal when there's a screenshot — the annotation canvas
   // needs room to breathe. Text-only stays narrow (max-w-lg) so
@@ -3290,21 +3281,14 @@ function NoteComposer({
             <label className="mb-1.5 block text-[11px] text-fg-muted">
               מה צריך לתקן?
             </label>
-            <NoteFormatToolbar
-              textareaRef={composerTextareaRef}
+            <HighlightTextarea
               value={text}
               onChange={setText}
-              className="mb-1.5"
-            />
-            <textarea
-              ref={composerTextareaRef}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
               autoFocus={!screenshotDataUrl}
               rows={4}
               placeholder="לדוגמה: צבע הירק לא מתאים, להוריד את הווליום של המוזיקה ברקע... (אפשר גם להקליט הסבר קולי למטה)"
-              className="block w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5 text-sm text-fg placeholder:text-fg-muted/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
             />
+            <FormatHint className="mt-1.5" />
           </div>
           <AudioRecorder
             blob={audioBlob}
