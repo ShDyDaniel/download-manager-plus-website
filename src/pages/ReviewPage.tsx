@@ -2988,8 +2988,11 @@ function NoteItem({
           ) : (
             note.text && (
               <p
+                // Selectable + copyable: stop the row's seek-on-click so a
+                // click/drag to highlight the text doesn't jump the video.
+                onClick={(e) => e.stopPropagation()}
                 className={
-                  'whitespace-pre-wrap break-words text-xs leading-relaxed ' +
+                  'cursor-text select-text whitespace-pre-wrap break-words text-xs leading-relaxed ' +
                   // No strikethrough on resolved notes — the viewer still
                   // needs to read the original request. Status shows via the
                   // badge + card tint, not by crossing out the text.
