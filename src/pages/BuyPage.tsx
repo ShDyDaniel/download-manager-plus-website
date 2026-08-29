@@ -1156,8 +1156,12 @@ export function BuyPage() {
             sitting visibly shorter beside it. The shared `mt-3` on
             the grid reserves space for the floating 'מומלץ' ribbon
             so it doesn't visually overlap with anything above. */}
+        {/* Legacy monthly/yearly cycle selector — only for the renewal /
+            plan-switch flow (arrived with ?renew / ?switchTo). On a NEW
+            purchase the tier comparison above is the selector, so these are
+            hidden to avoid a duplicate set of "purchase options". */}
+        {renewToken && (
         <div
-          id="tier-checkout"
           dir="rtl"
           className="mb-6 mt-3 grid grid-cols-1 items-stretch gap-4 md:grid-cols-2"
         >
@@ -1199,13 +1203,20 @@ export function BuyPage() {
             currentPlanBadge={switchTo === 'yearly'}
           />
         </div>
+        )}
 
         <motion.div
+          id="tier-checkout"
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.1 }}
           className="card-elevated rounded-lg border-border p-6 md:p-8"
         >
+          {/* Pro feature recap — accurate only for the Pro tier, so it shows
+              only there. Other tiers rely on the comparison cards above (which
+              list exactly what each tier includes) to avoid wrong claims. */}
+          {tier === 'pro' && (
+          <>
           <h2 className="mb-5 font-display text-xl text-fg md:text-2xl">
             כל מה שתקבלו עם מנוי <span className="accent-word">Pro</span>
           </h2>
@@ -1237,6 +1248,8 @@ export function BuyPage() {
               </li>
             ))}
           </ul>
+          </>
+          )}
 
           {/* Plan-switch banner — shown when ?switchTo=... is on
               the URL (user came in via /account "שינוי תוכנית").

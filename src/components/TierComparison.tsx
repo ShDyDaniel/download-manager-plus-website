@@ -34,38 +34,56 @@ function fmtCount(n: number | null, unit: string): string {
   return n == null ? `${unit} ללא הגבלה` : `${n} ${unit}`
 }
 
-/** Cumulative highlight bullets per tier (each tier is "everything below + …"). */
+/** One-line positioning per tier. */
+const TAGLINE: Record<Tier, string> = {
+  free: 'להתחיל לעבוד — בלי לשלם',
+  basic: 'עבודת לקוחות בקנה מידה קטן',
+  pro: 'הערכת העריכה המלאה + AI',
+  ultra: 'העוצמה המלאה, בלי גבולות',
+}
+
+/** The tier just below — for the cumulative "includes everything in X" note. */
+const PREV_TIER: Partial<Record<Tier, Tier>> = {
+  basic: 'free',
+  pro: 'basic',
+  ultra: 'pro',
+}
+
+/** Feature bullets per tier (the cumulative "includes X" note is shown
+ *  separately, above the bullets). */
 function highlights(tier: Tier, c: TierConfig): string[] {
   switch (tier) {
     case 'free':
       return [
-        'ניהול הורדות (עד 2 פרויקטים במקביל)',
-        'הורדת קבצים מלאה (יוטיוב / דרייב)',
-        'המרת קבצים (ללא כיווץ וידאו)',
+        'ניהול הורדות (עד 2 פרויקטים)',
+        'הורדת קבצים מלאה — יוטיוב / דרייב',
+        'המרת קבצים',
         `תמלול חכם — ${fmtMinutes(c.transcriptionMonthlySec)}`,
         'הצעת מחיר אחת בחודש',
       ]
     case 'basic':
       return [
-        'כל מה שבחינם, וגם:',
-        'הצעות מחיר ללא הגבלה + כיווץ וידאו',
+        'הצעות מחיר ללא הגבלה',
+        'כיווץ וידאו',
+        `סבבי תיקונים + מסירה ללקוח — ${c.storageGb}GB`,
+        `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
         `תמלול חכם — ${fmtMinutes(c.transcriptionMonthlySec)}`,
-        `סבבי תיקונים + מסירה ללקוח (${c.storageGb}GB, ${c.maxRevisionProjects} פרויקט)`,
         'מעקב זמן עבודה',
       ]
     case 'pro':
       return [
-        'כל מה שב-Basic, וגם:',
         'סנכרון אוטומטי',
-        'תמלול ללא הגבלה + תכונות מתקדמות (דוברים, מדויק, מילון)',
+        'תמלול ללא הגבלה + מתקדם (דוברים, מדויק, מילון)',
         'העורך האוטומטי (AI) + AI יוצר',
-        `${c.storageGb}GB אחסון · ${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
+        `${c.storageGb}GB אחסון`,
+        `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
       ]
     case 'ultra':
       return [
-        'כל מה שב-Pro, וגם:',
-        `${c.storageGb}GB אחסון`,
-        'מכסת טוקני AI מוגדלת',
+        `${c.storageGb}GB אחסון — הגדול ביותר`,
+        'מכסת טוקני AI מוגדלת לעורך ול-AI יוצר',
+        `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
+        'עדיפות בתמיכה',
       ]
   }
 }
@@ -152,8 +170,9 @@ export default function TierComparison({
                 </div>
               )}
               <div className="text-lg font-bold font-display text-fg">{TIER_LABEL[tier]}</div>
+              <div className="mt-0.5 text-[11px] leading-snug text-fg-muted">{TAGLINE[tier]}</div>
 
-              <div className="mt-2 min-h-[2.5rem]">
+              <div className="mt-3 min-h-[2.75rem] border-b border-border/60 pb-3">
                 {tier === 'free' ? (
                   <span className="text-2xl font-bold text-fg">חינם</span>
                 ) : loading ? (
@@ -166,11 +185,19 @@ export default function TierComparison({
                     </span>
                   </div>
                 ) : (
-                  <span className="text-sm text-fg-muted">בקרוב</span>
+                  <span className="inline-flex items-center rounded-md bg-bg-elevated px-2 py-0.5 text-xs text-fg-muted">
+                    בקרוב
+                  </span>
                 )}
               </div>
 
-              <ul className="mt-4 flex-1 space-y-2">
+              {PREV_TIER[tier] && (
+                <div className="mt-3 text-[11px] font-medium text-primary">
+                  כולל את כל מה שב-{TIER_LABEL[PREV_TIER[tier] as Tier]}, ובנוסף:
+                </div>
+              )}
+
+              <ul className={cn('flex-1 space-y-2', PREV_TIER[tier] ? 'mt-2' : 'mt-3')}>
                 {highlights(tier, c).map((h, i) => (
                   <li key={i} className="flex items-start gap-2 text-xs text-fg-secondary">
                     <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
