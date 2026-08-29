@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import { Check, Loader2, Crown } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import {
@@ -223,29 +224,56 @@ export default function TierComparison({
 
   const order: Tier[] = ['free', ...PAID_TIERS]
 
+  // Yearly savings vs paying monthly (from the Pro tier). Shown as a badge
+  // only when it's a sane, positive number.
+  const pm = cfg.pro.priceMonthly
+  const py = cfg.pro.priceYearly
+  const savingsPct =
+    pm > 0 && py > 0 && py < pm * 12 ? Math.round((1 - py / (pm * 12)) * 100) : 0
+  const showSavings = savingsPct > 0 && savingsPct <= 70
+
   return (
     <div className="mb-10">
-      {/* monthly / yearly toggle */}
-      <div className="mb-6 flex justify-center">
-        <div className="inline-flex rounded-xl border border-border bg-card p-0.5">
-          {(['monthly', 'yearly'] as const).map((c) => (
-            <button
-              key={c}
-              type="button"
-              onClick={() => setCycle(c)}
-              className={cn(
-                'rounded-lg px-4 py-1.5 text-sm font-medium transition-colors',
-                cycle === c ? 'bg-primary text-white' : 'text-fg-muted hover:text-fg',
-              )}
-            >
-              {c === 'monthly' ? 'חודשי' : 'שנתי'}
-              {c === 'yearly' && (
-                <span className="ms-1.5 rounded-full bg-primary/20 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                  חיסכון
+      {/* monthly / yearly toggle — animated sliding pill */}
+      <div className="mb-8 flex justify-center">
+        <div className="relative inline-flex rounded-full border border-border bg-card p-1">
+          {(['monthly', 'yearly'] as const).map((c) => {
+            const active = cycle === c
+            return (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setCycle(c)}
+                className="relative z-10 inline-flex items-center gap-1.5 rounded-full px-6 py-2 text-sm font-semibold"
+              >
+                {active && (
+                  <motion.span
+                    layoutId="cyclePill"
+                    className="absolute inset-0 -z-10 rounded-full bg-primary shadow-sm shadow-primary/30"
+                    transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                  />
+                )}
+                <span
+                  className={cn(
+                    'transition-colors',
+                    active ? 'text-white' : 'text-fg-muted hover:text-fg',
+                  )}
+                >
+                  {c === 'monthly' ? 'חודשי' : 'שנתי'}
                 </span>
-              )}
-            </button>
-          ))}
+                {c === 'yearly' && showSavings && (
+                  <span
+                    className={cn(
+                      'rounded-full px-1.5 py-0.5 text-[10px] font-bold transition-colors',
+                      active ? 'bg-white/20 text-white' : 'bg-primary/15 text-primary',
+                    )}
+                  >
+                    -{savingsPct}%
+                  </span>
+                )}
+              </button>
+            )
+          })}
         </div>
       </div>
 
@@ -272,18 +300,32 @@ export default function TierComparison({
               <div className="text-lg font-bold font-display text-fg">{TIER_LABEL[tier]}</div>
               <div className="mt-0.5 text-[11px] leading-snug text-fg-muted">{TAGLINE[tier]}</div>
 
-              <div className="mt-3 min-h-[2.75rem] border-b border-border/60 pb-3">
+              <div className="mt-3 min-h-[3rem] border-b border-border/60 pb-3">
                 {tier === 'free' ? (
-                  <span className="text-2xl font-bold text-fg">חינם</span>
+                  <span className="text-3xl font-extrabold text-fg">חינם</span>
                 ) : loading ? (
                   <Loader2 className="h-5 w-5 animate-spin text-fg-muted" />
                 ) : price > 0 ? (
-                  <div className="flex items-baseline gap-1" dir="ltr">
-                    <span className="text-2xl font-bold text-fg">₪{price}</span>
-                    <span className="text-xs text-fg-muted">
-                      /{cycle === 'monthly' ? 'חודש' : 'שנה'}
-                    </span>
-                  </div>
+                  // Price FIRST, then the period. AnimatePresence fades the
+                  // amount when the buyer flips monthly ↔ yearly.
+                  <AnimatePresence mode="wait" initial={false}>
+                    <motion.div
+                      key={cycle}
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      transition={{ duration: 0.18 }}
+                      className="flex items-baseline gap-1.5"
+                      dir="rtl"
+                    >
+                      <span className="text-3xl font-extrabold text-fg" dir="ltr">
+                        ₪{price}
+                      </span>
+                      <span className="text-xs text-fg-muted">
+                        {cycle === 'monthly' ? 'לחודש' : 'לשנה'}
+                      </span>
+                    </motion.div>
+                  </AnimatePresence>
                 ) : (
                   <span className="inline-flex items-center rounded-md bg-bg-elevated px-2 py-0.5 text-xs text-fg-muted">
                     בקרוב
