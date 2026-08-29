@@ -1059,7 +1059,7 @@ export function BuyPage() {
       transition={{ duration: 0.35 }}
       className="min-h-screen px-6 py-12 md:py-20"
     >
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto max-w-5xl">
         <Link
           to="/"
           className="mb-8 inline-flex items-center gap-2 text-sm text-fg-muted transition-colors hover:text-fg"
@@ -1118,7 +1118,7 @@ export function BuyPage() {
             keyless. Showing this notice INSTEAD of the plan cards +
             flow closes that window. See fetchLivePricingStrict(). */}
         {pricingUnavailable ? (
-          <div className="mb-6 rounded-2xl border border-destructive/30 bg-destructive/10 px-6 py-8 text-center">
+          <div className="mx-auto mb-6 max-w-2xl rounded-2xl border border-destructive/30 bg-destructive/10 px-6 py-8 text-center">
             <h2 className="text-lg font-semibold text-fg">
               הרכישה אינה זמינה כרגע
             </h2>
@@ -1139,7 +1139,7 @@ export function BuyPage() {
           /* Loading — the strict DB price fetch hasn't resolved yet.
              We show NO price (not even a skeleton number) until the
              real database price arrives. */
-          <div className="mb-6 flex flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-card px-6 py-16 text-center">
+          <div className="mx-auto mb-6 flex max-w-2xl flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-card px-6 py-16 text-center">
             <Loader2 className="h-6 w-6 animate-spin text-fg-muted" />
             <p className="text-sm text-fg-muted">טוען את פרטי המנוי…</p>
           </div>
@@ -1214,46 +1214,11 @@ export function BuyPage() {
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.1 }}
-          className="card-elevated rounded-lg border-border p-6 md:p-8"
+          className="card-elevated mx-auto w-full max-w-2xl rounded-lg border-border p-6 md:p-8"
         >
-          {/* Pro feature recap — accurate only for the Pro tier, so it shows
-              only there. Other tiers rely on the comparison cards above (which
-              list exactly what each tier includes) to avoid wrong claims. */}
-          {tier === 'pro' && (
-          <>
-          <h2 className="mb-5 font-display text-xl text-fg md:text-2xl">
-            כל מה שתקבלו עם מנוי <span className="accent-word">Pro</span>
-          </h2>
-          <ul className="mb-7 grid grid-cols-1 gap-x-10 gap-y-3 sm:grid-cols-2">
-            {[
-              'סנכרון אוטומטי של וידאו וסאונד (מולטיקאם ומיקרופונים חיצוניים)',
-              'סבבי תיקונים: קישור ביקורת ללקוח עם הערות ממוקדות-זמן',
-              'מסירה ללקוח: שליחת הקובץ הסופי בקישור מאובטח עם תוקף',
-              'אחסון של 100 ג׳יגה לסבבי התיקונים ולמסירות',
-              'תמיכה בסרטונים באיכות 4K',
-              'מספר פרויקטים בלתי מוגבל',
-              'מערכת זמן עבודה',
-              'מערכת AI למיון מוזיקה וסאונד אפקט',
-              'פתיחת תיקייה אחרי העברה באופן אוטומטי',
-              'פתיחת התוכנה אוטומטית עם פתיחת תוכנת העריכה',
-              'שינוי כללי מיון',
-              'דחיסת וידאו למשקל מדויק',
-              'מערכת הצעות מחיר מלאה',
-            ].map((t) => (
-              <li
-                key={t}
-                className="flex items-baseline gap-3 text-[15px] text-fg-secondary"
-                style={{ lineHeight: 1.55 }}
-              >
-                <span aria-hidden className="shrink-0 select-none" style={{ color: 'var(--accent)' }}>
-                  —
-                </span>
-                <span>{t}</span>
-              </li>
-            ))}
-          </ul>
-          </>
-          )}
+          {/* (The old "כל מה שתקבלו עם מנוי Pro" recap was removed — the tier
+              cards + the full comparison table above already show, clearly,
+              what every tier includes.) */}
 
           {/* Plan-switch banner — shown when ?switchTo=... is on
               the URL (user came in via /account "שינוי תוכנית").

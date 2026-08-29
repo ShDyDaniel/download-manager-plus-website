@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Check, Loader2, Crown } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import {
   PAID_TIERS,
   TIER_LABEL,
   DEFAULT_TIER_CONFIG,
+  tierAllows,
   type Tier,
   type TierConfig,
 } from '@/lib/tiers'
@@ -86,6 +87,101 @@ function highlights(tier: Tier, c: TierConfig): string[] {
         'עדיפות בתמיכה',
       ]
   }
+}
+
+/* ── Full feature-comparison table ─────────────────────────────────────── */
+function yes() {
+  return <Check className="mx-auto h-4 w-4 text-primary" />
+}
+function no() {
+  return <span className="text-fg-faint">—</span>
+}
+
+const TABLE_ROWS: { label: string; render: (t: Tier, c: TierConfig) => ReactNode }[] = [
+  { label: 'ניהול הורדות', render: () => yes() },
+  { label: 'הורדת קבצים (יוטיוב / דרייב)', render: () => yes() },
+  { label: 'המרת קבצים', render: () => yes() },
+  {
+    label: 'פרויקטי הורדה במקביל',
+    render: (_t, c) => (c.maxDownloadProjects == null ? 'ללא הגבלה' : String(c.maxDownloadProjects)),
+  },
+  {
+    label: 'הצעות מחיר',
+    render: (_t, c) => (c.quotesPerMonth == null ? 'ללא הגבלה' : `${c.quotesPerMonth} בחודש`),
+  },
+  { label: 'כיווץ וידאו', render: (t) => (tierAllows(t, 'compress') ? yes() : no()) },
+  { label: 'תמלול חכם', render: (_t, c) => fmtMinutes(c.transcriptionMonthlySec) },
+  {
+    label: 'תמלול מתקדם (דוברים, מדויק, מילון)',
+    render: (t) => (tierAllows(t, 'transcriptionAdvanced') ? yes() : no()),
+  },
+  { label: 'סנכרון אוטומטי', render: (t) => (tierAllows(t, 'sync') ? yes() : no()) },
+  { label: 'סבבי תיקונים', render: (t) => (tierAllows(t, 'revisions') ? yes() : no()) },
+  { label: 'מסירה ללקוח', render: (t) => (tierAllows(t, 'deliveries') ? yes() : no()) },
+  { label: 'מעקב זמן עבודה', render: (t) => (tierAllows(t, 'timeTracking') ? yes() : no()) },
+  { label: 'חוקי מיון בהורדות', render: (t) => (tierAllows(t, 'routingRules') ? yes() : no()) },
+  { label: 'העורך האוטומטי (AI)', render: (t) => (tierAllows(t, 'autoEditor') ? yes() : no()) },
+  { label: 'AI יוצר', render: (t) => (tierAllows(t, 'aiCreator') ? yes() : no()) },
+  {
+    label: 'אחסון (תיקונים + מסירה)',
+    render: (_t, c) => (c.storageGb > 0 ? `${c.storageGb}GB` : no()),
+  },
+  {
+    label: 'פרויקטים במקביל (תיקונים / מסירה)',
+    render: (_t, c) => (c.maxRevisionProjects > 0 ? String(c.maxRevisionProjects) : no()),
+  },
+  {
+    label: 'מכסת טוקני AI לחודש',
+    render: (_t, c) => (c.aiMonthlyTokens > 0 ? c.aiMonthlyTokens.toLocaleString('en-US') : no()),
+  },
+]
+
+function FeatureTable({ cfg, order }: { cfg: Record<Tier, TierConfig>; order: Tier[] }) {
+  return (
+    <div className="mt-12">
+      <h3 className="mb-4 text-center font-display text-xl font-bold text-fg">
+        השוואה מלאה
+      </h3>
+      <div className="overflow-x-auto rounded-2xl border border-border">
+        <table className="w-full min-w-[640px] border-collapse text-sm" dir="rtl">
+          <thead>
+            <tr className="border-b border-border bg-card">
+              <th className="px-4 py-3 text-right font-semibold text-fg-muted">תכונה</th>
+              {order.map((t) => (
+                <th
+                  key={t}
+                  className={cn(
+                    'px-3 py-3 text-center font-bold',
+                    t === 'pro' ? 'text-primary' : 'text-fg',
+                  )}
+                >
+                  {TIER_LABEL[t]}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {TABLE_ROWS.map((row, i) => (
+              <tr key={i} className="border-b border-border/50 last:border-0">
+                <td className="px-4 py-2.5 text-right text-fg-secondary">{row.label}</td>
+                {order.map((t) => (
+                  <td
+                    key={t}
+                    className={cn(
+                      'px-3 py-2.5 text-center text-fg',
+                      t === 'pro' && 'bg-primary/[0.04]',
+                    )}
+                  >
+                    {row.render(t, cfg[t])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
 }
 
 export default function TierComparison({
@@ -247,6 +343,8 @@ export default function TierComparison({
           )
         })}
       </div>
+
+      <FeatureTable cfg={cfg} order={order} />
     </div>
   )
 }
