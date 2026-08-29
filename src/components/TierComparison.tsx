@@ -107,7 +107,11 @@ export default function TierComparison({
     let alive = true
     void (async () => {
       try {
-        const r = await fetch('/api/paypal?action=get-tiers')
+        const r = await fetch('/api/paypal?action=get-tiers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        })
         const j = (await r.json().catch(() => null)) as { ok?: boolean; tiers?: Cfg } | null
         if (alive && j?.ok && j.tiers) setCfg(j.tiers)
       } catch {
