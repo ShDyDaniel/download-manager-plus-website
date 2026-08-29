@@ -1282,15 +1282,43 @@ async function getStorageQuotaBytes(): Promise<{
   }
 }
 
-function storageQuotaForUser(
-  user: Record<string, unknown>,
-  quota: { proBytes: number; trialBytes: number },
-): number {
-  // Trial-only access → small quota. Any paid/other Pro path → full.
-  if (serverIsTrialActive(user) && user.subscription !== 'pro') {
-    return quota.trialBytes
+// Per-tier storage in GB (defaults; appConfig/tiers overrides). Free never
+// uploads (revisions/deliveries are Basic+), so 0 is fine there.
+const DEFAULT_STORAGE_GB: Record<TierS, number> = { free: 0, basic: 10, pro: 50, ultra: 100 }
+async function tierStorageGb(tier: TierS): Promise<number> {
+  try {
+    const snap = await getDb().collection('appConfig').doc('tiers').get()
+    const v = (snap.exists
+      ? (snap.data() as { tiers?: Record<string, { storageGb?: number }> }).tiers?.[tier]
+          ?.storageGb
+      : undefined)
+    if (typeof v === 'number' && v >= 0) return v
+  } catch {
+    /* fall through to default */
   }
-  return quota.proBytes
+  return DEFAULT_STORAGE_GB[tier]
+}
+
+/** A user's storage ceiling in BYTES, resolved per TIER. Trial-only accounts
+ *  keep the small trial allotment (anti-abuse) even though resolveTier
+ *  elevates an active trial to Pro. */
+async function storageQuotaBytesFor(
+  uid: string,
+  user: Record<string, unknown>,
+): Promise<number> {
+  const GB = 1024 ** 3
+  // Trial-only: active trial, no paid subscription, not admin → small quota.
+  if (
+    serverIsTrialActive(user) &&
+    normalizeTierS(user.subscription) === 'free' &&
+    user.role !== 'admin'
+  ) {
+    const legacy = await getStorageQuotaBytes()
+    return legacy.trialBytes
+  }
+  const tier = await resolveTier(uid, String(user.email || ''))
+  if (tier === 'free') return 0
+  return (await tierStorageGb(tier)) * GB
 }
 
 // Compute a user's CURRENT R2 usage + their quota. Usage is summed
@@ -1300,12 +1328,9 @@ function storageQuotaForUser(
 async function getStorageState(
   uid: string,
 ): Promise<{ usedBytes: number; limitBytes: number }> {
-  const [userSnap, quota] = await Promise.all([
-    getDb().collection('users').doc(uid).get(),
-    getStorageQuotaBytes(),
-  ])
+  const userSnap = await getDb().collection('users').doc(uid).get()
   const user = (userSnap.data() as Record<string, unknown>) || {}
-  const limitBytes = storageQuotaForUser(user, quota)
+  const limitBytes = await storageQuotaBytesFor(uid, user)
 
   let usedBytes = 0
   try {
@@ -7821,16 +7846,48 @@ async function callFallbackAi(
  *  the ceiling is appConfig/global.aiMonthlyTokenQuota (0/absent = unlimited).
  *  Checked BEFORE the call (reject if already over) and incremented AFTER by
  *  the real token count from Gemini's usageMetadata — best-effort. */
-async function readAiMonthlyQuota(): Promise<number> {
+// Per-tier monthly AI token ceilings (defaults; appConfig/tiers overrides).
+// Free/Basic = 0 (auto-editor is Pro+ and gated anyway). Pro/Ultra finite.
+const DEFAULT_AI_MONTHLY_TOKENS: Record<TierS, number> = {
+  free: 0,
+  basic: 0,
+  pro: 1_000_000,
+  ultra: 5_000_000,
+}
+
+/** The user's monthly AI token ceiling, resolved from their TIER + the admin
+ *  per-tier config. Never returns a fail-open 0 for a paid tier unless the
+ *  admin explicitly set 0 (which means "no AI tokens"). An optional global
+ *  `appConfig/global.aiMonthlyTokenQuota`, when >0, further caps everyone. */
+async function aiMonthlyQuotaFor(uid: string, email: string): Promise<number> {
+  let tier: TierS = 'pro'
   try {
-    const snap = await getDb().collection('appConfig').doc('global').get()
-    const d = (snap.exists ? snap.data() : {}) as { aiMonthlyTokenQuota?: number }
-    return typeof d.aiMonthlyTokenQuota === 'number' && d.aiMonthlyTokenQuota > 0
-      ? d.aiMonthlyTokenQuota
-      : 0
+    tier = await resolveTier(uid, email)
   } catch {
-    return 0
+    /* default pro */
   }
+  let perTier = DEFAULT_AI_MONTHLY_TOKENS[tier] ?? 0
+  let globalCap = 0
+  try {
+    const [tiersSnap, globalSnap] = await Promise.all([
+      getDb().collection('appConfig').doc('tiers').get(),
+      getDb().collection('appConfig').doc('global').get(),
+    ])
+    if (tiersSnap.exists) {
+      const t = (tiersSnap.data() as {
+        tiers?: Record<string, { aiMonthlyTokens?: number }>
+      }).tiers
+      const v = t?.[tier]?.aiMonthlyTokens
+      if (typeof v === 'number' && v >= 0) perTier = Math.floor(v)
+    }
+    const g = (globalSnap.exists ? globalSnap.data() : {}) as { aiMonthlyTokenQuota?: number }
+    if (typeof g.aiMonthlyTokenQuota === 'number' && g.aiMonthlyTokenQuota > 0) {
+      globalCap = Math.floor(g.aiMonthlyTokenQuota)
+    }
+  } catch {
+    /* fall back to per-tier default */
+  }
+  return globalCap > 0 ? Math.min(perTier, globalCap) : perTier
 }
 async function readAiUsage(uid: string): Promise<number> {
   const month = new Date().toISOString().slice(0, 7)
@@ -7861,14 +7918,17 @@ function recordAiUsage(uid: string, tokens: number): void {
 async function handleAiUsage(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  const [quota, used] = await Promise.all([readAiMonthlyQuota(), readAiUsage(verified.uid)])
+  const [quota, used] = await Promise.all([
+    aiMonthlyQuotaFor(verified.uid, verified.email),
+    readAiUsage(verified.uid),
+  ])
   const month = new Date().toISOString().slice(0, 7)
   return res.status(200).json({
     ok: true,
     month,
     used,
-    quota, // 0 = unlimited
-    remaining: quota > 0 ? Math.max(0, quota - used) : null,
+    quota,
+    remaining: Math.max(0, quota - used),
   })
 }
 
@@ -7898,19 +7958,24 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
   const model = tier === 'pro' ? GEMINI_PRO_MODEL : GEMINI_FLASH_MODEL
   const allowThinking = tier === 'pro'
   const feature = String(body.feature || '')
-  const metered = feature === 'auto-editor'
 
-  // Quota gate — reject up-front if this metered user is already over budget
-  // for the month, so a big project can't silently blow past the ceiling.
-  if (metered) {
-    // The auto-editor is a Pro+ feature. Enforce the SUBSCRIPTION tier here
-    // (NB: the `tier` variable above is the Gemini MODEL tier — unrelated).
+  // SECURITY: gate + meter on the SERVED resource, not on client-declared
+  // strings. Any call that uses the expensive PRO model OR is the auto-editor
+  // feature requires the Pro subscription and is metered — otherwise a Free
+  // user could POST {tier:'pro', feature:'advisor'} and get the Pro model
+  // unmetered/ungated. The cheap flash advisor (no feature) stays open to all.
+  const needsPro = tier === 'pro' || feature === 'auto-editor'
+  const metered = needsPro
+
+  if (needsPro) {
     if (!(await requireTier(res, verified, 'pro'))) return
     const [quota, used] = await Promise.all([
-      readAiMonthlyQuota(),
+      aiMonthlyQuotaFor(verified.uid, verified.email),
       readAiUsage(verified.uid),
     ])
-    if (quota > 0 && used >= quota) {
+    // Per-tier ceiling (default: pro 1M / ultra 5M). used >= quota blocks —
+    // no fail-open on an unset/zero global.
+    if (used >= quota) {
       return res.status(200).json({
         ok: false,
         status: 429,
