@@ -590,7 +590,7 @@ async function driveTrashFile(ownerUid: string, fileId: string): Promise<boolean
 async function handleR2UploadInit(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
 
   const body = (req.body || {}) as {
     fileName?: string
@@ -802,7 +802,7 @@ async function handleR2UploadAbort(req: VercelRequest, res: VercelResponse) {
 async function handleDriveImportInit(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
 
   if (!DRIVE_API_KEY) {
     return res.status(500).json({
@@ -1480,7 +1480,7 @@ async function isUserPro(uid: string, email: string): Promise<boolean> {
  *
  *     const verified = await verifyFirebaseIdToken(...)
  *     if (!verified) return res.status(401).json({...})
- *     if (!(await requirePro(res, verified))) return
+ *     if (!(await requireTier(res, verified, 'basic'))) return
  *     // ... continue with the action ...
  *
  *  Three response shapes:
@@ -1511,6 +1511,88 @@ async function requirePro(
   res.status(403).json({
     ok: false,
     error: 'נדרש מנוי Pro פעיל כדי להשתמש בסבבי תיקונים',
+  })
+  return false
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Subscription TIERS (server authority) — mirror of src/lib/tiers.ts
+ *  and the desktop resolveTier. Ordered + cumulative: Free ⊂ Basic ⊂
+ *  Pro ⊂ Ultra. isUserPro/requirePro above are UNCHANGED (still the
+ *  live gate everywhere); resolveTier/requireTier are the additive
+ *  tier-aware path that endpoints migrate to as the matrix lands.
+ * ────────────────────────────────────────────────────────────── */
+const TIER_ORDER_S = ['free', 'basic', 'pro', 'ultra'] as const
+type TierS = (typeof TIER_ORDER_S)[number]
+function tierRankS(t: string): number {
+  const i = (TIER_ORDER_S as readonly string[]).indexOf(t)
+  return i < 0 ? 0 : i
+}
+function tierAtLeastS(userTier: string, min: string): boolean {
+  return tierRankS(userTier) >= tierRankS(min)
+}
+function maxTierS(a: string, b: string): TierS {
+  return (tierRankS(a) >= tierRankS(b) ? a : b) as TierS
+}
+function normalizeTierS(v: unknown): TierS {
+  if (v === true) return 'pro'
+  const s = String(v ?? '').toLowerCase()
+  return (TIER_ORDER_S as readonly string[]).includes(s) ? (s as TierS) : 'free'
+}
+/** Which tier a 7-day trial grants — PLACEHOLDER (Daniel decides later). */
+const TRIAL_TIER_S: TierS = 'pro'
+
+/** Resolve a user's effective tier — the highest of every entitlement signal.
+ *  Fail-CLOSED like isUserPro (reads can throw → bubbles to a 503 in
+ *  requireTier). Keep in sync with the desktop resolveTier. */
+async function resolveTier(uid: string, email: string): Promise<TierS> {
+  if (email && SERVER_ADMIN_EMAILS.has(email.toLowerCase())) return 'ultra'
+  const db = getDb()
+  if (await isBetaModeOn()) return 'ultra' // open beta → everyone Ultra
+  let t: TierS = 'free'
+  const userSnap = await db.collection('users').doc(uid).get()
+  if (userSnap.exists) {
+    const user = userSnap.data() as Record<string, unknown>
+    if (user.role === 'admin') return 'ultra'
+    t = maxTierS(t, normalizeTierS(user.subscription))
+    if (serverIsTrialActive(user)) t = maxTierS(t, TRIAL_TIER_S)
+  }
+  const keySnap = await db
+    .collection('productKeys')
+    .where('redeemedBy', '==', uid)
+    .limit(1)
+    .get()
+  if (!keySnap.empty) {
+    const key = keySnap.docs[0].data() as Record<string, unknown>
+    if (serverIsKeyActive(key)) t = maxTierS(t, normalizeTierS(key.tier))
+  }
+  return t
+}
+
+/** Gate a handler behind a MINIMUM tier (cumulative). Same 200/403/503
+ *  contract as requirePro. */
+async function requireTier(
+  res: VercelResponse,
+  verified: VerifiedUser,
+  minTier: TierS,
+): Promise<boolean> {
+  let tier: TierS
+  try {
+    tier = await resolveTier(verified.uid, verified.email)
+  } catch (err) {
+    console.warn('[revisions/requireTier] entitlement check failed:', err)
+    res.status(503).json({
+      ok: false,
+      error: 'לא הצלחנו לאמת את המנוי כרגע. נסו שוב בעוד רגע.',
+    })
+    return false
+  }
+  if (tierAtLeastS(tier, minTier)) return true
+  res.status(403).json({
+    ok: false,
+    error: 'המנוי הנוכחי אינו כולל את התכונה הזו. נדרשת רמת מנוי גבוהה יותר.',
+    requiredTier: minTier,
+    tier,
   })
   return false
 }
@@ -1807,7 +1889,7 @@ async function handleAccessToken(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { idToken?: string }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
 
   const snap = await integrationDocRef(verified.uid).get()
   if (!snap.exists) {
@@ -1903,7 +1985,7 @@ function pickerSessionRef(nonce: string) {
 async function handlePickerOpen(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
   const snap = await integrationDocRef(verified.uid).get()
   if (!snap.exists) {
     return res.status(404).json({ ok: false, error: 'Drive לא מחובר' })
@@ -2074,8 +2156,10 @@ async function handleCheckPro(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
   try {
-    const pro = await isUserPro(verified.uid, verified.email)
-    return res.status(200).json({ ok: true, isPro: pro })
+    // Resolve the tier once; isPro is derived from it (tier ≥ pro) so the
+    // legacy field stays correct while clients gain the richer `tier`.
+    const tier = await resolveTier(verified.uid, verified.email)
+    return res.status(200).json({ ok: true, isPro: tierAtLeastS(tier, 'pro'), tier })
   } catch (err) {
     // Fail-closed: same posture as requirePro — when we can't
     // determine entitlement we say "unknown" via 503 rather than
@@ -2617,7 +2701,30 @@ async function handleCreateProjectGroup(
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
+
+  // Concurrent-project cap (per tier; bypassed during beta). A "project" is a
+  // revisionGroups doc (see the data-model comment above). Archived/deleted
+  // groups don't count against the live cap.
+  const projCap = await tierNumericQuota(verified.uid, verified.email, 'maxRevisionProjects')
+  if (projCap != null) {
+    const owned = await getDb()
+      .collection('revisionGroups')
+      .where('ownerUid', '==', verified.uid)
+      .get()
+    const active = owned.docs.filter((d) => {
+      const s = String((d.data() as { status?: string }).status || '')
+      return s !== 'archived' && s !== 'deleted'
+    }).length
+    if (active >= projCap) {
+      return res.status(403).json({
+        ok: false,
+        error: `הגעת למגבלת הפרויקטים במסלול הנוכחי (${projCap}). ארכבו/מחקו פרויקט קיים או שדרגו מסלול.`,
+        quotaExceeded: true,
+        limit: projCap,
+      })
+    }
+  }
 
   const title = String(body.title || '').trim().slice(0, 200)
   const r2Key = String(body.r2Key || '').trim()
@@ -2784,7 +2891,7 @@ async function handleAddRoundToGroup(
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
 
   const groupId = String(body.groupId || '').trim()
   const r2Key = String(body.r2Key || '').trim()
@@ -3204,7 +3311,7 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
 
   const driveFileId = String(body.driveFileId || '').trim()
   const driveFolderId = String(body.driveFolderId || '').trim()
@@ -5449,7 +5556,7 @@ async function handleCheckVideoStatus(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as { idToken?: string; projectId?: string }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
 
   const projectId = String(body.projectId || '').trim()
   if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
@@ -5504,7 +5611,7 @@ async function handleDeleteProject(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
   const projectId = String(body.projectId || '').trim()
   if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
   const deleteDriveFile = body.deleteDriveFile === true
@@ -5654,7 +5761,7 @@ async function handleDeleteRound(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
   const roundId = String(body.roundId || '').trim()
   if (!roundId) return res.status(400).json({ ok: false, error: 'roundId' })
   const deleteDriveFile = body.deleteDriveFile === true
@@ -5751,7 +5858,7 @@ async function handleDeleteGroup(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
   const groupId = String(body.groupId || '').trim()
   if (!groupId) return res.status(400).json({ ok: false, error: 'groupId' })
   const deleteDriveFiles = body.deleteDriveFiles === true
@@ -6100,7 +6207,7 @@ async function handleUpdateGroup(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
   const groupId = String(body.groupId || '').trim()
   if (!groupId) return res.status(400).json({ ok: false, error: 'groupId' })
 
@@ -6173,7 +6280,7 @@ async function handleUpdateProject(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
   const projectId = String(body.projectId || '').trim()
   if (!projectId) return res.status(400).json({ ok: false, error: 'projectId' })
 
@@ -6279,7 +6386,7 @@ async function handleReplaceProjectVideo(
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
   const projectId = String(body.projectId || '').trim()
   const newR2Key = String(body.r2Key || '').trim()
   const newDriveFileId = String(body.driveFileId || '').trim()
@@ -6582,7 +6689,7 @@ async function handleUpdateNoteStatus(req: VercelRequest, res: VercelResponse) {
   }
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
   const projectId = String(body.projectId || '').trim()
   const noteId = String(body.noteId || '').trim()
   const status = body.status
@@ -6705,7 +6812,7 @@ async function handleDeliveryUploadInit(
 ) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
 
   const body = (req.body || {}) as {
     fileName?: string
@@ -6759,7 +6866,28 @@ async function handleDeliveryUploadInit(
 async function handleDeliveryCreate(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  if (!(await requireTier(res, verified, 'basic'))) return
+
+  // Concurrent-delivery cap (per tier; bypassed during beta). Counted
+  // separately from revision projects, though they share the storage pool.
+  const delCap = await tierNumericQuota(verified.uid, verified.email, 'maxDeliveryProjects')
+  if (delCap != null) {
+    const owned = await getDb()
+      .collection('deliveries')
+      .where('ownerUid', '==', verified.uid)
+      .get()
+    const active = owned.docs.filter(
+      (d) => String((d.data() as { status?: string }).status || '') !== 'deleted',
+    ).length
+    if (active >= delCap) {
+      return res.status(403).json({
+        ok: false,
+        error: `הגעת למגבלת המסירות במסלול הנוכחי (${delCap}). מחקו מסירה קיימת או שדרגו מסלול.`,
+        quotaExceeded: true,
+        limit: delCap,
+      })
+    }
+  }
 
   const body = (req.body || {}) as {
     title?: string
@@ -7427,6 +7555,12 @@ async function handleClientLogIngest(req: VercelRequest, res: VercelResponse) {
  *  in Vercel it WINS over this default, so it must match to take effect.
  * ────────────────────────────────────────────────────────────── */
 const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim()
+// Two tiers for the auto-editor brains: FLASH = cheap transcript cleaning,
+// PRO = the reasoning-heavy final assembly. Each overridable via env; the
+// desktop chooses per-call via the `tier` field (hybrid = flash clean + pro
+// editor). The price-quote advisor sends no tier and stays on flash.
+const GEMINI_FLASH_MODEL = (process.env.GEMINI_FLASH_MODEL || GEMINI_MODEL).trim()
+const GEMINI_PRO_MODEL = (process.env.GEMINI_PRO_MODEL || 'gemini-2.5-pro').trim()
 
 /* ── Multiple Gemini keys, tried IN ORDER (failover) ────────────────────
  *  The free tier has a low daily request cap per key. To stretch it we
@@ -7485,7 +7619,7 @@ const FALLBACK_AI_MODELS = (process.env.FALLBACK_AI_MODEL || '').trim()
     ['gpt-oss-120b', 'zai-glm-4.7']
 
 type AiResult =
-  | { ok: true; text: string }
+  | { ok: true; text: string; usage?: number }
   | { ok: false; status: number; error: string }
 
 /** Call Gemini (the primary). Returns a normalized result; the caller
@@ -7497,16 +7631,23 @@ async function callGemini(
   systemParts: string[],
   maxTokens: number,
   temperature = 0.7,
+  model = GEMINI_MODEL,
+  // PRO tier assembly benefits from real reasoning, so we let it "think"
+  // (the thought parts are still stripped from the returned text). The flash
+  // advisor keeps thinkingBudget:0 to save output tokens + avoid any leak.
+  allowThinking = false,
 ): Promise<AiResult> {
   const genCfg: Record<string, unknown> = {
     maxOutputTokens: maxTokens,
     temperature,
-    // Disable "thinking" so gemini-2.5-flash never emits its internal
+  }
+  if (!allowThinking) {
+    // Disable "thinking" so the flash model never emits its internal
     // chain-of-thought as visible text (the user must only ever see the
     // final answer). Some model versions reject thinkingConfig with a
     // 400 — the loop below strips it and retries so a single request
     // never goes dark.
-    thinkingConfig: { thinkingBudget: 0 },
+    genCfg.thinkingConfig = { thinkingBudget: 0 }
   }
   const payload: Record<string, unknown> = {
     contents,
@@ -7515,7 +7656,7 @@ async function callGemini(
   if (systemParts.length) {
     payload.systemInstruction = { parts: [{ text: systemParts.join('\n\n') }] }
   }
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
     apiKey,
   )}`
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -7535,6 +7676,7 @@ async function callGemini(
         }>
         error?: { message?: string }
         promptFeedback?: { blockReason?: string }
+        usageMetadata?: { totalTokenCount?: number }
       } | null
       if (!r.ok) {
         // A 400 while thinkingConfig is present is almost always caused by
@@ -7581,7 +7723,7 @@ async function callGemini(
               : 'תשובת AI ריקה',
         }
       }
-      return { ok: true, text }
+      return { ok: true, text, usage: Number(data?.usageMetadata?.totalTokenCount) || undefined }
     } catch (e) {
       lastErr = (e as Error)?.message || 'AI error'
       if (attempt === 0) {
@@ -7644,6 +7786,7 @@ async function callFallbackAi(
       const data = (await r.json().catch(() => null)) as {
         choices?: Array<{ message?: { content?: string } }>
         error?: { message?: string }
+        usage?: { total_tokens?: number }
       } | null
       if (!r.ok) {
         const msg = data?.error?.message || `HTTP ${r.status}`
@@ -7660,7 +7803,7 @@ async function callFallbackAi(
         continue
       }
       console.error(`[ai-fallback] OK via model="${model}"`)
-      return { ok: true, text }
+      return { ok: true, text, usage: Number(data?.usage?.total_tokens) || undefined }
     } catch (e) {
       const m = (e as Error)?.message || 'error'
       console.error(`[ai-fallback] model="${model}" exception: ${m}`)
@@ -7668,6 +7811,65 @@ async function callFallbackAi(
     }
   }
   return last
+}
+
+/* ── Per-user monthly AI token quota (auto-editor) ──────────────────────
+ *  Paid Gemini has no hard cap, so to bound cost + guarantee quality we give
+ *  each Pro user a MONTHLY token budget. Only the auto-editor feature (the
+ *  token-heavy Pro assembly) is metered + enforced — the price-quote advisor
+ *  is untouched. Usage lives in Firestore aiUsage/{uid}.months["YYYY-MM"];
+ *  the ceiling is appConfig/global.aiMonthlyTokenQuota (0/absent = unlimited).
+ *  Checked BEFORE the call (reject if already over) and incremented AFTER by
+ *  the real token count from Gemini's usageMetadata — best-effort. */
+async function readAiMonthlyQuota(): Promise<number> {
+  try {
+    const snap = await getDb().collection('appConfig').doc('global').get()
+    const d = (snap.exists ? snap.data() : {}) as { aiMonthlyTokenQuota?: number }
+    return typeof d.aiMonthlyTokenQuota === 'number' && d.aiMonthlyTokenQuota > 0
+      ? d.aiMonthlyTokenQuota
+      : 0
+  } catch {
+    return 0
+  }
+}
+async function readAiUsage(uid: string): Promise<number> {
+  const month = new Date().toISOString().slice(0, 7)
+  try {
+    const snap = await getDb().collection('aiUsage').doc(uid).get()
+    const months =
+      (snap.exists ? (snap.data() as { months?: Record<string, number> }).months : {}) || {}
+    return Math.round(months[month] || 0)
+  } catch {
+    return 0
+  }
+}
+function recordAiUsage(uid: string, tokens: number): void {
+  if (!uid || !(tokens > 0)) return
+  const month = new Date().toISOString().slice(0, 7)
+  getDb()
+    .collection('aiUsage')
+    .doc(uid)
+    .set(
+      { months: { [month]: FieldValue.increment(Math.round(tokens)) }, updatedAt: Date.now() },
+      { merge: true },
+    )
+    .catch(() => {})
+}
+
+/** Report a user's current-month AI token usage + ceiling (desktop shows the
+ *  remaining balance and gates the pre-flight estimate on it). */
+async function handleAiUsage(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const [quota, used] = await Promise.all([readAiMonthlyQuota(), readAiUsage(verified.uid)])
+  const month = new Date().toISOString().slice(0, 7)
+  return res.status(200).json({
+    ok: true,
+    month,
+    used,
+    quota, // 0 = unlimited
+    remaining: quota > 0 ? Math.max(0, quota - used) : null,
+  })
 }
 
 async function handleAiChat(req: VercelRequest, res: VercelResponse) {
@@ -7685,8 +7887,40 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
     messages?: Array<{ role?: string; content?: string }>
     max_tokens?: number
     temperature?: number
+    tier?: string
+    feature?: string
   }
   const messages = Array.isArray(body.messages) ? body.messages : []
+  // Model tier: 'pro' = the reasoning-heavy assembly, 'flash' (default) = the
+  // cheap cleaner + advisor. The auto-editor feature is metered against the
+  // user's monthly token quota; the advisor (no feature) is not.
+  const tier = String(body.tier) === 'pro' ? 'pro' : 'flash'
+  const model = tier === 'pro' ? GEMINI_PRO_MODEL : GEMINI_FLASH_MODEL
+  const allowThinking = tier === 'pro'
+  const feature = String(body.feature || '')
+  const metered = feature === 'auto-editor'
+
+  // Quota gate — reject up-front if this metered user is already over budget
+  // for the month, so a big project can't silently blow past the ceiling.
+  if (metered) {
+    // The auto-editor is a Pro+ feature. Enforce the SUBSCRIPTION tier here
+    // (NB: the `tier` variable above is the Gemini MODEL tier — unrelated).
+    if (!(await requireTier(res, verified, 'pro'))) return
+    const [quota, used] = await Promise.all([
+      readAiMonthlyQuota(),
+      readAiUsage(verified.uid),
+    ])
+    if (quota > 0 && used >= quota) {
+      return res.status(200).json({
+        ok: false,
+        status: 429,
+        error: 'חריגה ממכסת הטוקנים החודשית. המכסה מתאפסת בתחילת החודש.',
+        quotaExceeded: true,
+        used,
+        quota,
+      })
+    }
+  }
   // Optional temperature (deterministic callers — e.g. the editor brain —
   // send 0). Clamped; defaults to the advisor's conversational 0.7.
   const temperature =
@@ -7727,7 +7961,7 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
   // request) stops the rotation: another key would fail identically.
   let result: AiResult = { ok: false, status: 0, error: 'no gemini key attempted' }
   for (let i = 0; i < keys.length; i++) {
-    result = await callGemini(keys[i], contents, systemParts, maxTokens, temperature)
+    result = await callGemini(keys[i], contents, systemParts, maxTokens, temperature, model, allowThinking)
     if (result.ok) break
     console.error(
       `[ai] gemini key #${i + 1}/${keys.length} failed status=${result.status}: ${result.error.slice(0, 160)}`,
@@ -7744,6 +7978,18 @@ async function handleAiChat(req: VercelRequest, res: VercelResponse) {
   }
 
   if (result.ok) {
+    // Meter the real token spend against the user's monthly budget. Estimate
+    // from text length if the provider didn't report usage.
+    if (metered) {
+      const tokens =
+        result.usage ||
+        Math.round(
+          (messages.reduce((n, m) => n + String(m?.content || '').length, 0) +
+            result.text.length) /
+            3.5,
+        )
+      recordAiUsage(verified.uid, tokens)
+    }
     // OpenAI-shaped reply so the desktop client parsing stays the same.
     return res
       .status(200)
@@ -7854,7 +8100,11 @@ const MODEL_ASSETS: Array<{ id: string; key: string }> = [
 async function handleTranscriptionModels(req: VercelRequest, res: VercelResponse) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  if (!(await requirePro(res, verified))) return
+  // Transcription is available to EVERY tier (Free gets a monthly quota), so
+  // the model assets must be fetchable by any signed-in user. 'free' = just
+  // authenticated. (Advanced transcription options are gated in the client +
+  // the freemium quota is enforced separately.)
+  if (!(await requireTier(res, verified, 'free'))) return
   try {
     const assets = await Promise.all(
       MODEL_ASSETS.map(async (a) => ({
@@ -7973,33 +8223,110 @@ async function handleSrtCollect(req: VercelRequest, res: VercelResponse) {
  *  received. Reserved-but-never-settled seconds free up on the next weekly
  *  roll (≤7 days) — acceptable for a free tier.
  * ───────────────────────────────────────────────────────────────────── */
-const TRANSCRIPTION_WEEK_MS = 7 * 24 * 60 * 60 * 1000
-const DEFAULT_FREE_TRANSCRIPTION_SEC = 300
-
-async function freeWeeklyTranscriptionSec(): Promise<number> {
-  try {
-    const snap = await getDb().collection('appConfig').doc('global').get()
-    const v = snap.exists
-      ? Number((snap.data() as Record<string, unknown>)?.freeTranscriptionWeeklySec)
-      : NaN
-    if (Number.isFinite(v) && v >= 0) return Math.floor(v)
-  } catch {
-    /* fall through to default */
-  }
-  return DEFAULT_FREE_TRANSCRIPTION_SEC
+// Per-tier MONTHLY transcription limits (seconds). null = unlimited. These
+// are the code defaults; the admin panel (appConfig/tiers) overrides them —
+// same source the buy page + desktop read.
+const DEFAULT_TX_MONTHLY_SEC: Record<TierS, number | null> = {
+  free: 300, // 5 min / month
+  basic: 3600, // 1 hour / month
+  pro: null, // unlimited
+  ultra: null, // unlimited
 }
 
-/** Load the quota window and roll it if the 7-day window has lapsed. */
+/** Start of the calendar month (UTC) containing `now`. */
+function monthStartOf(now: number): number {
+  const d = new Date(now)
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)
+}
+/** Start of the NEXT calendar month — the quota reset time. */
+function nextMonthStart(monthStart: number): number {
+  const d = new Date(monthStart)
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)
+}
+
+/** The user's MONTHLY transcription limit in seconds, resolved from their
+ *  subscription tier + the admin per-tier config. null = unlimited. Falls
+ *  back to the code defaults (and to Free on any error — fail-closed). */
+async function transcriptionLimitFor(uid: string, email: string): Promise<number | null> {
+  let tier: TierS = 'free'
+  try {
+    tier = await resolveTier(uid, email)
+  } catch {
+    return DEFAULT_TX_MONTHLY_SEC.free
+  }
+  try {
+    const snap = await getDb().collection('appConfig').doc('tiers').get()
+    if (snap.exists) {
+      const t = (snap.data() as {
+        tiers?: Record<string, { transcriptionMonthlySec?: number | null }>
+      }).tiers
+      const v = t?.[tier]?.transcriptionMonthlySec
+      if (v === null) return null
+      if (typeof v === 'number' && v >= 0) return Math.floor(v)
+    }
+  } catch {
+    /* fall through to code default */
+  }
+  return DEFAULT_TX_MONTHLY_SEC[tier]
+}
+
+// Per-tier NUMERIC caps (defaults; admin panel appConfig/tiers overrides).
+// null = unlimited. Mirrors DEFAULT_TIER_CONFIG in src/lib/tiers.ts.
+const TIER_QUOTA_DEFAULTS: Record<string, Record<TierS, number | null>> = {
+  maxRevisionProjects: { free: 0, basic: 1, pro: 10, ultra: 10 },
+  maxDeliveryProjects: { free: 0, basic: 1, pro: 10, ultra: 10 },
+  quotesPerMonth: { free: 1, basic: null, pro: null, ultra: null },
+}
+
+/** A per-tier numeric quota for the caller. Returns null = UNLIMITED. During
+ *  the open beta ALL numeric caps are bypassed (returns null) so a heavy beta
+ *  user is never suddenly blocked. Reads the admin per-tier config, falling
+ *  back to the code defaults. */
+async function tierNumericQuota(
+  uid: string,
+  email: string,
+  field: keyof typeof TIER_QUOTA_DEFAULTS,
+): Promise<number | null> {
+  // Beta bypass — resolveTier maps beta users to Ultra, but a finite Ultra cap
+  // would still bite them, so short-circuit to unlimited during beta.
+  try {
+    if (await isBetaModeOn()) return null
+  } catch {
+    /* if we can't tell, fall through to per-tier enforcement */
+  }
+  let tier: TierS = 'free'
+  try {
+    tier = await resolveTier(uid, email)
+  } catch {
+    /* fail-closed to Free */
+  }
+  try {
+    const snap = await getDb().collection('appConfig').doc('tiers').get()
+    if (snap.exists) {
+      const t = (snap.data() as {
+        tiers?: Record<string, Record<string, number | null>>
+      }).tiers
+      const v = t?.[tier]?.[field]
+      if (v === null) return null
+      if (typeof v === 'number' && v >= 0) return Math.floor(v)
+    }
+  } catch {
+    /* fall through to defaults */
+  }
+  return TIER_QUOTA_DEFAULTS[field]?.[tier] ?? null
+}
+
+/** Load the quota window and roll it if the calendar month changed. Reads the
+ *  legacy `weekStart` field as a fallback so pre-migration docs roll cleanly. */
 function rollQuotaWindow(
   data: Record<string, unknown> | null | undefined,
   now: number,
-): { weekStart: number; usedSec: number } {
-  const weekStart = Number(data?.weekStart) || 0
+): { monthStart: number; usedSec: number } {
+  const stored = Number(data?.monthStart) || Number(data?.weekStart) || 0
   const usedSec = Number(data?.usedSec) || 0
-  if (!weekStart || now - weekStart >= TRANSCRIPTION_WEEK_MS) {
-    return { weekStart: now, usedSec: 0 }
-  }
-  return { weekStart, usedSec }
+  const cur = monthStartOf(now)
+  if (stored !== cur) return { monthStart: cur, usedSec: 0 }
+  return { monthStart: stored, usedSec }
 }
 
 // action=transcription-quota-status  → remaining seconds + reset time (read-only)
@@ -8009,22 +8336,16 @@ async function handleTranscriptionQuotaStatus(
 ) {
   const verified = await verifyOwnerAuth(req)
   if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  const limitSec = await freeWeeklyTranscriptionSec()
-  let pro = false
-  try {
-    pro = await isUserPro(verified.uid, verified.email)
-  } catch {
-    // Couldn't determine — show the free view rather than block a status read.
-    pro = false
-  }
-  if (pro) {
+  const limitSec = await transcriptionLimitFor(verified.uid, verified.email)
+  // Unlimited tier (Pro/Ultra, or admin-set null) — no metering.
+  if (limitSec == null) {
     return res
       .status(200)
-      .json({ ok: true, pro: true, remainingSec: null, limitSec, resetAt: null })
+      .json({ ok: true, pro: true, remainingSec: null, limitSec: null, resetAt: null })
   }
   const now = Date.now()
   const snap = await getDb().collection('transcriptionQuota').doc(verified.uid).get()
-  const { weekStart, usedSec } = rollQuotaWindow(
+  const { monthStart, usedSec } = rollQuotaWindow(
     snap.exists ? (snap.data() as Record<string, unknown>) : null,
     now,
   )
@@ -8033,7 +8354,7 @@ async function handleTranscriptionQuotaStatus(
     pro: false,
     remainingSec: Math.max(0, limitSec - usedSec),
     limitSec,
-    resetAt: weekStart + TRANSCRIPTION_WEEK_MS,
+    resetAt: nextMonthStart(monthStart),
   })
 }
 
@@ -8049,16 +8370,16 @@ async function handleTranscriptionQuotaGrant(
   if (requestedSec <= 0) {
     return res.status(400).json({ ok: false, error: 'bad-duration' })
   }
-  let pro: boolean
+  let limitSec: number | null
   try {
-    pro = await isUserPro(verified.uid, verified.email)
+    limitSec = await transcriptionLimitFor(verified.uid, verified.email)
   } catch {
     return res
       .status(503)
       .json({ ok: false, error: 'לא הצלחנו לאמת את המנוי כרגע. נסו שוב בעוד רגע.' })
   }
-  const limitSec = await freeWeeklyTranscriptionSec()
-  if (pro) {
+  // Unlimited tier — grant the full request, no metering.
+  if (limitSec == null) {
     return res.status(200).json({
       ok: true,
       pro: true,
@@ -8073,32 +8394,33 @@ async function handleTranscriptionQuotaGrant(
   const now = Date.now()
   const ref = db.collection('transcriptionQuota').doc(verified.uid)
   const grantId = crypto.randomBytes(16).toString('hex')
+  const cap = limitSec
 
   const out = await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref)
-    const { weekStart, usedSec } = rollQuotaWindow(
+    const { monthStart, usedSec } = rollQuotaWindow(
       snap.exists ? (snap.data() as Record<string, unknown>) : null,
       now,
     )
-    const remaining = Math.max(0, limitSec - usedSec)
+    const remaining = Math.max(0, cap - usedSec)
     const grantSec = Math.min(requestedSec, remaining)
     if (grantSec <= 0) {
       // Persist the (possibly rolled) window so resetAt is stable, no grant.
-      tx.set(ref, { weekStart, usedSec, updatedAt: now }, { merge: true })
-      return { grantSec: 0, weekStart, remainingSec: remaining, grantId: null as string | null }
+      tx.set(ref, { monthStart, usedSec, updatedAt: now }, { merge: true })
+      return { grantSec: 0, monthStart, remainingSec: remaining, grantId: null as string | null }
     }
     const newUsed = usedSec + grantSec
-    tx.set(ref, { weekStart, usedSec: newUsed, updatedAt: now }, { merge: true })
+    tx.set(ref, { monthStart, usedSec: newUsed, updatedAt: now }, { merge: true })
     tx.set(db.collection('transcriptionGrants').doc(grantId), {
       uid: verified.uid,
       grantSec,
-      weekStart,
+      monthStart,
       createdAt: now,
     })
     return {
       grantSec,
-      weekStart,
-      remainingSec: Math.max(0, limitSec - newUsed),
+      monthStart,
+      remainingSec: Math.max(0, cap - newUsed),
       grantId,
     }
   })
@@ -8108,7 +8430,7 @@ async function handleTranscriptionQuotaGrant(
     pro: false,
     allowedSec: out.grantSec,
     remainingSec: out.remainingSec,
-    resetAt: out.weekStart + TRANSCRIPTION_WEEK_MS,
+    resetAt: nextMonthStart(out.monthStart),
     grantId: out.grantId,
     limitSec,
   })
@@ -8145,8 +8467,11 @@ async function handleTranscriptionQuotaSettle(
     tx.delete(grantRef)
     if (refund > 0 && qsnap?.exists) {
       const qd = qsnap.data() as Record<string, unknown>
-      // Only refund if the window hasn't rolled since the grant.
-      if (Number(qd.weekStart) === Number(g.weekStart)) {
+      // Only refund if the window hasn't rolled since the grant. Compare on
+      // monthStart (legacy grants carried weekStart — fall back to it).
+      const qWin = Number(qd.monthStart) || Number(qd.weekStart)
+      const gWin = Number(g.monthStart) || Number(g.weekStart)
+      if (qWin === gWin) {
         const usedSec = Math.max(0, (Number(qd.usedSec) || 0) - refund)
         tx.set(quotaRef, { usedSec, updatedAt: now }, { merge: true })
       }
@@ -8154,6 +8479,61 @@ async function handleTranscriptionQuotaSettle(
   })
 
   return res.status(200).json({ ok: true })
+}
+
+/* ───────────────────────────────────────────────────────────────────────
+ *  Price-quote monthly counter — Free is capped (matrix: 1 quote/month);
+ *  paid tiers are unlimited. The desktop calls quote-consume right before it
+ *  exports/copies a quote; a 403 (quotaExceeded) blocks it with an upsell.
+ *  Server-authoritative so a reinstall can't reset the count. Beta bypasses.
+ * ─────────────────────────────────────────────────────────────────────── */
+async function handleQuoteConsume(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const cap = await tierNumericQuota(verified.uid, verified.email, 'quotesPerMonth')
+  if (cap == null) {
+    return res.status(200).json({ ok: true, unlimited: true, remaining: null })
+  }
+  const month = new Date().toISOString().slice(0, 7)
+  const db = getDb()
+  const ref = db.collection('quoteUsage').doc(verified.uid)
+  const out = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref)
+    const months =
+      (snap.exists ? (snap.data() as { months?: Record<string, number> }).months : {}) || {}
+    const used = Math.round(months[month] || 0)
+    if (used >= cap) return { ok: false as const, used }
+    tx.set(ref, { months: { [month]: used + 1 }, updatedAt: Date.now() }, { merge: true })
+    return { ok: true as const, used: used + 1 }
+  })
+  if (!out.ok) {
+    return res.status(403).json({
+      ok: false,
+      quotaExceeded: true,
+      error: `הגעת למגבלת הצעות המחיר החודשית במסלול הנוכחי (${cap}). המכסה מתאפסת בתחילת החודש.`,
+      limit: cap,
+      used: out.used,
+    })
+  }
+  return res.status(200).json({ ok: true, remaining: Math.max(0, cap - out.used), limit: cap })
+}
+
+/** action=quote-usage → read-only remaining monthly quote credits (for UI). */
+async function handleQuoteUsage(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const cap = await tierNumericQuota(verified.uid, verified.email, 'quotesPerMonth')
+  if (cap == null) return res.status(200).json({ ok: true, unlimited: true, remaining: null })
+  const month = new Date().toISOString().slice(0, 7)
+  try {
+    const snap = await getDb().collection('quoteUsage').doc(verified.uid).get()
+    const months =
+      (snap.exists ? (snap.data() as { months?: Record<string, number> }).months : {}) || {}
+    const used = Math.round(months[month] || 0)
+    return res.status(200).json({ ok: true, remaining: Math.max(0, cap - used), limit: cap, used })
+  } catch {
+    return res.status(200).json({ ok: true, remaining: cap, limit: cap, used: 0 })
+  }
 }
 
 
@@ -8619,6 +8999,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleTranscriptionQuotaGrant(req, res)
       case 'transcription-quota-settle':
         return await handleTranscriptionQuotaSettle(req, res)
+      case 'quote-consume':
+        return await handleQuoteConsume(req, res)
+      case 'quote-usage':
+        return await handleQuoteUsage(req, res)
       case 'drive-import-init':
         return await handleDriveImportInit(req, res)
       case 'drive-import-auth':
@@ -8697,6 +9081,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleVerifyLogsPassword(req, res)
       case 'ai-chat':
         return await handleAiChat(req, res)
+      case 'ai-usage':
+        return await handleAiUsage(req, res)
       case 'get-stream-token':
         return await handleGetStreamToken(req, res)
       case 'stream-video':

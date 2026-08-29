@@ -1702,6 +1702,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleSyncPlans(req, res)
       case 'admin-set-pricing':
         return await handleAdminSetPricing(req, res)
+      case 'get-tiers':
+        return await handleGetTiers(req, res)
+      case 'admin-get-tiers':
+        return await handleAdminGetTiers(req, res)
+      case 'admin-set-tiers':
+        return await handleAdminSetTiers(req, res)
       case 'signup-request-code':
         return await handleSignupRequestCode(req, res)
       case 'signup-verify-code':
@@ -2391,6 +2397,10 @@ async function ensureKeyForSubscription(
   let linkToUid: string | null = null
   let renewKeyId: string | null = null
   let pendingCoupon: { code: string; pct: number } | null = null
+  // Which subscription TIER this purchase is for — stamped on the key so
+  // entitlement resolves to the right level. Defaults to 'pro' (the only tier
+  // that existed before the migration + the legacy checkout path).
+  let pendingTier: TierS = 'pro'
   try {
     const pendingDoc = await db
       .collection('pendingSubscriptions')
@@ -2402,6 +2412,7 @@ async function ensureKeyForSubscription(
         renewKeyId?: string | null
         couponCode?: string | null
         couponPct?: number | null
+        tier?: string | null
       }
       if (typeof data.linkToUid === 'string' && data.linkToUid) {
         linkToUid = data.linkToUid
@@ -2415,6 +2426,8 @@ async function ensureKeyForSubscription(
           pct: Number(data.couponPct) || 0,
         }
       }
+      const t = normTier(data.tier)
+      if (t !== 'free') pendingTier = t // a subscription is never "free"
     }
   } catch (err) {
     console.warn(
@@ -2690,10 +2703,10 @@ async function ensureKeyForSubscription(
 
   const baseKeyDoc = {
     key,
-    tier: 'pro',
+    tier: pendingTier,
     expiresAt: initialExpiresAt.toISOString(),
     createdAt: new Date().toISOString(),
-    createdBy: `paypal-subscription-${planDays === 30 ? 'monthly' : 'yearly'}`,
+    createdBy: `paypal-subscription-${pendingTier}-${planDays === 30 ? 'monthly' : 'yearly'}`,
     buyerEmail,
     buyerName,
     ...(keyReferredBy ? { referredBy: keyReferredBy } : {}),
@@ -3290,6 +3303,7 @@ async function handleCreateSubscription(
     sessionToken?: string
     renewToken?: string
     coupon?: string
+    tier?: string
   }
   const plan = body.plan
   let email = (body.email || '').trim().toLowerCase()
@@ -3393,17 +3407,43 @@ async function handleCreateSubscription(
       .status(503)
       .json({ ok: false, error: 'המחיר אינו זמין כרגע, נסו שוב מאוחר יותר' })
   }
-  const usingSale = pricing[plan].sale != null
-  let lockedPrice = usingSale ? pricing[plan].sale! : pricing[plan].regular
-  const plans = await syncPlansForPricing(pricing)
-  let planId =
-    plan === 'monthly'
-      ? usingSale
-        ? plans.monthlySalePlanId
-        : plans.monthlyRegularPlanId
-      : usingSale
-        ? plans.yearlySalePlanId
-        : plans.yearlyRegularPlanId
+  const currency = pricing.currency
+
+  // Which tier is being purchased. Absent → 'pro' (the legacy checkout).
+  const tier = normTier(body.tier)
+  const tcfg = await loadTierConfig()
+  const tierPrice = plan === 'monthly' ? tcfg[tier].priceMonthly : tcfg[tier].priceYearly
+  // Per-tier path for any non-Pro tier, and for Pro once its per-tier price is
+  // configured in the admin panel. Otherwise the legacy single-product Pro
+  // path (sale slots) is used byte-for-byte as before.
+  const perTier = tier !== 'pro' || tierPrice > 0
+
+  let lockedPrice: number
+  let planId: string | null
+  let regularBase: number // pre-sale/pre-coupon list price, for coupon math
+  if (perTier) {
+    if (!(tierPrice > 0)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'המחיר למנוי זה עדיין לא הוגדר. נסו שוב מאוחר יותר.' })
+    }
+    lockedPrice = tierPrice
+    regularBase = tierPrice
+    planId = await ensurePlanForAmount(plan, tierPrice, currency)
+  } else {
+    const usingSale = pricing[plan].sale != null
+    lockedPrice = usingSale ? pricing[plan].sale! : pricing[plan].regular
+    regularBase = pricing[plan].regular
+    const plans = await syncPlansForPricing(pricing)
+    planId =
+      plan === 'monthly'
+        ? usingSale
+          ? plans.monthlySalePlanId
+          : plans.monthlyRegularPlanId
+        : usingSale
+          ? plans.yearlySalePlanId
+          : plans.yearlyRegularPlanId
+  }
   if (!planId) {
     return res
       .status(500)
@@ -3422,20 +3462,22 @@ async function handleCreateSubscription(
     }
     if (r.duration === 'first') {
       // First period discounted off the current effective price; the
-      // effective price recurs. Two-cycle PayPal plan.
-      const effective = usingSale ? pricing[plan].sale! : pricing[plan].regular
+      // effective price recurs. Two-cycle PayPal plan. `lockedPrice` is the
+      // current effective (post-sale for legacy Pro, the tier price otherwise).
+      const effective = lockedPrice
       const introPrice = couponPriceFrom(effective, r.pct)
       if (introPrice < effective) {
-        planId = await ensureIntroPlan(plan, introPrice, effective, pricing.currency)
+        planId = await ensureIntroPlan(plan, introPrice, effective, currency)
         lockedPrice = introPrice // first charge; recurring stays `effective`
         couponApplied = { code: r.code, pct: r.pct }
       }
     } else {
-      // 'forever': discount off regular, no stacking with sale.
-      const couponPrice = couponPriceFrom(pricing[plan].regular, r.pct)
+      // 'forever': discount off the list price (tier price, or Pro regular),
+      // no stacking with sale — buyer gets the cheaper of the two.
+      const couponPrice = couponPriceFrom(regularBase, r.pct)
       if (couponPrice < lockedPrice) {
         lockedPrice = couponPrice
-        planId = await ensurePlanForAmount(plan, couponPrice, pricing.currency)
+        planId = await ensurePlanForAmount(plan, couponPrice, currency)
         couponApplied = { code: r.code, pct: r.pct }
       }
       // else: the active sale is already cheaper — proceed without the
@@ -3479,10 +3521,13 @@ async function handleCreateSubscription(
   await db.collection('pendingSubscriptions').doc(subscription.id).set({
     subscriptionId: subscription.id,
     plan,
+    // The purchased tier — the webhook stamps it on the minted key so
+    // entitlement resolves to the right level.
+    tier,
     email,
     planId,
     lockedPrice,
-    currency: pricing.currency,
+    currency,
     createdAt: new Date().toISOString(),
     status: subscription.status,
     // null = guest purchase, redeem manually inside the app.
@@ -4193,6 +4238,118 @@ async function handleAdminSetPricing(req: VercelRequest, res: VercelResponse) {
   }
   await getDb().collection('appConfig').doc('pricing').set(doc, { merge: true })
   return res.status(200).json({ ok: true, pricing: doc })
+}
+
+/* ──────────────────────────────────────────────────────────────
+ *  Per-TIER config (Free/Basic/Pro/Ultra) — the admin panel is the
+ *  SOURCE OF TRUTH for prices + storage GB + every numeric quota,
+ *  stored in appConfig/tiers. Code holds only the defaults/fallback.
+ *  Mirror of DEFAULT_TIER_CONFIG in src/lib/tiers.ts — keep in sync.
+ *  `null` = unlimited, `0` = none/unset.
+ * ────────────────────────────────────────────────────────────── */
+type TierS = 'free' | 'basic' | 'pro' | 'ultra'
+interface TierConfigS {
+  priceMonthly: number
+  priceYearly: number
+  quotesPerMonth: number | null
+  maxDownloadProjects: number | null
+  transcriptionMonthlySec: number | null
+  storageGb: number
+  maxRevisionProjects: number
+  maxDeliveryProjects: number
+  aiMonthlyTokens: number
+}
+const DEFAULT_TIER_CONFIG_S: Record<TierS, TierConfigS> = {
+  free: { priceMonthly: 0, priceYearly: 0, quotesPerMonth: 1, maxDownloadProjects: 2, transcriptionMonthlySec: 300, storageGb: 0, maxRevisionProjects: 0, maxDeliveryProjects: 0, aiMonthlyTokens: 0 },
+  basic: { priceMonthly: 0, priceYearly: 0, quotesPerMonth: null, maxDownloadProjects: null, transcriptionMonthlySec: 3600, storageGb: 10, maxRevisionProjects: 1, maxDeliveryProjects: 1, aiMonthlyTokens: 0 },
+  pro: { priceMonthly: 0, priceYearly: 0, quotesPerMonth: null, maxDownloadProjects: null, transcriptionMonthlySec: null, storageGb: 50, maxRevisionProjects: 10, maxDeliveryProjects: 10, aiMonthlyTokens: 1_000_000 },
+  ultra: { priceMonthly: 0, priceYearly: 0, quotesPerMonth: null, maxDownloadProjects: null, transcriptionMonthlySec: null, storageGb: 100, maxRevisionProjects: 10, maxDeliveryProjects: 10, aiMonthlyTokens: 5_000_000 },
+}
+const TIER_KEYS_S: readonly TierS[] = ['free', 'basic', 'pro', 'ultra']
+
+/** Coerce a value to a tier; unknown/absent → 'pro' (the legacy default for
+ *  the subscription path — create-subscription is only for paid tiers). */
+function normTier(v: unknown): TierS {
+  const s = String(v ?? '').toLowerCase()
+  return (TIER_KEYS_S as readonly string[]).includes(s) ? (s as TierS) : 'pro'
+}
+
+/** Read appConfig/tiers and merge the stored values over the code defaults,
+ *  tier-by-tier, field-by-field (a missing field always falls back safely). */
+async function loadTierConfig(): Promise<Record<TierS, TierConfigS>> {
+  let stored: Partial<Record<TierS, Partial<TierConfigS>>> = {}
+  try {
+    const snap = await getDb().collection('appConfig').doc('tiers').get()
+    if (snap.exists) {
+      const d = snap.data() as { tiers?: Partial<Record<TierS, Partial<TierConfigS>>> }
+      if (d.tiers && typeof d.tiers === 'object') stored = d.tiers
+    }
+  } catch {
+    /* fall back to defaults */
+  }
+  const out = {} as Record<TierS, TierConfigS>
+  for (const t of TIER_KEYS_S) {
+    out[t] = { ...DEFAULT_TIER_CONFIG_S[t], ...(stored[t] ?? {}) }
+  }
+  return out
+}
+
+/** Public read — the buy page shows per-tier prices + what each includes. */
+async function handleGetTiers(_req: VercelRequest, res: VercelResponse) {
+  try {
+    const tiers = await loadTierConfig()
+    return res.status(200).json({ ok: true, tiers })
+  } catch (err) {
+    return res
+      .status(200)
+      .json({ ok: false, error: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+/** Admin read (2FA session). */
+async function handleAdminGetTiers(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const tiers = await loadTierConfig()
+  return res.status(200).json({ ok: true, tiers })
+}
+
+/** Admin write (step-up). Validates + persists the per-tier config. */
+async function handleAdminSetTiers(req: VercelRequest, res: VercelResponse) {
+  const admin = await verifyAdminStepUp(req)
+  if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const body = (req.body || {}) as { tiers?: Partial<Record<TierS, Partial<TierConfigS>>> }
+  const incoming = body.tiers
+  if (!incoming || typeof incoming !== 'object') {
+    return res.status(400).json({ ok: false, error: 'tiers object required' })
+  }
+  // non-negative number, or null only for the fields that allow "unlimited".
+  const num0 = (v: unknown, fallback: number): number =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback
+  const numOrNull = (v: unknown, fallback: number | null): number | null =>
+    v === null ? null : typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback
+  const clean = {} as Record<TierS, TierConfigS>
+  for (const t of TIER_KEYS_S) {
+    const src = (incoming[t] ?? {}) as Partial<TierConfigS>
+    const def = DEFAULT_TIER_CONFIG_S[t]
+    clean[t] = {
+      priceMonthly: num0(src.priceMonthly, def.priceMonthly),
+      priceYearly: num0(src.priceYearly, def.priceYearly),
+      quotesPerMonth: numOrNull(src.quotesPerMonth, def.quotesPerMonth),
+      maxDownloadProjects: numOrNull(src.maxDownloadProjects, def.maxDownloadProjects),
+      transcriptionMonthlySec: numOrNull(src.transcriptionMonthlySec, def.transcriptionMonthlySec),
+      storageGb: num0(src.storageGb, def.storageGb),
+      maxRevisionProjects: num0(src.maxRevisionProjects, def.maxRevisionProjects),
+      maxDeliveryProjects: num0(src.maxDeliveryProjects, def.maxDeliveryProjects),
+      aiMonthlyTokens: num0(src.aiMonthlyTokens, def.aiMonthlyTokens),
+    }
+  }
+  await getDb()
+    .collection('appConfig')
+    .doc('tiers')
+    .set({ tiers: clean, updatedAt: new Date().toISOString(), updatedBy: admin }, { merge: true })
+  return res.status(200).json({ ok: true, tiers: clean })
 }
 
 async function handleSyncPlans(req: VercelRequest, res: VercelResponse) {

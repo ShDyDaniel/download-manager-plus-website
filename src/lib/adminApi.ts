@@ -319,6 +319,7 @@ export async function setGateKey(newKey: string): Promise<void> {
  */
 const STEPUP_ACTIONS = new Set<string>([
   'admin-set-pricing',
+  'admin-set-tiers',
   'sync-plans',
   'admin-migrate-email-verified',
   'admin-send-test-email',

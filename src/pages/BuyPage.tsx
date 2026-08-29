@@ -20,6 +20,13 @@ import {
   writePricingCache,
   type LivePricing,
 } from '../lib/pricing'
+import TierComparison from '../components/TierComparison'
+import {
+  DEFAULT_TIER_CONFIG,
+  TIER_LABEL,
+  type Tier,
+  type TierConfig,
+} from '@/lib/tiers'
 
 /**
  * Dedicated purchase page at `/buy`. The buyer picks a plan
@@ -251,6 +258,31 @@ interface PurchaseContext {
 
 export function BuyPage() {
   const [plan, setPlan] = useState<Plan>('yearly')
+  // Which tier the buyer selected in the comparison cards. Drives the
+  // per-tier price on the server; 'pro' keeps the legacy checkout behavior.
+  const [tier, setTier] = useState<Tier>('pro')
+  // Live per-tier config (prices) for the checkout display — same public
+  // source the comparison cards read. Falls back to code defaults.
+  const [tierCfg, setTierCfg] = useState<Record<Tier, TierConfig>>(DEFAULT_TIER_CONFIG)
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const r = await fetch('/api/paypal?action=get-tiers')
+        const j = (await r.json().catch(() => null)) as
+          | { ok?: boolean; tiers?: Record<Tier, TierConfig> }
+          | null
+        if (alive && j?.ok && j.tiers) setTierCfg(j.tiers)
+      } catch {
+        /* keep defaults */
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [])
+  const selectedTierPrice =
+    plan === 'monthly' ? tierCfg[tier].priceMonthly : tierCfg[tier].priceYearly
   const [email, setEmail] = useState('')
   const [emailLocked, setEmailLocked] = useState(false)
   // Populated on mount from sessionStorage if the buyer arrived
@@ -1056,9 +1088,23 @@ export function BuyPage() {
             בחירת התוכנית שמתאימה לך
           </h1>
           <p className="mx-auto mt-3 max-w-2xl text-sm text-fg-muted md:text-base">
-            כל הפיצ'רים פתוחים, ללא הגבלות.
+            בחרו את המסלול שמתאים לכם — כל מסלול פותח עוד.
           </p>
         </motion.div>
+
+        {/* New tier comparison (Free/Basic/Pro/Ultra) — live admin-configured
+            prices + the feature matrix. Only Pro has a live checkout today
+            (BUYABLE_NOW); the others show "בקרוב" until the per-tier PayPal
+            plans land. Choosing Pro selects the cycle + scrolls to checkout. */}
+        <TierComparison
+          onChoose={(chosenTier, cycle) => {
+            setTier(chosenTier)
+            setPlan(cycle)
+            document
+              .getElementById('tier-checkout')
+              ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          }}
+        />
 
         {/* Pricing-unavailable HARD BLOCK. When the strict pricing
             fetch failed (server / Firestore down) we refuse to show
@@ -1111,6 +1157,7 @@ export function BuyPage() {
             the grid reserves space for the floating 'מומלץ' ribbon
             so it doesn't visually overlap with anything above. */}
         <div
+          id="tier-checkout"
           dir="rtl"
           className="mb-6 mt-3 grid grid-cols-1 items-stretch gap-4 md:grid-cols-2"
         >
@@ -1446,6 +1493,9 @@ export function BuyPage() {
               email={email}
               setEmail={setEmail}
               plan={plan}
+              tier={tier}
+              tierPrice={selectedTierPrice}
+              tierLabel={TIER_LABEL[tier]}
               pricing={pricing}
               autoRenewAccepted={autoRenewAccepted}
               setAutoRenewAccepted={setAutoRenewAccepted}
@@ -1973,6 +2023,9 @@ function SubscriptionFlow({
   email,
   setEmail,
   plan,
+  tier,
+  tierPrice,
+  tierLabel,
   pricing,
   autoRenewAccepted,
   setAutoRenewAccepted,
@@ -1986,6 +2039,11 @@ function SubscriptionFlow({
   email: string
   setEmail: (s: string) => void
   plan: Plan
+  tier: Tier
+  /** Selected tier's price for the current cycle (0/undefined = legacy Pro). */
+  tierPrice?: number
+  /** Hebrew label of the selected tier ("Basic"/"Pro"/"Ultra"). */
+  tierLabel?: string
   pricing: LivePricing
   autoRenewAccepted: boolean
   setAutoRenewAccepted: (b: boolean) => void
@@ -2042,10 +2100,17 @@ function SubscriptionFlow({
     )
   }
 
-  const eff = effectivePrice(pricing[plan])
+  // Per-tier price (Basic/Ultra, or Pro once its per-tier price is set) —
+  // when present it drives the whole display, and the legacy sale/coupon UI
+  // (which is Pro-single-product only) is suppressed. The charge itself is
+  // priced per-tier server-side regardless.
+  const perTierPrice = typeof tierPrice === 'number' && tierPrice > 0 ? tierPrice : null
+  const isPerTier = perTierPrice != null
+  const planLabelText = tierLabel ?? 'Pro'
+  const eff = perTierPrice ?? effectivePrice(pricing[plan])
   const sym = currencySymbol(pricing.currency)
   const cycleLabel = plan === 'monthly' ? 'חודש' : 'שנה'
-  const onSale = pricing[plan].sale != null
+  const onSale = !isPerTier && pricing[plan].sale != null
   // Terms modal — replaces the previously-inline "סיכום העסקה"
   // block. The legal requirement (sec. 13ג) is that the user has
   // ACCESS to the disclosures before paying, not that they're
@@ -2140,8 +2205,10 @@ function SubscriptionFlow({
   // the Buttons rendered and still be charged for the old plan.
   const emailLatestRef = useRef(trimmedEmail)
   const planLatestRef = useRef(plan)
+  const tierLatestRef = useRef(tier)
   emailLatestRef.current = trimmedEmail
   planLatestRef.current = plan
+  tierLatestRef.current = tier
 
   // Render the embedded PayPal Buttons once the SDK is loaded AND
   // the form (email + checkbox) is valid. The Buttons component
@@ -2173,6 +2240,9 @@ function SubscriptionFlow({
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 plan: planLatestRef.current,
+                // The selected tier — the server prices it per-tier and the
+                // webhook stamps it on the minted key.
+                tier: tierLatestRef.current,
                 email: emailLatestRef.current,
                 // Pass-through the signed-in session token so the
                 // backend webhook can auto-redeem the new key to
@@ -2263,8 +2333,10 @@ function SubscriptionFlow({
 
       {/* Coupon — only the CODE travels to the server; price + validity
           are decided there. This flow is fresh-purchase-only (renewals
-          use a separate container), so the field is always in scope. */}
-      <div>
+          use a separate container), so the field is always in scope.
+          Hidden on the per-tier path (coupon price preview is Pro-single-
+          product only for now). */}
+      <div style={isPerTier ? { display: 'none' } : undefined}>
           {!couponOpen && !couponOk ? (
             <button
               type="button"
@@ -2404,7 +2476,7 @@ function SubscriptionFlow({
             </div>
             <ul className="space-y-2.5 text-xs leading-relaxed text-fg-secondary">
               <li>
-                • <strong>תוכנית:</strong> מנוי Pro {cycleLabel === 'חודש' ? 'חודשי' : 'שנתי'}.
+                • <strong>תוכנית:</strong> מנוי {planLabelText} {cycleLabel === 'חודש' ? 'חודשי' : 'שנתי'}.
               </li>
               <li>
                 • <strong>סכום החיוב:</strong>{' '}

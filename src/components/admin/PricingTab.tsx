@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/Input'
 import { Switch } from '@/components/ui/Switch'
 import { cn } from '@/lib/cn'
 import { PricingCard } from './SettingsTab'
+import TiersCard from './TiersCard'
 
 /* Coupons tab — discount codes for the /buy checkout.
  *
@@ -135,7 +136,11 @@ export default function PricingTab({
       {/* ── Plan mode (moved from Settings) ── */}
       <PlanModeCard onErr={handleErr} />
 
-      {/* ── Subscription prices (moved from Settings) ── */}
+      {/* ── Per-tier config (Free/Basic/Pro/Ultra): prices + storage + quotas ── */}
+      <TiersCard onErr={handleErr} />
+
+      {/* ── Legacy single-product prices (monthly/yearly of the old "Pro"). Kept
+             until the PayPal per-tier plans land in a later phase. ── */}
       <PricingCard onErr={handleErr} />
 
       {/* ── Coupons ── */}
