@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Loader2, Crown } from 'lucide-react'
+import { Check, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import {
   PAID_TIERS,
@@ -36,6 +36,10 @@ function fmtMinutes(sec: number | null): string {
 function fmtCount(n: number | null, unit: string): string {
   return n == null ? `${unit} ללא הגבלה` : `${n} ${unit}`
 }
+/** GB value → "NGB" / "ללא הגבלה" (null) / "—" (0). */
+function fmtGb(v: number | null): string {
+  return v == null ? 'ללא הגבלה' : v > 0 ? `${v}GB` : '—'
+}
 
 /** One-line positioning per tier. */
 const TAGLINE: Record<Tier, string> = {
@@ -68,7 +72,7 @@ function highlights(tier: Tier, c: TierConfig): string[] {
       return [
         'הצעות מחיר ללא הגבלה',
         'כיווץ וידאו',
-        `סבבי תיקונים + מסירה ללקוח — ${c.storageGb}GB`,
+        `סבבי תיקונים + מסירה ללקוח — ${fmtGb(c.storageGb)}`,
         `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
         `תמלול חכם — ${fmtMinutes(c.transcriptionMonthlySec)}`,
         'מעקב זמן עבודה',
@@ -78,12 +82,12 @@ function highlights(tier: Tier, c: TierConfig): string[] {
         'סנכרון אוטומטי',
         'תמלול ללא הגבלה + מתקדם (דוברים, מדויק, מילון)',
         'העורך האוטומטי (AI) + AI יוצר',
-        `${c.storageGb}GB אחסון`,
+        `${fmtGb(c.storageGb)} אחסון`,
         `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
       ]
     case 'ultra':
       return [
-        `${c.storageGb}GB אחסון — הגדול ביותר`,
+        `${fmtGb(c.storageGb)} אחסון — הגדול ביותר`,
         'מכסת טוקני AI מוגדלת לעורך ול-AI יוצר',
         `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
         'עדיפות בתמיכה',
@@ -126,15 +130,25 @@ const TABLE_ROWS: { label: string; render: (t: Tier, c: TierConfig) => ReactNode
   { label: 'AI יוצר', render: (t) => (tierAllows(t, 'aiCreator') ? yes() : no()) },
   {
     label: 'אחסון (תיקונים + מסירה)',
-    render: (_t, c) => (c.storageGb > 0 ? `${c.storageGb}GB` : no()),
+    render: (_t, c) => (c.storageGb == null ? 'ללא הגבלה' : c.storageGb > 0 ? `${c.storageGb}GB` : no()),
   },
   {
     label: 'פרויקטים במקביל (תיקונים / מסירה)',
-    render: (_t, c) => (c.maxRevisionProjects > 0 ? String(c.maxRevisionProjects) : no()),
+    render: (_t, c) =>
+      c.maxRevisionProjects == null
+        ? 'ללא הגבלה'
+        : c.maxRevisionProjects > 0
+          ? String(c.maxRevisionProjects)
+          : no(),
   },
   {
     label: 'מכסת טוקני AI לחודש',
-    render: (_t, c) => (c.aiMonthlyTokens > 0 ? c.aiMonthlyTokens.toLocaleString('en-US') : no()),
+    render: (_t, c) =>
+      c.aiMonthlyTokens == null
+        ? 'ללא הגבלה'
+        : c.aiMonthlyTokens > 0
+          ? c.aiMonthlyTokens.toLocaleString('en-US')
+          : no(),
   },
 ]
 
@@ -150,13 +164,7 @@ function FeatureTable({ cfg, order }: { cfg: Record<Tier, TierConfig>; order: Ti
             <tr className="border-b border-border bg-card">
               <th className="px-4 py-3 text-right font-semibold text-fg-muted">תכונה</th>
               {order.map((t) => (
-                <th
-                  key={t}
-                  className={cn(
-                    'px-3 py-3 text-center font-bold',
-                    t === 'pro' ? 'text-primary' : 'text-fg',
-                  )}
-                >
+                <th key={t} className="px-3 py-3 text-center font-bold text-fg">
                   {TIER_LABEL[t]}
                 </th>
               ))}
@@ -167,13 +175,7 @@ function FeatureTable({ cfg, order }: { cfg: Record<Tier, TierConfig>; order: Ti
               <tr key={i} className="border-b border-border/50 last:border-0">
                 <td className="px-4 py-2.5 text-right text-fg-secondary">{row.label}</td>
                 {order.map((t) => (
-                  <td
-                    key={t}
-                    className={cn(
-                      'px-3 py-2.5 text-center text-fg',
-                      t === 'pro' && 'bg-primary/[0.04]',
-                    )}
-                  >
+                  <td key={t} className="px-3 py-2.5 text-center text-fg">
                     {row.render(t, cfg[t])}
                   </td>
                 ))}
@@ -235,9 +237,10 @@ export default function TierComparison({
 
   return (
     <div className="mb-10">
-      {/* monthly / yearly toggle — animated sliding pill */}
+      {/* monthly / yearly toggle — squared segmented control (matches the
+          app's own toggles), animated sliding highlight */}
       <div className="mb-8 flex justify-center">
-        <div className="relative inline-flex rounded-full border border-border bg-card p-1">
+        <div className="relative inline-flex rounded-lg border border-border bg-card p-1">
           {(['monthly', 'yearly'] as const).map((c) => {
             const active = cycle === c
             return (
@@ -245,12 +248,12 @@ export default function TierComparison({
                 key={c}
                 type="button"
                 onClick={() => setCycle(c)}
-                className="relative z-10 inline-flex items-center gap-1.5 rounded-full px-6 py-2 text-sm font-semibold"
+                className="relative z-10 inline-flex items-center gap-1.5 rounded-md px-6 py-2 text-sm font-semibold"
               >
                 {active && (
                   <motion.span
                     layoutId="cyclePill"
-                    className="absolute inset-0 -z-10 rounded-full bg-primary shadow-sm shadow-primary/30"
+                    className="absolute inset-0 -z-10 rounded-md bg-primary"
                     transition={{ type: 'spring', stiffness: 420, damping: 34 }}
                   />
                 )}
@@ -285,20 +288,11 @@ export default function TierComparison({
           const pr = tierPrice(c, cycle) // { regular, sale, effective }
           const price = pr.effective
           const isCurrent = currentTier === tier
-          const isPro = tier === 'pro'
           return (
             <div
               key={tier}
-              className={cn(
-                'relative flex flex-col rounded-2xl border p-5',
-                isPro ? 'border-primary/50 bg-primary/[0.05]' : 'border-border bg-card',
-              )}
+              className="relative flex flex-col rounded-2xl border border-border bg-card p-5"
             >
-              {isPro && (
-                <div className="absolute -top-2.5 right-4 inline-flex items-center gap-1 rounded-full bg-primary px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
-                  <Crown className="h-3 w-3" /> מומלץ
-                </div>
-              )}
               <div className="text-lg font-bold font-display text-fg">{TIER_LABEL[tier]}</div>
               <div className="mt-0.5 text-[11px] leading-snug text-fg-muted">{TAGLINE[tier]}</div>
 
@@ -329,7 +323,7 @@ export default function TierComparison({
                         </span>
                       )}
                       <span className="text-xs text-fg-muted">
-                        {cycle === 'monthly' ? 'לחודש' : 'לשנה'}
+                        {cycle === 'monthly' ? '/ לחודש' : '/ לשנה'}
                       </span>
                     </motion.div>
                   </AnimatePresence>
@@ -375,12 +369,7 @@ export default function TierComparison({
                         onClick={() =>
                           canBuy && onChoose?.(tier as Exclude<Tier, 'free'>, cycle)
                         }
-                        className={cn(
-                          'w-full rounded-xl px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                          isPro
-                            ? 'bg-primary text-white hover:bg-primary/90'
-                            : 'border border-primary/40 text-fg hover:bg-primary/10',
-                        )}
+                        className="w-full rounded-xl border border-primary/40 px-3 py-2 text-sm font-semibold text-fg transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {canBuy ? 'בחירת המסלול' : 'בקרוב'}
                       </button>

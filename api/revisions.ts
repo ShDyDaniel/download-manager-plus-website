@@ -1284,14 +1284,16 @@ async function getStorageQuotaBytes(): Promise<{
 
 // Per-tier storage in GB (defaults; appConfig/tiers overrides). Free never
 // uploads (revisions/deliveries are Basic+), so 0 is fine there.
-const DEFAULT_STORAGE_GB: Record<TierS, number> = { free: 0, basic: 10, pro: 50, ultra: 100 }
-async function tierStorageGb(tier: TierS): Promise<number> {
+// null = unlimited. Free never uploads (revisions/deliveries are Basic+).
+const DEFAULT_STORAGE_GB: Record<TierS, number | null> = { free: 0, basic: 10, pro: 50, ultra: 100 }
+async function tierStorageGb(tier: TierS): Promise<number | null> {
   try {
     const snap = await getDb().collection('appConfig').doc('tiers').get()
     const v = (snap.exists
-      ? (snap.data() as { tiers?: Record<string, { storageGb?: number }> }).tiers?.[tier]
+      ? (snap.data() as { tiers?: Record<string, { storageGb?: number | null }> }).tiers?.[tier]
           ?.storageGb
       : undefined)
+    if (v === null) return null // unlimited
     if (typeof v === 'number' && v >= 0) return v
   } catch {
     /* fall through to default */
@@ -1318,7 +1320,8 @@ async function storageQuotaBytesFor(
   }
   const tier = await resolveTier(uid, String(user.email || ''))
   if (tier === 'free') return 0
-  return (await tierStorageGb(tier)) * GB
+  const gb = await tierStorageGb(tier)
+  return gb == null ? Number.POSITIVE_INFINITY : gb * GB // null = unlimited
 }
 
 // Compute a user's CURRENT R2 usage + their quota. Usage is summed
@@ -7866,7 +7869,8 @@ async function aiMonthlyQuotaFor(uid: string, email: string): Promise<number> {
   } catch {
     /* default pro */
   }
-  let perTier = DEFAULT_AI_MONTHLY_TOKENS[tier] ?? 0
+  // Infinity = unlimited.
+  let perTier: number = DEFAULT_AI_MONTHLY_TOKENS[tier] ?? 0
   let globalCap = 0
   try {
     const [tiersSnap, globalSnap] = await Promise.all([
@@ -7875,10 +7879,11 @@ async function aiMonthlyQuotaFor(uid: string, email: string): Promise<number> {
     ])
     if (tiersSnap.exists) {
       const t = (tiersSnap.data() as {
-        tiers?: Record<string, { aiMonthlyTokens?: number }>
+        tiers?: Record<string, { aiMonthlyTokens?: number | null }>
       }).tiers
       const v = t?.[tier]?.aiMonthlyTokens
-      if (typeof v === 'number' && v >= 0) perTier = Math.floor(v)
+      if (v === null) perTier = Number.POSITIVE_INFINITY // unlimited
+      else if (typeof v === 'number' && v >= 0) perTier = Math.floor(v)
     }
     const g = (globalSnap.exists ? globalSnap.data() : {}) as { aiMonthlyTokenQuota?: number }
     if (typeof g.aiMonthlyTokenQuota === 'number' && g.aiMonthlyTokenQuota > 0) {
@@ -7923,12 +7928,13 @@ async function handleAiUsage(req: VercelRequest, res: VercelResponse) {
     readAiUsage(verified.uid),
   ])
   const month = new Date().toISOString().slice(0, 7)
+  const unlimited = !Number.isFinite(quota)
   return res.status(200).json({
     ok: true,
     month,
     used,
-    quota,
-    remaining: Math.max(0, quota - used),
+    quota: unlimited ? null : quota, // null = unlimited
+    remaining: unlimited ? null : Math.max(0, quota - used),
   })
 }
 

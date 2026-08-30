@@ -1084,11 +1084,7 @@ export function BuyPage() {
               className="relative h-20 w-20 rounded-2xl shadow-2xl shadow-lg"
             />
           </div>
-          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-primary">
-            <Crown className="h-3 w-3" />
-            Pro
-          </div>
-          <h1 className="text-3xl font-bold font-display text-fg md:text-4xl">
+          <h1 className="mt-3 text-3xl font-bold font-display text-fg md:text-4xl">
             בחירת התוכנית שמתאימה לך
           </h1>
           <p className="mx-auto mt-3 max-w-2xl text-sm text-fg-muted md:text-base">

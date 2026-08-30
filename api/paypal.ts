@@ -4261,10 +4261,10 @@ interface TierConfigS {
   quotesPerMonth: number | null
   maxDownloadProjects: number | null
   transcriptionMonthlySec: number | null
-  storageGb: number
-  maxRevisionProjects: number
-  maxDeliveryProjects: number
-  aiMonthlyTokens: number
+  storageGb: number | null
+  maxRevisionProjects: number | null
+  maxDeliveryProjects: number | null
+  aiMonthlyTokens: number | null
 }
 const DEFAULT_TIER_CONFIG_S: Record<TierS, TierConfigS> = {
   free: { priceMonthly: 0, priceMonthlySale: 0, priceYearly: 0, priceYearlySale: 0, quotesPerMonth: 1, maxDownloadProjects: 2, transcriptionMonthlySec: 300, storageGb: 0, maxRevisionProjects: 0, maxDeliveryProjects: 0, aiMonthlyTokens: 0 },
@@ -4348,10 +4348,10 @@ async function handleAdminSetTiers(req: VercelRequest, res: VercelResponse) {
       quotesPerMonth: numOrNull(src.quotesPerMonth, def.quotesPerMonth),
       maxDownloadProjects: numOrNull(src.maxDownloadProjects, def.maxDownloadProjects),
       transcriptionMonthlySec: numOrNull(src.transcriptionMonthlySec, def.transcriptionMonthlySec),
-      storageGb: num0(src.storageGb, def.storageGb),
-      maxRevisionProjects: num0(src.maxRevisionProjects, def.maxRevisionProjects),
-      maxDeliveryProjects: num0(src.maxDeliveryProjects, def.maxDeliveryProjects),
-      aiMonthlyTokens: num0(src.aiMonthlyTokens, def.aiMonthlyTokens),
+      storageGb: numOrNull(src.storageGb, def.storageGb),
+      maxRevisionProjects: numOrNull(src.maxRevisionProjects, def.maxRevisionProjects),
+      maxDeliveryProjects: numOrNull(src.maxDeliveryProjects, def.maxDeliveryProjects),
+      aiMonthlyTokens: numOrNull(src.aiMonthlyTokens, def.aiMonthlyTokens),
     }
   }
   await getDb()

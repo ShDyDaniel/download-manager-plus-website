@@ -109,15 +109,14 @@ export interface TierQuotas {
   maxDownloadProjects: number | null;
   /** Transcription seconds per calendar month; null = unlimited. */
   transcriptionMonthlySec: number | null;
-  /** Shared revisions+deliveries storage pool, in GB. */
-  storageGb: number;
-  /** Max concurrent revision projects (0 = feature not available). */
-  maxRevisionProjects: number;
-  /** Max concurrent delivery projects (0 = feature not available). */
-  maxDeliveryProjects: number;
-  /** Monthly AI (auto-editor + AI-creator) token budget. 0 = none.
-   *  PLACEHOLDER counts — Daniel: "מספר טוקנים שנחליט בהמשך". */
-  aiMonthlyTokens: number;
+  /** Shared revisions+deliveries storage pool, in GB; null = unlimited, 0 = none. */
+  storageGb: number | null;
+  /** Max concurrent revision projects; null = unlimited, 0 = not available. */
+  maxRevisionProjects: number | null;
+  /** Max concurrent delivery projects; null = unlimited, 0 = not available. */
+  maxDeliveryProjects: number | null;
+  /** Monthly AI (auto-editor + AI-creator) token budget; null = unlimited, 0 = none. */
+  aiMonthlyTokens: number | null;
 }
 
 export const TIER_QUOTAS: Record<Tier, TierQuotas> = {

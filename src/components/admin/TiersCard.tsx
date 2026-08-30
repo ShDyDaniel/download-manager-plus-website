@@ -24,10 +24,15 @@ import {
 
 type Cfg = Record<Tier, TierConfig>
 
+// Empty input on any of these = "unlimited" (stored as null).
 const NULLABLE = new Set<keyof TierConfig>([
   'quotesPerMonth',
   'maxDownloadProjects',
   'transcriptionMonthlySec',
+  'storageGb',
+  'maxRevisionProjects',
+  'maxDeliveryProjects',
+  'aiMonthlyTokens',
 ])
 
 export default function TiersCard({ onErr }: { onErr: (e: unknown) => void }) {
@@ -199,8 +204,9 @@ function QuotaColumn({
   return (
     <div className="space-y-2.5 rounded-xl border border-border bg-bg-elevated p-3">
       <span className="text-sm font-bold text-fg">{TIER_LABEL[tier]}</span>
+      <p className="text-[10px] text-fg-muted">שדה ריק = ללא הגבלה (∞).</p>
       <div className="grid grid-cols-2 gap-2">
-        <Field label="אחסון (GB)" value={numOrEmpty(cfg.storageGb)} onChange={(v) => onSet(tier, 'storageGb', v)} />
+        <Field label="אחסון (GB)" value={numOrEmpty(cfg.storageGb)} placeholder="∞" onChange={(v) => onSet(tier, 'storageGb', v)} />
         <Field
           label="תמלול (דק׳/חודש)"
           value={minutes}
@@ -209,9 +215,9 @@ function QuotaColumn({
         />
         <Field label="הצעות מחיר/חודש" value={numOrEmpty(cfg.quotesPerMonth)} placeholder="∞" onChange={(v) => onSet(tier, 'quotesPerMonth', v)} />
         <Field label="הורדות במקביל" value={numOrEmpty(cfg.maxDownloadProjects)} placeholder="∞" onChange={(v) => onSet(tier, 'maxDownloadProjects', v)} />
-        <Field label="תיקונים במקביל" value={numOrEmpty(cfg.maxRevisionProjects)} onChange={(v) => onSet(tier, 'maxRevisionProjects', v)} />
-        <Field label="מסירות במקביל" value={numOrEmpty(cfg.maxDeliveryProjects)} onChange={(v) => onSet(tier, 'maxDeliveryProjects', v)} />
-        <Field label="טוקני AI/חודש" value={numOrEmpty(cfg.aiMonthlyTokens)} onChange={(v) => onSet(tier, 'aiMonthlyTokens', v)} />
+        <Field label="תיקונים במקביל" value={numOrEmpty(cfg.maxRevisionProjects)} placeholder="∞" onChange={(v) => onSet(tier, 'maxRevisionProjects', v)} />
+        <Field label="מסירות במקביל" value={numOrEmpty(cfg.maxDeliveryProjects)} placeholder="∞" onChange={(v) => onSet(tier, 'maxDeliveryProjects', v)} />
+        <Field label="טוקני AI/חודש" value={numOrEmpty(cfg.aiMonthlyTokens)} placeholder="∞" onChange={(v) => onSet(tier, 'aiMonthlyTokens', v)} />
       </div>
     </div>
   )
