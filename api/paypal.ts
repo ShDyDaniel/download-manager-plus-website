@@ -1145,6 +1145,9 @@ interface KeyDoc {
   subscriptionCurrency?: string
   subscriptionPlanDays?: number
   planDays?: number
+  // Subscription tier this key grants (Free/Basic/Pro/Ultra). Stamped at
+  // mint/renew/tier-change; legacy keys without it are treated as Pro.
+  tier?: string
   // Stamped by handlePaymentFailed when PayPal's PAYMENT.FAILED
   // webhook fires; lets the admin panel surface at-risk
   // subscriptions and lets us debug retry behaviour after the fact.
@@ -3338,6 +3341,7 @@ async function handleCreateSubscription(
   let currentKeyTier: TierS | null = null
   let currentKeyExpiresAt: string | null = null
   let currentKeyPlanDays = 0
+  let currentKeySubId: string | null = null
   if (body.sessionToken) {
     const claims = verifySessionToken(body.sessionToken.trim())
     if (claims) {
@@ -3379,12 +3383,14 @@ async function handleCreateSubscription(
               expiresAt?: string | null
               planDays?: number
               subscriptionPlanDays?: number
+              subscriptionId?: string | null
             }
           | undefined
         if (keyData) {
           currentKeyTier = normTier(keyData.tier)
           currentKeyExpiresAt = keyData.expiresAt ?? null
           currentKeyPlanDays = keyData.planDays || keyData.subscriptionPlanDays || 0
+          currentKeySubId = keyData.subscriptionId ?? null
           if (!email) {
             const recovered = keyData.redeemedByEmail || keyData.buyerEmail || ''
             if (recovered) email = recovered.trim().toLowerCase()
@@ -3457,6 +3463,19 @@ async function handleCreateSubscription(
     !!renewKeyId &&
     currentKeyTier != null &&
     TIER_KEYS_S.indexOf(tier) > TIER_KEYS_S.indexOf(currentKeyTier)
+  // DOWNGRADE: existing key → LOWER tier. No charge now; the new lower sub is
+  // scheduled to start at the end of the paid period, and the current (higher)
+  // sub is cancelled so it won't recharge. The key keeps the higher tier until
+  // then (it stays active until expiresAt).
+  const isTierDowngrade =
+    !!renewKeyId &&
+    currentKeyTier != null &&
+    TIER_KEYS_S.indexOf(tier) < TIER_KEYS_S.indexOf(currentKeyTier)
+  // ISO start_time for a scheduled (downgrade) subscription; null = start now.
+  const scheduledStartAt =
+    isTierDowngrade && currentKeyExpiresAt && Date.parse(currentKeyExpiresAt) > Date.now()
+      ? currentKeyExpiresAt
+      : null
   if (perTier) {
     if (!(tierRegular > 0)) {
       return res
@@ -3545,6 +3564,10 @@ async function handleCreateSubscription(
   }>('POST', '/v1/billing/subscriptions', {
     plan_id: planId,
     subscriber: { email_address: email },
+    // Downgrade: the lower-tier sub is scheduled to START at the end of the
+    // current paid period, so the buyer keeps the higher tier until then and
+    // the first lower charge lands exactly at renewal.
+    ...(scheduledStartAt ? { start_time: scheduledStartAt } : {}),
     application_context: {
       brand_name: 'ניהול הורדות פלוס',
       locale: 'he-IL',
@@ -3597,7 +3620,21 @@ async function handleCreateSubscription(
     // webhook only after PayPal confirms the activation.
     couponCode: couponApplied ? couponApplied.code : null,
     couponPct: couponApplied ? couponApplied.pct : null,
+    // Downgrade bookkeeping: the scheduled start of the lower tier.
+    scheduledStartAt: scheduledStartAt || null,
   })
+  // Downgrade: cancel the CURRENT (higher) subscription now so it won't
+  // recharge at the higher price. The key keeps the higher tier until its
+  // expiresAt (unchanged); the scheduled lower sub then takes over at renewal.
+  if (scheduledStartAt && currentKeySubId && currentKeySubId !== subscription.id) {
+    try {
+      await paypalCall('POST', `/v1/billing/subscriptions/${currentKeySubId}/cancel`, {
+        reason: `Scheduled downgrade to ${tier} at period end`,
+      })
+    } catch (err) {
+      console.warn('[paypal/create-subscription] downgrade: cancel old sub failed:', err)
+    }
+  }
   return res.status(200).json({
     ok: true,
     approvalUrl: approval.href,
@@ -3795,6 +3832,7 @@ interface SubscriptionSummary {
   currency: string
   planDays: number
   cycleLabel: string
+  tier: string
 }
 
 interface ProfileSummary {
@@ -3872,6 +3910,7 @@ async function respondWithSession(
         currency: typeof k.subscriptionCurrency === 'string' ? k.subscriptionCurrency : 'ILS',
         planDays: days,
         cycleLabel: days >= 300 ? 'שנתי' : 'חודשי',
+        tier: normTier(k.tier),
       })
     }
 

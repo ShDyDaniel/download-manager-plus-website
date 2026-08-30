@@ -5,6 +5,8 @@ import { AuthInput, AuthButton, AuthError } from '../components/authUi'
 import { offerCredentialSave, redeemProductKey } from '../lib/webSession'
 import {
   ArrowRight,
+  ArrowUp,
+  ArrowDown,
   Loader2,
   CheckCircle2,
   AlertTriangle,
@@ -19,6 +21,13 @@ import {
   RefreshCw,
   LogOut,
 } from 'lucide-react'
+import {
+  PAID_TIERS,
+  TIER_LABEL,
+  tierRank,
+  normalizeTier,
+  type Tier,
+} from '../lib/tiers'
 
 /**
  * /account — full account dashboard.
@@ -65,6 +74,7 @@ interface Subscription {
   currency: string
   planDays: number
   cycleLabel: string
+  tier?: string
 }
 
 interface Profile {
@@ -639,6 +649,32 @@ export default function AccountPage() {
     }
   }
 
+  /** Change the subscription TIER (Basic/Pro/Ultra). Mints a renewToken and
+   *  sends the buyer to /buy?renew=…&tier=<target>, where an upgrade is priced
+   *  as the prorated difference (immediate) and a downgrade is scheduled for
+   *  the end of the paid period. */
+  async function handleChangeTier(subscriptionId: string, targetTier: string) {
+    if (switchingSubId) return
+    if (!token) return
+    setSwitchingSubId(subscriptionId)
+    setSwitchError(null)
+    try {
+      const r = await fetch('/api/paypal?action=mint-renew-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      })
+      const json = (await r.json()) as { ok: boolean; renewToken?: string; error?: string }
+      if (!r.ok || !json.ok || !json.renewToken) {
+        throw new Error(json.error || 'יצירת לינק שינוי מסלול נכשלה')
+      }
+      navigate(`/buy?renew=${encodeURIComponent(json.renewToken)}&tier=${targetTier}`)
+    } catch (err) {
+      setSwitchError(err instanceof Error ? err.message : 'שגיאה')
+      setSwitchingSubId(null)
+    }
+  }
+
   const loadBilling = useCallback(async () => {
     if (!token) return
     setBillingLoading(true)
@@ -1098,6 +1134,7 @@ export default function AccountPage() {
                       onSwitchPlan={() =>
                         void handleSwitchPlan(s.subscriptionId, s.planDays)
                       }
+                      onChangeTier={(t) => void handleChangeTier(s.subscriptionId, t)}
                       switchingThisSub={switchingSubId === s.subscriptionId}
                       switchError={
                         switchingSubId === null && switchError
@@ -1375,12 +1412,16 @@ function SubscriptionCard({
   sub,
   onCancel,
   onSwitchPlan,
+  onChangeTier,
   switchingThisSub,
   switchError,
 }: {
   sub: Subscription
   onCancel: () => void
   onSwitchPlan: () => void
+  /** Navigate to the tier-change flow for a specific target tier. Upgrade =
+   *  immediate + prorated difference; downgrade = scheduled to period end. */
+  onChangeTier: (targetTier: Tier) => void
   /** True while we're minting the renewToken + navigating for THIS
    *  card's subscription. Used to disable the link + show a spinner
    *  in place of the label so the user knows something's happening. */
@@ -1423,11 +1464,24 @@ function SubscriptionCard({
   // main "חידוש המנוי שלי" button elsewhere on the page).
   const canSwitch = isActive && !isCancelled
 
+  // Current tier of this subscription (falls back to "pro" for legacy
+  // subscriptions minted before tiers existed — those were all Pro).
+  const currentTier: Tier = sub.tier ? normalizeTier(sub.tier) : 'pro'
+  // Offer every OTHER paid tier as a switch target while the sub is active.
+  const tierTargets = canSwitch
+    ? PAID_TIERS.filter((t) => t !== currentTier)
+    : []
+
   return (
     <li className="rounded-md border border-border bg-bg-elevated p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold text-fg">{sub.cycleLabel}</div>
+          <div className="text-sm font-semibold text-fg">
+            {`מסלול ${TIER_LABEL[currentTier]}`}
+            <span className="mr-1.5 text-xs font-normal text-fg-muted">
+              · {sub.cycleLabel}
+            </span>
+          </div>
           <div className="mt-0.5 text-xs text-fg-muted">
             {sub.price !== null
               ? `${sub.price} ${sub.currency} ${sub.cycleLabel === 'שנתי' ? 'לשנה' : 'לחודש'}`
@@ -1490,6 +1544,43 @@ function SubscriptionCard({
           <div className="mt-0.5 text-fg">{formatDate(sub.expiresAt)}</div>
         </div>
       </div>
+
+      {tierTargets.length > 0 && (
+        <div className="mt-4 border-t border-border pt-3">
+          <div className="mb-2 text-xs font-medium text-fg-muted">שינוי מסלול</div>
+          <div className="flex flex-wrap gap-2">
+            {tierTargets.map((t) => {
+              const isUpgrade = tierRank(t) > tierRank(currentTier)
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => onChangeTier(t)}
+                  disabled={switchingThisSub}
+                  title={
+                    isUpgrade
+                      ? `שדרוג ל-${TIER_LABEL[t]} — מיידי, בתשלום הפרש יחסי`
+                      : `מעבר ל-${TIER_LABEL[t]} — יחל בסוף תקופת החיוב הנוכחית`
+                  }
+                  className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                    isUpgrade
+                      ? 'border-accent/50 text-accent hover:bg-accent/10'
+                      : 'border-border text-fg-muted hover:bg-bg-elevated hover:text-fg'
+                  }`}
+                >
+                  {isUpgrade ? (
+                    <ArrowUp className="h-3 w-3" />
+                  ) : (
+                    <ArrowDown className="h-3 w-3" />
+                  )}
+                  {isUpgrade ? 'שדרוג ל-' : 'מעבר ל-'}
+                  {TIER_LABEL[t]}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {isActive && !isCancelled && (
         <button

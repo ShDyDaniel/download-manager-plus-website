@@ -25,6 +25,8 @@ import {
   DEFAULT_TIER_CONFIG,
   TIER_LABEL,
   tierPrice,
+  tierRank,
+  normalizeTier,
   type Tier,
   type TierConfig,
 } from '@/lib/tiers'
@@ -309,6 +311,46 @@ export function BuyPage() {
   const [renewInfo, setRenewInfo] = useState<RenewInfo | null>(null)
   const [renewLoading, setRenewLoading] = useState(false)
   const [renewError, setRenewError] = useState<string | null>(null)
+  // ── Tier-change summary (upgrade/downgrade) ──
+  // Populated only when the buyer arrived via ?renew=<token>&tier=<t> and the
+  // target tier differs from the key's current tier. Mirrors the server's
+  // pricing: an UPGRADE charges the prorated difference NOW (and the same key
+  // is kept); a DOWNGRADE charges nothing now and takes effect at period end.
+  const tierChange = (() => {
+    if (!renewInfo) return null
+    const currentTier = normalizeTier(renewInfo.tier)
+    const targetTier = tier
+    if (currentTier === targetTier) return null
+    const currentEff = tierPrice(tierCfg[currentTier], plan).effective
+    const newEff = tierPrice(tierCfg[targetTier], plan).effective
+    const isUpgrade = tierRank(targetTier) > tierRank(currentTier)
+    if (isUpgrade) {
+      // Fraction of the current paid period still remaining — the buyer only
+      // pays the price difference on the days they haven't used yet.
+      const periodDays = renewInfo.planDays ?? (plan === 'yearly' ? 365 : 30)
+      const expMs = new Date(renewInfo.expiresAt).getTime()
+      const remMs = Math.max(0, expMs - Date.now())
+      const fraction = Math.min(1, remMs / (periodDays * 86_400_000))
+      const payNow = Math.max(0, Math.round((newEff - currentEff) * fraction))
+      const remDays = Math.max(0, Math.ceil(remMs / 86_400_000))
+      return {
+        kind: 'upgrade' as const,
+        currentTier,
+        targetTier,
+        payNow,
+        recurring: newEff,
+        remDays,
+      }
+    }
+    return {
+      kind: 'downgrade' as const,
+      currentTier,
+      targetTier,
+      payNow: 0,
+      recurring: newEff,
+      effectiveDate: renewInfo.expiresAt,
+    }
+  })()
   // Plan-switch mode — populated when the URL carries
   // ?switchTo=monthly|yearly alongside ?renew=<token>. The /account
   // "שינוי תוכנית" link sends users here. When set:
@@ -1064,6 +1106,46 @@ export function BuyPage() {
     )
   }
 
+  // Tier-change summary block, rendered inside the renewal panel so the buyer
+  // sees exactly what they pay now vs. recurring before committing. Upgrade =
+  // prorated difference now; downgrade = ₪0 now, new price from period end.
+  const curSym = currencySymbol(pricing?.currency ?? 'ILS')
+  const tierChangeSummary = tierChange ? (
+    <div className="space-y-2.5 rounded-xl border border-primary/30 bg-primary/[0.06] p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[11px] text-fg-muted">
+            {tierChange.kind === 'upgrade' ? 'שדרוג מסלול' : 'הורדת מסלול'}
+          </div>
+          <div className="text-base font-bold text-fg">
+            {TIER_LABEL[tierChange.currentTier]} ← {TIER_LABEL[tierChange.targetTier]}
+          </div>
+        </div>
+      </div>
+      <div className="space-y-1 border-t border-border/60 pt-2.5 text-xs">
+        <div className="flex items-center justify-between">
+          <span className="text-fg-secondary">לתשלום עכשיו</span>
+          <span className="font-semibold text-fg" dir="ltr">
+            {formatPrice(tierChange.payNow)} {curSym}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-fg-secondary">
+            {tierChange.kind === 'upgrade' ? 'מתחדש אוטומטית' : `מתחדש מ-${formatExpiry(tierChange.effectiveDate)}`}
+          </span>
+          <span className="font-semibold text-fg" dir="ltr">
+            {formatPrice(tierChange.recurring)} {curSym} / {plan === 'yearly' ? 'שנה' : 'חודש'}
+          </span>
+        </div>
+      </div>
+      <p className="text-[11px] leading-relaxed text-fg-muted">
+        {tierChange.kind === 'upgrade'
+          ? `השדרוג נכנס לתוקף מיד. משלמים עכשיו רק את ההפרש היחסי עבור ${tierChange.remDays} הימים שנותרו במחזור החיוב הנוכחי — המפתח נשאר אותו מפתח, והתוספת (טוקנים, נפח, דקות) נזקפת מיד. מהחיוב הבא ואילך תחויבו ${formatPrice(tierChange.recurring)} ${curSym} כל ${plan === 'yearly' ? 'שנה' : 'חודש'}.`
+          : `אין תשלום עכשיו. עד ${formatExpiry(tierChange.effectiveDate)} תישארו במסלול ${TIER_LABEL[tierChange.currentTier]} ששילמתם עליו במלואו. מ-${formatExpiry(tierChange.effectiveDate)} תעברו אוטומטית למסלול ${TIER_LABEL[tierChange.targetTier]} ותחויבו ${formatPrice(tierChange.recurring)} ${curSym} כל ${plan === 'yearly' ? 'שנה' : 'חודש'}.`}
+      </p>
+    </div>
+  ) : null
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -1444,19 +1526,24 @@ export function BuyPage() {
                 {/* Renewal mode uses the email field as a confirmation
                     step — the buyer's email is already known from the
                     renew token; this is just to acknowledge it before
-                    PayPal renders. */}
+                    PayPal renders. On a tier change we show the
+                    upgrade/downgrade summary above the button. */}
+                {tierChangeSummary}
                 <button
                   type="submit"
                   className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl bg-primary px-6 py-4 text-base font-bold text-bg shadow-lg shadow-primary/30 transition-all hover:bg-primary-hover hover:shadow-xl hover:shadow-primary/40 active:scale-[0.98]"
                 >
                   <Crown className="h-5 w-5" />
-                  המשך לחידוש:{' '}
-                  {formatPrice(effectivePrice(pricing[plan]))}{' '}
-                  {currencySymbol(pricing.currency)}
+                  {tierChange
+                    ? tierChange.kind === 'upgrade'
+                      ? `המשך לשדרוג: ${formatPrice(tierChange.payNow)} ${curSym}`
+                      : 'אישור הורדת המסלול'
+                    : `המשך לחידוש: ${formatPrice(effectivePrice(pricing[plan]))} ${currencySymbol(pricing.currency)}`}
                 </button>
               </form>
             ) : (
               <>
+                {tierChangeSummary}
                 {status.kind === 'error' && (
                   <div className="mb-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-xs text-destructive">
                     {status.message}
