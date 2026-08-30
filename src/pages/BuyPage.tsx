@@ -2290,19 +2290,41 @@ function SubscriptionFlow({
 
   return (
     <form onSubmit={(e) => e.preventDefault()} className="space-y-4">
-      {/* Order summary — ties the payment box to the tier the buyer picked
-          above, so it doesn't read as a stray form. */}
-      <div className="flex items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/[0.06] px-4 py-3">
-        <div className="min-w-0">
-          <div className="text-[11px] text-fg-muted">המסלול שנבחר</div>
-          <div className="text-base font-bold text-fg">מסלול {planLabelText}</div>
-        </div>
-        <div className="text-left" dir="ltr">
-          <div className="text-lg font-extrabold text-primary">
-            {formatPrice(eff)} {sym}
+      {/* Order summary — ties the payment box to the tier the buyer picked,
+          and spells out exactly what's charged NOW vs every cycle, plus how
+          upgrades/downgrades are timed, so there's zero billing surprise. */}
+      <div className="space-y-2.5 rounded-xl border border-primary/30 bg-primary/[0.06] p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] text-fg-muted">המסלול שנבחר</div>
+            <div className="text-base font-bold text-fg">מסלול {planLabelText}</div>
           </div>
-          <div className="text-[11px] text-fg-muted">/ {cycleLabel}</div>
+          <div className="text-left" dir="ltr">
+            <div className="text-lg font-extrabold text-primary">
+              {formatPrice(eff)} {sym}
+            </div>
+            <div className="text-[11px] text-fg-muted">/ {cycleLabel}</div>
+          </div>
         </div>
+        <div className="space-y-1 border-t border-border/60 pt-2.5 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-fg-secondary">לתשלום עכשיו</span>
+            <span className="font-semibold text-fg" dir="ltr">
+              {formatPrice(eff)} {sym}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-fg-secondary">מתחדש אוטומטית</span>
+            <span className="font-semibold text-fg" dir="ltr">
+              {formatPrice(eff)} {sym} / {cycleLabel}
+            </span>
+          </div>
+        </div>
+        <p className="text-[11px] leading-relaxed text-fg-muted">
+          החיוב הראשון עכשיו, ואז {formatPrice(eff)} {sym} כל {cycleLabel} עד לביטול.
+          שדרוג מסלול נכנס לתוקף מיד (משלמים רק את ההפרש); הורדת מסלול נכנסת לתוקף
+          בסוף התקופה ששולמה — עד אז נשארים במסלול הנוכחי.
+        </p>
       </div>
       <label className="block">
         <span className="mb-1.5 block text-xs text-fg-secondary">
