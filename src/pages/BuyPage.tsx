@@ -396,6 +396,8 @@ export function BuyPage() {
   emailRef.current = email
   const renewTokenRef = useRef<string | null>(renewToken)
   renewTokenRef.current = renewToken
+  const tierRef = useRef(tier)
+  tierRef.current = tier
   const buttonContainer = useRef<HTMLDivElement>(null)
 
   // Detect ?subscribed=1 / ?cancelled=1 returned by PayPal after
@@ -614,6 +616,12 @@ export function BuyPage() {
       setSwitchTo(switchToParam)
       setPlan(switchToParam)
     }
+    // ?tier=<t> — a TIER change on the existing key. Pre-select it so the
+    // checkout prices + explains the upgrade/downgrade against this target.
+    const tierParam = params.get('tier')
+    if (tierParam === 'basic' || tierParam === 'pro' || tierParam === 'ultra') {
+      setTier(tierParam)
+    }
     setRenewToken(token)
     setRenewLoading(true)
     setEmailLocked(true)
@@ -789,6 +797,10 @@ export function BuyPage() {
               // EXTEND the existing key instead of creating a new
               // one — what the user wants on the renewal panel.
               renewToken: renewTokenRef.current,
+              // On a TIER change (?tier=), the server prices the first charge
+              // as the prorated difference and stamps the new tier on the SAME
+              // key. Omitted/same tier = a plain renewal.
+              tier: tierRef.current,
             }),
           })
           const json = (await r.json()) as {

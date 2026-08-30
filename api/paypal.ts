@@ -2477,6 +2477,7 @@ async function ensureKeyForSubscription(
         subscriptionId?: string
         subscriptionPlanDays?: number
         planDays?: number
+        tier?: string
         buyerEmail?: string
         buyerName?: string
         redeemedByEmail?: string
@@ -2497,8 +2498,13 @@ async function ensureKeyForSubscription(
       const previousSubId = existing.subscriptionId || null
       const previousPlanDays =
         existing.planDays || existing.subscriptionPlanDays || 0
+      // A TIER change (e.g. Basic→Pro) also counts as a switch — the old
+      // subscription must be cancelled so the buyer isn't billed twice, and
+      // the key's tier updated. Same-interval upgrades have equal planDays,
+      // so detect the tier change explicitly too.
+      const isTierChange = pendingTier !== normTier(existing.tier)
       const isPlanSwitch =
-        previousPlanDays > 0 && previousPlanDays !== planDays
+        (previousPlanDays > 0 && previousPlanDays !== planDays) || isTierChange
 
       const currentExpMs = existing.expiresAt
         ? Date.parse(existing.expiresAt)
@@ -2546,6 +2552,8 @@ async function ensureKeyForSubscription(
       // key has already been moved off the old subscriptionId.
       await existingRef.update({
         expiresAt: newExpiresAt.toISOString(),
+        // Tier change (upgrade/downgrade) applies to the SAME key.
+        tier: pendingTier,
         subscriptionId,
         planId: sub.plan_id,
         subscriptionPrice: planPrice,
@@ -3325,6 +3333,11 @@ async function handleCreateSubscription(
   // server-side from session claims or the productKey document.
   let linkToUid: string | null = null
   let renewKeyId: string | null = null
+  // For a TIER CHANGE on an existing key (renewToken flow): the key's current
+  // tier + expiry, so we can price the upgrade as a prorated DIFFERENCE.
+  let currentKeyTier: TierS | null = null
+  let currentKeyExpiresAt: string | null = null
+  let currentKeyPlanDays = 0
   if (body.sessionToken) {
     const claims = verifySessionToken(body.sessionToken.trim())
     if (claims) {
@@ -3351,24 +3364,37 @@ async function handleCreateSubscription(
       // client didn't supply one (renewal panel never has it). The
       // key's redeemedByEmail was set when the original buyer
       // bound this key — it IS the correct email for billing.
-      if (!email) {
-        try {
-          const keySnap = await getDb()
-            .collection('productKeys')
-            .doc(claims.key)
-            .get()
-          const keyData = keySnap.data() as
-            | { redeemedByEmail?: string; buyerEmail?: string }
-            | undefined
-          const recovered =
-            keyData?.redeemedByEmail || keyData?.buyerEmail || ''
-          if (recovered) email = recovered.trim().toLowerCase()
-        } catch (err) {
-          console.warn(
-            '[paypal/create-subscription] renewToken email lookup failed:',
-            err,
-          )
+      // Always fetch the key doc — we need its tier/expiry/planDays for
+      // tier-change proration, and (if missing) the buyer email.
+      try {
+        const keySnap = await getDb()
+          .collection('productKeys')
+          .doc(claims.key)
+          .get()
+        const keyData = keySnap.data() as
+          | {
+              redeemedByEmail?: string
+              buyerEmail?: string
+              tier?: string
+              expiresAt?: string | null
+              planDays?: number
+              subscriptionPlanDays?: number
+            }
+          | undefined
+        if (keyData) {
+          currentKeyTier = normTier(keyData.tier)
+          currentKeyExpiresAt = keyData.expiresAt ?? null
+          currentKeyPlanDays = keyData.planDays || keyData.subscriptionPlanDays || 0
+          if (!email) {
+            const recovered = keyData.redeemedByEmail || keyData.buyerEmail || ''
+            if (recovered) email = recovered.trim().toLowerCase()
+          }
         }
+      } catch (err) {
+        console.warn(
+          '[paypal/create-subscription] renewToken key lookup failed:',
+          err,
+        )
       }
     }
   }
@@ -3424,17 +3450,40 @@ async function handleCreateSubscription(
   let lockedPrice: number
   let planId: string | null
   let regularBase: number // pre-sale/pre-coupon list price, for coupon math
+  // UPGRADE detection: an existing key (renewToken) moving to a HIGHER tier.
+  // The buyer keeps the SAME key; the FIRST charge is the prorated DIFFERENCE
+  // (by remaining days), then the new tier's full price recurs.
+  const isTierUpgrade =
+    !!renewKeyId &&
+    currentKeyTier != null &&
+    TIER_KEYS_S.indexOf(tier) > TIER_KEYS_S.indexOf(currentKeyTier)
   if (perTier) {
     if (!(tierRegular > 0)) {
       return res
         .status(400)
         .json({ ok: false, error: 'המחיר למנוי זה עדיין לא הוגדר. נסו שוב מאוחר יותר.' })
     }
-    // Charge the effective (sale-aware) price; coupon math still discounts
-    // off the regular list price (regularBase).
-    lockedPrice = tierEffective
     regularBase = tierRegular
-    planId = await ensurePlanForAmount(plan, tierEffective, currency)
+    if (isTierUpgrade) {
+      // Prorated difference = (new − old effective) × (remaining days / period).
+      const oldCfg = tcfg[currentKeyTier as TierS]
+      const oldRegular = plan === 'monthly' ? oldCfg.priceMonthly : oldCfg.priceYearly
+      const oldSaleRaw = plan === 'monthly' ? oldCfg.priceMonthlySale : oldCfg.priceYearlySale
+      const oldEffective = oldSaleRaw > 0 && oldSaleRaw < oldRegular ? oldSaleRaw : oldRegular
+      const now = Date.now()
+      const remMs = currentKeyExpiresAt ? Math.max(0, Date.parse(currentKeyExpiresAt) - now) : 0
+      const periodDays = currentKeyPlanDays > 0 ? currentKeyPlanDays : plan === 'monthly' ? 30 : 365
+      const fraction = periodDays > 0 ? Math.min(1, remMs / (periodDays * 86_400_000)) : 0
+      const diff = Math.max(0, Math.round((tierEffective - oldEffective) * fraction * 100) / 100)
+      // First charge = the prorated difference; then the new tier's full price.
+      planId = await ensureIntroPlan(plan, diff, tierEffective, currency)
+      lockedPrice = diff
+    } else {
+      // Charge the effective (sale-aware) price; coupon math still discounts
+      // off the regular list price (regularBase).
+      lockedPrice = tierEffective
+      planId = await ensurePlanForAmount(plan, tierEffective, currency)
+    }
   } else {
     const usingSale = pricing[plan].sale != null
     lockedPrice = usingSale ? pricing[plan].sale! : pricing[plan].regular
