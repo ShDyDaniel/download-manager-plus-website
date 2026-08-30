@@ -1604,6 +1604,23 @@ async function requireTier(
   verified: VerifiedUser,
   minTier: TierS,
 ): Promise<boolean> {
+  // Blocked-account gate (server-side, defense-in-depth). The desktop
+  // already refuses to operate for a blocked user, but a patched client
+  // could hit the API directly — so every paid endpoint rejects a blocked
+  // account here too. Set by the admin panel or the daily quota-abuse audit.
+  try {
+    const usnap = await getDb().collection('users').doc(verified.uid).get()
+    if (usnap.exists && usnap.data()?.blocked === true) {
+      res.status(403).json({
+        ok: false,
+        error: 'החשבון שלך הושבת. פנה למנהל המערכת לבירור.',
+        blocked: true,
+      })
+      return false
+    }
+  } catch {
+    /* block-check read failed → fall through; the tier check below fail-closes */
+  }
   let tier: TierS
   try {
     tier = await resolveTier(verified.uid, verified.email)
@@ -2769,6 +2786,18 @@ async function handleCreateProjectGroup(
   const videoFileName = String(body.videoFileName || '').trim().slice(0, 300)
   // Quota-safe: for an R2 object use its REAL size, not the client number.
   const videoSizeBytes = await authoritativeVideoSize(r2Key, body.videoSizeBytes)
+  // Re-check quota at registration too (TOCTOU — see add-round-to-group).
+  if (r2Key) {
+    const { usedBytes, limitBytes } = await getStorageState(verified.uid)
+    if (usedBytes + videoSizeBytes > limitBytes) {
+      return res.status(413).json({
+        ok: false,
+        error: `אין מספיק מקום אחסון לקובץ הזה (${(videoSizeBytes / GB).toFixed(2)}GB). בשימוש ${(usedBytes / GB).toFixed(2)}GB מתוך ${(limitBytes / GB).toFixed(2)}GB.`,
+        usedBytes,
+        limitBytes,
+      })
+    }
+  }
   const videoMime = String(body.videoMime || '').trim().slice(0, 100)
   const password = String(body.password || '')
   const roundNumber = Math.max(
@@ -2968,6 +2997,23 @@ async function handleAddRoundToGroup(
   const now = Date.now()
   // Quota-safe: store the REAL R2 object size, not the client number.
   const videoSizeBytes = await authoritativeVideoSize(r2Key, body.videoSizeBytes)
+  // Re-check the quota HERE, at registration — not only at upload-complete.
+  // Otherwise a client can complete many uploads in parallel (each sees the
+  // pre-registration usage) and then register them all, durably exceeding the
+  // quota (TOCTOU). Registration is the point the object starts counting, so
+  // it must be gated too. The daily storage audit is the authoritative backstop.
+  if (r2Key) {
+    const { usedBytes, limitBytes } = await getStorageState(verified.uid)
+    if (usedBytes + videoSizeBytes > limitBytes) {
+      // The orphaned R2 object (never registered) is reclaimed by the janitor.
+      return res.status(413).json({
+        ok: false,
+        error: `אין מספיק מקום אחסון לקובץ הזה (${(videoSizeBytes / GB).toFixed(2)}GB). בשימוש ${(usedBytes / GB).toFixed(2)}GB מתוך ${(limitBytes / GB).toFixed(2)}GB.`,
+        usedBytes,
+        limitBytes,
+      })
+    }
+  }
   await roundRef.set({
     id: roundRef.id,
     groupId,
@@ -3002,9 +3048,10 @@ async function handleAddRoundToGroup(
   ).length
   await groupRef.update({ updatedAt: now, roundCount: activeCount })
 
-  // Count R2 storage toward the user's quota (Drive videos don't).
+  // Count R2 storage toward the user's quota (Drive videos don't). Use the
+  // AUTHORITATIVE size (HEAD of the real object), not the client number.
   if (r2Key) {
-    await adjustStorageUsage(verified.uid, Number(body.videoSizeBytes) || 0)
+    await adjustStorageUsage(verified.uid, videoSizeBytes)
   }
 
   return res.status(200).json({ ok: true, roundId: roundRef.id })

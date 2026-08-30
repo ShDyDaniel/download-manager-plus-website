@@ -71,6 +71,16 @@ interface UserDoc {
   /** Revisions storage backend: 'r2' (new, default) | 'drive'. */
   storageBackend?: 'r2' | 'drive'
   blocked?: boolean
+  /** Why the account was blocked (e.g. 'quota-abuse' from the daily audit). */
+  blockReason?: string
+  blockedAt?: string
+  /** Usage snapshot captured when the audit blocked the user. */
+  blockDetails?: {
+    tier?: string
+    storage?: { usedGb?: number; limitGb?: number }
+    transcription?: { usedSec?: number; limitSec?: number }
+    tokens?: { used?: number; limit?: number }
+  }
   deviceId?: string | null
   createdAt?: string
   lastSeenAt?: string
@@ -539,6 +549,36 @@ function UserRow({
           <div className="truncate text-right text-xs text-fg-muted" dir="ltr">
             {user.email}
           </div>
+          {blocked && user.blockReason === 'quota-abuse' && (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-destructive">
+              <span className="font-semibold">נחסם אוטומטית — חריגת מכסה</span>
+              {user.blockedAt && (
+                <span className="text-destructive/70">
+                  {' '}· {new Date(user.blockedAt).toLocaleDateString('he-IL')}
+                </span>
+              )}
+              <div className="mt-0.5 space-y-0.5 text-destructive/90">
+                {user.blockDetails?.storage && (
+                  <div>
+                    אחסון: {user.blockDetails.storage.usedGb}GB מתוך{' '}
+                    {user.blockDetails.storage.limitGb}GB
+                  </div>
+                )}
+                {user.blockDetails?.transcription && (
+                  <div>
+                    תמלול: {Math.round((user.blockDetails.transcription.usedSec ?? 0) / 60)} דק' מתוך{' '}
+                    {Math.round((user.blockDetails.transcription.limitSec ?? 0) / 60)} דק'
+                  </div>
+                )}
+                {user.blockDetails?.tokens && (
+                  <div>
+                    טוקנים: {(user.blockDetails.tokens.used ?? 0).toLocaleString()} מתוך{' '}
+                    {(user.blockDetails.tokens.limit ?? 0).toLocaleString()}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-fg-faint">
             <span>תוכנה: {relTime(user.lastSeenAt)}</span>
             <span>·</span>

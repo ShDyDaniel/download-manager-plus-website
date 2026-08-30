@@ -478,6 +478,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // that's mid-flight right now is never touched.
     const janitorResults = await runStorageJanitor(db)
 
+    // ─── Daily quota-abuse audit ──────────────────────────────
+    // Authoritative daily check: block + Telegram-alert any user whose
+    // ACTUAL usage (storage summed from R2-backed docs; recorded
+    // transcription/token usage) exceeds their tier's limits — catches
+    // anyone who bypassed the real-time gates. Skipped during beta.
+    const auditResults = await runQuotaAbuseAudit(db)
+
     // NOTE: Firestore backups used to run here too. They've moved
     // entirely to the dedicated Cloudflare backup worker
     // (dmplus-backup-cron → admin-run-auto-backup), so the two systems
@@ -495,6 +502,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       purge: purgeResults,
       deliveries: deliveryResults,
       janitor: janitorResults,
+      audit: auditResults,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
@@ -905,6 +913,209 @@ async function sendPurgeTelegramAlert(text: string): Promise<void> {
 // guaranteed to be 'admin'. Prevents the purge from ever touching an
 // operator account.
 const PURGE_ADMIN_EMAILS = new Set(['dyshalts@gmail.com'])
+
+/* ──────────────────────────────────────────────────────────────
+ *  Daily quota-abuse audit
+ *
+ *  Authoritative daily check that catches anyone who exceeded their
+ *  tier's limits (e.g. by bypassing the real-time upload gate via a
+ *  TOCTOU race or a tampered client). For each non-admin user we compare
+ *  ACTUAL usage against their tier's limits:
+ *    - Storage: authoritative — we own the R2 objects, summed from the
+ *      user's registered rounds + deliveries. A bypass shows here for real.
+ *    - Transcription / AI tokens: the server-RECORDED usage. A fully-
+ *      tampered client can under-report, but honest-client over-use is
+ *      caught; storage (the costly one) is always authoritative.
+ *  Over-quota users are BLOCKED (users/{uid}.blocked=true) so the desktop
+ *  refuses to operate, and a Telegram alert is sent. The admin reviews the
+ *  full details and unblocks from the users tab. Skipped entirely during
+ *  beta (everyone is Ultra and numeric caps are bypassed).
+ * ────────────────────────────────────────────────────────────── */
+type AuditTier = 'free' | 'basic' | 'pro' | 'ultra'
+const AUDIT_TIER_RANK: Record<AuditTier, number> = { free: 0, basic: 1, pro: 2, ultra: 3 }
+function auditNormTier(v: unknown): AuditTier {
+  const s = String(v ?? '').toLowerCase()
+  return (['free', 'basic', 'pro', 'ultra'] as string[]).includes(s) ? (s as AuditTier) : 'free'
+}
+// Code defaults — appConfig/tiers overrides these per field (admin-configured).
+// null = unlimited (that dimension is not audited).
+const AUDIT_DEFAULT_LIMITS: Record<
+  AuditTier,
+  { storageGb: number | null; txSec: number | null; aiTokens: number | null }
+> = {
+  free: { storageGb: 0, txSec: 300, aiTokens: 0 },
+  basic: { storageGb: 10, txSec: 3600, aiTokens: 0 },
+  pro: { storageGb: 50, txSec: null, aiTokens: 1_000_000 },
+  ultra: { storageGb: 100, txSec: null, aiTokens: 5_000_000 },
+}
+function auditMonthStartUtc(now: number): number {
+  const d = new Date(now)
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)
+}
+
+async function runQuotaAbuseAudit(db: ReturnType<typeof getFirestore>): Promise<{
+  ran: boolean
+  reason?: string
+  scanned: number
+  blocked: number
+}> {
+  // Beta = everyone Ultra, numeric caps bypassed → nothing to audit.
+  if (await isBetaOn(db)) return { ran: false, reason: 'beta mode on', scanned: 0, blocked: 0 }
+
+  const now = Date.now()
+  const monthStart = auditMonthStartUtc(now)
+  const monthKey = new Date(now).toISOString().slice(0, 7)
+  const GB = 1024 * 1024 * 1024
+
+  // Effective per-tier limits (defaults merged with admin config).
+  const limits: Record<AuditTier, { storageGb: number | null; txSec: number | null; aiTokens: number | null }> =
+    JSON.parse(JSON.stringify(AUDIT_DEFAULT_LIMITS))
+  try {
+    const snap = await db.collection('appConfig').doc('tiers').get()
+    const stored = (snap.exists ? snap.data() : {}) as Record<string, Record<string, unknown>>
+    for (const t of ['free', 'basic', 'pro', 'ultra'] as AuditTier[]) {
+      const c = stored?.[t] || {}
+      if ('storageGb' in c) limits[t].storageGb = c.storageGb as number | null
+      if ('transcriptionMonthlySec' in c) limits[t].txSec = c.transcriptionMonthlySec as number | null
+      if ('aiMonthlyTokens' in c) limits[t].aiTokens = c.aiMonthlyTokens as number | null
+    }
+  } catch {
+    /* keep defaults */
+  }
+
+  // ── Bulk scans (one pass each) → aggregate by uid. Cheaper than per-user. ──
+  const storageByUid = new Map<string, number>()
+  const txByUid = new Map<string, number>()
+  const aiByUid = new Map<string, number>()
+  const keyTierByUid = new Map<string, AuditTier>()
+  try {
+    const projSnap = await db.collection('revisionProjects').get()
+    for (const d of projSnap.docs) {
+      const r = d.data() as { ownerUid?: string; r2Key?: string; videoSizeBytes?: number; status?: string }
+      if (r.ownerUid && r.r2Key && r.status !== 'archived') {
+        storageByUid.set(r.ownerUid, (storageByUid.get(r.ownerUid) || 0) + (Number(r.videoSizeBytes) || 0))
+      }
+    }
+    const delivSnap = await db.collection('deliveries').get()
+    for (const d of delivSnap.docs) {
+      const del = d.data() as { ownerUid?: string; status?: string; videos?: Array<{ sizeBytes?: number }> }
+      if (!del.ownerUid || del.status === 'deleted') continue
+      let s = 0
+      for (const v of del.videos || []) s += Number(v.sizeBytes) || 0
+      storageByUid.set(del.ownerUid, (storageByUid.get(del.ownerUid) || 0) + s)
+    }
+    const txSnap = await db.collection('transcriptionQuota').get()
+    for (const d of txSnap.docs) {
+      const q = d.data() as { monthStart?: number; usedSec?: number }
+      if (Number(q.monthStart) === monthStart) txByUid.set(d.id, Number(q.usedSec) || 0)
+    }
+    const aiSnap = await db.collection('aiUsage').get()
+    for (const d of aiSnap.docs) {
+      const m = (d.data() as { months?: Record<string, number> }).months || {}
+      if (m[monthKey]) aiByUid.set(d.id, Number(m[monthKey]) || 0)
+    }
+    const keySnap = await db.collection('productKeys').get()
+    for (const d of keySnap.docs) {
+      const k = d.data() as { redeemedBy?: string; tier?: string; expiresAt?: string }
+      if (!k.redeemedBy) continue
+      const exp = k.expiresAt ? new Date(k.expiresAt).getTime() : Infinity
+      if (Number.isFinite(exp) && exp <= now) continue // expired key doesn't grant a tier
+      const t = auditNormTier(k.tier)
+      const cur = keyTierByUid.get(k.redeemedBy)
+      if (!cur || AUDIT_TIER_RANK[t] > AUDIT_TIER_RANK[cur]) keyTierByUid.set(k.redeemedBy, t)
+    }
+  } catch (e) {
+    console.warn('[audit] bulk scan failed:', e)
+    return { ran: false, reason: 'scan failed', scanned: 0, blocked: 0 }
+  }
+
+  const usersSnap = await db.collection('users').get()
+  let scanned = 0
+  let blocked = 0
+  const alerts: string[] = []
+
+  for (const doc of usersSnap.docs) {
+    const uid = doc.id
+    const u = doc.data() as Record<string, unknown>
+    const email = String(u.email || '').toLowerCase()
+    // Never touch operators.
+    if (PURGE_ADMIN_EMAILS.has(email) || u.role === 'admin') continue
+    // Already blocked → don't re-alert / re-write.
+    if (u.blocked === true) continue
+    scanned++
+
+    // Resolve the user's current entitled tier (max of subscription / trial / key).
+    let tier: AuditTier = auditNormTier(u.subscription)
+    if (
+      u.trialStatus === 'approved' &&
+      u.trialExpiresAt &&
+      new Date(String(u.trialExpiresAt)).getTime() > now &&
+      AUDIT_TIER_RANK.pro > AUDIT_TIER_RANK[tier]
+    ) {
+      tier = 'pro' // trial grants Pro-tier
+    }
+    const kt = keyTierByUid.get(uid)
+    if (kt && AUDIT_TIER_RANK[kt] > AUDIT_TIER_RANK[tier]) tier = kt
+
+    const lim = limits[tier]
+    const violations: string[] = []
+    const details: Record<string, unknown> = {}
+
+    // Storage — authoritative. Tolerance: 5% + 100MB (rounding/timing slack).
+    const usedStorage = storageByUid.get(uid) || 0
+    if (lim.storageGb != null) {
+      const limitBytes = lim.storageGb * GB
+      const slack = Math.max(limitBytes * 0.05, 100 * 1024 * 1024)
+      if (usedStorage > limitBytes + slack) {
+        violations.push(
+          `אחסון ${(usedStorage / GB).toFixed(2)}GB מתוך ${lim.storageGb}GB`,
+        )
+        details.storage = { usedGb: +(usedStorage / GB).toFixed(2), limitGb: lim.storageGb }
+      }
+    }
+    // Transcription — recorded usage. 25% grace (mid-month tier changes).
+    const usedTx = txByUid.get(uid) || 0
+    if (lim.txSec != null && usedTx > lim.txSec * 1.25) {
+      violations.push(`תמלול ${Math.round(usedTx / 60)} דק' מתוך ${Math.round(lim.txSec / 60)} דק'`)
+      details.transcription = { usedSec: usedTx, limitSec: lim.txSec }
+    }
+    // AI tokens — recorded usage. 25% grace; for a 0-limit tier, only a
+    // meaningful amount counts (ignore tiny residue from a prior paid month).
+    const usedAi = aiByUid.get(uid) || 0
+    const aiThreshold = lim.aiTokens != null ? (lim.aiTokens > 0 ? lim.aiTokens * 1.25 : 5000) : null
+    if (aiThreshold != null && usedAi > aiThreshold) {
+      violations.push(`טוקנים ${usedAi.toLocaleString()} מתוך ${(lim.aiTokens || 0).toLocaleString()}`)
+      details.tokens = { used: usedAi, limit: lim.aiTokens || 0 }
+    }
+
+    if (violations.length === 0) continue
+
+    // Block the user (server-side, Admin SDK — the desktop refuses to
+    // operate while blocked; the admin unblocks from the panel).
+    try {
+      await db.collection('users').doc(uid).set(
+        {
+          blocked: true,
+          blockReason: 'quota-abuse',
+          blockedAt: new Date(now).toISOString(),
+          blockDetails: { tier, ...details },
+        },
+        { merge: true },
+      )
+      blocked++
+      alerts.push(`• ${email || uid} (${tier}): ${violations.join(' · ')}`)
+    } catch (e) {
+      console.warn('[audit] block write failed:', uid, e)
+    }
+  }
+
+  if (alerts.length > 0) {
+    await sendPurgeTelegramAlert(
+      `🚫 חריגת-מכסה — נחסמו ${blocked} משתמשים (עקפו את מערכת המכסות):\n\n${alerts.join('\n')}\n\nלבדיקה/שחרור: פאנל הניהול → משתמשים.`,
+    )
+  }
+  return { ran: true, scanned, blocked }
+}
 
 /** Does this user currently have access (so we must NOT purge)? Mirrors
  *  the server's isUserPro (admin email + role + subscription + trial +

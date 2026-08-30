@@ -325,21 +325,15 @@ export function BuyPage() {
     const newEff = tierPrice(tierCfg[targetTier], plan).effective
     const isUpgrade = tierRank(targetTier) > tierRank(currentTier)
     if (isUpgrade) {
-      // Fraction of the current paid period still remaining — the buyer only
-      // pays the price difference on the days they haven't used yet.
-      const periodDays = renewInfo.planDays ?? (plan === 'yearly' ? 365 : 30)
-      const expMs = new Date(renewInfo.expiresAt).getTime()
-      const remMs = Math.max(0, expMs - Date.now())
-      const fraction = Math.min(1, remMs / (periodDays * 86_400_000))
-      const payNow = Math.max(0, Math.round((newEff - currentEff) * fraction))
-      const remDays = Math.max(0, Math.ceil(remMs / 86_400_000))
+      // Pay the FULL price difference (new − old), not prorated — "as if you'd
+      // bought the bigger plan from the start". Matches the server charge.
+      const payNow = Math.max(0, Math.round(newEff - currentEff))
       return {
         kind: 'upgrade' as const,
         currentTier,
         targetTier,
         payNow,
         recurring: newEff,
-        remDays,
       }
     }
     return {
@@ -1140,7 +1134,7 @@ export function BuyPage() {
       </div>
       <p className="text-[11px] leading-relaxed text-fg-muted">
         {tierChange.kind === 'upgrade'
-          ? `השדרוג נכנס לתוקף מיד. משלמים עכשיו רק את ההפרש היחסי עבור ${tierChange.remDays} הימים שנותרו במחזור החיוב הנוכחי — המפתח נשאר אותו מפתח, והתוספת (טוקנים, נפח, דקות) נזקפת מיד. מהחיוב הבא ואילך תחויבו ${formatPrice(tierChange.recurring)} ${curSym} כל ${plan === 'yearly' ? 'שנה' : 'חודש'}.`
+          ? `השדרוג נכנס לתוקף מיד. משלמים עכשיו את ההפרש בין המסלולים (${formatPrice(tierChange.payNow)} ${curSym}) — כאילו קניתם את המסלול הגבוה מלכתחילה. המפתח נשאר אותו מפתח, והתוספת (טוקנים, נפח, דקות) נזקפת מיד. מהחיוב הבא ואילך תחויבו ${formatPrice(tierChange.recurring)} ${curSym} כל ${plan === 'yearly' ? 'שנה' : 'חודש'}.`
           : `אין תשלום עכשיו. עד ${formatExpiry(tierChange.effectiveDate)} תישארו במסלול ${TIER_LABEL[tierChange.currentTier]} ששילמתם עליו במלואו. מ-${formatExpiry(tierChange.effectiveDate)} תעברו אוטומטית למסלול ${TIER_LABEL[tierChange.targetTier]} ותחויבו ${formatPrice(tierChange.recurring)} ${curSym} כל ${plan === 'yearly' ? 'שנה' : 'חודש'}.`}
       </p>
     </div>

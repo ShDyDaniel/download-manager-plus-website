@@ -3490,19 +3490,31 @@ async function handleCreateSubscription(
     }
     regularBase = tierRegular
     if (isTierUpgrade) {
-      // Prorated difference = (new − old effective) × (remaining days / period).
+      // First charge = the FULL price difference (new − old effective), NOT
+      // prorated. Intent (Daniel): "pay the difference as if you'd bought the
+      // bigger plan from the start", regardless of how much of the current
+      // period elapsed. Then the new tier's full price recurs.
+      //
+      // SECURITY: the previous version prorated the diff by remaining days,
+      // so near expiry the diff rounded to ₪0 and the buyer still received a
+      // full period of the higher tier — a repeatable near-free upgrade. The
+      // full-difference charge closes that: total paid = old price + (new−old)
+      // = full new-tier price for the new period.
       const oldCfg = tcfg[currentKeyTier as TierS]
       const oldRegular = plan === 'monthly' ? oldCfg.priceMonthly : oldCfg.priceYearly
       const oldSaleRaw = plan === 'monthly' ? oldCfg.priceMonthlySale : oldCfg.priceYearlySale
       const oldEffective = oldSaleRaw > 0 && oldSaleRaw < oldRegular ? oldSaleRaw : oldRegular
-      const now = Date.now()
-      const remMs = currentKeyExpiresAt ? Math.max(0, Date.parse(currentKeyExpiresAt) - now) : 0
-      const periodDays = currentKeyPlanDays > 0 ? currentKeyPlanDays : plan === 'monthly' ? 30 : 365
-      const fraction = periodDays > 0 ? Math.min(1, remMs / (periodDays * 86_400_000)) : 0
-      const diff = Math.max(0, Math.round((tierEffective - oldEffective) * fraction * 100) / 100)
-      // First charge = the prorated difference; then the new tier's full price.
-      planId = await ensureIntroPlan(plan, diff, tierEffective, currency)
-      lockedPrice = diff
+      const diff = Math.round((tierEffective - oldEffective) * 100) / 100
+      if (diff > 0) {
+        // First charge = the full difference; then the new tier's full price.
+        planId = await ensureIntroPlan(plan, diff, tierEffective, currency)
+        lockedPrice = diff
+      } else {
+        // New tier isn't actually more expensive (unusual sale config) — never
+        // hand out a higher tier for free; charge its full price outright.
+        lockedPrice = tierEffective
+        planId = await ensurePlanForAmount(plan, tierEffective, currency)
+      }
     } else {
       // Charge the effective (sale-aware) price; coupon math still discounts
       // off the regular list price (regularBase).
