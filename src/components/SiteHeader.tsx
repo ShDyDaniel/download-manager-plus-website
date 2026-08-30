@@ -35,9 +35,11 @@ export function SiteHeader() {
   if (location.pathname.startsWith('/deliveries')) return null
 
   // Per-route alignment — match the page's content rail so the cluster
-  // lines up under the same column as the rest of the chrome.
+  // lines up under the same column as the rest of the chrome. /buy's own
+  // back-link ("חזרה לדף הבית") sits on a max-w-5xl rail with px-6, so the
+  // nav must use the SAME rail or it drifts toward the center.
   const isBuyPage = location.pathname === '/buy'
-  const widthClass = isBuyPage ? 'max-w-3xl' : 'max-w-6xl'
+  const widthClass = isBuyPage ? 'max-w-5xl' : 'max-w-6xl'
   // Homepage: vertically center the menu with the Hero brand icon
   // (h-10 sitting at pt-16). /buy: align with the page's back-link.
   const topClass = isBuyPage ? 'top-12 md:top-20' : 'top-16 md:top-[5.5rem]'
