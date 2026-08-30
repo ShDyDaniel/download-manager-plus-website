@@ -2300,6 +2300,7 @@ async function handleSaleCompleted(
         currency: resource.amount.currency,
         newExpiresAt,
         subscriptionId,
+        tier: key.tier,
       })
     }
   } catch (err) {
@@ -2667,6 +2668,7 @@ async function ensureKeyForSubscription(
             to: buyerEmail,
             key: renewKeyId,
             planLabel: planDays === 30 ? 'חודש' : 'שנה',
+            tier: pendingTier,
             price: planPrice,
             currency: planCurrency,
             nextBillingAt: newExpiresAt,
@@ -2818,6 +2820,7 @@ async function ensureKeyForSubscription(
       to: buyerEmail,
       key,
       planLabel: planDays === 30 ? 'חודש' : 'שנה',
+      tier: pendingTier,
       price: planPrice, // recurring
       firstChargePrice: initialChargePrice, // what was billed now
       coupon: pendingCoupon
@@ -2847,6 +2850,7 @@ async function ensureKeyForSubscription(
         to: buyerEmail,
         key,
         validUntil: initialExpiresAt,
+        tier: pendingTier,
       })
     } catch (err) {
       console.error('[webhook] pro-activated email failed for', key, err)
@@ -2914,6 +2918,7 @@ async function handleSubscriptionEnded(
         validUntil: validUntilDate,
         reason: null,
         cancelledFrom: 'paypal-direct',
+        tier: keyData.tier,
       }).catch((err) => {
         console.error(
           '[webhook] cancellation email failed for',
@@ -3014,6 +3019,7 @@ async function handlePaymentFailed(
       to: recipient,
       validUntil: keyData.expiresAt ? new Date(keyData.expiresAt) : null,
       subscriptionId,
+      tier: keyData.tier,
     }).catch((err) => {
       console.error(
         '[webhook] payment-failed email failed for',
@@ -4155,6 +4161,7 @@ async function handleCancel(req: VercelRequest, res: VercelResponse) {
     validUntil: validUntilDate,
     reason,
     cancelledFrom: 'account',
+    tier: key.tier,
   }).catch((err) => {
     console.error('[paypal/cancel] confirmation email failed:', err)
   })
@@ -4361,6 +4368,19 @@ const DEFAULT_TIER_CONFIG_S: Record<TierS, TierConfigS> = {
   ultra: { priceMonthly: 0, priceMonthlySale: 0, priceYearly: 0, priceYearlySale: 0, quotesPerMonth: null, maxDownloadProjects: null, transcriptionMonthlySec: null, storageGb: 100, maxRevisionProjects: 10, maxDeliveryProjects: 10, aiMonthlyTokens: 5_000_000 },
 }
 const TIER_KEYS_S: readonly TierS[] = ['free', 'basic', 'pro', 'ultra']
+
+/** Hebrew-facing tier names for emails / receipts. Keep in sync with the
+ *  desktop + website TIER_LABEL. Used so purchase / renewal / activation
+ *  emails name the buyer's ACTUAL plan instead of a hardcoded "Pro". */
+const TIER_LABEL_S: Record<TierS, string> = {
+  free: 'חינם',
+  basic: 'Basic',
+  pro: 'Pro',
+  ultra: 'Ultra',
+}
+function tierLabelS(v: unknown): string {
+  return TIER_LABEL_S[normTier(v)]
+}
 
 /** Coerce a value to a tier; unknown/absent → 'pro' (the legacy default for
  *  the subscription path — create-subscription is only for paid tiers). */
@@ -5305,6 +5325,9 @@ async function sendSubscriptionWelcomeEmail(args: {
   to: string
   key: string
   planLabel: string
+  /** The buyer's actual tier (free/basic/pro/ultra). Names the plan in the
+   *  heading / body / subject instead of a hardcoded "Pro". */
+  tier?: string
   /** The RECURRING price — what auto-renews every cycle. */
   price: number
   /** What was actually charged NOW. Differs from `price` only for a
@@ -5340,11 +5363,12 @@ async function sendSubscriptionWelcomeEmail(args: {
   const firstIsDiscounted =
     typeof args.firstChargePrice === 'number' &&
     args.firstChargePrice < args.price
+  const tierName = tierLabelS(args.tier)
   const html = renderEmail({
-    heading: 'ברוך הבא ל-Pro 🎉',
+    heading: `ברוך הבא ל-${tierName} 🎉`,
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-        המנוי שלך פעיל! מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong>.
+        המנוי שלך פעיל! מצורף מפתח ${tierName} לתוכנה <strong>ניהול הורדות פלוס</strong>.
       </p>
       <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
         <div style="font-size:11px;color:#8B8170;margin-bottom:8px;">מפתח המוצר</div>
@@ -5352,7 +5376,8 @@ async function sendSubscriptionWelcomeEmail(args: {
       </div>
       <h3 style="font-size:14px;margin:24px 0 8px;color:#F5EFE6;font-weight:600;">פרטי המנוי</h3>
       <div style="font-size:13px;line-height:1.9;color:#C9BFA8;">
-        <div>• תוכנית: ${args.planLabel}</div>
+        <div>• מסלול: ${tierName}</div>
+        <div>• תדירות חיוב: ${args.planLabel === 'שנה' ? 'שנתי' : 'חודשי'}</div>
         ${
           args.coupon && firstIsDiscounted
             ? `<div>• שולם עכשיו: <strong>${args.firstChargePrice} ${symbol}</strong> (קופון ${couponCode} · ${args.coupon.pct}% הנחה)</div>`
@@ -5377,7 +5402,7 @@ async function sendSubscriptionWelcomeEmail(args: {
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: 'המנוי שלך פעיל · ניהול הורדות פלוס Pro',
+    subject: `המנוי שלך פעיל · ניהול הורדות פלוס ${tierName}`,
     html,
   })
 }
@@ -5540,10 +5565,13 @@ async function sendProActivatedEmail(args: {
   to: string
   key: string
   validUntil: Date | null
+  /** The buyer's actual tier — names the plan instead of a hardcoded "Pro". */
+  tier?: string
 }): Promise<void> {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const tierName = tierLabelS(args.tier)
   const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
@@ -5558,10 +5586,10 @@ async function sendProActivatedEmail(args: {
     : 'ללא תפוגה'
   const keyLast8 = args.key.length >= 8 ? args.key.slice(-8) : args.key
   const html = renderEmail({
-    heading: '✓ החשבון שלך עכשיו Pro',
+    heading: `✓ החשבון שלך עכשיו ${tierName}`,
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-        המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי Pro בתוכנה <strong>ניהול הורדות פלוס</strong>.
+        המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי ${tierName} בתוכנה <strong>ניהול הורדות פלוס</strong>.
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
         <div style="display:flex;justify-content:space-between;font-size:13px;line-height:1.8;color:#C9BFA8;">
@@ -5597,7 +5625,7 @@ async function sendProActivatedEmail(args: {
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: '✓ החשבון שלך פעיל · ניהול הורדות פלוס Pro',
+    subject: `✓ החשבון שלך פעיל · ניהול הורדות פלוס ${tierName}`,
     html,
   })
 }
@@ -5623,10 +5651,13 @@ async function sendCancellationEmail(args: {
   validUntil: Date | null
   reason?: string | null
   cancelledFrom: 'account' | 'paypal-direct' | 'admin'
+  /** The cancelled subscription's tier — names the plan instead of "Pro". */
+  tier?: string
 }): Promise<void> {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const tierName = tierLabelS(args.tier)
   const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
@@ -5649,10 +5680,10 @@ async function sendCancellationEmail(args: {
     heading: 'המנוי שלך בוטל',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-        קיבלנו את בקשת הביטול שלך למנוי <strong>ניהול הורדות פלוס Pro</strong>. ${sourceLine} לא תחויב שוב.
+        קיבלנו את בקשת הביטול שלך למנוי <strong>ניהול הורדות פלוס ${tierName}</strong>. ${sourceLine} לא תחויב שוב.
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
-        <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה ל-Pro תפעל עד</div>
+        <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה ל-${tierName} תפעל עד</div>
         <div style="font-size:18px;color:#F5EFE6;font-weight:600;">${validUntilStr}</div>
         <div style="margin-top:10px;font-size:11px;line-height:1.6;color:#8B8170;">
           קיבלת את התקופה ששילמת עליה במלואה. לאחר מכן החשבון יחזור לחינם.
@@ -5695,10 +5726,13 @@ async function sendPaymentFailedEmail(args: {
   to: string
   validUntil: Date | null
   subscriptionId: string
+  /** The subscription's tier — names the plan instead of "Pro". */
+  tier?: string
 }): Promise<void> {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const tierName = tierLabelS(args.tier)
   const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
@@ -5715,10 +5749,10 @@ async function sendPaymentFailedEmail(args: {
     heading: '⚠ התשלום שלך נכשל',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-        ניסינו לחייב את אמצעי התשלום שלך לחידוש המנוי ב-<strong>ניהול הורדות פלוס Pro</strong>, אבל החיוב נדחה (כרטיס פג תוקף, יתרה לא מספיקה, או חסום).
+        ניסינו לחייב את אמצעי התשלום שלך לחידוש המנוי ב-<strong>ניהול הורדות פלוס ${tierName}</strong>, אבל החיוב נדחה (כרטיס פג תוקף, יתרה לא מספיקה, או חסום).
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
-        <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה ל-Pro פעילה עד</div>
+        <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה ל-${tierName} פעילה עד</div>
         <div style="font-size:18px;color:#F5EFE6;font-weight:600;">${validUntilStr}</div>
         <div style="margin-top:10px;font-size:11px;line-height:1.6;color:#8B8170;">
           PayPal ינסה שוב באופן אוטומטי. אם גם הניסיון הבא ייכשל, המנוי יושעה והגישה תיפסק.
@@ -5765,10 +5799,13 @@ async function sendRenewalEmail(args: {
   currency: string
   newExpiresAt: Date
   subscriptionId: string
+  /** The renewed subscription's tier — names the plan instead of "Pro". */
+  tier?: string
 }): Promise<void> {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const tierName = tierLabelS(args.tier)
   const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
@@ -5788,7 +5825,7 @@ async function sendRenewalEmail(args: {
     heading: '✓ המנוי שלך חודש',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
-        החיוב התקופתי עבור <strong>ניהול הורדות פלוס Pro</strong> בוצע בהצלחה, והמנוי ה${planLabel} שלך חודש אוטומטית. אין צורך לעשות דבר, הגישה ממשיכה ברצף מלא.
+        החיוב התקופתי עבור <strong>ניהול הורדות פלוס ${tierName}</strong> בוצע בהצלחה, והמנוי ה${planLabel} שלך חודש אוטומטית. אין צורך לעשות דבר, הגישה ממשיכה ברצף מלא.
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:18px;margin:0 0 22px;">
         <div style="font-size:13px;line-height:1.85;color:#C9BFA8;">
@@ -7819,10 +7856,15 @@ async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {
     targetEmail?: string
     days?: number
     reason?: string
+    tier?: string
   }
   const targetEmail = (body.targetEmail || '').trim().toLowerCase()
   const days = typeof body.days === 'number' ? Math.floor(body.days) : 30
   const reason = (body.reason || '').slice(0, 200) || 'admin grant'
+  // Which tier to grant. Defaults to Pro (legacy behaviour) when the admin
+  // UI doesn't send one; when it does, the key AND its activation email use
+  // the real tier — never a hardcoded "Pro".
+  const grantTier: TierS = body.tier ? normTier(body.tier) : 'pro'
 
   if (!targetEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetEmail)) {
     return res.status(400).json({ ok: false, error: 'כתובת מייל יעד לא תקינה' })
@@ -7885,13 +7927,13 @@ async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {
 
   await db.collection('productKeys').doc(newKey).set({
     key: newKey,
-    tier: 'pro',
+    tier: grantTier,
     redeemedBy: targetUid,
     redeemedByEmail: targetEmail,
     redeemedAt: new Date().toISOString(),
     expiresAt: expiresAt.toISOString(),
     createdAt: new Date().toISOString(),
-    createdBy: `admin-grant:${adminEmail}`,
+    createdBy: `admin-grant-${grantTier}:${adminEmail}`,
     buyerEmail: targetEmail,
     grantReason: reason,
     grantedByAdmin: adminEmail,
@@ -7910,6 +7952,7 @@ async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {
       to: targetEmail,
       key: newKey,
       validUntil: expiresAt,
+      tier: grantTier,
     })
   } catch (err) {
     console.error('[admin-grant-pro] pro-activated email failed:', err)
@@ -9619,6 +9662,7 @@ async function handleAdminCancelSubscription(
       validUntil: key.expiresAt ? new Date(key.expiresAt) : null,
       reason,
       cancelledFrom: 'admin',
+      tier: key.tier,
     }).catch((err) =>
       console.error('[admin-cancel-subscription] email failed:', err),
     )
@@ -9763,6 +9807,7 @@ async function handleAdminRefundSubscription(
             validUntil: key.expiresAt ? new Date(key.expiresAt) : null,
             reason: 'Refund issued by support',
             cancelledFrom: 'admin',
+            tier: key.tier,
           }).catch((e) =>
             console.error('[admin-refund] email failed:', e),
           )

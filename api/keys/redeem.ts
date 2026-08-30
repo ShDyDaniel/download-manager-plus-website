@@ -418,6 +418,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           to: email,
           key: result.keyId,
           validUntil: result.expiresAt ? new Date(result.expiresAt) : null,
+          tier: result.tier,
         }).catch((err) => {
           console.error('[keys/redeem] pro-activated email failed:', err)
         })
@@ -449,14 +450,30 @@ const WEBSITE_BASE_REDEEM = 'https://dmplus.net'
  * imports out of api/). Keep the markup in sync if you tweak
  * the design.
  */
+/** Hebrew tier names for the activation email. Standalone copy — redeem.ts is
+ *  bundled separately (see the note on sendProActivatedEmail). */
+const TIER_LABEL_REDEEM: Record<string, string> = {
+  free: 'חינם',
+  basic: 'Basic',
+  pro: 'Pro',
+  ultra: 'Ultra',
+}
+function tierLabelRedeem(v: unknown): string {
+  const s = String(v ?? '').toLowerCase()
+  return TIER_LABEL_REDEEM[s] ?? 'Pro'
+}
+
 async function sendProActivatedEmail(args: {
   to: string
   key: string
   validUntil: Date | null
+  /** The redeemed key's tier — names the plan instead of a hardcoded "Pro". */
+  tier?: string
 }): Promise<void> {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
+  const tierName = tierLabelRedeem(args.tier)
   const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
@@ -471,10 +488,10 @@ async function sendProActivatedEmail(args: {
     : 'ללא תפוגה'
   const keyLast8 = args.key.length >= 8 ? args.key.slice(-8) : args.key
   const html = renderEmail({
-    heading: '✓ החשבון שלך עכשיו Pro',
+    heading: `✓ החשבון שלך עכשיו ${tierName}`,
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-        המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי Pro בתוכנה <strong>ניהול הורדות פלוס</strong>.
+        המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי ${tierName} בתוכנה <strong>ניהול הורדות פלוס</strong>.
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
         <div style="display:flex;justify-content:space-between;font-size:13px;line-height:1.8;color:#C9BFA8;">
@@ -510,7 +527,7 @@ async function sendProActivatedEmail(args: {
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to: args.to,
-    subject: '✓ החשבון שלך פעיל · ניהול הורדות פלוס Pro',
+    subject: `✓ החשבון שלך פעיל · ניהול הורדות פלוס ${tierName}`,
     html,
   })
 }

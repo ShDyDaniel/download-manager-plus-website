@@ -236,10 +236,20 @@ function daysUntil(date: Date): number {
   )
 }
 
+/** Hebrew tier names for the reminder email. Standalone copy — this cron is
+ *  bundled separately from the rest of the api. */
+const TIER_LABEL_REMINDER: Record<string, string> = {
+  free: 'חינם',
+  basic: 'Basic',
+  pro: 'Pro',
+  ultra: 'Ultra',
+}
+
 async function sendReminderEmail(
   to: string,
   renewUrl: string,
   expiresAt: Date,
+  tier?: string,
 ): Promise<void> {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
@@ -253,11 +263,15 @@ async function sendReminderEmail(
   const dateStr = formatExpiryHebrew(expiresAt)
   const days = daysUntil(expiresAt)
   const daysWord = days === 1 ? 'יום אחד' : `${days} ימים`
+  // Name the actual plan when we know it (e.g. "מנוי Pro"); fall back to the
+  // generic wording for legacy keys with no tier stamped.
+  const tierName = tier ? TIER_LABEL_REMINDER[String(tier).toLowerCase()] : ''
+  const planPhrase = tierName ? `מנוי ${tierName}` : 'המנוי'
   const html = renderEmail({
-    heading: '⏳ המנוי שלך עומד להסתיים',
+    heading: `⏳ ${planPhrase} שלך עומד להסתיים`,
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-        המפתח שלך לתוכנה <strong>ניהול הורדות פלוס</strong> פג בעוד <strong>${daysWord}</strong> (${dateStr}).
+        ${tierName ? `מפתח <strong>${tierName}</strong>` : 'המפתח'} שלך לתוכנה <strong>ניהול הורדות פלוס</strong> פג בעוד <strong>${daysWord}</strong> (${dateStr}).
       </p>
       <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
         לחיצה על הכפתור למטה תעביר אותך לעמוד החידוש. המפתח שלך נשאר אותו דבר, אין מה לעדכן באפליקציה, פשוט מאריכים את התוקף.
@@ -281,7 +295,7 @@ async function sendReminderEmail(
   await transporter.sendMail({
     from: `"ניהול הורדות פלוס" <${user}>`,
     to,
-    subject: `⏳ המנוי שלך מסתיים בעוד ${daysWord} · חידוש בלחיצה`,
+    subject: `⏳ ${planPhrase} שלך מסתיים בעוד ${daysWord} · חידוש בלחיצה`,
     html,
   })
 }
@@ -407,7 +421,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const renewUrl = `${WEBSITE_BASE}/buy?renew=${encodeURIComponent(token)}`
 
       try {
-        await sendReminderEmail(buyerEmail, renewUrl, expiresAt)
+        await sendReminderEmail(buyerEmail, renewUrl, expiresAt, data.tier)
         await doc.ref.update({
           [firedStage.sentField]: new Date().toISOString(),
         })

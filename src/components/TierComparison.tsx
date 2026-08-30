@@ -240,7 +240,10 @@ export default function TierComparison({
       {/* monthly / yearly toggle — squared segmented control (matches the
           app's own toggles), animated sliding highlight */}
       <div className="mb-8 flex justify-center">
-        <div className="relative inline-flex rounded-lg border border-border bg-card p-1">
+        {/* Concentric nesting: outer radius (rounded-xl = 12px) minus the 4px
+            (p-1) inset equals the inner radius (rounded-lg = 8px), so the
+            sliding highlight sits flush in the corners of the track. */}
+        <div className="relative inline-flex rounded-xl border border-border bg-card p-1">
           {(['monthly', 'yearly'] as const).map((c) => {
             const active = cycle === c
             return (
@@ -248,12 +251,12 @@ export default function TierComparison({
                 key={c}
                 type="button"
                 onClick={() => setCycle(c)}
-                className="relative z-10 inline-flex items-center gap-1.5 rounded-md px-6 py-2 text-sm font-semibold"
+                className="relative z-10 inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2 text-sm font-semibold leading-none"
               >
                 {active && (
                   <motion.span
                     layoutId="cyclePill"
-                    className="absolute inset-0 -z-10 rounded-md bg-primary"
+                    className="absolute inset-0 -z-10 rounded-lg bg-primary"
                     transition={{ type: 'spring', stiffness: 420, damping: 34 }}
                   />
                 )}
@@ -267,8 +270,9 @@ export default function TierComparison({
                 </span>
                 {c === 'yearly' && showSavings && (
                   <span
+                    dir="ltr"
                     className={cn(
-                      'rounded-full px-1.5 py-0.5 text-[10px] font-bold transition-colors',
+                      'inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none transition-colors',
                       active ? 'bg-white/20 text-white' : 'bg-primary/15 text-primary',
                     )}
                   >

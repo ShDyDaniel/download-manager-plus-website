@@ -2747,7 +2747,7 @@ async function handleCreateProjectGroup(
     if (active >= projCap) {
       return res.status(403).json({
         ok: false,
-        error: `הגעת למגבלת הפרויקטים במסלול הנוכחי (${projCap}). ארכבו/מחקו פרויקט קיים או שדרגו מסלול.`,
+        error: `הגעת למגבלת הפרויקטים במסלול הנוכחי (${projCap}). מחקו פרויקט קיים או שדרגו מסלול.`,
         quotaExceeded: true,
         limit: projCap,
       })
