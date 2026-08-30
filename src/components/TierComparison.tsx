@@ -237,13 +237,12 @@ export default function TierComparison({
 
   return (
     <div className="mb-10">
-      {/* monthly / yearly toggle — squared segmented control (matches the
-          app's own toggles), animated sliding highlight */}
+      {/* monthly / yearly toggle — fully-rounded segmented control (pill inside
+          a pill). A uniformly-inset fully-rounded thumb always nests perfectly
+          inside a fully-rounded track, so the highlight reads as part of the
+          control rather than a floating blob. */}
       <div className="mb-8 flex justify-center">
-        {/* Concentric nesting: outer radius (rounded-xl = 12px) minus the 4px
-            (p-1) inset equals the inner radius (rounded-lg = 8px), so the
-            sliding highlight sits flush in the corners of the track. */}
-        <div className="relative inline-flex rounded-xl border border-border bg-card p-1">
+        <div className="relative inline-flex rounded-full border border-border bg-card p-1">
           {(['monthly', 'yearly'] as const).map((c) => {
             const active = cycle === c
             return (
@@ -251,12 +250,12 @@ export default function TierComparison({
                 key={c}
                 type="button"
                 onClick={() => setCycle(c)}
-                className="relative z-10 inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2 text-sm font-semibold leading-none"
+                className="relative z-10 inline-flex items-center justify-center gap-2 rounded-full px-5 py-2 text-sm font-semibold leading-none"
               >
                 {active && (
                   <motion.span
                     layoutId="cyclePill"
-                    className="absolute inset-0 -z-10 rounded-lg bg-primary"
+                    className="absolute inset-0 -z-10 rounded-full bg-primary"
                     transition={{ type: 'spring', stiffness: 420, damping: 34 }}
                   />
                 )}
