@@ -3412,24 +3412,29 @@ async function handleCreateSubscription(
   // Which tier is being purchased. Absent → 'pro' (the legacy checkout).
   const tier = normTier(body.tier)
   const tcfg = await loadTierConfig()
-  const tierPrice = plan === 'monthly' ? tcfg[tier].priceMonthly : tcfg[tier].priceYearly
+  const tierRegular = plan === 'monthly' ? tcfg[tier].priceMonthly : tcfg[tier].priceYearly
+  const tierSaleRaw = plan === 'monthly' ? tcfg[tier].priceMonthlySale : tcfg[tier].priceYearlySale
+  // Sale wins only when positive AND strictly below regular.
+  const tierEffective = tierSaleRaw > 0 && tierSaleRaw < tierRegular ? tierSaleRaw : tierRegular
   // Per-tier path for any non-Pro tier, and for Pro once its per-tier price is
   // configured in the admin panel. Otherwise the legacy single-product Pro
   // path (sale slots) is used byte-for-byte as before.
-  const perTier = tier !== 'pro' || tierPrice > 0
+  const perTier = tier !== 'pro' || tierRegular > 0
 
   let lockedPrice: number
   let planId: string | null
   let regularBase: number // pre-sale/pre-coupon list price, for coupon math
   if (perTier) {
-    if (!(tierPrice > 0)) {
+    if (!(tierRegular > 0)) {
       return res
         .status(400)
         .json({ ok: false, error: 'המחיר למנוי זה עדיין לא הוגדר. נסו שוב מאוחר יותר.' })
     }
-    lockedPrice = tierPrice
-    regularBase = tierPrice
-    planId = await ensurePlanForAmount(plan, tierPrice, currency)
+    // Charge the effective (sale-aware) price; coupon math still discounts
+    // off the regular list price (regularBase).
+    lockedPrice = tierEffective
+    regularBase = tierRegular
+    planId = await ensurePlanForAmount(plan, tierEffective, currency)
   } else {
     const usingSale = pricing[plan].sale != null
     lockedPrice = usingSale ? pricing[plan].sale! : pricing[plan].regular
@@ -4250,7 +4255,9 @@ async function handleAdminSetPricing(req: VercelRequest, res: VercelResponse) {
 type TierS = 'free' | 'basic' | 'pro' | 'ultra'
 interface TierConfigS {
   priceMonthly: number
+  priceMonthlySale: number
   priceYearly: number
+  priceYearlySale: number
   quotesPerMonth: number | null
   maxDownloadProjects: number | null
   transcriptionMonthlySec: number | null
@@ -4260,10 +4267,10 @@ interface TierConfigS {
   aiMonthlyTokens: number
 }
 const DEFAULT_TIER_CONFIG_S: Record<TierS, TierConfigS> = {
-  free: { priceMonthly: 0, priceYearly: 0, quotesPerMonth: 1, maxDownloadProjects: 2, transcriptionMonthlySec: 300, storageGb: 0, maxRevisionProjects: 0, maxDeliveryProjects: 0, aiMonthlyTokens: 0 },
-  basic: { priceMonthly: 0, priceYearly: 0, quotesPerMonth: null, maxDownloadProjects: null, transcriptionMonthlySec: 3600, storageGb: 10, maxRevisionProjects: 1, maxDeliveryProjects: 1, aiMonthlyTokens: 0 },
-  pro: { priceMonthly: 0, priceYearly: 0, quotesPerMonth: null, maxDownloadProjects: null, transcriptionMonthlySec: null, storageGb: 50, maxRevisionProjects: 10, maxDeliveryProjects: 10, aiMonthlyTokens: 1_000_000 },
-  ultra: { priceMonthly: 0, priceYearly: 0, quotesPerMonth: null, maxDownloadProjects: null, transcriptionMonthlySec: null, storageGb: 100, maxRevisionProjects: 10, maxDeliveryProjects: 10, aiMonthlyTokens: 5_000_000 },
+  free: { priceMonthly: 0, priceMonthlySale: 0, priceYearly: 0, priceYearlySale: 0, quotesPerMonth: 1, maxDownloadProjects: 2, transcriptionMonthlySec: 300, storageGb: 0, maxRevisionProjects: 0, maxDeliveryProjects: 0, aiMonthlyTokens: 0 },
+  basic: { priceMonthly: 0, priceMonthlySale: 0, priceYearly: 0, priceYearlySale: 0, quotesPerMonth: null, maxDownloadProjects: null, transcriptionMonthlySec: 3600, storageGb: 10, maxRevisionProjects: 1, maxDeliveryProjects: 1, aiMonthlyTokens: 0 },
+  pro: { priceMonthly: 0, priceMonthlySale: 0, priceYearly: 0, priceYearlySale: 0, quotesPerMonth: null, maxDownloadProjects: null, transcriptionMonthlySec: null, storageGb: 50, maxRevisionProjects: 10, maxDeliveryProjects: 10, aiMonthlyTokens: 1_000_000 },
+  ultra: { priceMonthly: 0, priceMonthlySale: 0, priceYearly: 0, priceYearlySale: 0, quotesPerMonth: null, maxDownloadProjects: null, transcriptionMonthlySec: null, storageGb: 100, maxRevisionProjects: 10, maxDeliveryProjects: 10, aiMonthlyTokens: 5_000_000 },
 }
 const TIER_KEYS_S: readonly TierS[] = ['free', 'basic', 'pro', 'ultra']
 
@@ -4335,7 +4342,9 @@ async function handleAdminSetTiers(req: VercelRequest, res: VercelResponse) {
     const def = DEFAULT_TIER_CONFIG_S[t]
     clean[t] = {
       priceMonthly: num0(src.priceMonthly, def.priceMonthly),
+      priceMonthlySale: num0(src.priceMonthlySale, def.priceMonthlySale),
       priceYearly: num0(src.priceYearly, def.priceYearly),
+      priceYearlySale: num0(src.priceYearlySale, def.priceYearlySale),
       quotesPerMonth: numOrNull(src.quotesPerMonth, def.quotesPerMonth),
       maxDownloadProjects: numOrNull(src.maxDownloadProjects, def.maxDownloadProjects),
       transcriptionMonthlySec: numOrNull(src.transcriptionMonthlySec, def.transcriptionMonthlySec),
@@ -8859,7 +8868,12 @@ async function handleAdminSetUserSubscription(
   }
   const body = (req.body || {}) as { uid?: string; subscription?: string }
   const uid = String(body.uid || '').trim()
-  const sub = body.subscription === 'pro' ? 'pro' : 'free'
+  // Any of the four tiers; anything unknown → 'free'.
+  const sub = (['free', 'basic', 'pro', 'ultra'] as const).includes(
+    String(body.subscription) as 'free' | 'basic' | 'pro' | 'ultra',
+  )
+    ? (String(body.subscription) as 'free' | 'basic' | 'pro' | 'ultra')
+    : 'free'
   if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
   const db = getDb()
 
@@ -9763,7 +9777,14 @@ async function handleAdminLinkSubscription(
 async function handleAdminCreateKey(req: VercelRequest, res: VercelResponse) {
   const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
-  const body = (req.body || {}) as { expiresAt?: string | null }
+  const body = (req.body || {}) as { expiresAt?: string | null; tier?: string }
+  // Which tier the key grants (Basic / Pro / Ultra); default 'pro'. 'free'
+  // isn't a purchasable key.
+  const keyTier = (['basic', 'pro', 'ultra'] as const).includes(
+    String(body.tier) as 'basic' | 'pro' | 'ultra',
+  )
+    ? (String(body.tier) as 'basic' | 'pro' | 'ultra')
+    : 'pro'
   // Validate expiry: null (perpetual) or a future ISO string.
   let expiresAt: string | null = null
   if (body.expiresAt) {
@@ -9783,7 +9804,7 @@ async function handleAdminCreateKey(req: VercelRequest, res: VercelResponse) {
   }
   const data = {
     key: keyString,
-    tier: 'pro' as const,
+    tier: keyTier,
     redeemedBy: null,
     redeemedByEmail: null,
     redeemedAt: null,

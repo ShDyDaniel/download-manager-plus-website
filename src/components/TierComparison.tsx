@@ -7,6 +7,7 @@ import {
   TIER_LABEL,
   DEFAULT_TIER_CONFIG,
   tierAllows,
+  tierPrice,
   type Tier,
   type TierConfig,
 } from '@/lib/tiers'
@@ -281,7 +282,8 @@ export default function TierComparison({
         {order.map((tier) => {
           const c = cfg[tier]
           const paid = tier !== 'free'
-          const price = cycle === 'monthly' ? c.priceMonthly : c.priceYearly
+          const pr = tierPrice(c, cycle) // { regular, sale, effective }
+          const price = pr.effective
           const isCurrent = currentTier === tier
           const isPro = tier === 'pro'
           return (
@@ -321,6 +323,11 @@ export default function TierComparison({
                       <span className="text-3xl font-extrabold text-fg" dir="ltr">
                         ₪{price}
                       </span>
+                      {pr.sale != null && (
+                        <span className="text-sm text-fg-faint line-through" dir="ltr">
+                          ₪{pr.regular}
+                        </span>
+                      )}
                       <span className="text-xs text-fg-muted">
                         {cycle === 'monthly' ? 'לחודש' : 'לשנה'}
                       </span>

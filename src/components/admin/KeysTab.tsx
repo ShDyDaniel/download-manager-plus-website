@@ -71,6 +71,7 @@ export default function KeysTab({
   const [preset, setPreset] = useState<number | null>(30)
   const [customDays, setCustomDays] = useState('')
   const [untilDate, setUntilDate] = useState('')
+  const [keyTier, setKeyTier] = useState<'basic' | 'pro' | 'ultra'>('pro')
 
   const [extendingId, setExtendingId] = useState<string | null>(null)
   const [extendDate, setExtendDate] = useState('')
@@ -129,7 +130,7 @@ export default function KeysTab({
     setBusy(true)
     setError('')
     try {
-      await adminApi('admin-create-key', { expiresAt: exp })
+      await adminApi('admin-create-key', { expiresAt: exp, tier: keyTier })
       await load(true)
     } catch (e) {
       handleErr(e)
@@ -262,6 +263,16 @@ export default function KeysTab({
             }}
             className="rounded-lg border border-border bg-transparent px-3 py-1.5 text-sm text-fg outline-none focus:border-primary"
           />
+          <span className="text-xs text-fg-faint">מנוי:</span>
+          <select
+            value={keyTier}
+            onChange={(e) => setKeyTier(e.target.value as 'basic' | 'pro' | 'ultra')}
+            className="rounded-lg border border-border bg-bg-elevated px-2 py-1.5 text-sm text-fg outline-none focus:border-primary"
+          >
+            <option value="basic">Basic</option>
+            <option value="pro">Pro</option>
+            <option value="ultra">Ultra</option>
+          </select>
           <button
             type="button"
             onClick={create}

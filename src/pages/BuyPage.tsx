@@ -24,6 +24,7 @@ import TierComparison from '../components/TierComparison'
 import {
   DEFAULT_TIER_CONFIG,
   TIER_LABEL,
+  tierPrice,
   type Tier,
   type TierConfig,
 } from '@/lib/tiers'
@@ -285,8 +286,7 @@ export function BuyPage() {
       alive = false
     }
   }, [])
-  const selectedTierPrice =
-    plan === 'monthly' ? tierCfg[tier].priceMonthly : tierCfg[tier].priceYearly
+  const selectedTierPrice = tierPrice(tierCfg[tier], plan).effective
   const [email, setEmail] = useState('')
   const [emailLocked, setEmailLocked] = useState(false)
   // Populated on mount from sessionStorage if the buyer arrived

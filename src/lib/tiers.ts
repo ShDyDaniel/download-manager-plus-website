@@ -180,16 +180,33 @@ export function tierQuotas(userTier: Tier): TierQuotas {
 export interface TierConfig extends TierQuotas {
   /** Regular monthly price in the store currency; 0 = unset / free. */
   priceMonthly: number;
+  /** Sale (discounted) monthly price; 0 = no sale. Applied only when > 0 and
+   *  strictly below the regular price. */
+  priceMonthlySale: number;
   /** Regular yearly price; 0 = unset / free. */
   priceYearly: number;
+  /** Sale yearly price; 0 = no sale. */
+  priceYearlySale: number;
 }
 
 export const DEFAULT_TIER_CONFIG: Record<Tier, TierConfig> = {
-  free: { ...TIER_QUOTAS.free, priceMonthly: 0, priceYearly: 0 },
-  basic: { ...TIER_QUOTAS.basic, priceMonthly: 0, priceYearly: 0 },
-  pro: { ...TIER_QUOTAS.pro, priceMonthly: 0, priceYearly: 0 },
-  ultra: { ...TIER_QUOTAS.ultra, priceMonthly: 0, priceYearly: 0 },
+  free: { ...TIER_QUOTAS.free, priceMonthly: 0, priceMonthlySale: 0, priceYearly: 0, priceYearlySale: 0 },
+  basic: { ...TIER_QUOTAS.basic, priceMonthly: 0, priceMonthlySale: 0, priceYearly: 0, priceYearlySale: 0 },
+  pro: { ...TIER_QUOTAS.pro, priceMonthly: 0, priceMonthlySale: 0, priceYearly: 0, priceYearlySale: 0 },
+  ultra: { ...TIER_QUOTAS.ultra, priceMonthly: 0, priceMonthlySale: 0, priceYearly: 0, priceYearlySale: 0 },
 };
+
+/** Regular + effective (post-sale) price for a tier + cycle. sale wins only
+ *  when it's a positive number strictly below the regular price. */
+export function tierPrice(
+  cfg: TierConfig,
+  cycle: "monthly" | "yearly",
+): { regular: number; sale: number | null; effective: number } {
+  const regular = cycle === "monthly" ? cfg.priceMonthly : cfg.priceYearly;
+  const saleRaw = cycle === "monthly" ? cfg.priceMonthlySale : cfg.priceYearlySale;
+  const sale = saleRaw > 0 && saleRaw < regular ? saleRaw : null;
+  return { regular, sale, effective: sale ?? regular };
+}
 
 /** Paid tiers only (Free is never purchased) — the tiers the buy page +
  *  PayPal plan sync iterate over, low → high. */

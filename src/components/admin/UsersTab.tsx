@@ -36,6 +36,8 @@ function isAdminEmail(email: string): boolean {
 interface KeySummary {
   id: string
   key: string
+  /** Plan level the key grants (basic/pro/ultra); older keys omit it → pro. */
+  tier?: string
   redeemedBy?: string | null
   redeemedByEmail?: string | null
   expiresAt?: string | null
@@ -458,7 +460,13 @@ function UserRow({
   const isAdmin = user.role === 'admin' || isAdminEmail(user.email)
   const isDrive = user.storageBackend === 'drive'
   const onTrial = isTrialActive(user)
-  const isPro = user.subscription === 'pro' || isKeyActive(redeemedKey)
+  // Effective tier = the higher of the subscription field and an active key.
+  const TIER_RANK: Record<string, number> = { free: 0, basic: 1, pro: 2, ultra: 3 }
+  const subTier = String(user.subscription || 'free')
+  const keyTier = isKeyActive(redeemedKey) ? String(redeemedKey?.tier || 'pro') : 'free'
+  const effectiveTier =
+    (TIER_RANK[keyTier] ?? 0) > (TIER_RANK[subTier] ?? 0) ? keyTier : subTier
+  const isPro = (TIER_RANK[effectiveTier] ?? 0) >= TIER_RANK.pro
   // Allocated bytes reflect the account's CURRENT state:
   //   Pro            → full pro quota
   //   active trial   → trial quota
@@ -515,11 +523,17 @@ function UserRow({
               {user.name || '—'}
             </span>
             {isAdmin && <Badge tone="primary">Admin</Badge>}
-            {!isAdmin && isPro && <Badge tone="success">Pro</Badge>}
-            {!isAdmin && !isPro && onTrial && (
+            {!isAdmin && effectiveTier !== 'free' && (
+              <Badge tone="success">
+                {effectiveTier === 'ultra' ? 'Ultra' : effectiveTier === 'basic' ? 'Basic' : 'Pro'}
+              </Badge>
+            )}
+            {!isAdmin && effectiveTier === 'free' && onTrial && (
               <Badge tone="accent">ניסיון חינם</Badge>
             )}
-            {!isAdmin && !isPro && !onTrial && <Badge tone="muted">חינם</Badge>}
+            {!isAdmin && effectiveTier === 'free' && !onTrial && (
+              <Badge tone="muted">חינם</Badge>
+            )}
             {blocked && <Badge tone="destructive">חסום</Badge>}
           </div>
           <div className="truncate text-right text-xs text-fg-muted" dir="ltr">
@@ -569,7 +583,7 @@ function UserRow({
               <span className="text-[10px] text-fg-faint">שנה תוכנית:</span>
               <PlanChip
                 label="חינם"
-                active={!isPro && !onTrial}
+                active={effectiveTier === 'free' && !onTrial}
                 disabled={!!busy}
                 onClick={() =>
                   run('plan', 'admin-set-user-subscription', {
@@ -589,17 +603,20 @@ function UserRow({
                   })
                 }
               />
-              <PlanChip
-                label="Pro"
-                active={isPro}
-                disabled={!!busy}
-                onClick={() =>
-                  run('plan', 'admin-set-user-subscription', {
-                    uid: user.uid,
-                    subscription: 'pro',
-                  })
-                }
-              />
+              {(['basic', 'pro', 'ultra'] as const).map((t) => (
+                <PlanChip
+                  key={t}
+                  label={t === 'basic' ? 'Basic' : t === 'pro' ? 'Pro' : 'Ultra'}
+                  active={effectiveTier === t && !onTrial}
+                  disabled={!!busy}
+                  onClick={() =>
+                    run('plan', 'admin-set-user-subscription', {
+                      uid: user.uid,
+                      subscription: t,
+                    })
+                  }
+                />
+              ))}
             </div>
           )}
         </div>
