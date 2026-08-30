@@ -237,12 +237,12 @@ export default function TierComparison({
 
   return (
     <div className="mb-10">
-      {/* monthly / yearly toggle — fully-rounded segmented control (pill inside
-          a pill). A uniformly-inset fully-rounded thumb always nests perfectly
-          inside a fully-rounded track, so the highlight reads as part of the
-          control rather than a floating blob. */}
+      {/* monthly / yearly toggle — segmented control with slightly-squared,
+          concentric corners. Outer radius (rounded-2xl = 16px) minus the 4px
+          (p-1) inset equals the inner radius (rounded-xl = 12px), so the
+          sliding thumb sits flush inside the track. */}
       <div className="mb-8 flex justify-center">
-        <div className="relative inline-flex rounded-full border border-border bg-card p-1">
+        <div className="relative inline-flex rounded-2xl border border-border bg-card p-1">
           {(['monthly', 'yearly'] as const).map((c) => {
             const active = cycle === c
             return (
@@ -250,12 +250,12 @@ export default function TierComparison({
                 key={c}
                 type="button"
                 onClick={() => setCycle(c)}
-                className="relative z-10 inline-flex items-center justify-center gap-2 rounded-full px-5 py-2 text-sm font-semibold leading-none"
+                className="relative z-10 inline-flex items-center justify-center gap-2.5 rounded-xl px-8 py-3 text-base font-semibold leading-none"
               >
                 {active && (
                   <motion.span
                     layoutId="cyclePill"
-                    className="absolute inset-0 -z-10 rounded-full bg-primary"
+                    className="absolute inset-0 -z-10 rounded-xl bg-primary"
                     transition={{ type: 'spring', stiffness: 420, damping: 34 }}
                   />
                 )}
@@ -271,7 +271,7 @@ export default function TierComparison({
                   <span
                     dir="ltr"
                     className={cn(
-                      'inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none transition-colors',
+                      'inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-bold leading-none transition-colors',
                       active ? 'bg-white/20 text-white' : 'bg-primary/15 text-primary',
                     )}
                   >
