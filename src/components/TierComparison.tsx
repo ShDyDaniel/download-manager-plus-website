@@ -271,7 +271,7 @@ export default function TierComparison({
                   <span
                     dir="ltr"
                     className={cn(
-                      'inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-bold leading-none transition-colors',
+                      'inline-flex items-center rounded-md px-2.5 py-1 text-sm font-bold leading-none transition-colors',
                       active ? 'bg-white/20 text-white' : 'bg-primary/15 text-primary',
                     )}
                   >
