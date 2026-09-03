@@ -9171,6 +9171,8 @@ async function handleGlossaryPacks(req: VercelRequest, res: VercelResponse) {
 // basename ending in .log, capped at 25 MB each.
 const SUPPORT_LOG_MAX_BYTES = 25 * 1024 * 1024
 const SUPPORT_MAX_LOGS = 40
+const SUPPORT_MAX_SCREENS = 8
+const SUPPORT_SCREEN_MAX_BYTES = 12 * 1024 * 1024
 
 function supportSecret(): Buffer {
   const sec = process.env.RENEW_TOKEN_SECRET
@@ -9236,6 +9238,18 @@ function supportLogKey(code: string, name: string): string {
   return `support/${code}/logs/${name}`
 }
 
+function supportScreenKey(code: string, name: string): string {
+  return `support/${code}/screens/${name}`
+}
+
+/** Accepts <=80-char .jpg basenames only; blocks path traversal. */
+function safeScreenName(raw: unknown): string | null {
+  const n = String(raw || '').split(/[\\/]/).pop() || ''
+  if (!/^[A-Za-z0-9._-]{1,80}\.jpg$/.test(n)) return null
+  if (n.includes('..')) return null
+  return n
+}
+
 /** Sanitise a client-supplied log filename → a safe bare basename ending
  *  in .log, or null if it doesn't qualify. Blocks path traversal. */
 function safeLogName(raw: unknown): string | null {
@@ -9254,6 +9268,7 @@ type SupportSession = {
   platform?: string
   appVersion?: string
   logManifest?: Array<{ name: string; key: string; size: number }>
+  screenManifest?: Array<{ name: string; key: string }>
   refreshReq?: number
   stoppedBy?: string
 }
@@ -9295,6 +9310,12 @@ async function handleSupportGet(req: VercelRequest, res: VercelResponse) {
       url: await r2PresignGet(l.key, 15 * 60),
     })),
   )
+  const screens = await Promise.all(
+    (s.screenManifest || []).map(async (sc) => ({
+      name: sc.name,
+      url: await r2PresignGet(sc.key, 15 * 60),
+    })),
+  )
   return res.status(200).json({
     ok: true,
     status: s.status,
@@ -9302,6 +9323,7 @@ async function handleSupportGet(req: VercelRequest, res: VercelResponse) {
     appVersion: s.appVersion || null,
     email: s.email || null,
     logs,
+    screens,
   })
 }
 
@@ -9320,9 +9342,12 @@ async function handleSupportRefresh(req: VercelRequest, res: VercelResponse) {
 
 /** Delete every R2 object a session created, then flip status → stopped. */
 async function endSupportSession(code: string, s: SupportSession, by: string) {
-  await Promise.all((s.logManifest || []).map((l) => r2DeleteObject(l.key).catch(() => false)))
+  await Promise.all([
+    ...(s.logManifest || []).map((l) => r2DeleteObject(l.key).catch(() => false)),
+    ...(s.screenManifest || []).map((sc) => r2DeleteObject(sc.key).catch(() => false)),
+  ])
   await getDb().collection('supportSessions').doc(code)
-    .set({ status: 'stopped', stoppedBy: by, logManifest: [], updatedAt: Date.now() }, { merge: true })
+    .set({ status: 'stopped', stoppedBy: by, logManifest: [], screenManifest: [], updatedAt: Date.now() }, { merge: true })
   await writeSupportControl(code, 'stop')
 }
 
@@ -9420,6 +9445,44 @@ async function handleSupportLogsCommit(req: VercelRequest, res: VercelResponse) 
   return res.status(200).json({ ok: true })
 }
 
+/** action=support-screens-init (app) → presigned PUT url per screenshot. */
+async function handleSupportScreensInit(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const b = (req.body || {}) as { code?: string; screens?: Array<{ name?: string }> }
+  const code = String(b.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
+  if (s.status !== 'active') return res.status(410).json({ ok: false, error: 'not-active' })
+  const screens = Array.isArray(b.screens) ? b.screens.slice(0, SUPPORT_MAX_SCREENS) : []
+  const uploads: Array<{ name: string; key: string; url: string }> = []
+  for (const sc of screens) {
+    const name = safeScreenName(sc.name)
+    if (!name) continue
+    const key = supportScreenKey(code, name)
+    // 1h TTL, reused each capture cycle (the app overwrites the same key).
+    uploads.push({ name, key, url: await r2PresignPut(key, 60 * 60) })
+  }
+  return res.status(200).json({ ok: true, uploads })
+}
+
+/** action=support-screens-commit (app) → record which screenshots are in R2. */
+async function handleSupportScreensCommit(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const b = (req.body || {}) as { code?: string; manifest?: Array<{ name?: string }> }
+  const code = String(b.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
+  const manifest: SupportSession['screenManifest'] = []
+  for (const m of (Array.isArray(b.manifest) ? b.manifest : []).slice(0, SUPPORT_MAX_SCREENS)) {
+    const name = safeScreenName(m.name)
+    if (name) manifest.push({ name, key: supportScreenKey(code, name) })
+  }
+  await getDb().collection('supportSessions').doc(code)
+    .set({ screenManifest: manifest, updatedAt: Date.now() }, { merge: true })
+  return res.status(200).json({ ok: true })
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   recordVercelInvocation()
@@ -9511,6 +9574,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleSupportLogsInit(req, res)
       case 'support-logs-commit':
         return await handleSupportLogsCommit(req, res)
+      case 'support-screens-init':
+        return await handleSupportScreensInit(req, res)
+      case 'support-screens-commit':
+        return await handleSupportScreensCommit(req, res)
       case 'music-quota-consume':
         return await handleMusicConsume(req, res)
       case 'music-quota-refund':

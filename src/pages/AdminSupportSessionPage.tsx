@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { LifeBuoy, RefreshCw, Copy, Check, Square, Download, Loader2 } from 'lucide-react'
+import { LifeBuoy, RefreshCw, Copy, Check, Square, Download, Loader2, Monitor, X } from 'lucide-react'
 import { buildZip } from '../lib/zip'
 
 /**
@@ -10,6 +10,13 @@ import { buildZip } from '../lib/zip'
  * The only DB traffic is the small status/urls fetch every ~8 s.
  */
 type LogEntry = { name: string; size: number; url: string }
+type ScreenEntry = { name: string; url: string }
+
+function screenLabel(name: string): string {
+  if (name === 'app.jpg') return 'חלון התוכנה'
+  const m = name.match(/screen-(\d+)/)
+  return m ? `מסך ${m[1]}` : name
+}
 
 function viewToken(): string {
   const h = window.location.hash || ''
@@ -38,7 +45,11 @@ export default function AdminSupportSessionPage() {
   const [content, setContent] = useState<Record<string, string>>({})
   const [err, setErr] = useState('')
   const [copied, setCopied] = useState(false)
+  const [shots, setShots] = useState<Record<string, string>>({}) // name -> objectURL
+  const [zoom, setZoom] = useState('') // enlarged screenshot name
   const urlsRef = useRef<Record<string, string>>({})
+  const screenUrlsRef = useRef<Record<string, string>>({}) // name -> presigned GET
+  const shotObjRef = useRef<Record<string, string>>({}) // name -> objectURL (to revoke)
   const url = `https://dmplus.net/support/${cleanCode}`
 
   // ~8s: refresh status + fresh presigned R2 urls (the only DB touch).
@@ -50,6 +61,7 @@ export default function AdminSupportSessionPage() {
         appVersion?: string
         email?: string
         logs: LogEntry[]
+        screens?: ScreenEntry[]
       }>('support-get', { code: cleanCode })
       setStatus(j.status)
       setMeta({ platform: j.platform, appVersion: j.appVersion, email: j.email })
@@ -58,6 +70,9 @@ export default function AdminSupportSessionPage() {
       const map: Record<string, string> = {}
       for (const l of j.logs || []) map[l.name] = l.url
       urlsRef.current = map
+      const smap: Record<string, string> = {}
+      for (const sc of j.screens || []) smap[sc.name] = sc.url
+      screenUrlsRef.current = smap
       setActive((a) => a || names[0] || '')
     } catch (e) {
       setErr((e as Error).message || 'auth')
@@ -81,15 +96,41 @@ export default function AdminSupportSessionPage() {
     if (Object.keys(out).length) setContent((c) => ({ ...c, ...out }))
   }, [])
 
+  // ~1.5s: fetch each screenshot straight from R2 (no DB), swap in a fresh
+  // object URL, and revoke the previous one so memory doesn't grow.
+  const pullScreens = useCallback(async () => {
+    const map = screenUrlsRef.current
+    const names = Object.keys(map)
+    if (!names.length) return
+    await Promise.all(
+      names.map(async (name) => {
+        try {
+          const r = await fetch(map[name], { cache: 'no-store' })
+          if (!r.ok) return
+          const obj = URL.createObjectURL(await r.blob())
+          const prev = shotObjRef.current[name]
+          shotObjRef.current[name] = obj
+          setShots((s) => ({ ...s, [name]: obj }))
+          if (prev) URL.revokeObjectURL(prev)
+        } catch {
+          /* url may have expired — the 8s meta pull re-signs it */
+        }
+      }),
+    )
+  }, [])
+
   useEffect(() => {
     void pullMeta()
     const m = setInterval(() => void pullMeta(), 8000)
     const l = setInterval(() => void pullLogs(), 2000)
+    const sc = setInterval(() => void pullScreens(), 1500)
     return () => {
       clearInterval(m)
       clearInterval(l)
+      clearInterval(sc)
+      for (const u of Object.values(shotObjRef.current)) URL.revokeObjectURL(u)
     }
-  }, [pullMeta, pullLogs])
+  }, [pullMeta, pullLogs, pullScreens])
 
   async function copyLink() {
     try {
@@ -174,12 +215,36 @@ export default function AdminSupportSessionPage() {
 
         {err && <p className="mb-3 text-xs text-red-400">שגיאה: {err}</p>}
 
-        {logNames.length === 0 ? (
+        {/* Live screenshots — app window + desktop(s), refreshed straight from R2 */}
+        {Object.keys(shots).length > 0 && (
+          <div className="mb-4">
+            <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Monitor className="h-3.5 w-3.5" /> מסך חי
+            </div>
+            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
+              {Object.entries(shots).map(([name, src]) => (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => setZoom(name)}
+                  className="group overflow-hidden rounded-xl border border-border bg-card text-right transition hover:border-primary/50"
+                >
+                  <img src={src} alt={screenLabel(name)} className="block max-h-56 w-full object-contain bg-black/40" />
+                  <span className="block px-2.5 py-1.5 text-[11px] text-muted-foreground group-hover:text-foreground">
+                    {screenLabel(name)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {logNames.length === 0 && Object.keys(shots).length === 0 ? (
           <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-8 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             ממתין שהמשתמש יאשר את החיבור וישדר את הלוגים…
           </div>
-        ) : (
+        ) : logNames.length > 0 ? (
           <div className="rounded-xl border border-border bg-card">
             <div className="flex flex-wrap gap-1 border-b border-border p-2">
               {logNames.map((n) => (
@@ -196,8 +261,25 @@ export default function AdminSupportSessionPage() {
               {content[active] ?? '…'}
             </pre>
           </div>
-        )}
+        ) : null}
       </div>
+
+      {/* Enlarged screenshot */}
+      {zoom && shots[zoom] && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
+          onClick={() => setZoom('')}
+        >
+          <button
+            type="button"
+            onClick={() => setZoom('')}
+            className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+          >
+            <X className="h-5 w-5" />
+          </button>
+          <img src={shots[zoom]} alt={screenLabel(zoom)} className="max-h-[90vh] max-w-full rounded-lg object-contain" />
+        </div>
+      )}
     </div>
   )
 }
