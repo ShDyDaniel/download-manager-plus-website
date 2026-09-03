@@ -8394,9 +8394,10 @@ const TIER_QUOTA_DEFAULTS: Record<string, Record<TierS, number | null>> = {
   maxRevisionProjects: { free: 0, basic: 1, pro: 10, ultra: 10 },
   maxDeliveryProjects: { free: 0, basic: 1, pro: 10, ultra: 10 },
   quotesPerMonth: { free: 1, basic: null, pro: null, ultra: null },
-  // Music channel-separation runs per calendar month. Pro/Ultra = unlimited
-  // (null) but STILL counted server-side (see handleMusicConsume).
-  musicSeparationsPerMonth: { free: 1, basic: 10, pro: null, ultra: null },
+  // Music channel-separation runs per calendar month. Free = 0 → the tab is
+  // LOCKED (no access; the desktop sidebar also gates it below Basic). Ultra =
+  // unlimited (null) but STILL counted server-side (see handleMusicConsume).
+  musicSeparationsPerMonth: { free: 0, basic: 10, pro: 50, ultra: null },
 }
 
 /** A per-tier numeric quota for the caller. Returns null = UNLIMITED. During
