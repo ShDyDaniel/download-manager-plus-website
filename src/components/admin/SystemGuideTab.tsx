@@ -614,13 +614,15 @@ function RemoteSupportCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ stepUpToken }),
       })
-      const j = (await r.json().catch(() => ({}))) as { ok?: boolean; code?: string; error?: string }
+      const j = (await r.json().catch(() => ({}))) as { ok?: boolean; code?: string; viewToken?: string; error?: string }
       if (!j.ok || !j.code) {
         if (r.status === 403) return onAuthExpired?.()
         throw new Error(j.error || 'failed')
       }
-      // Open the dedicated live-session page in its own tab.
-      window.open(`/admin/support/${j.code}`, '_blank', 'noopener')
+      // Open the dedicated live-session page in its own tab. The session-scoped
+      // view token rides in the URL fragment (client-only) so that page needs
+      // no per-tab admin session or repeated passkey.
+      window.open(`/admin/support/${j.code}#t=${encodeURIComponent(j.viewToken || '')}`, '_blank', 'noopener')
     } catch (e) {
       setErr((e as Error).message || 'יצירת הקישור נכשלה')
     } finally {

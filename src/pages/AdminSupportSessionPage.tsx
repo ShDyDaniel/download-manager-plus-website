@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { LifeBuoy, RefreshCw, Copy, Check, Square, Download, Loader2 } from 'lucide-react'
-import { ensureStepUp } from '../lib/adminApi'
 import { buildZip } from '../lib/zip'
 
 /**
@@ -12,12 +11,17 @@ import { buildZip } from '../lib/zip'
  */
 type LogEntry = { name: string; size: number; url: string }
 
+function viewToken(): string {
+  const h = window.location.hash || ''
+  const m = h.match(/[#&]t=([^&]+)/)
+  return m ? decodeURIComponent(m[1]) : ''
+}
+
 async function api<T>(action: string, body: Record<string, unknown> = {}): Promise<T> {
-  const stepUpToken = await ensureStepUp()
   const r = await fetch(`/api/revisions?action=${action}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...body, stepUpToken }),
+    body: JSON.stringify({ ...body, viewToken: viewToken() }),
   })
   const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string } & Record<string, unknown>
   if (!j.ok) throw new Error(j.error || 'failed')

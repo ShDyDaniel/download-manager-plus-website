@@ -9172,6 +9172,61 @@ async function handleGlossaryPacks(req: VercelRequest, res: VercelResponse) {
 const SUPPORT_LOG_MAX_BYTES = 25 * 1024 * 1024
 const SUPPORT_MAX_LOGS = 40
 
+function supportSecret(): Buffer {
+  const sec = process.env.RENEW_TOKEN_SECRET
+  if (!sec) throw new Error('RENEW_TOKEN_SECRET env var not set')
+  return Buffer.from(sec, 'utf8')
+}
+/** A signed, session-scoped view token so the dedicated /admin/support page
+ *  (which opens in a NEW tab — no per-tab admin session, and step-up tokens
+ *  only last 2 min) can read/stop/refresh WITHOUT re-prompting a passkey. */
+function mintSupportViewToken(code: string): string {
+  const header = b64url(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })))
+  const payload = b64url(
+    Buffer.from(JSON.stringify({ use: 'support-view', code, exp: Math.floor(Date.now() / 1000) + 24 * 60 * 60 })),
+  )
+  const sig = b64url(crypto.createHmac('sha256', supportSecret()).update(`${header}.${payload}`).digest())
+  return `${header}.${payload}.${sig}`
+}
+function verifySupportViewToken(token: string, code: string): boolean {
+  try {
+    const parts = String(token || '').split('.')
+    if (parts.length !== 3) return false
+    const [h, pl, sig] = parts
+    const expected = crypto.createHmac('sha256', supportSecret()).update(`${h}.${pl}`).digest()
+    const actual = b64urlDecode(sig)
+    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return false
+    const claims = JSON.parse(b64urlDecode(pl).toString('utf8')) as { use?: string; code?: string; exp?: number }
+    if (claims.use !== 'support-view' || claims.code !== code) return false
+    if (!claims.exp || claims.exp < Math.floor(Date.now() / 1000)) return false
+    return true
+  } catch {
+    return false
+  }
+}
+/** Admin auth for the support panel: a fresh step-up token OR a valid
+ *  session-scoped view token for THIS code. */
+async function writeSupportControl(code: string, action: 'stop' | 'refresh'): Promise<void> {
+  // Push channel: clients watch appConfig/supportControl via onSnapshot (the
+  // same cheap mechanism as the pull-responders). Bumping issuedAt notifies the
+  // one client whose active session matches `code`. No polling on the app side.
+  try {
+    await getDb().collection('appConfig').doc('supportControl').set({
+      code,
+      action,
+      issuedAt: new Date().toISOString(),
+    })
+  } catch {
+    /* best-effort — the app also learns 'stopped' from support-get on reconnect */
+  }
+}
+
+function supportAdminOk(body: { stepUpToken?: string; viewToken?: string }, code: string): boolean {
+  if (body.stepUpToken && verifyAdminStepUp(body.stepUpToken)) return true
+  if (body.viewToken && verifySupportViewToken(body.viewToken, code)) return true
+  return false
+}
+
 function genSupportCode(): string {
   // 8 hex chars — same shape/space as device-check codes, easy to read aloud.
   return crypto.randomBytes(4).toString('hex').toUpperCase()
@@ -9223,14 +9278,14 @@ async function handleSupportCreate(req: VercelRequest, res: VercelResponse) {
     updatedAt: Date.now(),
     refreshReq: 0,
   })
-  return res.status(200).json({ ok: true, code })
+  return res.status(200).json({ ok: true, code, viewToken: mintSupportViewToken(code) })
 }
 
 /** action=support-get (admin) → session + presigned GET url per log. Polled. */
 async function handleSupportGet(req: VercelRequest, res: VercelResponse) {
-  const tok = String((req.body as { stepUpToken?: string })?.stepUpToken || '')
-  if (!verifyAdminStepUp(tok)) return res.status(403).json({ ok: false, error: 'forbidden' })
-  const code = String((req.body as { code?: string })?.code || '').trim().toUpperCase()
+  const b = (req.body || {}) as { stepUpToken?: string; viewToken?: string; code?: string }
+  const code = String(b.code || '').trim().toUpperCase()
+  if (!supportAdminOk(b, code)) return res.status(403).json({ ok: false, error: 'forbidden' })
   const s = await loadSupportSession(code)
   if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
   const logs = await Promise.all(
@@ -9252,13 +9307,14 @@ async function handleSupportGet(req: VercelRequest, res: VercelResponse) {
 
 /** action=support-refresh (admin) → ask the app to re-upload logs now. */
 async function handleSupportRefresh(req: VercelRequest, res: VercelResponse) {
-  const tok = String((req.body as { stepUpToken?: string })?.stepUpToken || '')
-  if (!verifyAdminStepUp(tok)) return res.status(403).json({ ok: false, error: 'forbidden' })
-  const code = String((req.body as { code?: string })?.code || '').trim().toUpperCase()
+  const b = (req.body || {}) as { stepUpToken?: string; viewToken?: string; code?: string }
+  const code = String(b.code || '').trim().toUpperCase()
+  if (!supportAdminOk(b, code)) return res.status(403).json({ ok: false, error: 'forbidden' })
   const s = await loadSupportSession(code)
   if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
   await getDb().collection('supportSessions').doc(code)
     .set({ refreshReq: FieldValue.increment(1), updatedAt: Date.now() }, { merge: true })
+  await writeSupportControl(code, 'refresh')
   return res.status(200).json({ ok: true })
 }
 
@@ -9267,6 +9323,7 @@ async function endSupportSession(code: string, s: SupportSession, by: string) {
   await Promise.all((s.logManifest || []).map((l) => r2DeleteObject(l.key).catch(() => false)))
   await getDb().collection('supportSessions').doc(code)
     .set({ status: 'stopped', stoppedBy: by, logManifest: [], updatedAt: Date.now() }, { merge: true })
+  await writeSupportControl(code, 'stop')
 }
 
 /** action=support-stop → either side ends it (admin step-up OR the app user). */
@@ -9274,9 +9331,9 @@ async function handleSupportStop(req: VercelRequest, res: VercelResponse) {
   const code = String((req.body as { code?: string })?.code || '').trim().toUpperCase()
   const s = await loadSupportSession(code)
   if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
-  const tok = String((req.body as { stepUpToken?: string })?.stepUpToken || '')
+  const b = (req.body || {}) as { stepUpToken?: string; viewToken?: string }
   let by: string | null = null
-  if (tok && verifyAdminStepUp(tok)) by = 'admin'
+  if (supportAdminOk(b, code)) by = 'admin'
   else {
     const v = await verifyOwnerAuth(req)
     if (v && v.uid === s.uid) by = 'user'
