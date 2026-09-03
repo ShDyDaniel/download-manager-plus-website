@@ -9211,7 +9211,7 @@ function verifySupportViewToken(
 }
 /** Admin auth for the support panel: a fresh step-up token OR a valid
  *  session-scoped view token for THIS code. */
-async function writeSupportControl(code: string, action: 'stop' | 'refresh' | 'cmd-enable' | 'cmd'): Promise<void> {
+async function writeSupportControl(code: string, action: 'stop' | 'refresh' | 'cmd-enable' | 'cmd' | 'screen'): Promise<void> {
   // Push channel: clients watch appConfig/supportControl via onSnapshot (the
   // same cheap mechanism as the pull-responders). Bumping issuedAt notifies the
   // one client whose active session matches `code`. No polling on the app side.
