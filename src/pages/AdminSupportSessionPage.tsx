@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { LifeBuoy, RefreshCw, Copy, Check, Square, Download, Loader2, Monitor, X, TerminalSquare, CornerDownLeft } from 'lucide-react'
+import { LifeBuoy, RefreshCw, Copy, Check, Square, Download, Loader2, Monitor, X, TerminalSquare, CornerDownLeft, Cpu, MonitorOff, AppWindow } from 'lucide-react'
 import { buildZip } from '../lib/zip'
 
 /**
@@ -11,7 +11,10 @@ import { buildZip } from '../lib/zip'
  */
 type LogEntry = { name: string; size: number; url: string }
 type ScreenEntry = { name: string; url: string }
-type CmdEntry = { seq: number; text: string; output: string; at: number; truncated?: boolean }
+type CmdEntry = { seq: number; text: string; output: string; cwd?: string; at: number; truncated?: boolean }
+type Hardware = { model: string; cpu: string; cores: string; ram: string; gpu: string; vram: string }
+type DisplayInfo = { id: string; index: number; w: number; h: number; primary: boolean }
+type ScreenMode = 'off' | 'app' | 'desktop'
 
 function screenLabel(name: string): string {
   if (name === 'app.jpg') return 'חלון התוכנה'
@@ -52,6 +55,10 @@ export default function AdminSupportSessionPage() {
   const [cmdLog, setCmdLog] = useState<CmdEntry[]>([])
   const [cmdInput, setCmdInput] = useState('')
   const [cmdSending, setCmdSending] = useState(false)
+  const [hardware, setHardware] = useState<Hardware | null>(null)
+  const [displays, setDisplays] = useState<DisplayInfo[]>([])
+  const [screenMode, setScreenMode] = useState<ScreenMode>('app')
+  const [screenDisplay, setScreenDisplay] = useState(-1)
   const cmdEnabledRef = useRef(false) // drives the faster poll while the console is open
   const urlsRef = useRef<Record<string, string>>({})
   const screenUrlsRef = useRef<Record<string, string>>({}) // name -> presigned GET
@@ -72,11 +79,19 @@ export default function AdminSupportSessionPage() {
         cmdConsent?: boolean
         cmdPending?: boolean
         cmdLog?: CmdEntry[]
+        hardware?: Hardware | null
+        displays?: DisplayInfo[]
+        screenMode?: ScreenMode
+        screenDisplay?: number
       }>('support-get', { code: cleanCode })
       setStatus(j.status)
       setCmd({ enabled: !!j.cmdEnabled, consent: !!j.cmdConsent, pending: !!j.cmdPending })
       cmdEnabledRef.current = !!j.cmdEnabled
       setCmdLog(j.cmdLog || [])
+      setHardware(j.hardware || null)
+      setDisplays(j.displays || [])
+      setScreenMode(j.screenMode || 'app')
+      setScreenDisplay(typeof j.screenDisplay === 'number' ? j.screenDisplay : -1)
       setMeta({ platform: j.platform, appVersion: j.appVersion, email: j.email })
       const names = (j.logs || []).map((l) => l.name)
       setLogNames(names)
@@ -86,6 +101,16 @@ export default function AdminSupportSessionPage() {
       const smap: Record<string, string> = {}
       for (const sc of j.screens || []) smap[sc.name] = sc.url
       screenUrlsRef.current = smap
+      // Drop any screenshots the app no longer sends (mode switched to off/app).
+      setShots((cur) => {
+        let changed = false
+        const next: Record<string, string> = {}
+        for (const [n, u] of Object.entries(cur)) {
+          if (smap[n]) next[n] = u
+          else { changed = true; URL.revokeObjectURL(u); delete shotObjRef.current[n] }
+        }
+        return changed ? next : cur
+      })
       setActive((a) => a || names[0] || '')
     } catch (e) {
       setErr((e as Error).message || 'auth')
@@ -150,6 +175,16 @@ export default function AdminSupportSessionPage() {
       for (const u of Object.values(shotObjRef.current)) URL.revokeObjectURL(u)
     }
   }, [pullMeta, pullLogs, pullScreens])
+
+  async function changeScreen(mode: ScreenMode, display: number) {
+    setScreenMode(mode)
+    setScreenDisplay(display)
+    try {
+      await api('support-screen-mode', { code: cleanCode, mode, display })
+    } catch (e) {
+      setErr((e as Error).message || 'failed')
+    }
+  }
 
   async function sendCmd() {
     const text = cmdInput.trim()
@@ -250,6 +285,69 @@ export default function AdminSupportSessionPage() {
 
         {err && <p className="mb-3 text-xs text-red-400">שגיאה: {err}</p>}
 
+        {/* Machine specs (reported once on consent, like the system-check link) */}
+        {hardware && (
+          <div className="mb-4 rounded-xl border border-border bg-card p-3">
+            <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Cpu className="h-3.5 w-3.5" /> פרטי המחשב
+            </div>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-3">
+              {[
+                ['דגם', hardware.model],
+                ['מעבד', hardware.cpu],
+                ['ליבות', hardware.cores],
+                ['זיכרון (RAM)', hardware.ram],
+                ['כרטיס מסך', hardware.gpu],
+                ['זיכרון גרפי', hardware.vram],
+              ].map(([k, v]) => (
+                <div key={k} className="min-w-0">
+                  <dt className="text-muted-foreground">{k}</dt>
+                  <dd className="truncate font-medium text-foreground" title={v}>{v || '—'}</dd>
+                </div>
+              ))}
+            </dl>
+            {displays.length > 0 && (
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                מסכים מחוברים: {displays.map((d) => `${d.w}×${d.h}${d.primary ? ' (ראשי)' : ''}`).join(' · ')}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Screen-capture controls — what the app should stream */}
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2.5">
+          <span className="me-1 text-xs font-medium text-muted-foreground">שיתוף מסך:</span>
+          {([
+            ['off', 'כבוי', MonitorOff],
+            ['app', 'התוכנה בלבד', AppWindow],
+            ['desktop', 'כל המסך', Monitor],
+          ] as const).map(([m, label, Icon]) => (
+            <button
+              key={m}
+              onClick={() => void changeScreen(m, m === 'desktop' ? (screenDisplay >= 0 ? screenDisplay : -1) : -1)}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition ${
+                screenMode === m ? 'bg-primary/15 text-primary ring-1 ring-primary/40' : 'text-muted-foreground hover:bg-secondary'
+              }`}
+            >
+              <Icon className="h-3.5 w-3.5" /> {label}
+            </button>
+          ))}
+          {screenMode === 'desktop' && displays.length > 1 && (
+            <select
+              value={screenDisplay}
+              onChange={(e) => void changeScreen('desktop', Number(e.target.value))}
+              className="rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary/50"
+            >
+              <option value={-1}>כל המסכים</option>
+              {displays.map((d) => (
+                <option key={d.id} value={d.index}>
+                  מסך {d.index + 1} — {d.w}×{d.h}{d.primary ? ' (ראשי)' : ''}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
         {/* Live screenshots — app window + desktop(s), refreshed straight from R2 */}
         {Object.keys(shots).length > 0 && (
           <div className="mb-4">
@@ -294,7 +392,9 @@ export default function AdminSupportSessionPage() {
                   ) : (
                     cmdLog.map((e) => (
                       <div key={e.seq}>
-                        <div className="text-emerald-400">$ {e.text}</div>
+                        <div className="text-emerald-400">
+                          {e.cwd && <span className="text-muted-foreground">{e.cwd} </span>}$ {e.text}
+                        </div>
                         {e.output && <pre className="whitespace-pre-wrap text-foreground/80">{e.output}</pre>}
                         {e.truncated && <div className="text-amber-500/80">[הפלט נחתך]</div>}
                       </div>

@@ -9170,7 +9170,7 @@ async function handleGlossaryPacks(req: VercelRequest, res: VercelResponse) {
 // only ever touches its OWN session. Log filenames are sanitised to a bare
 // basename ending in .log, capped at 25 MB each.
 const SUPPORT_LOG_MAX_BYTES = 25 * 1024 * 1024
-const SUPPORT_MAX_LOGS = 40
+const SUPPORT_MAX_LOGS = 120
 const SUPPORT_MAX_SCREENS = 8
 const SUPPORT_SCREEN_MAX_BYTES = 12 * 1024 * 1024
 
@@ -9286,7 +9286,11 @@ type SupportSession = {
   cmdConsent?: boolean
   cmdSeq?: number
   pendingCmd?: { seq: number; text: string; issuedAt: number } | null
-  cmdLog?: Array<{ seq: number; text: string; output: string; at: number; truncated?: boolean }>
+  cmdLog?: Array<{ seq: number; text: string; output: string; cwd?: string; at: number; truncated?: boolean }>
+  hardware?: { model: string; cpu: string; cores: string; ram: string; gpu: string; vram: string } | null
+  displays?: Array<{ id: string; index: number; w: number; h: number; primary: boolean }>
+  screenMode?: 'off' | 'app' | 'desktop'
+  screenDisplay?: number
 }
 
 async function loadSupportSession(code: string): Promise<SupportSession | null> {
@@ -9312,6 +9316,8 @@ async function handleSupportCreate(req: VercelRequest, res: VercelResponse) {
     cmdEnabled: cmd,
     cmdConsent: false,
     cmdSeq: 0,
+    screenMode: 'app',
+    screenDisplay: -1,
   })
   return res.status(200).json({ ok: true, code, viewToken: mintSupportViewToken(code, cmd), cmd })
 }
@@ -9348,6 +9354,10 @@ async function handleSupportGet(req: VercelRequest, res: VercelResponse) {
     cmdConsent: s.cmdConsent === true,
     cmdPending: !!s.pendingCmd,
     cmdLog: s.cmdLog || [],
+    hardware: s.hardware || null,
+    displays: s.displays || [],
+    screenMode: s.screenMode || 'app',
+    screenDisplay: typeof s.screenDisplay === 'number' ? s.screenDisplay : -1,
   })
 }
 
@@ -9409,7 +9419,7 @@ async function handleSupportConsent(req: VercelRequest, res: VercelResponse) {
     appVersion: String(b.appVersion || '').slice(0, 20),
     updatedAt: Date.now(),
   }, { merge: true })
-  return res.status(200).json({ ok: true, cmdEnabled: s.cmdEnabled === true })
+  return res.status(200).json({ ok: true, cmdEnabled: s.cmdEnabled === true, screenMode: s.screenMode || 'app', screenDisplay: typeof s.screenDisplay === 'number' ? s.screenDisplay : -1 })
 }
 
 /** action=support-poll (app, ~6 s) → tiny status: stop + refresh counter. */
@@ -9578,7 +9588,7 @@ async function handleSupportCmdFetch(req: VercelRequest, res: VercelResponse) {
 async function handleSupportCmdResult(req: VercelRequest, res: VercelResponse) {
   const v = await verifyOwnerAuth(req)
   if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  const b = (req.body || {}) as { code?: string; seq?: number; text?: string; output?: string; truncated?: boolean }
+  const b = (req.body || {}) as { code?: string; seq?: number; text?: string; output?: string; cwd?: string; truncated?: boolean }
   const code = String(b.code || '').trim().toUpperCase()
   const s = await loadSupportSession(code)
   if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
@@ -9589,11 +9599,75 @@ async function handleSupportCmdResult(req: VercelRequest, res: VercelResponse) {
     output = output.slice(0, SUPPORT_CMD_MAX_OUTPUT)
     truncated = true
   }
-  const entry = { seq, text: String(b.text || '').slice(0, 4000), output, at: Date.now(), truncated }
+  const entry = { seq, text: String(b.text || '').slice(0, 4000), output, cwd: String(b.cwd || '').slice(0, 400), at: Date.now(), truncated }
   const log = [...(s.cmdLog || []), entry].slice(-SUPPORT_CMD_LOG_KEEP)
   const patch: Record<string, unknown> = { cmdLog: log, updatedAt: Date.now() }
   if (s.pendingCmd && s.pendingCmd.seq === seq) patch.pendingCmd = null
   await getDb().collection('supportSessions').doc(code).set(patch, { merge: true })
+  return res.status(200).json({ ok: true })
+}
+
+/** action=support-report-info (app) → full machine specs + display list. */
+async function handleSupportReportInfo(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const b = (req.body || {}) as {
+    code?: string
+    hardware?: { model?: string; cpu?: string; cores?: string; ram?: string; gpu?: string; vram?: string } | null
+    displays?: Array<{ id?: string; index?: number; w?: number; h?: number; primary?: boolean }>
+  }
+  const code = String(b.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
+  const clip = (x: unknown, n = 120) => String(x ?? '').slice(0, n)
+  const hardware = b.hardware
+    ? {
+        model: clip(b.hardware.model),
+        cpu: clip(b.hardware.cpu),
+        cores: clip(b.hardware.cores, 12),
+        ram: clip(b.hardware.ram, 24),
+        gpu: clip(b.hardware.gpu, 200),
+        vram: clip(b.hardware.vram, 40),
+      }
+    : null
+  const displays = (Array.isArray(b.displays) ? b.displays : []).slice(0, 8).map((d, i) => ({
+    id: clip(d.id, 40),
+    index: Number(d.index) || i,
+    w: Math.max(0, Math.min(20000, Number(d.w) || 0)),
+    h: Math.max(0, Math.min(20000, Number(d.h) || 0)),
+    primary: d.primary === true,
+  }))
+  await getDb().collection('supportSessions').doc(code)
+    .set({ hardware, displays, updatedAt: Date.now() }, { merge: true })
+  return res.status(200).json({ ok: true })
+}
+
+/** action=support-screen-get (app) → the admin's current capture preference. */
+async function handleSupportScreenGet(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const code = String((req.body as { code?: string })?.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
+  return res.status(200).json({
+    ok: true,
+    mode: s.screenMode || 'app',
+    display: typeof s.screenDisplay === 'number' ? s.screenDisplay : -1,
+  })
+}
+
+/** action=support-screen-mode (admin) → set capture preference + push to app. */
+async function handleSupportScreenMode(req: VercelRequest, res: VercelResponse) {
+  const b = (req.body || {}) as { stepUpToken?: string; viewToken?: string; code?: string; mode?: string; display?: number }
+  const code = String(b.code || '').trim().toUpperCase()
+  if (!supportAdminOk(b, code)) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const s = await loadSupportSession(code)
+  if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
+  const mode = b.mode === 'off' || b.mode === 'desktop' ? b.mode : 'app'
+  const display = Number.isInteger(b.display) ? Number(b.display) : -1
+  await getDb().collection('supportSessions').doc(code)
+    .set({ screenMode: mode, screenDisplay: display, updatedAt: Date.now() }, { merge: true })
+  await writeSupportControl(code, 'screen')
   return res.status(200).json({ ok: true })
 }
 
@@ -9701,6 +9775,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleSupportCmdFetch(req, res)
       case 'support-cmd-result':
         return await handleSupportCmdResult(req, res)
+      case 'support-report-info':
+        return await handleSupportReportInfo(req, res)
+      case 'support-screen-get':
+        return await handleSupportScreenGet(req, res)
+      case 'support-screen-mode':
+        return await handleSupportScreenMode(req, res)
       case 'music-quota-consume':
         return await handleMusicConsume(req, res)
       case 'music-quota-refund':
