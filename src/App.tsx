@@ -67,6 +67,7 @@ const PartnerPage = lazy(() => import('./pages/PartnerPage'))
 const DeviceCheckPage = lazy(() => import('./pages/DeviceCheckPage'))
 const SystemCheckPage = lazy(() => import('./pages/SystemCheckPage'))
 const SupportPage = lazy(() => import('./pages/SupportPage'))
+const AdminSupportSessionPage = lazy(() => import('./pages/AdminSupportSessionPage'))
 const TrialActivatePage = lazy(() => import('./pages/TrialActivatePage'))
 const InstallPage = lazy(() => import('./pages/InstallPage'))
 // AdminPage also pulls in Firebase Auth (signInWithEmailAndPassword),
@@ -236,6 +237,7 @@ function AnimatedRoutes() {
         <Route path="/install" element={<InstallPage />} />
         <Route path="/mac-setup" element={<InstallPage />} />
         {/* Admin panel — 2FA-gated web twin of the desktop panel. */}
+        <Route path="/admin/support/:code" element={<AdminSupportSessionPage />} />
         <Route path="/admin" element={<AdminPage />} />
       </Routes>
       </Suspense>

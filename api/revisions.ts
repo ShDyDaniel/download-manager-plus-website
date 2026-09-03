@@ -9336,8 +9336,10 @@ async function handleSupportLogsInit(req: VercelRequest, res: VercelResponse) {
     const size = Number(f.size) || 0
     if (!name || size <= 0 || size > SUPPORT_LOG_MAX_BYTES) continue
     const key = supportLogKey(code, name)
-    // No bound Content-Length: log files grow between sizing and upload.
-    uploads.push({ name, key, url: await r2PresignPut(key, 15 * 60) })
+    // 1h TTL (re-minted by the app well before expiry) so long support
+    // sessions keep uploading. No bound Content-Length: logs grow between
+    // sizing and upload.
+    uploads.push({ name, key, url: await r2PresignPut(key, 60 * 60) })
   }
   return res.status(200).json({ ok: true, uploads })
 }
