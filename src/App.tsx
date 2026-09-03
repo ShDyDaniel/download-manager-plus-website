@@ -66,6 +66,7 @@ const DrivePickerPage = lazy(() => import('./pages/DrivePickerPage'))
 const PartnerPage = lazy(() => import('./pages/PartnerPage'))
 const DeviceCheckPage = lazy(() => import('./pages/DeviceCheckPage'))
 const SystemCheckPage = lazy(() => import('./pages/SystemCheckPage'))
+const SupportPage = lazy(() => import('./pages/SupportPage'))
 const TrialActivatePage = lazy(() => import('./pages/TrialActivatePage'))
 const InstallPage = lazy(() => import('./pages/InstallPage'))
 // AdminPage also pulls in Firebase Auth (signInWithEmailAndPassword),
@@ -93,6 +94,7 @@ function isChromelessRoute(pathname: string): boolean {
     pathname.startsWith('/partner') ||
     pathname.startsWith('/device-check') ||
     pathname.startsWith('/system-check') ||
+    pathname.startsWith('/support') ||
     pathname.startsWith('/trial') ||
     pathname.startsWith('/install') ||
     pathname.startsWith('/mac-setup') ||
@@ -225,6 +227,7 @@ function AnimatedRoutes() {
             report its device signature (or shows a backup code). */}
         <Route path="/device-check/:code" element={<DeviceCheckPage />} />
         <Route path="/system-check/:code" element={<SystemCheckPage />} />
+        <Route path="/support/:code" element={<SupportPage />} />
         {/* Trial activation — opened from the desktop user menu; the app
             passes the ID token + device id on the fragment. */}
         <Route path="/trial" element={<TrialActivatePage />} />

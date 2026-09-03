@@ -461,7 +461,7 @@ export function consumeWebauthnCeremonyReload(): boolean {
  *   - code 'no-passkey'→ this device has no registered passkey
  *   - code 'cancelled' → the operator dismissed the biometric prompt
  */
-async function ensureStepUp(): Promise<string> {
+export async function ensureStepUp(): Promise<string> {
   const cached = getValidStepUpToken()
   if (cached) return cached
   // 1) Ask the server for a fresh authentication challenge. This call

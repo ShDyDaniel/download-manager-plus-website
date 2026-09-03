@@ -9152,6 +9152,216 @@ async function handleGlossaryPacks(req: VercelRequest, res: VercelResponse) {
   return res.status(200).json({ ok: true, packs: all })
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Live remote-support sessions (admin diagnostics). Phase 1 = live LOGS.
+//
+// Flow: admin creates a session (support-create) → sends the user a
+// dmplus://support?code=CODE link → the app shows a consent window and, on
+// approval, uploads ALL its *.log files to R2 under support/<code>/logs/ and
+// refreshes them while the session is active. The admin views + downloads them.
+// Either side can stop; stopping deletes every R2 object the session created.
+//
+// "Live" without burning DB quota: the app polls a TINY status doc (~6 s) for
+// stop/refresh flags; log BLOBS live in R2 (not Firestore); the admin panel
+// reads the session via a small polled GET. No per-second reads/writes.
+//
+// Security: create/get/stop-admin/refresh require a fresh admin step-up token;
+// the app side requires the user's Firebase ID token + the session code, and
+// only ever touches its OWN session. Log filenames are sanitised to a bare
+// basename ending in .log, capped at 25 MB each.
+const SUPPORT_LOG_MAX_BYTES = 25 * 1024 * 1024
+const SUPPORT_MAX_LOGS = 40
+
+function genSupportCode(): string {
+  // 8 hex chars — same shape/space as device-check codes, easy to read aloud.
+  return crypto.randomBytes(4).toString('hex').toUpperCase()
+}
+
+function supportLogKey(code: string, name: string): string {
+  return `support/${code}/logs/${name}`
+}
+
+/** Sanitise a client-supplied log filename → a safe bare basename ending
+ *  in .log, or null if it doesn't qualify. Blocks path traversal. */
+function safeLogName(raw: unknown): string | null {
+  const n = String(raw || '').split(/[\\/]/).pop() || ''
+  if (!/^[A-Za-z0-9._-]{1,80}\.log$/.test(n)) return null
+  if (n.includes('..')) return null
+  return n
+}
+
+type SupportSession = {
+  code: string
+  status: 'pending' | 'active' | 'stopped'
+  createdBy?: string
+  uid?: string
+  email?: string
+  platform?: string
+  appVersion?: string
+  logManifest?: Array<{ name: string; key: string; size: number }>
+  refreshReq?: number
+  stoppedBy?: string
+}
+
+async function loadSupportSession(code: string): Promise<SupportSession | null> {
+  if (!/^[A-Z0-9]{4,16}$/.test(code)) return null
+  const snap = await getDb().collection('supportSessions').doc(code).get()
+  return snap.exists ? (snap.data() as SupportSession) : null
+}
+
+/** action=support-create (admin) → new session code. */
+async function handleSupportCreate(req: VercelRequest, res: VercelResponse) {
+  const tok = String((req.body as { stepUpToken?: string })?.stepUpToken || '')
+  const claims = verifyAdminStepUp(tok)
+  if (!claims) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const code = genSupportCode()
+  await getDb().collection('supportSessions').doc(code).set({
+    code,
+    status: 'pending',
+    createdBy: claims.email,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    refreshReq: 0,
+  })
+  return res.status(200).json({ ok: true, code })
+}
+
+/** action=support-get (admin) → session + presigned GET url per log. Polled. */
+async function handleSupportGet(req: VercelRequest, res: VercelResponse) {
+  const tok = String((req.body as { stepUpToken?: string })?.stepUpToken || '')
+  if (!verifyAdminStepUp(tok)) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const code = String((req.body as { code?: string })?.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
+  const logs = await Promise.all(
+    (s.logManifest || []).map(async (l) => ({
+      name: l.name,
+      size: l.size,
+      url: await r2PresignGet(l.key, 15 * 60),
+    })),
+  )
+  return res.status(200).json({
+    ok: true,
+    status: s.status,
+    platform: s.platform || null,
+    appVersion: s.appVersion || null,
+    email: s.email || null,
+    logs,
+  })
+}
+
+/** action=support-refresh (admin) → ask the app to re-upload logs now. */
+async function handleSupportRefresh(req: VercelRequest, res: VercelResponse) {
+  const tok = String((req.body as { stepUpToken?: string })?.stepUpToken || '')
+  if (!verifyAdminStepUp(tok)) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const code = String((req.body as { code?: string })?.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
+  await getDb().collection('supportSessions').doc(code)
+    .set({ refreshReq: FieldValue.increment(1), updatedAt: Date.now() }, { merge: true })
+  return res.status(200).json({ ok: true })
+}
+
+/** Delete every R2 object a session created, then flip status → stopped. */
+async function endSupportSession(code: string, s: SupportSession, by: string) {
+  await Promise.all((s.logManifest || []).map((l) => r2DeleteObject(l.key).catch(() => false)))
+  await getDb().collection('supportSessions').doc(code)
+    .set({ status: 'stopped', stoppedBy: by, logManifest: [], updatedAt: Date.now() }, { merge: true })
+}
+
+/** action=support-stop → either side ends it (admin step-up OR the app user). */
+async function handleSupportStop(req: VercelRequest, res: VercelResponse) {
+  const code = String((req.body as { code?: string })?.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
+  const tok = String((req.body as { stepUpToken?: string })?.stepUpToken || '')
+  let by: string | null = null
+  if (tok && verifyAdminStepUp(tok)) by = 'admin'
+  else {
+    const v = await verifyOwnerAuth(req)
+    if (v && v.uid === s.uid) by = 'user'
+  }
+  if (!by) return res.status(403).json({ ok: false, error: 'forbidden' })
+  await endSupportSession(code, s, by)
+  return res.status(200).json({ ok: true })
+}
+
+/** action=support-consent (app) → user approved; mark active. */
+async function handleSupportConsent(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const b = (req.body || {}) as { code?: string; platform?: string; appVersion?: string }
+  const code = String(b.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
+  if (s.status === 'stopped') return res.status(410).json({ ok: false, error: 'stopped' })
+  await getDb().collection('supportSessions').doc(code).set({
+    status: 'active',
+    uid: v.uid,
+    email: v.email,
+    platform: String(b.platform || '').slice(0, 40),
+    appVersion: String(b.appVersion || '').slice(0, 20),
+    updatedAt: Date.now(),
+  }, { merge: true })
+  return res.status(200).json({ ok: true })
+}
+
+/** action=support-poll (app, ~6 s) → tiny status: stop + refresh counter. */
+async function handleSupportPoll(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const code = String((req.body as { code?: string })?.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
+  return res.status(200).json({
+    ok: true,
+    stop: s.status === 'stopped',
+    refreshReq: s.refreshReq || 0,
+  })
+}
+
+/** action=support-logs-init (app) → presigned PUT url per log file. */
+async function handleSupportLogsInit(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const b = (req.body || {}) as { code?: string; files?: Array<{ name?: string; size?: number }> }
+  const code = String(b.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
+  if (s.status !== 'active') return res.status(410).json({ ok: false, error: 'not-active' })
+  const files = Array.isArray(b.files) ? b.files.slice(0, SUPPORT_MAX_LOGS) : []
+  const uploads: Array<{ name: string; key: string; url: string }> = []
+  for (const f of files) {
+    const name = safeLogName(f.name)
+    const size = Number(f.size) || 0
+    if (!name || size <= 0 || size > SUPPORT_LOG_MAX_BYTES) continue
+    const key = supportLogKey(code, name)
+    // No bound Content-Length: log files grow between sizing and upload.
+    uploads.push({ name, key, url: await r2PresignPut(key, 15 * 60) })
+  }
+  return res.status(200).json({ ok: true, uploads })
+}
+
+/** action=support-logs-commit (app) → record which logs are now in R2. */
+async function handleSupportLogsCommit(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const b = (req.body || {}) as { code?: string; manifest?: Array<{ name?: string; size?: number }> }
+  const code = String(b.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
+  const manifest: SupportSession['logManifest'] = []
+  for (const m of (Array.isArray(b.manifest) ? b.manifest : []).slice(0, SUPPORT_MAX_LOGS)) {
+    const name = safeLogName(m.name)
+    const size = Number(m.size) || 0
+    if (name && size > 0) manifest.push({ name, key: supportLogKey(code, name), size })
+  }
+  await getDb().collection('supportSessions').doc(code)
+    .set({ logManifest: manifest, updatedAt: Date.now() }, { merge: true })
+  return res.status(200).json({ ok: true })
+}
+
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   recordVercelInvocation()
   const action = String(req.query.action || '').trim()
@@ -9226,6 +9436,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleQuoteConsume(req, res)
       case 'quote-usage':
         return await handleQuoteUsage(req, res)
+      case 'support-create':
+        return await handleSupportCreate(req, res)
+      case 'support-get':
+        return await handleSupportGet(req, res)
+      case 'support-refresh':
+        return await handleSupportRefresh(req, res)
+      case 'support-stop':
+        return await handleSupportStop(req, res)
+      case 'support-consent':
+        return await handleSupportConsent(req, res)
+      case 'support-poll':
+        return await handleSupportPoll(req, res)
+      case 'support-logs-init':
+        return await handleSupportLogsInit(req, res)
+      case 'support-logs-commit':
+        return await handleSupportLogsCommit(req, res)
       case 'music-quota-consume':
         return await handleMusicConsume(req, res)
       case 'music-quota-refund':

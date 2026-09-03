@@ -599,6 +599,180 @@ function LogViewer({ logs }: { logs: Record<string, string> }) {
   )
 }
 
+function RemoteSupportCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [code, setCode] = useState<string | null>(null)
+  const [status, setStatus] = useState('')
+  const [meta, setMeta] = useState<{ platform?: string; appVersion?: string; email?: string }>({})
+  const [logs, setLogs] = useState<Record<string, string>>({})
+  const [err, setErr] = useState('')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const stopPoll = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+  useEffect(() => stopPoll, [])
+
+  // Support endpoints live in /api/revisions (co-located with R2), so we call
+  // them directly with a fresh admin step-up token instead of adminApi (paypal).
+  async function api<T>(action: string, body: Record<string, unknown> = {}): Promise<T> {
+    const { ensureStepUp } = await import('../../lib/adminApi')
+    const stepUpToken = await ensureStepUp()
+    const r = await fetch(`/api/revisions?action=${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, stepUpToken }),
+    })
+    const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string } & Record<string, unknown>
+    if (!j.ok) {
+      const e = new Error(j.error || 'failed') as Error & { code?: string }
+      if (r.status === 403) e.code = 'auth'
+      throw e
+    }
+    return j as T
+  }
+
+  const poll = useCallback(
+    async (c: string) => {
+      try {
+        const j = await api<{
+          status: string
+          platform?: string
+          appVersion?: string
+          email?: string
+          logs: Array<{ name: string; size: number; url: string }>
+        }>('support-get', { code: c })
+        setStatus(j.status)
+        setMeta({ platform: j.platform, appVersion: j.appVersion, email: j.email })
+        const entries = await Promise.all(
+          (j.logs || []).map(async (l) => {
+            try {
+              const rr = await fetch(l.url)
+              return [l.name, await rr.text()] as const
+            } catch {
+              return [l.name, '(שגיאה בטעינת הלוג)'] as const
+            }
+          }),
+        )
+        setLogs(Object.fromEntries(entries))
+        if (j.status === 'stopped') stopPoll()
+      } catch (e) {
+        const er = e as Error & { code?: string }
+        if (er.code === 'auth') {
+          stopPoll()
+          onAuthExpired?.()
+        }
+      }
+    },
+    [onAuthExpired],
+  )
+
+  async function createLink() {
+    setBusy(true)
+    setErr('')
+    setLogs({})
+    setStatus('')
+    stopPoll()
+    try {
+      const j = await api<{ code: string }>('support-create')
+      setCode(j.code)
+      pollRef.current = setInterval(() => void poll(j.code), 6000)
+      void poll(j.code)
+    } catch (e) {
+      const er = e as Error & { code?: string }
+      if (er.code === 'auth') return onAuthExpired?.()
+      setErr(er.message || 'יצירת הקישור נכשלה')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function refresh() {
+    if (!code) return
+    try {
+      await api('support-refresh', { code })
+    } catch {
+      /* best-effort */
+    }
+  }
+  async function stopSession() {
+    if (!code) return
+    try {
+      await api('support-stop', { code })
+    } catch {
+      /* best-effort */
+    }
+    stopPoll()
+    setStatus('stopped')
+  }
+
+  const url = code ? `https://dmplus.net/support/${code}` : ''
+  function downloadAll() {
+    const enc = new TextEncoder()
+    const entries = Object.entries(logs).map(([n, c]) => ({ name: n, data: enc.encode(c) }))
+    if (!entries.length) return
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(buildZip(entries))
+    a.download = `dmplus-support-${code || 'logs'}.zip`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const statusLabel =
+    status === 'active' ? 'משדר ✓' : status === 'stopped' ? 'הופסק' : 'ממתין לאישור המשתמש…'
+
+  return (
+    <Card title="תמיכה מרחוק — לוגים חיים">
+      <p className="text-[11px] leading-relaxed text-fg-muted">
+        צור קישור ושלח ללקוח. הוא מאשר פעם אחת, והתוכנה משדרת לכאן את כל קובצי
+        היומן (לוגים) בזמן אמת. אפשר לרענן, להוריד הכל, ולעצור בכל רגע.
+      </p>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="gradient" size="sm" onClick={() => void createLink()} disabled={busy}>
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <LifeBuoy className="h-3.5 w-3.5" />}
+          צור קישור תמיכה
+        </Button>
+        {code && <CopyBtn text={url} label="העתק קישור" />}
+        {code && <span className="text-[11px] text-fg-muted">קוד {code} · {statusLabel}</span>}
+      </div>
+
+      {err && <p className="text-[11px] text-red-400">{err}</p>}
+      {code && url && (
+        <code dir="ltr" className="block select-all rounded-lg border border-border bg-background px-2 py-1.5 text-[11px] text-fg-muted">
+          {url}
+        </code>
+      )}
+      {(meta.email || meta.platform) && (
+        <p className="text-[11px] text-fg-muted">
+          {meta.email} · {meta.platform} · v{meta.appVersion}
+        </p>
+      )}
+
+      {code && status !== 'stopped' && (
+        <div className="flex flex-wrap gap-2">
+          <Button variant="ghost" size="sm" onClick={() => void refresh()}>
+            <RefreshCw className="h-3.5 w-3.5" /> רענן לוגים
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => void stopSession()}>
+            עצור סשן
+          </Button>
+          {Object.keys(logs).length > 0 && (
+            <Button variant="ghost" size="sm" onClick={downloadAll}>
+              הורד הכל (zip)
+            </Button>
+          )}
+        </div>
+      )}
+
+      {Object.keys(logs).length > 0 && <LogViewer logs={logs} />}
+    </Card>
+  )
+}
+
+
 export default function SystemGuideTab({
   onAuthExpired,
 }: {
@@ -617,6 +791,7 @@ export default function SystemGuideTab({
       </header>
 
       <RemoteCheckCard onAuthExpired={onAuthExpired} />
+      <RemoteSupportCard onAuthExpired={onAuthExpired} />
 
       {/* intro note */}
       <div className="flex items-start gap-2 rounded-xl border border-accent/30 bg-accent/[0.06] px-3 py-2.5 text-sm text-fg">
