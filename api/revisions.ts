@@ -9291,6 +9291,10 @@ type SupportSession = {
   displays?: Array<{ id: string; index: number; w: number; h: number; primary: boolean }>
   screenMode?: 'off' | 'app' | 'desktop'
   screenDisplay?: number
+  screenPermission?: string
+  stoppedAt?: number
+  purgeAt?: number
+  purged?: boolean
 }
 
 async function loadSupportSession(code: string): Promise<SupportSession | null> {
@@ -9327,8 +9331,9 @@ async function handleSupportGet(req: VercelRequest, res: VercelResponse) {
   const b = (req.body || {}) as { stepUpToken?: string; viewToken?: string; code?: string }
   const code = String(b.code || '').trim().toUpperCase()
   if (!supportAdminOk(b, code)) return res.status(403).json({ ok: false, error: 'forbidden' })
-  const s = await loadSupportSession(code)
+  let s = await loadSupportSession(code)
   if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
+  s = await maybePurgeSupport(code, s)
   const logs = await Promise.all(
     (s.logManifest || []).map(async (l) => ({
       name: l.name,
@@ -9358,6 +9363,9 @@ async function handleSupportGet(req: VercelRequest, res: VercelResponse) {
     displays: s.displays || [],
     screenMode: s.screenMode || 'app',
     screenDisplay: typeof s.screenDisplay === 'number' ? s.screenDisplay : -1,
+    screenPermission: s.screenPermission || 'granted',
+    purgeAt: s.purgeAt || null,
+    purged: s.purged === true,
   })
 }
 
@@ -9374,14 +9382,41 @@ async function handleSupportRefresh(req: VercelRequest, res: VercelResponse) {
   return res.status(200).json({ ok: true })
 }
 
-/** Delete every R2 object a session created, then flip status → stopped. */
-async function endSupportSession(code: string, s: SupportSession, by: string) {
+const SUPPORT_PURGE_GRACE_MS = 5 * 60 * 1000
+
+/** Once the post-stop grace period has elapsed, delete every R2 object the
+ *  session created and clear the manifests. Idempotent; returns the updated
+ *  session. Called lazily (admin poll / app timer) + by the daily cron. */
+async function maybePurgeSupport(code: string, s: SupportSession): Promise<SupportSession> {
+  if (s.status !== 'stopped' || s.purged || !s.purgeAt || Date.now() < s.purgeAt) return s
   await Promise.all([
     ...(s.logManifest || []).map((l) => r2DeleteObject(l.key).catch(() => false)),
     ...(s.screenManifest || []).map((sc) => r2DeleteObject(sc.key).catch(() => false)),
   ])
+  const patch = { purged: true, logManifest: [], screenManifest: [], cmdLog: [], updatedAt: Date.now() }
+  await getDb().collection('supportSessions').doc(code).set(patch, { merge: true })
+  return { ...s, ...patch }
+}
+
+/** Flip a session → stopped, keeping its data for a short grace period. */
+async function endSupportSession(code: string, s: SupportSession, by: string) {
+  // Command capability is revoked immediately; the collected data (logs/shots)
+  // is kept for a 5-minute grace window, then purged by maybePurgeSupport
+  // (lazily on the next admin poll, by the app ~5 min after stop, or by the
+  // daily cron backstop — see SUPPORT_PURGE_GRACE_MS).
+  const now = Date.now()
   await getDb().collection('supportSessions').doc(code)
-    .set({ status: 'stopped', stoppedBy: by, logManifest: [], screenManifest: [], pendingCmd: null, cmdEnabled: false, cmdConsent: false, cmdLog: [], updatedAt: Date.now() }, { merge: true })
+    .set({
+      status: 'stopped',
+      stoppedBy: by,
+      stoppedAt: now,
+      purgeAt: now + SUPPORT_PURGE_GRACE_MS,
+      purged: false,
+      pendingCmd: null,
+      cmdEnabled: false,
+      cmdConsent: false,
+      updatedAt: now,
+    }, { merge: true })
   await writeSupportControl(code, 'stop')
 }
 
@@ -9615,6 +9650,7 @@ async function handleSupportReportInfo(req: VercelRequest, res: VercelResponse) 
     code?: string
     hardware?: { model?: string; cpu?: string; cores?: string; ram?: string; gpu?: string; vram?: string } | null
     displays?: Array<{ id?: string; index?: number; w?: number; h?: number; primary?: boolean }>
+    screenPermission?: string
   }
   const code = String(b.code || '').trim().toUpperCase()
   const s = await loadSupportSession(code)
@@ -9638,7 +9674,7 @@ async function handleSupportReportInfo(req: VercelRequest, res: VercelResponse) 
     primary: d.primary === true,
   }))
   await getDb().collection('supportSessions').doc(code)
-    .set({ hardware, displays, updatedAt: Date.now() }, { merge: true })
+    .set({ hardware, displays, screenPermission: clip(b.screenPermission, 24), updatedAt: Date.now() }, { merge: true })
   return res.status(200).json({ ok: true })
 }
 
@@ -9669,6 +9705,22 @@ async function handleSupportScreenMode(req: VercelRequest, res: VercelResponse) 
     .set({ screenMode: mode, screenDisplay: display, updatedAt: Date.now() }, { merge: true })
   await writeSupportControl(code, 'screen')
   return res.status(200).json({ ok: true })
+}
+
+/** action=support-purge (app or admin) → force the grace-period purge check. */
+async function handleSupportPurge(req: VercelRequest, res: VercelResponse) {
+  const code = String((req.body as { code?: string })?.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
+  const b = (req.body || {}) as { stepUpToken?: string; viewToken?: string }
+  let ok = supportAdminOk(b, code)
+  if (!ok) {
+    const v = await verifyOwnerAuth(req)
+    ok = !!v && v.uid === s.uid
+  }
+  if (!ok) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const after = await maybePurgeSupport(code, s)
+  return res.status(200).json({ ok: true, purged: after.purged === true })
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -9781,6 +9833,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleSupportScreenGet(req, res)
       case 'support-screen-mode':
         return await handleSupportScreenMode(req, res)
+      case 'support-purge':
+        return await handleSupportPurge(req, res)
       case 'music-quota-consume':
         return await handleMusicConsume(req, res)
       case 'music-quota-refund':

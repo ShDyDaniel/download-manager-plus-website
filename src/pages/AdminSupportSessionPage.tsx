@@ -59,6 +59,9 @@ export default function AdminSupportSessionPage() {
   const [displays, setDisplays] = useState<DisplayInfo[]>([])
   const [screenMode, setScreenMode] = useState<ScreenMode>('app')
   const [screenDisplay, setScreenDisplay] = useState(-1)
+  const [screenPerm, setScreenPerm] = useState('granted')
+  const [purgeAt, setPurgeAt] = useState<number | null>(null)
+  const [purged, setPurged] = useState(false)
   const cmdEnabledRef = useRef(false) // drives the faster poll while the console is open
   const urlsRef = useRef<Record<string, string>>({})
   const screenUrlsRef = useRef<Record<string, string>>({}) // name -> presigned GET
@@ -83,6 +86,9 @@ export default function AdminSupportSessionPage() {
         displays?: DisplayInfo[]
         screenMode?: ScreenMode
         screenDisplay?: number
+        screenPermission?: string
+        purgeAt?: number | null
+        purged?: boolean
       }>('support-get', { code: cleanCode })
       setStatus(j.status)
       setCmd({ enabled: !!j.cmdEnabled, consent: !!j.cmdConsent, pending: !!j.cmdPending })
@@ -92,6 +98,9 @@ export default function AdminSupportSessionPage() {
       setDisplays(j.displays || [])
       setScreenMode(j.screenMode || 'app')
       setScreenDisplay(typeof j.screenDisplay === 'number' ? j.screenDisplay : -1)
+      setScreenPerm(j.screenPermission || 'granted')
+      setPurgeAt(j.purgeAt ?? null)
+      setPurged(j.purged === true)
       setMeta({ platform: j.platform, appVersion: j.appVersion, email: j.email })
       const names = (j.logs || []).map((l) => l.name)
       setLogNames(names)
@@ -285,6 +294,14 @@ export default function AdminSupportSessionPage() {
 
         {err && <p className="mb-3 text-xs text-red-400">שגיאה: {err}</p>}
 
+        {status === 'stopped' && (
+          <p className="mb-3 text-xs text-muted-foreground">
+            {purged
+              ? 'הסשן הופסק והנתונים נמחקו מהאחסון.'
+              : `הסשן הופסק. הנתונים יימחקו מהאחסון${purgeAt ? ` בעוד כ-${Math.max(0, Math.ceil((purgeAt - Date.now()) / 60000))} דק׳` : ' בקרוב'}.`}
+          </p>
+        )}
+
         {/* Machine specs (reported once on consent, like the system-check link) */}
         {hardware && (
           <div className="mb-4 rounded-xl border border-border bg-card p-3">
@@ -332,6 +349,11 @@ export default function AdminSupportSessionPage() {
               <Icon className="h-3.5 w-3.5" /> {label}
             </button>
           ))}
+          {screenMode === 'desktop' && screenPerm !== 'granted' && (
+            <span className="w-full text-[11px] text-amber-400">
+              המשתמש לא אישר "הקלטת מסך" (macOS). יש לאשר בהגדרות המערכת ← פרטיות ← הקלטת מסך, ולהפעיל את התוכנה מחדש.
+            </span>
+          )}
           {screenMode === 'desktop' && displays.length > 1 && (
             <select
               value={screenDisplay}

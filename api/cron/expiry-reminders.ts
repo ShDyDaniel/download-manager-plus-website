@@ -485,6 +485,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // anyone who bypassed the real-time gates. Skipped during beta.
     const auditResults = await runQuotaAbuseAudit(db)
 
+    // ─── Remote-support purge backstop ────────────────────────
+    // Stopped support sessions delete their R2 data ~5 min after stop
+    // (lazily / app-driven). This daily sweep guarantees anything that
+    // slipped through (app closed, admin tab shut) is still wiped.
+    const supportPurge = await runSupportPurgeSweep(db)
+
     // NOTE: Firestore backups used to run here too. They've moved
     // entirely to the dedicated Cloudflare backup worker
     // (dmplus-backup-cron → admin-run-auto-backup), so the two systems
@@ -503,6 +509,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       deliveries: deliveryResults,
       janitor: janitorResults,
       audit: auditResults,
+      supportPurge,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
@@ -715,6 +722,44 @@ function getR2OrNull(): S3Client | null {
 async function r2Delete(r2: S3Client, key: string): Promise<void> {
   if (!key) return
   await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }))
+}
+
+/** Backstop for the remote-support 5-min purge: wipe R2 data for any stopped,
+ *  not-yet-purged session whose grace period has passed. */
+async function runSupportPurgeSweep(
+  db: ReturnType<typeof getFirestore>,
+): Promise<{ ran: boolean; purged: number }> {
+  const r2 = getR2OrNull()
+  if (!r2) return { ran: false, purged: 0 }
+  const now = Date.now()
+  let purged = 0
+  try {
+    const snap = await db
+      .collection('supportSessions')
+      .where('status', '==', 'stopped')
+      .where('purged', '==', false)
+      .get()
+    for (const doc of snap.docs) {
+      const s = doc.data() as {
+        purgeAt?: number
+        logManifest?: Array<{ key: string }>
+        screenManifest?: Array<{ key: string }>
+      }
+      if (!s.purgeAt || now < s.purgeAt) continue
+      await Promise.all([
+        ...(s.logManifest || []).map((l) => r2Delete(r2, l.key).catch(() => {})),
+        ...(s.screenManifest || []).map((sc) => r2Delete(r2, sc.key).catch(() => {})),
+      ])
+      await doc.ref.set(
+        { purged: true, logManifest: [], screenManifest: [], cmdLog: [], updatedAt: now },
+        { merge: true },
+      )
+      purged++
+    }
+  } catch {
+    /* best-effort backstop */
+  }
+  return { ran: true, purged }
 }
 
 /* ──────────────────────────────────────────────────────────────
