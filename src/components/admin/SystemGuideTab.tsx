@@ -602,6 +602,7 @@ function LogViewer({ logs }: { logs: Record<string, string> }) {
 function RemoteSupportCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const [withCmd, setWithCmd] = useState(false)
 
   async function createLink() {
     setBusy(true)
@@ -612,7 +613,9 @@ function RemoteSupportCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
       const r = await fetch('/api/revisions?action=support-create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stepUpToken }),
+        // This step-up (a real passkey verification) is what authorises command
+        // execution for the whole session — the user still gives a second consent.
+        body: JSON.stringify({ stepUpToken, cmd: withCmd }),
       })
       const j = (await r.json().catch(() => ({}))) as { ok?: boolean; code?: string; viewToken?: string; error?: string }
       if (!j.ok || !j.code) {
@@ -631,12 +634,24 @@ function RemoteSupportCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
   }
 
   return (
-    <Card title="תמיכה מרחוק — לוגים חיים">
+    <Card title="תמיכה מרחוק — לוגים, מסך חי ופקודות">
       <p className="text-[11px] leading-relaxed text-fg-muted">
-        צור קישור ושלח ללקוח. הוא מאשר פעם אחת, והתוכנה משדרת לכאן את כל קובצי
-        היומן (לוגים) בזמן אמת. הכל נפתח בדף ייעודי חדש — עם צפייה חיה, רענון,
-        הורדה ועצירה.
+        צור קישור ושלח ללקוח. הוא מאשר פעם אחת, והתוכנה משדרת לכאן בזמן אמת את כל
+        קובצי היומן (לוגים) וצילומי מסך חיים. הכל נפתח בדף ייעודי חדש — עם צפייה
+        חיה, רענון, הורדה ועצירה.
       </p>
+      <label className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] leading-relaxed text-fg-muted">
+        <input
+          type="checkbox"
+          checked={withCmd}
+          onChange={(e) => setWithCmd(e.target.checked)}
+          className="mt-0.5 accent-amber-500"
+        />
+        <span>
+          <span className="font-semibold text-amber-500">כלול הרשאת הרצת פקודות (מתקדם)</span>
+          {' '}— האימות שלך עכשיו מאשר את היכולת להריץ פקודות מערכת במחשב הלקוח. הלקוח יתבקש לאשר זאת בנפרד בתוכנה.
+        </span>
+      </label>
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="gradient" size="sm" onClick={() => void createLink()} disabled={busy}>
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <LifeBuoy className="h-3.5 w-3.5" />}

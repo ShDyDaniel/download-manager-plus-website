@@ -9182,33 +9182,36 @@ function supportSecret(): Buffer {
 /** A signed, session-scoped view token so the dedicated /admin/support page
  *  (which opens in a NEW tab — no per-tab admin session, and step-up tokens
  *  only last 2 min) can read/stop/refresh WITHOUT re-prompting a passkey. */
-function mintSupportViewToken(code: string): string {
+function mintSupportViewToken(code: string, cmd = false): string {
   const header = b64url(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })))
   const payload = b64url(
-    Buffer.from(JSON.stringify({ use: 'support-view', code, exp: Math.floor(Date.now() / 1000) + 24 * 60 * 60 })),
+    Buffer.from(JSON.stringify({ use: 'support-view', code, cmd, exp: Math.floor(Date.now() / 1000) + 24 * 60 * 60 })),
   )
   const sig = b64url(crypto.createHmac('sha256', supportSecret()).update(`${header}.${payload}`).digest())
   return `${header}.${payload}.${sig}`
 }
-function verifySupportViewToken(token: string, code: string): boolean {
+function verifySupportViewToken(
+  token: string,
+  code: string,
+): { code: string; cmd: boolean } | null {
   try {
     const parts = String(token || '').split('.')
-    if (parts.length !== 3) return false
+    if (parts.length !== 3) return null
     const [h, pl, sig] = parts
     const expected = crypto.createHmac('sha256', supportSecret()).update(`${h}.${pl}`).digest()
     const actual = b64urlDecode(sig)
-    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return false
-    const claims = JSON.parse(b64urlDecode(pl).toString('utf8')) as { use?: string; code?: string; exp?: number }
-    if (claims.use !== 'support-view' || claims.code !== code) return false
-    if (!claims.exp || claims.exp < Math.floor(Date.now() / 1000)) return false
-    return true
+    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return null
+    const claims = JSON.parse(b64urlDecode(pl).toString('utf8')) as { use?: string; code?: string; cmd?: boolean; exp?: number }
+    if (claims.use !== 'support-view' || claims.code !== code) return null
+    if (!claims.exp || claims.exp < Math.floor(Date.now() / 1000)) return null
+    return { code: String(claims.code), cmd: claims.cmd === true }
   } catch {
-    return false
+    return null
   }
 }
 /** Admin auth for the support panel: a fresh step-up token OR a valid
  *  session-scoped view token for THIS code. */
-async function writeSupportControl(code: string, action: 'stop' | 'refresh'): Promise<void> {
+async function writeSupportControl(code: string, action: 'stop' | 'refresh' | 'cmd-enable' | 'cmd'): Promise<void> {
   // Push channel: clients watch appConfig/supportControl via onSnapshot (the
   // same cheap mechanism as the pull-responders). Bumping issuedAt notifies the
   // one client whose active session matches `code`. No polling on the app side.
@@ -9227,6 +9230,14 @@ function supportAdminOk(body: { stepUpToken?: string; viewToken?: string }, code
   if (body.stepUpToken && verifyAdminStepUp(body.stepUpToken)) return true
   if (body.viewToken && verifySupportViewToken(body.viewToken, code)) return true
   return false
+}
+
+/** Command execution is a higher bar: a fresh admin step-up, OR a view token
+ *  that was minted with cmd scope (which itself required a step-up at create). */
+function supportCmdOk(body: { stepUpToken?: string; viewToken?: string }, code: string): boolean {
+  if (body.stepUpToken && verifyAdminStepUp(body.stepUpToken)) return true
+  const claims = body.viewToken ? verifySupportViewToken(body.viewToken, code) : null
+  return claims?.cmd === true
 }
 
 function genSupportCode(): string {
@@ -9271,6 +9282,11 @@ type SupportSession = {
   screenManifest?: Array<{ name: string; key: string }>
   refreshReq?: number
   stoppedBy?: string
+  cmdEnabled?: boolean
+  cmdConsent?: boolean
+  cmdSeq?: number
+  pendingCmd?: { seq: number; text: string; issuedAt: number } | null
+  cmdLog?: Array<{ seq: number; text: string; output: string; at: number; truncated?: boolean }>
 }
 
 async function loadSupportSession(code: string): Promise<SupportSession | null> {
@@ -9281,9 +9297,10 @@ async function loadSupportSession(code: string): Promise<SupportSession | null> 
 
 /** action=support-create (admin) → new session code. */
 async function handleSupportCreate(req: VercelRequest, res: VercelResponse) {
-  const tok = String((req.body as { stepUpToken?: string })?.stepUpToken || '')
-  const claims = verifyAdminStepUp(tok)
+  const body = (req.body || {}) as { stepUpToken?: string; cmd?: boolean }
+  const claims = verifyAdminStepUp(String(body.stepUpToken || ''))
   if (!claims) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const cmd = body.cmd === true // command execution requested (this step-up authorises it)
   const code = genSupportCode()
   await getDb().collection('supportSessions').doc(code).set({
     code,
@@ -9292,8 +9309,11 @@ async function handleSupportCreate(req: VercelRequest, res: VercelResponse) {
     createdAt: Date.now(),
     updatedAt: Date.now(),
     refreshReq: 0,
+    cmdEnabled: cmd,
+    cmdConsent: false,
+    cmdSeq: 0,
   })
-  return res.status(200).json({ ok: true, code, viewToken: mintSupportViewToken(code) })
+  return res.status(200).json({ ok: true, code, viewToken: mintSupportViewToken(code, cmd), cmd })
 }
 
 /** action=support-get (admin) → session + presigned GET url per log. Polled. */
@@ -9324,6 +9344,10 @@ async function handleSupportGet(req: VercelRequest, res: VercelResponse) {
     email: s.email || null,
     logs,
     screens,
+    cmdEnabled: s.cmdEnabled === true,
+    cmdConsent: s.cmdConsent === true,
+    cmdPending: !!s.pendingCmd,
+    cmdLog: s.cmdLog || [],
   })
 }
 
@@ -9347,7 +9371,7 @@ async function endSupportSession(code: string, s: SupportSession, by: string) {
     ...(s.screenManifest || []).map((sc) => r2DeleteObject(sc.key).catch(() => false)),
   ])
   await getDb().collection('supportSessions').doc(code)
-    .set({ status: 'stopped', stoppedBy: by, logManifest: [], screenManifest: [], updatedAt: Date.now() }, { merge: true })
+    .set({ status: 'stopped', stoppedBy: by, logManifest: [], screenManifest: [], pendingCmd: null, cmdEnabled: false, cmdConsent: false, cmdLog: [], updatedAt: Date.now() }, { merge: true })
   await writeSupportControl(code, 'stop')
 }
 
@@ -9385,7 +9409,7 @@ async function handleSupportConsent(req: VercelRequest, res: VercelResponse) {
     appVersion: String(b.appVersion || '').slice(0, 20),
     updatedAt: Date.now(),
   }, { merge: true })
-  return res.status(200).json({ ok: true })
+  return res.status(200).json({ ok: true, cmdEnabled: s.cmdEnabled === true })
 }
 
 /** action=support-poll (app, ~6 s) → tiny status: stop + refresh counter. */
@@ -9484,6 +9508,95 @@ async function handleSupportScreensCommit(req: VercelRequest, res: VercelRespons
   return res.status(200).json({ ok: true })
 }
 
+const SUPPORT_CMD_MAX_OUTPUT = 40 * 1024 // per-result cap kept in the session doc
+const SUPPORT_CMD_LOG_KEEP = 12          // rolling console history length
+
+/** action=support-cmd-enable (admin, fresh step-up REQUIRED) → turn on the
+ *  command channel for a session created without it. */
+async function handleSupportCmdEnable(req: VercelRequest, res: VercelResponse) {
+  const b = (req.body || {}) as { stepUpToken?: string; code?: string }
+  if (!verifyAdminStepUp(String(b.stepUpToken || ''))) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const code = String(b.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
+  await getDb().collection('supportSessions').doc(code)
+    .set({ cmdEnabled: true, updatedAt: Date.now() }, { merge: true })
+  await writeSupportControl(code, 'cmd-enable')
+  return res.status(200).json({ ok: true, viewToken: mintSupportViewToken(code, true) })
+}
+
+/** action=support-cmd-consent (app) → the user separately approved command
+ *  execution for this session. Required before any command runs. */
+async function handleSupportCmdConsent(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const b = (req.body || {}) as { code?: string; consent?: boolean }
+  const code = String(b.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
+  await getDb().collection('supportSessions').doc(code)
+    .set({ cmdConsent: b.consent !== false, updatedAt: Date.now() }, { merge: true })
+  return res.status(200).json({ ok: true })
+}
+
+/** action=support-cmd-submit (admin, cmd-scoped) → queue one command. Requires
+ *  the session to be active, command-enabled, AND user-consented. */
+async function handleSupportCmdSubmit(req: VercelRequest, res: VercelResponse) {
+  const b = (req.body || {}) as { stepUpToken?: string; viewToken?: string; code?: string; text?: string }
+  const code = String(b.code || '').trim().toUpperCase()
+  if (!supportCmdOk(b, code)) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const text = String(b.text || '').slice(0, 4000).trim()
+  if (!text) return res.status(400).json({ ok: false, error: 'empty' })
+  const s = await loadSupportSession(code)
+  if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
+  if (s.status !== 'active') return res.status(410).json({ ok: false, error: 'not-active' })
+  if (!s.cmdEnabled) return res.status(403).json({ ok: false, error: 'cmd-disabled' })
+  if (!s.cmdConsent) return res.status(409).json({ ok: false, error: 'no-consent' })
+  if (s.pendingCmd) return res.status(409).json({ ok: false, error: 'busy' })
+  const seq = (s.cmdSeq || 0) + 1
+  await getDb().collection('supportSessions').doc(code).set(
+    { cmdSeq: seq, pendingCmd: { seq, text, issuedAt: Date.now() }, updatedAt: Date.now() },
+    { merge: true },
+  )
+  await writeSupportControl(code, 'cmd')
+  return res.status(200).json({ ok: true, seq })
+}
+
+/** action=support-cmd-fetch (app) → the pending command to run, if any. */
+async function handleSupportCmdFetch(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const code = String((req.body as { code?: string })?.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
+  // Only hand out a command when everything lines up server-side too.
+  const runnable = s.status === 'active' && s.cmdEnabled === true && s.cmdConsent === true
+  return res.status(200).json({ ok: true, cmd: runnable ? s.pendingCmd || null : null })
+}
+
+/** action=support-cmd-result (app) → report a command's output; clears pending. */
+async function handleSupportCmdResult(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const b = (req.body || {}) as { code?: string; seq?: number; text?: string; output?: string; truncated?: boolean }
+  const code = String(b.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
+  const seq = Number(b.seq) || 0
+  let output = String(b.output || '')
+  let truncated = b.truncated === true
+  if (output.length > SUPPORT_CMD_MAX_OUTPUT) {
+    output = output.slice(0, SUPPORT_CMD_MAX_OUTPUT)
+    truncated = true
+  }
+  const entry = { seq, text: String(b.text || '').slice(0, 4000), output, at: Date.now(), truncated }
+  const log = [...(s.cmdLog || []), entry].slice(-SUPPORT_CMD_LOG_KEEP)
+  const patch: Record<string, unknown> = { cmdLog: log, updatedAt: Date.now() }
+  if (s.pendingCmd && s.pendingCmd.seq === seq) patch.pendingCmd = null
+  await getDb().collection('supportSessions').doc(code).set(patch, { merge: true })
+  return res.status(200).json({ ok: true })
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   recordVercelInvocation()
   const action = String(req.query.action || '').trim()
@@ -9578,6 +9691,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleSupportScreensInit(req, res)
       case 'support-screens-commit':
         return await handleSupportScreensCommit(req, res)
+      case 'support-cmd-enable':
+        return await handleSupportCmdEnable(req, res)
+      case 'support-cmd-consent':
+        return await handleSupportCmdConsent(req, res)
+      case 'support-cmd-submit':
+        return await handleSupportCmdSubmit(req, res)
+      case 'support-cmd-fetch':
+        return await handleSupportCmdFetch(req, res)
+      case 'support-cmd-result':
+        return await handleSupportCmdResult(req, res)
       case 'music-quota-consume':
         return await handleMusicConsume(req, res)
       case 'music-quota-refund':
