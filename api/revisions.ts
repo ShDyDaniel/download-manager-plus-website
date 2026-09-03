@@ -8394,6 +8394,9 @@ const TIER_QUOTA_DEFAULTS: Record<string, Record<TierS, number | null>> = {
   maxRevisionProjects: { free: 0, basic: 1, pro: 10, ultra: 10 },
   maxDeliveryProjects: { free: 0, basic: 1, pro: 10, ultra: 10 },
   quotesPerMonth: { free: 1, basic: null, pro: null, ultra: null },
+  // Music channel-separation runs per calendar month. Pro/Ultra = unlimited
+  // (null) but STILL counted server-side (see handleMusicConsume).
+  musicSeparationsPerMonth: { free: 1, basic: 10, pro: null, ultra: null },
 }
 
 /** A per-tier numeric quota for the caller. Returns null = UNLIMITED. During
@@ -8652,6 +8655,107 @@ async function handleQuoteUsage(req: VercelRequest, res: VercelResponse) {
   } catch {
     return res.status(200).json({ ok: true, remaining: cap, limit: cap, used: 0 })
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// action=music-quota-consume  →  count ONE channel-separation run.
+//
+// Every run is recorded server-side in musicUsage/{uid}.months[YYYY-MM] —
+// EVEN for unlimited tiers (Pro/Ultra) and during beta — so usage is always
+// tracked. Capped tiers (Free/Basic) are additionally enforced: once the
+// month's cap is reached the run is blocked (403). Server clock + server
+// counter = immune to client clock changes, cache wipes or reinstalls.
+// ─────────────────────────────────────────────────────────────────────
+async function handleMusicConsume(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const cap = await tierNumericQuota(verified.uid, verified.email, 'musicSeparationsPerMonth')
+  const unlimited = cap == null
+  const month = new Date().toISOString().slice(0, 7)
+  const db = getDb()
+  const ref = db.collection('musicUsage').doc(verified.uid)
+  const out = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref)
+    const months =
+      (snap.exists ? (snap.data() as { months?: Record<string, number> }).months : {}) || {}
+    const used = Math.round(months[month] || 0)
+    // Enforce only for capped tiers; unlimited tiers pass through but are
+    // STILL counted below.
+    if (!unlimited && used >= (cap as number)) return { ok: false as const, used }
+    tx.set(
+      ref,
+      { months: { [month]: used + 1 }, updatedAt: Date.now() },
+      { merge: true },
+    )
+    return { ok: true as const, used: used + 1 }
+  })
+  if (!out.ok) {
+    return res.status(403).json({
+      ok: false,
+      quotaExceeded: true,
+      error: `הגעת למגבלת הפרדות-הערוצים החודשית במסלול הנוכחי (${cap}). המכסה מתאפסת בתחילת החודש.`,
+      limit: cap,
+      used: out.used,
+    })
+  }
+  return res.status(200).json({
+    ok: true,
+    unlimited,
+    used: out.used,
+    limit: unlimited ? null : cap,
+    remaining: unlimited ? null : Math.max(0, (cap as number) - out.used),
+  })
+}
+
+/** action=music-quota-refund → give back one credit when a run that was
+ *  consumed up-front then failed or was cancelled, so only real, completed
+ *  separations count. Floored at 0; never goes negative. */
+async function handleMusicRefund(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const month = new Date().toISOString().slice(0, 7)
+  const db = getDb()
+  const ref = db.collection('musicUsage').doc(verified.uid)
+  try {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref)
+      const months =
+        (snap.exists ? (snap.data() as { months?: Record<string, number> }).months : {}) || {}
+      const used = Math.round(months[month] || 0)
+      if (used <= 0) return
+      tx.set(ref, { months: { [month]: used - 1 }, updatedAt: Date.now() }, { merge: true })
+    })
+  } catch {
+    /* best-effort — a failed refund just means the run stays counted */
+  }
+  return res.status(200).json({ ok: true })
+}
+
+/** action=music-quota-status → read-only monthly usage + cap (for the UI meter).
+ *  Reports `used` for everyone, including unlimited tiers. */
+async function handleMusicUsage(req: VercelRequest, res: VercelResponse) {
+  const verified = await verifyOwnerAuth(req)
+  if (!verified) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const cap = await tierNumericQuota(verified.uid, verified.email, 'musicSeparationsPerMonth')
+  const unlimited = cap == null
+  const month = new Date().toISOString().slice(0, 7)
+  let used = 0
+  try {
+    const snap = await getDb().collection('musicUsage').doc(verified.uid).get()
+    const months =
+      (snap.exists ? (snap.data() as { months?: Record<string, number> }).months : {}) || {}
+    used = Math.round(months[month] || 0)
+  } catch {
+    /* report zero on read failure */
+  }
+  return res.status(200).json({
+    ok: true,
+    month,
+    used,
+    unlimited,
+    limit: unlimited ? null : cap,
+    remaining: unlimited ? null : Math.max(0, (cap as number) - used),
+  })
 }
 
 
@@ -9121,6 +9225,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleQuoteConsume(req, res)
       case 'quote-usage':
         return await handleQuoteUsage(req, res)
+      case 'music-quota-consume':
+        return await handleMusicConsume(req, res)
+      case 'music-quota-refund':
+        return await handleMusicRefund(req, res)
+      case 'music-quota-status':
+        return await handleMusicUsage(req, res)
       case 'drive-import-init':
         return await handleDriveImportInit(req, res)
       case 'drive-import-auth':
