@@ -1484,7 +1484,9 @@ async function isUserPro(uid: string, email: string): Promise<boolean> {
   if (userSnap.exists) {
     const user = userSnap.data() as Record<string, unknown>
     if (user.role === 'admin') return true
-    if (user.subscription === 'pro') return true
+    // Any PAID tier (basic/pro/ultra) — not just legacy 'pro'. The binary check
+    // wrongly locked out basic AND ultra subscribers after the tier migration.
+    if (normalizeTierS(user.subscription) !== 'free') return true
     if (serverIsTrialActive(user)) return true
   }
 

@@ -1175,7 +1175,15 @@ async function userHasAccess(
     const u = userSnap.data() as Record<string, unknown>
     if (PURGE_ADMIN_EMAILS.has(String(u.email || '').toLowerCase())) return true
     if (u.role === 'admin') return true
-    if (u.subscription === 'pro') return true
+    // ANY active paid tier keeps access — not just the legacy 'pro'. Before the
+    // Free/Basic/Pro/Ultra migration this only knew 'pro', so basic AND ultra
+    // subscribers were wrongly treated as lapsed → warned + their rounds queued
+    // for deletion. (An admin-granted Basic has no productKey, so this user-doc
+    // check is the ONLY thing standing between them and data loss.)
+    {
+      const sub = String(u.subscription || '').toLowerCase()
+      if (sub === 'basic' || sub === 'pro' || sub === 'ultra') return true
+    }
     if (u.trialStatus === 'approved' && u.trialExpiresAt) {
       const ts = new Date(String(u.trialExpiresAt)).getTime()
       if (Number.isFinite(ts) && ts > Date.now()) return true
