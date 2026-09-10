@@ -9725,6 +9725,126 @@ async function handleSupportPurge(req: VercelRequest, res: VercelResponse) {
   return res.status(200).json({ ok: true, purged: after.purged === true })
 }
 
+/* ══════════════════════════════════════════════════════════════════
+ *  TRANSCRIPTION HISTORY SYNC
+ *
+ *  Each saved run is a JSON file holding every word with its timing —
+ *  hundreds of KB to megabytes. So the BODIES live in R2 and only a small
+ *  index (names, dates, counts) touches Firestore; putting the transcripts in
+ *  documents would burn the DB quota this project is careful about.
+ *
+ *  One round trip does everything: the app sends what it has, and gets back
+ *  the merged index plus presigned URLs for exactly the entries it must upload
+ *  and the ones it's missing. Deletions travel as tombstones, or a machine
+ *  still holding a deleted run would restore it on its next sync.
+ * ══════════════════════════════════════════════════════════════════ */
+const HISTORY_MAX_ENTRIES = 300
+const HISTORY_MAX_BYTES = 40 * 1024 * 1024
+
+interface HistoryMeta {
+  id: string
+  name?: string
+  createdAt?: number
+  updatedAt?: number
+  sourceName?: string
+  speechDurationSec?: number
+  wordCount?: number
+  cueCount?: number
+}
+interface HistoryIndexDoc {
+  entries?: Record<string, HistoryMeta>
+  deleted?: Record<string, number>
+  updatedAt?: number
+}
+
+function historyKey(uid: string, id: string): string {
+  return `history/${uid}/${id}.json`
+}
+/** Entry ids become R2 keys, so keep them to the safe set the desktop uses. */
+function safeHistoryId(raw: unknown): string | null {
+  const s = String(raw || '')
+  return /^[a-zA-Z0-9_-]{1,64}$/.test(s) ? s : null
+}
+
+/** action=history-sync (app) → merge the index, then hand back the work. */
+async function handleHistorySync(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const b = (req.body || {}) as { entries?: HistoryMeta[]; deleted?: string[] }
+
+  const ref = getDb().collection('userHistory').doc(v.uid)
+  const snap = await ref.get()
+  const cur = ((snap.exists ? (snap.data() as HistoryIndexDoc) : {}) || {}) as HistoryIndexDoc
+  const entries: Record<string, HistoryMeta> = { ...(cur.entries || {}) }
+  const tombs: Record<string, number> = { ...(cur.deleted || {}) }
+  const now = Date.now()
+
+  for (const raw of (b.deleted || []).slice(0, HISTORY_MAX_ENTRIES)) {
+    const id = safeHistoryId(raw)
+    if (!id) continue
+    tombs[id] = now
+    if (entries[id]) {
+      delete entries[id]
+      await r2DeleteObject(historyKey(v.uid, id)).catch(() => false)
+    }
+  }
+
+  const local = new Set<string>()
+  const upload: Array<{ id: string; url: string }> = []
+  for (const m of (b.entries || []).slice(0, HISTORY_MAX_ENTRIES)) {
+    const id = safeHistoryId(m?.id)
+    if (!id) continue
+    local.add(id)
+    // A run deleted elsewhere stays deleted — don't let this machine revive it.
+    if (tombs[id]) continue
+    const at = Number(m.updatedAt) || Number(m.createdAt) || now
+    const known = entries[id]
+    if (!known || (Number(known.updatedAt) || 0) < at) {
+      entries[id] = {
+        id,
+        name: String(m.name || '').slice(0, 200),
+        createdAt: Number(m.createdAt) || now,
+        updatedAt: at,
+        sourceName: String(m.sourceName || '').slice(0, 200),
+        speechDurationSec: Number(m.speechDurationSec) || 0,
+        wordCount: Number(m.wordCount) || 0,
+        cueCount: Number(m.cueCount) || 0,
+      }
+      // Newer here than in the account → this machine owns the body.
+      upload.push({ id, url: await r2PresignPut(historyKey(v.uid, id), 60 * 60) })
+    }
+  }
+
+  // Keep the newest N; older ones age out of the account index.
+  const ids = Object.keys(entries)
+  if (ids.length > HISTORY_MAX_ENTRIES) {
+    ids
+      .sort((a, b2) => (entries[a].updatedAt || 0) - (entries[b2].updatedAt || 0))
+      .slice(0, ids.length - HISTORY_MAX_ENTRIES)
+      .forEach((id) => delete entries[id])
+  }
+
+  // What the account has that this machine doesn't — newest first, so a fresh
+  // install fills in the runs the user is most likely to want.
+  const download: Array<{ id: string; url: string }> = []
+  const missing = Object.values(entries)
+    .filter((e) => !local.has(e.id))
+    .sort((a, b2) => (b2.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, 100)
+  for (const e of missing) {
+    download.push({ id: e.id, url: await r2PresignGet(historyKey(v.uid, e.id), 60 * 60) })
+  }
+
+  await ref.set({ entries, deleted: tombs, updatedAt: now })
+  return res.status(200).json({
+    ok: true,
+    index: Object.values(entries),
+    upload,
+    download,
+    maxBytes: HISTORY_MAX_BYTES,
+  })
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   recordVercelInvocation()
   const action = String(req.query.action || '').trim()
@@ -9799,6 +9919,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleQuoteConsume(req, res)
       case 'quote-usage':
         return await handleQuoteUsage(req, res)
+      case 'history-sync':
+        return await handleHistorySync(req, res)
       case 'support-create':
         return await handleSupportCreate(req, res)
       case 'support-get':
