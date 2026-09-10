@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { RefreshCw, Loader2, AlertTriangle, Coins } from 'lucide-react'
+import { RefreshCw, Loader2, AlertTriangle, Coins, ChevronDown } from 'lucide-react'
 import { getAdminIdToken } from '../../lib/adminApi'
 import {
   cachedAdminApi,
@@ -95,6 +95,16 @@ function fmtMonth(m: string): string {
   if (m === 'unknown') return 'ללא תאריך'
   return `${m.slice(5, 7)}/${m.slice(0, 4)}`
 }
+/** Current calendar month as the report's `YYYY-MM` key. */
+function monthKeyNow(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+/** A zeroed month, so a month with no income still renders (and still shows
+ *  the infra costs it's carrying — a real negative is the honest answer). */
+function emptyMonth(month: string): MonthRow {
+  return { month, gross: {}, fee: {}, vat: {}, net: {}, partners: [], ownerFinal: {} }
+}
 /** Subtract a ₪ amount (the converted Cloudflare cost) from the ILS
  *  bucket of a multi-currency Money, leaving other currencies intact. */
 function subtractIls(m: Money | undefined, ils: number): Money {
@@ -123,6 +133,12 @@ export default function RevenueTab({
   )
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
+  /** Which month's full breakdown is open in the list below. */
+  const [openMonth, setOpenMonth] = useState<string | null>(null)
+
+  const nowKey = monthKeyNow()
+  const thisMonth =
+    data?.months.find((m) => m.month === nowKey) ?? emptyMonth(nowKey)
 
   async function load(force = false) {
     setError('')
@@ -180,7 +196,8 @@ export default function RevenueTab({
         <div>
           <h2 className="text-3xl font-bold font-display text-fg">הכנסות</h2>
           <p className="mt-1 text-sm text-fg-muted">
-            כל ההכנסות, עמלות PayPal, חלוקה לשותפים והשורה התחתונה, לפי חודשים.
+            השורה התחתונה של החודש הנוכחי. למטה — כל חודש בנפרד, לחיצה פותחת
+            פירוט מלא.
           </p>
         </div>
         <button
@@ -208,24 +225,28 @@ export default function RevenueTab({
         </div>
       ) : (
         <>
-          {/* Profit waterfall — gross → −fees → −partners → −Cloudflare
-              → −database → what's left. One clean top-to-bottom flow. */}
+          {/* Profit waterfall for THIS MONTH — gross → −fees → −partners →
+              −Cloudflare → −database → what's left. Scoping it to the current
+              month also makes it internally consistent: the infra costs below
+              are monthly, so subtracting them from all-time income (the old
+              behaviour) never described a real period. */}
           <PnLCard
-            totals={data.totals}
+            totals={thisMonth}
             cloudflare={data.cloudflare}
             db={db}
             receiptsEnabled={data.receiptsEnabled !== false}
+            periodLabel={fmtMonth(thisMonth.month)}
           />
 
-          {/* Per-partner totals */}
-          {data.totals.partners.length > 0 && (
+          {/* Per-partner totals for the current month */}
+          {thisMonth.partners.length > 0 && (
             <div className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-3 flex items-center gap-2 text-sm font-medium text-fg">
                 <Coins className="h-4 w-4 text-primary" />
-                מגיע לשותפים (סה״כ)
+                מגיע לשותפים ({fmtMonth(thisMonth.month)})
               </div>
               <div className="space-y-1.5">
-                {data.totals.partners.map((p) => (
+                {thisMonth.partners.map((p) => (
                   <div
                     key={p.code}
                     className="flex items-center justify-between rounded-lg bg-background px-3 py-2 text-sm"
@@ -247,44 +268,102 @@ export default function RevenueTab({
             </div>
           ) : (
             <div className="space-y-3">
-              {data.months.map((m) => (
-                <div
-                  key={m.month}
-                  className="rounded-2xl border border-border bg-card p-5"
-                >
-                  <div className="mb-3 flex items-center justify-between">
-                    <span className="font-display text-lg text-fg">
-                      {fmtMonth(m.month)}
-                    </span>
-                    <span className="text-xs text-fg-muted">
-                      נשאר לך: <span className="text-fg">{fmt(m.ownerFinal)}</span>
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <Mini label="ברוטו" value={fmt(m.gross)} />
-                    <Mini label="עמלת PayPal" value={fmt(m.fee)} />
-                    <Mini label="נטו" value={fmt(m.net)} />
-                  </div>
-                  {m.partners.length > 0 && (
-                    <div className="mt-3 space-y-1 border-t border-border pt-3">
-                      <div className="text-[11px] uppercase tracking-wide text-fg-muted">
-                        חלוקה לשותפים
+              {data.months.map((m) => {
+                const open = openMonth === m.month
+                return (
+                  <div
+                    key={m.month}
+                    className="overflow-hidden rounded-2xl border border-border bg-card"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setOpenMonth(open ? null : m.month)}
+                      aria-expanded={open}
+                      className="w-full p-5 text-right transition-colors hover:bg-popover/60"
+                    >
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <span className="flex items-center gap-2 font-display text-lg text-fg">
+                          <ChevronDown
+                            className={`h-4 w-4 text-fg-muted transition-transform ${open ? 'rotate-180' : ''}`}
+                            aria-hidden
+                          />
+                          {fmtMonth(m.month)}
+                          {m.month === nowKey && (
+                            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
+                              החודש
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-xs text-fg-muted">
+                          נשאר לך:{' '}
+                          <span className="text-fg">{fmt(m.ownerFinal)}</span>
+                        </span>
                       </div>
-                      {m.partners.map((p) => (
-                        <div
-                          key={p.code}
-                          className="flex items-center justify-between text-sm"
-                        >
-                          <span className="text-fg-muted">{p.name}</span>
-                          <span className="text-fg" dir="ltr">
-                            {fmt(p.amount)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        <Mini label="ברוטו" value={fmt(m.gross)} />
+                        <Mini label="עמלת PayPal" value={fmt(m.fee)} />
+                        <Mini label="נטו" value={fmt(m.net)} />
+                      </div>
+                    </button>
+
+                    {open && (
+                      <div className="border-t border-border px-5 pb-5 pt-1.5">
+                        {/* Full waterfall for this month. Infra costs are only
+                            known for the CURRENT month (they're live readings,
+                            not history), so they're shown there only — better
+                            an omitted line than a fabricated one. */}
+                        <PnLRow label="הכנסות ברוטו" value={fmt(m.gross)} />
+                        <PnLRow label="עמלות PayPal" value={fmt(m.fee)} deduct />
+                        {data.receiptsEnabled === false && (
+                          <PnLRow
+                            label={'מע"מ (עסקת אקראי)'}
+                            value={fmt(m.vat)}
+                            deduct
+                          />
+                        )}
+                        <PnLRow
+                          label={
+                            data.receiptsEnabled === false
+                              ? 'נטו (אחרי PayPal ומע"מ)'
+                              : 'נטו (אחרי PayPal)'
+                          }
+                          value={fmt(m.net)}
+                          subtotal
+                        />
+                        {m.partners.length > 0 && (
+                          <>
+                            <PnLRow
+                              label="חלוקה לשותפים"
+                              value={fmt(sumMoney(m.partners.map((p) => p.amount)))}
+                              deduct
+                            />
+                            <div className="mb-1 space-y-1 rounded-lg bg-background px-3 py-2">
+                              {m.partners.map((p) => (
+                                <div
+                                  key={p.code}
+                                  className="flex items-center justify-between text-xs"
+                                >
+                                  <span className="text-fg-muted">{p.name}</span>
+                                  <span className="text-fg-muted" dir="ltr">
+                                    {fmt(p.amount)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                        <PnLRow label="נשאר לך" value={fmt(m.ownerFinal)} hero />
+                        {m.month !== nowKey && (
+                          <p className="mt-2 text-[10px] leading-relaxed text-fg-faint">
+                            עלויות התשתית (Cloudflare, מסד נתונים) נמדדות בזמן
+                            אמת ולכן מוצגות רק לחודש הנוכחי.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )}
         </>
@@ -304,6 +383,7 @@ function PnLCard({
   cloudflare,
   db,
   receiptsEnabled,
+  periodLabel,
 }: {
   totals: RevenueReport['totals']
   cloudflare?: RevenueReport['cloudflare']
@@ -311,6 +391,8 @@ function PnLCard({
   /** When false (עסקת אקראי mode) the owner remits VAT himself, so it's
    *  shown as an explicit deduction in the waterfall. */
   receiptsEnabled: boolean
+  /** The period this statement covers, e.g. "09/2026". */
+  periodLabel: string
 }) {
   const fxRate = cloudflare?.fxRate || 3.7
   const partnerTotal = sumMoney(totals.partners.map((p) => p.amount))
@@ -334,11 +416,16 @@ function PnLCard({
     dbUsd > 0 ? 'מעל מכסת החינם' : '$0 · בתוך מכסת החינם היומית'
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-card">
-      <div className="border-b border-border px-5 py-3.5">
-        <h3 className="text-sm font-semibold text-fg">שורת רווח</h3>
-        <p className="mt-0.5 text-[11px] text-fg-faint">
-          מהברוטו ועד מה שנשאר לך ביד, אחרי כל העלויות
-        </p>
+      <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3.5">
+        <div>
+          <h3 className="text-sm font-semibold text-fg">שורת רווח</h3>
+          <p className="mt-0.5 text-[11px] text-fg-faint">
+            מהברוטו ועד מה שנשאר לך ביד, אחרי כל העלויות
+          </p>
+        </div>
+        <span className="shrink-0 rounded-full bg-primary/15 px-2.5 py-1 text-[11px] font-medium text-primary">
+          {periodLabel}
+        </span>
       </div>
       <div className="px-5 py-1.5">
         <PnLRow label="הכנסות ברוטו" value={fmt(totals.gross)} />
@@ -373,7 +460,7 @@ function PnLCard({
       </div>
       <div className="border-t border-border bg-background/40 px-5 py-2.5">
         <p className="text-[10px] leading-relaxed text-fg-faint">
-          ההכנסות מצטברות מתחילת הפעילות; עלויות התשתית חודשיות שוטפות.
+          ההכנסות הן של החודש הנוכחי בלבד; עלויות התשתית חודשיות שוטפות.
           Cloudflare R2 (לפי שימוש; כרגע {cfState}); Cloudflare Worker (תוכנית
           חינמית, $0; מעבר ל-100K בקשות ביום נחסם, לא מחויב); מסד נתונים
           (Firestore: הערכה לפי השימוש ב-24 השעות האחרונות × 30; כרגע {dbState})
