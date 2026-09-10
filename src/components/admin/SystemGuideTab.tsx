@@ -625,7 +625,13 @@ function RemoteSupportCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
       // Open the dedicated live-session page in its own tab. The session-scoped
       // view token rides in the URL fragment (client-only) so that page needs
       // no per-tab admin session or repeated passkey.
-      window.open(`/admin/support/${j.code}#t=${encodeURIComponent(j.viewToken || '')}`, '_blank', 'noopener')
+      // Deliberately WITHOUT noopener: the admin session lives in
+      // sessionStorage, which a new tab inherits from its opener only when
+      // the opener link is intact. With noopener the session page started
+      // blank, so anything needing a step-up there — turning on the terminal
+      // mid-session — failed with "admin-auth-required". The page is our own
+      // origin, so noopener was protecting us from nothing.
+      window.open(`/admin/support/${j.code}#t=${encodeURIComponent(j.viewToken || '')}`, '_blank')
     } catch (e) {
       setErr((e as Error).message || 'יצירת הקישור נכשלה')
     } finally {

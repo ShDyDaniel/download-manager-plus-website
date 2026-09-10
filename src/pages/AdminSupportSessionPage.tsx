@@ -358,9 +358,14 @@ export default function AdminSupportSessionPage() {
       setCmd((c) => ({ ...c, enabled: true }))
       void pullMeta()
     } catch (e) {
+      // "admin-auth-required" means this TAB has no admin session — the panel
+      // keeps it in sessionStorage, which is per-tab. Say what to do about it
+      // instead of showing the raw code.
+      const err = e as Error & { code?: string }
       setCmdEnableErr(
-        (e as Error).message ||
-          'ההפעלה נכשלה. ודאו שאתם מחוברים לפאנל הניהול באותו דפדפן.',
+        err.code === 'auth' || err.message === 'admin-auth-required'
+          ? 'הטאב הזה לא מזוהה כמנהל. פתחו את הסשן מחדש מתוך פאנל הניהול, או פתחו את הפאנל בטאב הזה והתחברו — ואז נסו שוב.'
+          : err.message || 'ההפעלה נכשלה. נסו שוב.',
       )
     } finally {
       setCmdEnabling(false)
