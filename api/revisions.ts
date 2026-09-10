@@ -9300,6 +9300,11 @@ type SupportSession = {
   pendingCmd?: { seq: number; text: string; issuedAt: number } | null
   cmdLog?: Array<{ seq: number; text: string; output: string; cwd?: string; at: number; truncated?: boolean }>
   hardware?: { model: string; cpu: string; cores: string; ram: string; gpu: string; vram: string } | null
+  /** Long-form machine profile for the downloaded report — ordered
+   *  section/key/value rows. Opaque here on purpose: the app decides what to
+   *  collect, and neither this file nor the admin page needs to be changed
+   *  when it collects more. */
+  system?: Array<{ s: string; k: string; v: string }>
   displays?: Array<{ id: string; index: number; w: number; h: number; primary: boolean }>
   screenMode?: 'off' | 'app' | 'desktop'
   screenDisplay?: number
@@ -9372,6 +9377,7 @@ async function handleSupportGet(req: VercelRequest, res: VercelResponse) {
     cmdPending: !!s.pendingCmd,
     cmdLog: s.cmdLog || [],
     hardware: s.hardware || null,
+    system: s.system || [],
     displays: s.displays || [],
     screenMode: s.screenMode || 'app',
     screenDisplay: typeof s.screenDisplay === 'number' ? s.screenDisplay : -1,
@@ -9661,6 +9667,7 @@ async function handleSupportReportInfo(req: VercelRequest, res: VercelResponse) 
   const b = (req.body || {}) as {
     code?: string
     hardware?: { model?: string; cpu?: string; cores?: string; ram?: string; gpu?: string; vram?: string } | null
+    system?: Array<{ s?: string; k?: string; v?: string }>
     displays?: Array<{ id?: string; index?: number; w?: number; h?: number; primary?: boolean }>
     screenPermission?: string
   }
@@ -9678,6 +9685,13 @@ async function handleSupportReportInfo(req: VercelRequest, res: VercelResponse) 
         vram: clip(b.hardware.vram, 40),
       }
     : null
+  // Stored as-is apart from clipping and a row cap — the app owns what goes in
+  // here, so adding a field to the report never needs a server change. The cap
+  // keeps a patched client from growing the session doc without bound.
+  const system = (Array.isArray(b.system) ? b.system : [])
+    .slice(0, 120)
+    .map((r) => ({ s: clip(r.s, 40), k: clip(r.k, 60), v: clip(r.v, 300) }))
+    .filter((r) => r.k && r.v)
   const displays = (Array.isArray(b.displays) ? b.displays : []).slice(0, 8).map((d, i) => ({
     id: clip(d.id, 40),
     index: Number(d.index) || i,
@@ -9685,8 +9699,16 @@ async function handleSupportReportInfo(req: VercelRequest, res: VercelResponse) 
     h: Math.max(0, Math.min(20000, Number(d.h) || 0)),
     primary: d.primary === true,
   }))
-  await getDb().collection('supportSessions').doc(code)
-    .set({ hardware, displays, screenPermission: clip(b.screenPermission, 24), updatedAt: Date.now() }, { merge: true })
+  await getDb().collection('supportSessions').doc(code).set(
+    {
+      hardware,
+      system,
+      displays,
+      screenPermission: clip(b.screenPermission, 24),
+      updatedAt: Date.now(),
+    },
+    { merge: true },
+  )
   return res.status(200).json({ ok: true })
 }
 

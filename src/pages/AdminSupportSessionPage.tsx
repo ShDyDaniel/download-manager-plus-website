@@ -13,6 +13,10 @@ type LogEntry = { name: string; size: number; url: string }
 type ScreenEntry = { name: string; url: string }
 type CmdEntry = { seq: number; text: string; output: string; cwd?: string; at: number; truncated?: boolean }
 type Hardware = { model: string; cpu: string; cores: string; ram: string; gpu: string; vram: string }
+/** One row of the app-supplied machine profile: section, label, value. The app
+ *  decides what it contains — this page only groups and prints it, so the
+ *  report grows without the website changing. */
+type SystemRow = { s: string; k: string; v: string }
 type DisplayInfo = { id: string; index: number; w: number; h: number; primary: boolean }
 type ScreenMode = 'off' | 'app' | 'desktop'
 
@@ -56,6 +60,7 @@ export default function AdminSupportSessionPage() {
   const [cmdInput, setCmdInput] = useState('')
   const [cmdSending, setCmdSending] = useState(false)
   const [hardware, setHardware] = useState<Hardware | null>(null)
+  const [system, setSystem] = useState<SystemRow[]>([])
   const [displays, setDisplays] = useState<DisplayInfo[]>([])
   const [screenMode, setScreenMode] = useState<ScreenMode>('app')
   const [screenDisplay, setScreenDisplay] = useState(-1)
@@ -83,6 +88,7 @@ export default function AdminSupportSessionPage() {
         cmdPending?: boolean
         cmdLog?: CmdEntry[]
         hardware?: Hardware | null
+        system?: SystemRow[]
         displays?: DisplayInfo[]
         screenMode?: ScreenMode
         screenDisplay?: number
@@ -95,6 +101,7 @@ export default function AdminSupportSessionPage() {
       cmdEnabledRef.current = !!j.cmdEnabled
       setCmdLog(j.cmdLog || [])
       setHardware(j.hardware || null)
+      setSystem(j.system || [])
       setDisplays(j.displays || [])
       setScreenMode(j.screenMode || 'app')
       setScreenDisplay(typeof j.screenDisplay === 'number' ? j.screenDisplay : -1)
@@ -235,10 +242,76 @@ export default function AdminSupportSessionPage() {
     }
     setStatus('stopped')
   }
+  /** The machine profile, as the plain-text file that leads the report.
+   *  Log files say what went wrong; without this there's no record of what it
+   *  went wrong ON, and a bundle downloaded today is unreadable next month. */
+  function machineReport(): string {
+    const L: string[] = []
+    const rule = '─'.repeat(46)
+    L.push('פרטי המחשב · ניהול הורדות פלוס', rule)
+    L.push(`קוד סשן: ${cleanCode}`)
+    if (meta.email) L.push(`חשבון: ${meta.email}`)
+    if (meta.appVersion) L.push(`גרסת התוכנה: ${meta.appVersion}`)
+    if (meta.platform) L.push(`דפדפן/מערכת (מדווח): ${meta.platform}`)
+    L.push(`הדוח הופק: ${new Date().toLocaleString('he-IL')}`)
+
+    // No column padding anywhere below: these lines mix Hebrew labels with
+    // Latin values, and in a plain-text editor the bidi algorithm moves
+    // padding spaces into the middle of the line rather than aligning it.
+    if (system.length) {
+      // Printed in the order the app sent, opening a block at each new section.
+      let cur = ''
+      for (const r of system) {
+        if (r.s !== cur) {
+          cur = r.s
+          L.push('', rule, cur, rule)
+        }
+        L.push(`${r.k}: ${r.v}`)
+      }
+    } else if (hardware) {
+      // An older app version reported specs but not the long profile.
+      L.push('', rule, 'חומרה', rule)
+      L.push(`דגם: ${hardware.model}`)
+      L.push(`מעבד: ${hardware.cpu}`)
+      L.push(`ליבות: ${hardware.cores}`)
+      L.push(`זיכרון: ${hardware.ram}`)
+      L.push(`כרטיס מסך: ${hardware.gpu}`)
+      L.push(`זיכרון כרטיס: ${hardware.vram}`)
+      L.push('', 'התוכנה במחשב הזה ישנה מכדי לדווח את הפרופיל המלא.')
+    } else {
+      L.push('', 'המחשב לא הספיק לדווח את פרטיו לפני שהסשן הסתיים.')
+    }
+
+    if (displays.length) {
+      L.push('', rule, 'מסכים', rule)
+      for (const d of displays) {
+        L.push(`מסך ${d.index + 1}${d.primary ? ' (ראשי)' : ''}: ${d.w}×${d.h}`)
+      }
+      if (screenPerm !== 'granted') L.push(`הרשאת צילום מסך: ${screenPerm}`)
+    }
+
+    const names = Object.keys(content).sort()
+    if (names.length) {
+      L.push('', rule, `קבצי לוג בדוח (${names.length})`, rule)
+      // Filename first and unlabelled — a Hebrew unit at the end of a Latin
+      // filename would jump to the wrong side of the line.
+      for (const n of names) L.push(n)
+    }
+    return L.join('\r\n')
+  }
+
   function downloadAll() {
     const enc = new TextEncoder()
     const entries = Object.entries(content).map(([n, c]) => ({ name: n, data: enc.encode(c) }))
-    if (!entries.length) return
+    // A session that reported its machine but produced no log file is still
+    // worth downloading — the specs are the point.
+    if (!entries.length && !system.length && !hardware) return
+    // Leads the archive: "00-" so it sorts first, and a BOM so Notepad on
+    // Windows reads the Hebrew as UTF-8 instead of mojibake.
+    entries.unshift({
+      name: '00-machine-info.txt',
+      data: enc.encode('﻿' + machineReport()),
+    })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(buildZip(entries))
     a.download = `dmplus-support-${cleanCode}.zip`
