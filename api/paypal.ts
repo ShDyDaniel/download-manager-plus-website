@@ -9574,6 +9574,21 @@ async function resolveSeatTier(
   return t
 }
 
+/** Admin-granted extra seats, READ DEFENSIVELY.
+ *
+ *  The Firestore `allow create` rule for users/{uid} constrains role,
+ *  subscription, blocked and the trial fields — but does NOT forbid extra
+ *  properties, so a modified client could plant `extraDeviceSeats` in the very
+ *  first write of its own user document. The rules are the real fix; this hard
+ *  ceiling means that even if one slips through, the blast radius is a couple of
+ *  seats rather than an unlimited licence. */
+const MAX_EXTRA_SEATS = 20
+function seatExtras(user: Record<string, unknown>): number {
+  const n = Math.floor(Number(user.extraDeviceSeats) || 0)
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return Math.min(MAX_EXTRA_SEATS, n)
+}
+
 function isSeatAdmin(email: string, user: Record<string, unknown>): boolean {
   return user.role === 'admin' || ADMIN_EMAILS.includes((email || '').toLowerCase())
 }
@@ -9621,7 +9636,7 @@ async function handleDeviceList(req: VercelRequest, res: VercelResponse) {
   }
   const tier = await resolveSeatTier(who.uid, who.email, user)
   const seats =
-    TIER_DEVICE_SEATS[tier] + Math.max(0, Math.floor(Number(user.extraDeviceSeats) || 0))
+    TIER_DEVICE_SEATS[tier] + seatExtras(user)
   const devices = seatDevicesOf(user)
   return res.status(200).json({
     ok: true,
@@ -9681,7 +9696,7 @@ async function handleDeviceClaim(req: VercelRequest, res: VercelResponse) {
   }
 
   const tier = await resolveSeatTier(who.uid, who.email, user)
-  const extra = Math.max(0, Math.floor(Number(user.extraDeviceSeats) || 0))
+  const extra = seatExtras(user)
   const seats = TIER_DEVICE_SEATS[tier] + extra
   const now = new Date().toISOString()
 
@@ -9845,7 +9860,7 @@ async function handleDeviceReleaseConfirm(req: VercelRequest, res: VercelRespons
   }
   delete devices[target]
   const tier = await resolveSeatTier(who.uid, who.email, user)
-  const seats = TIER_DEVICE_SEATS[tier] + Math.max(0, Math.floor(Number(user.extraDeviceSeats) || 0))
+  const seats = TIER_DEVICE_SEATS[tier] + seatExtras(user)
   const activeIds = activeSeatIds(devices, seats)
   // MUST be an explicit field delete: `set(..., {merge:true})` MERGES nested
   // maps, so writing the trimmed map back would leave the removed machine in
@@ -9872,7 +9887,7 @@ async function handleAdminDeviceList(req: VercelRequest, res: VercelResponse) {
   const user = snap.data() as Record<string, unknown>
   const email = String(user.email || '')
   const tier = await resolveSeatTier(uid, email, user)
-  const extra = Math.max(0, Math.floor(Number(user.extraDeviceSeats) || 0))
+  const extra = seatExtras(user)
   const seats = TIER_DEVICE_SEATS[tier] + extra
   const devices = seatDevicesOf(user)
   return res.status(200).json({
@@ -9904,7 +9919,7 @@ async function handleAdminDeviceRevoke(req: VercelRequest, res: VercelResponse) 
   const devices = seatDevicesOf(user)
   delete devices[target]
   const tier = await resolveSeatTier(uid, String(user.email || ''), user)
-  const seats = TIER_DEVICE_SEATS[tier] + Math.max(0, Math.floor(Number(user.extraDeviceSeats) || 0))
+  const seats = TIER_DEVICE_SEATS[tier] + seatExtras(user)
   const activeIds = activeSeatIds(devices, seats)
   // Explicit field delete — see the note in the user-release handler.
   await ref.update(
