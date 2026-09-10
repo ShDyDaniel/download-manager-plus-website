@@ -2400,6 +2400,28 @@ function SubscriptionFlow({
           </div>
         </div>
         <div className="space-y-1 border-t border-border/60 pt-2.5 text-xs">
+          {/* How the yearly figure is built. The comparison cards quote a
+              monthly price for both cycles so they can be compared at all —
+              which leaves the buyer arriving here at a number twelve times
+              bigger with no explanation. Showing the multiplication is the
+              explanation. */}
+          {plan === 'yearly' && (
+            <div className="mb-1.5 rounded-lg bg-bg-elevated/60 px-2.5 py-2">
+              <div className="flex items-center justify-between">
+                <span className="text-fg-secondary">מחיר לחודש</span>
+                <span className="tabular-nums text-fg" dir="ltr">
+                  {formatPrice(Math.round((eff / 12) * 100) / 100)} {sym}
+                </span>
+              </div>
+              <div className="text-fg-secondary">× 12 חודשים</div>
+              <div className="mt-1 flex items-center justify-between border-t border-border/60 pt-1">
+                <span className="font-semibold text-fg">סה״כ לשנה, בתשלום אחד</span>
+                <span className="font-bold tabular-nums text-primary" dir="ltr">
+                  {formatPrice(eff)} {sym}
+                </span>
+              </div>
+            </div>
+          )}
           <div className="flex items-center justify-between">
             <span className="text-fg-secondary">לתשלום עכשיו</span>
             <span className="font-semibold text-fg" dir="ltr">

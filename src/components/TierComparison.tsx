@@ -27,6 +27,17 @@ import {
 type Cfg = Record<Tier, TierConfig>
 type Cycle = 'monthly' | 'yearly'
 
+/** What a cycle costs per month, to the agora.
+ *
+ *  Exact rather than rounded: the checkout breaks the same figure back down
+ *  into 12 payments, and a card that says ₪25 leading to a checkout that says
+ *  ₪24.92 looks like a bait-and-switch over eight agorot. */
+function perMonth(amount: number, cycle: Cycle): string {
+  const v = cycle === 'yearly' ? amount / 12 : amount
+  // Whole prices stay whole — "₪59" reads better than "₪59.00".
+  return Number.isInteger(v) ? String(v) : v.toFixed(2)
+}
+
 function fmtMinutes(sec: number | null): string {
   if (sec == null) return 'ללא הגבלה'
   const m = Math.round(sec / 60)
@@ -317,19 +328,18 @@ export default function TierComparison({
                       className="flex items-baseline gap-1.5"
                       dir="rtl"
                     >
-                      {/* Yearly quotes what it works out to PER MONTH. That's
-                          the number a buyer weighs against the monthly plan;
-                          a yearly total sitting beside a monthly one reads as
-                          far dearer than it is, and buries the discount. The
-                          actual charge is spelled out directly underneath —
-                          the point is to make the saving legible, never to
-                          obscure what leaves the buyer's account. */}
+                      {/* Both cycles are quoted PER MONTH so the two are
+                          directly comparable — a yearly total beside a monthly
+                          one reads as far dearer than it is and buries the
+                          discount. What is actually charged, and the ×12 that
+                          gets there, is laid out in the order summary the
+                          "בחירת המסלול" button scrolls down to. */}
                       <span className="text-3xl font-extrabold text-fg" dir="ltr">
-                        ₪{cycle === 'yearly' ? Math.round(price / 12) : price}
+                        ₪{perMonth(price, cycle)}
                       </span>
                       {pr.sale != null && (
                         <span className="text-sm text-fg-faint line-through" dir="ltr">
-                          ₪{cycle === 'yearly' ? Math.round(pr.regular / 12) : pr.regular}
+                          ₪{perMonth(pr.regular, cycle)}
                         </span>
                       )}
                       <span className="text-xs text-fg-muted">/ לחודש</span>
@@ -339,16 +349,6 @@ export default function TierComparison({
                   <span className="inline-flex items-center rounded-md bg-bg-elevated px-2 py-0.5 text-xs text-fg-muted">
                     בקרוב
                   </span>
-                )}
-                {/* What is actually charged, and when. A monthly figure on a
-                    yearly plan is only honest with this line next to it. */}
-                {paid && !loading && price > 0 && cycle === 'yearly' && (
-                  <div className="mt-1 text-[11px] text-fg-muted">
-                    בחיוב שנתי של{' '}
-                    <span dir="ltr" className="tabular-nums">
-                      ₪{price}
-                    </span>
-                  </div>
                 )}
               </div>
 
