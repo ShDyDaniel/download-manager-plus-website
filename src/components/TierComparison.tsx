@@ -317,23 +317,38 @@ export default function TierComparison({
                       className="flex items-baseline gap-1.5"
                       dir="rtl"
                     >
+                      {/* Yearly quotes what it works out to PER MONTH. That's
+                          the number a buyer weighs against the monthly plan;
+                          a yearly total sitting beside a monthly one reads as
+                          far dearer than it is, and buries the discount. The
+                          actual charge is spelled out directly underneath —
+                          the point is to make the saving legible, never to
+                          obscure what leaves the buyer's account. */}
                       <span className="text-3xl font-extrabold text-fg" dir="ltr">
-                        ₪{price}
+                        ₪{cycle === 'yearly' ? Math.round(price / 12) : price}
                       </span>
                       {pr.sale != null && (
                         <span className="text-sm text-fg-faint line-through" dir="ltr">
-                          ₪{pr.regular}
+                          ₪{cycle === 'yearly' ? Math.round(pr.regular / 12) : pr.regular}
                         </span>
                       )}
-                      <span className="text-xs text-fg-muted">
-                        {cycle === 'monthly' ? '/ לחודש' : '/ לשנה'}
-                      </span>
+                      <span className="text-xs text-fg-muted">/ לחודש</span>
                     </motion.div>
                   </AnimatePresence>
                 ) : (
                   <span className="inline-flex items-center rounded-md bg-bg-elevated px-2 py-0.5 text-xs text-fg-muted">
                     בקרוב
                   </span>
+                )}
+                {/* What is actually charged, and when. A monthly figure on a
+                    yearly plan is only honest with this line next to it. */}
+                {paid && !loading && price > 0 && cycle === 'yearly' && (
+                  <div className="mt-1 text-[11px] text-fg-muted">
+                    בחיוב שנתי של{' '}
+                    <span dir="ltr" className="tabular-nums">
+                      ₪{price}
+                    </span>
+                  </div>
                 )}
               </div>
 
