@@ -179,6 +179,8 @@ export default function AdminSupportSessionPage() {
   const [cmdLog, setCmdLog] = useState<CmdEntry[]>([])
   const [cmdInput, setCmdInput] = useState('')
   const [cmdSending, setCmdSending] = useState(false)
+  const [cmdEnabling, setCmdEnabling] = useState(false)
+  const [cmdEnableErr, setCmdEnableErr] = useState('')
   const [hardware, setHardware] = useState<Hardware | null>(null)
   const [system, setSystem] = useState<SystemRow[]>([])
   const [displays, setDisplays] = useState<DisplayInfo[]>([])
@@ -322,6 +324,46 @@ export default function AdminSupportSessionPage() {
       await api('support-screen-mode', { code: cleanCode, mode, display })
     } catch (e) {
       setErr((e as Error).message || 'failed')
+    }
+  }
+
+  /** Turn on command execution for a session that is already running.
+   *
+   *  Same bar as ticking the box at creation: a real passkey step-up here,
+   *  and then a separate consent dialog on the user's machine — the app
+   *  raises it the moment the control lands, so nothing can run before they
+   *  agree. Enabling costs the session nothing else; the link, the logs and
+   *  the screen carry on uninterrupted. */
+  async function enableCmd() {
+    if (cmdEnabling) return
+    setCmdEnabling(true)
+    setCmdEnableErr('')
+    try {
+      const { ensureStepUp } = await import('../lib/adminApi')
+      const stepUpToken = await ensureStepUp()
+      const j = await api<{ viewToken?: string }>('support-cmd-enable', {
+        code: cleanCode,
+        stepUpToken,
+      })
+      // The token this tab opened with was minted WITHOUT command scope, so
+      // every command sent afterwards would be refused. Swap in the one the
+      // server just issued.
+      if (j.viewToken) {
+        history.replaceState(
+          null,
+          '',
+          `${window.location.pathname}#t=${encodeURIComponent(j.viewToken)}`,
+        )
+      }
+      setCmd((c) => ({ ...c, enabled: true }))
+      void pullMeta()
+    } catch (e) {
+      setCmdEnableErr(
+        (e as Error).message ||
+          'ההפעלה נכשלה. ודאו שאתם מחוברים לפאנל הניהול באותו דפדפן.',
+      )
+    } finally {
+      setCmdEnabling(false)
     }
   }
 
@@ -680,6 +722,32 @@ export default function AdminSupportSessionPage() {
         )}
 
         {/* Command console (only when the admin authorised commands at creation) */}
+        {/* Commands can be turned on mid-session. Deciding up front whether a
+            fault will need a terminal is guesswork — you usually find out from
+            the logs, by which point the session is already running, and
+            starting over to tick a box costs the customer another consent. */}
+        {!cmd.enabled && status !== 'stopped' && (
+          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-3">
+            <TerminalSquare className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="flex-1 text-xs text-muted-foreground">
+              הרצת פקודות כבויה בסשן הזה. אפשר להפעיל עכשיו — נדרש אימות שלך, והמשתמש יתבקש לאשר בנפרד בתוכנה.
+            </span>
+            <button
+              onClick={() => void enableCmd()}
+              disabled={cmdEnabling}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/15 px-3 py-1.5 text-xs text-amber-500 ring-1 ring-amber-500/40 transition hover:bg-amber-500/25 disabled:opacity-50"
+            >
+              {cmdEnabling ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <TerminalSquare className="h-3.5 w-3.5" />
+              )}
+              הפעל הרצת פקודות
+            </button>
+            {cmdEnableErr && <span className="w-full text-[11px] text-red-400">{cmdEnableErr}</span>}
+          </div>
+        )}
+
         {cmd.enabled && (
           <div className="mb-4 rounded-xl border border-amber-500/30 bg-card">
             <div className="flex items-center gap-1.5 border-b border-amber-500/20 px-3 py-2 text-xs font-medium text-amber-500">
