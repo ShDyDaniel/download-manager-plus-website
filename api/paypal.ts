@@ -1830,6 +1830,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminSyscheckCreate(req, res)
       case 'admin-syscheck-get':
         return await handleAdminSyscheckGet(req, res)
+      case 'support-code-identify':
+        return await handleSupportCodeIdentify(req, res)
       case 'syscheck-report':
         return await handleSyscheckReport(req, res)
       case 'admin-device-check-create':
@@ -9464,6 +9466,78 @@ async function handleAdminSyscheckGet(req: VercelRequest, res: VercelResponse) {
  *  valid, unexpired, admin-issued code (single-purpose, 24h TTL). Stores
  *  the results + machine meta for the admin to read; returns nothing
  *  sensitive. */
+/**
+ * action=support-code-identify → what IS this code, and is it still good?
+ *
+ * Support hands out three different codes — a system check, a device check
+ * and a live session — and two of them are minted from the same generator, so
+ * they are indistinguishable by looking at them. The app used to assume that
+ * anything typed into the support box was a system check, and then find out
+ * otherwise only after running three and a half minutes of diagnostics. This
+ * answers both questions BEFORE anything starts.
+ *
+ * Reads only. It never consumes a code, never starts a flow, and never
+ * reports anything about the machine — so calling it is always safe.
+ *
+ * Signed-in and rate-limited, because "tell me whether this code exists" is
+ * otherwise a way to hunt for live codes by guessing.
+ */
+async function handleSupportCodeIdentify(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { code?: string; idToken?: string }
+  const who = await seatVerifyUser(body)
+  if (!who) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!(await tryRateLimit(`code-identify_${who.uid}`, 20, 10 * 60))) {
+    return res
+      .status(429)
+      .json({ ok: false, error: 'יותר מדי ניסיונות. נסו שוב בעוד כמה דקות.' })
+  }
+  const code = String(body.code || '').trim().toUpperCase()
+  if (!code) return res.status(400).json({ ok: false, error: 'קוד חסר' })
+
+  const db = getDb()
+  const expired = (v: unknown) => {
+    const t = Date.parse(String(v ?? ''))
+    return Number.isFinite(t) && t < Date.now()
+  }
+
+  // System check — single-use, so "already used" is its own answer.
+  const sys = await db.collection('systemChecks').doc(code).get()
+  if (sys.exists) {
+    const d = sys.data() as { expiresAt?: string; status?: string; used?: boolean }
+    return res.status(200).json({
+      ok: true,
+      kind: 'system-check',
+      status: expired(d.expiresAt)
+        ? 'expired'
+        : d.used || d.status === 'done'
+          ? 'used'
+          : 'ok',
+    })
+  }
+
+  const dev = await db.collection('deviceChecks').doc(code).get()
+  if (dev.exists) {
+    const d = dev.data() as { expiresAt?: string }
+    return res
+      .status(200)
+      .json({ ok: true, kind: 'device-check', status: expired(d.expiresAt) ? 'expired' : 'ok' })
+  }
+
+  // Live session codes have no expiry — they end when the operator stops
+  // them, and a stopped session can't be joined.
+  const sup = await db.collection('supportSessions').doc(code).get()
+  if (sup.exists) {
+    const d = sup.data() as { status?: string; purged?: boolean }
+    return res.status(200).json({
+      ok: true,
+      kind: 'support',
+      status: d.purged || d.status === 'stopped' ? 'expired' : 'ok',
+    })
+  }
+
+  return res.status(200).json({ ok: true, kind: 'unknown', status: 'unknown' })
+}
+
 async function handleSyscheckReport(req: VercelRequest, res: VercelResponse) {
   const body = (req.body || {}) as {
     code?: string
