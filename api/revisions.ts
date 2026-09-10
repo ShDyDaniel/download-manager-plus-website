@@ -1569,6 +1569,16 @@ function normalizeTierS(v: unknown): TierS {
   const s = String(v ?? '').toLowerCase()
   return (TIER_ORDER_S as readonly string[]).includes(s) ? (s as TierS) : 'free'
 }
+/** What an ACTIVE key grants. Falls back to 'pro', not 'free': keys minted
+ *  before the tier migration carry no `tier` field and were all sold as Pro,
+ *  so fail-closing here would 403 a paying customer out of the product they
+ *  bought. Mirror of normalizeKeyTier in the desktop src/lib/tiers.ts. */
+function normalizeKeyTierS(v: unknown): TierS {
+  const s = String(v ?? '').toLowerCase()
+  return (TIER_ORDER_S as readonly string[]).includes(s) && s !== 'free'
+    ? (s as TierS)
+    : 'pro'
+}
 /** Which tier a 7-day trial grants — PLACEHOLDER (Daniel decides later). */
 const TRIAL_TIER_S: TierS = 'pro'
 
@@ -1594,7 +1604,7 @@ async function resolveTier(uid: string, email: string): Promise<TierS> {
     .get()
   if (!keySnap.empty) {
     const key = keySnap.docs[0].data() as Record<string, unknown>
-    if (serverIsKeyActive(key)) t = maxTierS(t, normalizeTierS(key.tier))
+    if (serverIsKeyActive(key)) t = maxTierS(t, normalizeKeyTierS(key.tier))
   }
   return t
 }

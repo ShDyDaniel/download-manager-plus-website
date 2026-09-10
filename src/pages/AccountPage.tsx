@@ -82,10 +82,25 @@ interface Profile {
   email: string
   plan: 'admin' | 'pro' | 'free'
   planLabel: string
+  /** The real tier. Older backends don't send it — fall back to `plan`. */
+  tier?: 'free' | 'basic' | 'pro' | 'ultra'
+  /** Why the user has access. 'grant' and 'trial' have no PayPal subscription
+   *  and no key behind them, so the subscription section has to explain them
+   *  itself instead of reporting "no active plan". */
+  accessSource?: 'paypal' | 'key' | 'grant' | 'trial' | 'admin' | 'beta' | 'none'
   keyLast8: string | null
   validUntil: string | null
+  /** When the access ends, from whatever grants it. null on a paid tier means
+   *  unlimited. Absent on older backends — fall back to `validUntil`. */
+  accessUntil?: string | null
   hasActiveSubscription: boolean
   marketingOptIn: boolean
+}
+
+/** Does this profile currently have paid-level access, whatever its source? */
+function profileHasAccess(p: Profile | null): boolean {
+  if (!p) return false
+  return p.tier ? p.tier !== 'free' : p.plan !== 'free'
 }
 
 interface SessionResponse {
@@ -1071,7 +1086,17 @@ export default function AccountPage() {
               </h2>
               {subs.length === 0 ? (
                 <div className="rounded-md border border-border bg-bg-elevated px-4 py-6 text-center text-sm text-fg-muted">
-                  אין לך מנוי פעיל כרגע.
+                  {/* "No subscriptions" here means "no PayPal subscription
+                      record" — which is NOT the same as having no plan. A plan
+                      set from the admin panel, a granted key and a trial all
+                      land here with real, working access, and flatly telling
+                      those users they have nothing contradicts the app they're
+                      signed into. */}
+                  {profileHasAccess(profile) ? (
+                    <GrantedPlanNotice profile={profile!} />
+                  ) : (
+                    'אין לך מנוי פעיל כרגע.'
+                  )}
                   {goError && (
                     <div className="mt-2 text-xs text-destructive">{goError}</div>
                   )}
@@ -1360,7 +1385,10 @@ function ProfileRow({
  */
 function ValidityRow({ profile }: { profile: Profile | null }) {
   const isAdmin = profile?.plan === 'admin'
-  const validUntil = profile?.validUntil ?? null
+  // The end of the ACCESS, not of the product key. They differ whenever the
+  // plan wasn't bought: an admin grant has no end date, and a trial's end
+  // lives on the account. Older backends only send `validUntil`.
+  const validUntil = profile?.accessUntil ?? profile?.validUntil ?? null
   const expired = validUntil
     ? Date.parse(validUntil) <= Date.now()
     : false
@@ -1369,6 +1397,12 @@ function ValidityRow({ profile }: { profile: Profile | null }) {
   let content: React.ReactNode
 
   if (isAdmin) {
+    iconColor = 'text-success'
+    content = <span className="text-sm text-fg">ללא הגבלה</span>
+  } else if (!validUntil && profileHasAccess(profile)) {
+    // A plan set from the admin panel lives on the account, not on a product
+    // key, so there is no expiry date to print — but the access is real. "—"
+    // read as "nothing here", which is how an Ultra user ended up looking free.
     iconColor = 'text-success'
     content = <span className="text-sm text-fg">ללא הגבלה</span>
   } else if (!validUntil) {
@@ -1396,7 +1430,58 @@ function ValidityRow({ profile }: { profile: Profile | null }) {
   )
 }
 
+/**
+ * Explains a plan that has no PayPal subscription behind it.
+ *
+ * Access can be granted four ways that never create a subscription record:
+ * an admin setting the plan on the account, an admin-granted product key, an
+ * approved trial, and open beta. All four used to render as "אין לך מנוי פעיל
+ * כרגע" while the app itself showed the plan working — so the two halves of
+ * the product disagreed about what the user had paid for.
+ */
+function GrantedPlanNotice({ profile }: { profile: Profile }) {
+  const tier = profile.tier ?? 'pro'
+  const label = TIER_LABEL[normalizeTier(tier)]
+  const until = profile.accessUntil ?? profile.validUntil ?? null
+
+  const detail = ((): string => {
+    switch (profile.accessSource) {
+      case 'admin':
+        return 'חשבון ניהול — גישה מלאה לכל התכונות.'
+      case 'beta':
+        return 'גרסת בטא — כל התכונות פתוחות לכולם בתקופה הזו.'
+      case 'grant':
+        return 'המנוי הוענק לך על ידי ההנהלה, ללא חיוב ובלי תאריך סיום.'
+      case 'trial':
+        return until
+          ? `תקופת התנסות — בתוקף עד ${formatDate(until)}.`
+          : 'תקופת התנסות פעילה.'
+      case 'key':
+        return until
+          ? `הופעל באמצעות מפתח מוצר — בתוקף עד ${formatDate(until)}.`
+          : 'הופעל באמצעות מפתח מוצר.'
+      default:
+        return until ? `בתוקף עד ${formatDate(until)}.` : 'המנוי פעיל.'
+    }
+  })()
+
+  return (
+    <div className="rounded-md border border-success/30 bg-success/5 px-4 py-4">
+      <div className="flex items-center justify-center gap-2 text-sm font-semibold text-fg">
+        <Crown className="h-4 w-4 text-success" />
+        <span>מנוי {label} פעיל</span>
+      </div>
+      <p className="mt-1.5 text-xs text-fg-muted">{detail}</p>
+      <p className="mt-1 text-xs text-fg-muted">
+        אין כאן חיוב תקופתי לניהול — כל התכונות של המסלול זמינות בתוכנה.
+      </p>
+    </div>
+  )
+}
+
 function PlanBadge({ plan, label }: { plan: Profile['plan']; label: string }) {
+  // `plan` still only distinguishes admin / paid / free; the LABEL carries the
+  // real tier name, so an Ultra user reads "Ultra" here rather than "Pro".
   const cls =
     plan === 'admin'
       ? 'border-primary/40 bg-primary/15 text-primary'

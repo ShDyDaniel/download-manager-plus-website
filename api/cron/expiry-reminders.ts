@@ -1028,6 +1028,15 @@ function auditNormTier(v: unknown): AuditTier {
   const s = String(v ?? '').toLowerCase()
   return (['free', 'basic', 'pro', 'ultra'] as string[]).includes(s) ? (s as AuditTier) : 'free'
 }
+/** The tier a LIVE product key grants. Falls back to 'pro', not 'free' — keys
+ *  sold before the tier migration carry no `tier` field, and scoring one of
+ *  them at free limits would have this audit BLOCK a paying customer for
+ *  "abusing" a quota they never had. Only call it on a key already confirmed
+ *  unexpired. Mirrors normalizeKeyTier in the desktop src/lib/tiers.ts. */
+function auditKeyTier(v: unknown): AuditTier {
+  const s = String(v ?? '').toLowerCase()
+  return (['basic', 'pro', 'ultra'] as string[]).includes(s) ? (s as AuditTier) : 'pro'
+}
 // Code defaults — appConfig/tiers overrides these per field (admin-configured).
 // null = unlimited (that dimension is not audited).
 const AUDIT_DEFAULT_LIMITS: Record<
@@ -1111,7 +1120,7 @@ async function runQuotaAbuseAudit(db: ReturnType<typeof getFirestore>): Promise<
       if (!k.redeemedBy) continue
       const exp = k.expiresAt ? new Date(k.expiresAt).getTime() : Infinity
       if (Number.isFinite(exp) && exp <= now) continue // expired key doesn't grant a tier
-      const t = auditNormTier(k.tier)
+      const t = auditKeyTier(k.tier)
       const cur = keyTierByUid.get(k.redeemedBy)
       if (!cur || AUDIT_TIER_RANK[t] > AUDIT_TIER_RANK[cur]) keyTierByUid.set(k.redeemedBy, t)
     }

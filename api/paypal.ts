@@ -3880,8 +3880,20 @@ interface ProfileSummary {
   email: string
   plan: 'admin' | 'pro' | 'free'
   planLabel: string
+  /** The real tier, so the page can say "Ultra" instead of collapsing every
+   *  paid plan into "Pro". */
+  tier: 'free' | 'basic' | 'pro' | 'ultra'
+  /** Where the access comes from. A plan granted from the admin panel or an
+   *  approved trial has no PayPal subscription and no key, so without this the
+   *  page has nothing to render but "you have no plan" — which is what it used
+   *  to do, contradicting the app. */
+  accessSource: 'paypal' | 'key' | 'grant' | 'trial' | 'admin' | 'beta' | 'none'
   keyLast8: string | null
+  /** When the product KEY expires — still shown next to the key itself. */
   validUntil: string | null
+  /** When the ACCESS ends, from whatever grants it. null with a paid tier
+   *  means unlimited (an admin grant carries no end date). */
+  accessUntil: string | null
   hasActiveSubscription: boolean
   /** Current state of the marketing email opt-in flag in
    *  users/{uid}. The /account page surfaces this as a toggle so
@@ -4020,26 +4032,109 @@ async function respondWithSession(
       (s) => s.status === 'ACTIVE' || s.status === 'APPROVAL_PENDING',
     )
 
-    // Read marketing-opt-in from the user doc. Best-effort: if the
-    // doc is missing or the field isn't there, default false (the
-    // safe default per Israeli תקשורת sec. 30א — never assume opt-in).
+    // Read the user doc: marketing-opt-in, and the entitlement signals that
+    // live on the ACCOUNT rather than on a product key.
+    //
+    // Everything above this point looks only at productKeys, which is how the
+    // account page used to tell a paying user from a free one. That misses the
+    // two ways access is granted without a purchase — an admin setting
+    // `subscription` from the panel, and an approved trial — so a user the app
+    // correctly showed as Ultra was told here they had no plan at all. The
+    // app, the seat allocator and every server gate already read these fields;
+    // this page was the last surface that didn't.
+    //
+    // Best-effort on marketing-opt-in specifically: a missing doc or field
+    // means false (the safe default per Israeli תקשורת sec. 30א — never assume
+    // opt-in). The tier falls back to whatever the keys said.
     let marketingOptIn = false
+    let accountTier: TierS = 'free'
+    let trialActive = false
+    let trialUntil: string | null = null
+    let roleAdmin = false
     try {
       const userSnap = await db.collection('users').doc(uid).get()
       if (userSnap.exists) {
-        const d = userSnap.data() as { marketingOptIn?: unknown }
+        const d = userSnap.data() as {
+          marketingOptIn?: unknown
+          subscription?: unknown
+          role?: unknown
+          trialStatus?: unknown
+          trialExpiresAt?: unknown
+        }
         marketingOptIn = d.marketingOptIn === true
+        accountTier = entTier(d.subscription)
+        roleAdmin = d.role === 'admin'
+        const trialExp =
+          d.trialStatus === 'approved' ? Date.parse(String(d.trialExpiresAt ?? '')) : NaN
+        trialActive = Number.isFinite(trialExp) && trialExp > Date.now()
+        if (trialActive) trialUntil = new Date(trialExp).toISOString()
       }
     } catch (err) {
-      console.warn('[paypal/session] marketingOptIn lookup failed:', err)
+      console.warn('[paypal/session] user-doc lookup failed:', err)
     }
 
+    // Open beta hands everyone Ultra in the app — say so here too, or the page
+    // contradicts the product the user is actually running.
+    let betaOn = false
+    try {
+      const cfg = await db.collection('appConfig').doc('global').get()
+      betaOn = cfg.exists && cfg.data()?.betaMode === true
+    } catch {
+      /* not being able to read the flag just means "not in beta" */
+    }
+
+    // Highest of every signal, exactly like resolveTier server-side and in the
+    // app. `primaryIsActive` is the grace-aware key check computed above.
+    // normTier (not entTier) for the key: its 'pro' fallback is exactly right
+    // here, because a key minted before the tier migration has no `tier` field
+    // and every one of those was sold as Pro.
+    const keyTier: TierS = primaryIsActive ? normTier(primaryKey?.tier) : 'free'
+    let tier: TierS = maxTierS(accountTier, keyTier)
+    if (trialActive) tier = maxTierS(tier, 'pro')
+    if (isAdmin || roleAdmin || betaOn) tier = 'ultra'
+
+    // WHY the user has access — the account page needs this to explain a plan
+    // that has no PayPal subscription behind it and no key to show.
+    const accessSource: ProfileSummary['accessSource'] =
+      isAdmin || roleAdmin
+        ? 'admin'
+        : betaOn
+          ? 'beta'
+          : hasActiveSub
+            ? 'paypal'
+            : keyTier !== 'free'
+              ? 'key'
+              : accountTier !== 'free'
+                ? 'grant'
+                : trialActive
+                  ? 'trial'
+                  : 'none'
+
+    // When the access ENDS — which is not the same as when the key expires.
+    // An admin-granted plan has no end date at all, and a trial's end lives on
+    // the user doc; printing the key's stale date for either is how a live
+    // account ended up showing "פג תוקף".
+    const accessUntil =
+      accessSource === 'trial'
+        ? trialUntil
+        : accessSource === 'grant' ||
+            accessSource === 'admin' ||
+            accessSource === 'beta'
+          ? null
+          : primaryExpiresAt
+
+    const isPaid = tier !== 'free'
     const profile: ProfileSummary = {
       email,
-      plan: isAdmin ? 'admin' : primaryIsActive || hasActiveSub ? 'pro' : 'free',
-      planLabel: isAdmin ? 'Admin' : primaryIsActive || hasActiveSub ? 'Pro' : 'חינם',
+      // `plan` stays the old three-value field so nothing that reads it
+      // breaks; `tier` carries the real one.
+      plan: isAdmin || roleAdmin ? 'admin' : isPaid ? 'pro' : 'free',
+      planLabel: isAdmin || roleAdmin ? 'Admin' : TIER_LABEL_S[tier],
+      tier,
+      accessSource,
       keyLast8: primaryKeyStr ? primaryKeyStr.slice(-8) : null,
       validUntil: primaryExpiresAt,
+      accessUntil,
       hasActiveSubscription: hasActiveSub,
       marketingOptIn,
     }
@@ -4422,6 +4517,18 @@ function tierLabelS(v: unknown): string {
 function normTier(v: unknown): TierS {
   const s = String(v ?? '').toLowerCase()
   return (TIER_KEYS_S as readonly string[]).includes(s) ? (s as TierS) : 'pro'
+}
+
+/** The SAME coercion, but for reading an ENTITLEMENT off a stored document,
+ *  where "absent" means "no plan" — never Pro. normTier's 'pro' default is
+ *  right for the purchase flow (you can't buy "free") and catastrophic here:
+ *  a user doc with no `subscription` field would read as a paid plan. */
+function entTier(v: unknown): TierS {
+  const s = String(v ?? '').toLowerCase()
+  return (TIER_KEYS_S as readonly string[]).includes(s) ? (s as TierS) : 'free'
+}
+function maxTierS(a: TierS, b: TierS): TierS {
+  return TIER_KEYS_S.indexOf(a) >= TIER_KEYS_S.indexOf(b) ? a : b
 }
 
 /** Read appConfig/tiers and merge the stored values over the code defaults,
