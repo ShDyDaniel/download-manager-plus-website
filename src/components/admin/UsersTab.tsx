@@ -20,6 +20,7 @@ import { Portal } from '@/components/ui/Portal'
 import { adminApi } from '../../lib/adminApi'
 import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
 import { KeyDetailsModal } from './KeyDetailsModal'
+import { DevicesModal } from './DevicesModal'
 
 /**
  * Admin → Users tab (web). Faithful port of the desktop UsersTab:
@@ -82,6 +83,12 @@ interface UserDoc {
     tokens?: { used?: number; limit?: number }
   }
   deviceId?: string | null
+  /** Machines holding a seat, keyed by device signature (server-written). */
+  devices?: Record<string, { claimedAt?: string; lastSeenAt?: string; model?: string }>
+  /** Admin-granted seats on top of the tier allowance. */
+  extraDeviceSeats?: number
+  /** Most recent sign-in on any of this account's machines. */
+  lastSignInAt?: string
   createdAt?: string
   lastSeenAt?: string
   lastSeenVersion?: string
@@ -201,6 +208,11 @@ export default function UsersTab({
     uid: string
     email: string
     name?: string
+  } | null>(null)
+  /** Which user's connected-computers panel is open. */
+  const [devicesModal, setDevicesModal] = useState<{
+    uid: string
+    email: string
   } | null>(null)
 
   async function loadStorage() {
@@ -347,6 +359,7 @@ export default function UsersTab({
               onOpenStorage={(uid, email, name) =>
                 setStorageModal({ uid, email, name })
               }
+              onOpenDevices={(uid, email) => setDevicesModal({ uid, email })}
             />
           ))
         )}
@@ -354,6 +367,14 @@ export default function UsersTab({
 
       {keyModal && (
         <KeyDetailsModal keyDoc={keyModal} onClose={() => setKeyModal(null)} />
+      )}
+      {devicesModal && (
+        <DevicesModal
+          uid={devicesModal.uid}
+          email={devicesModal.email}
+          onClose={() => setDevicesModal(null)}
+          onChanged={() => void load(true)}
+        />
       )}
       {storageModal && (
         <UserStorageModal
@@ -409,6 +430,7 @@ function UserRow({
   onAuthExpired,
   onShowKey,
   onOpenStorage,
+  onOpenDevices,
 }: {
   user: UserDoc
   redeemedKey: KeySummary | null
@@ -418,6 +440,7 @@ function UserRow({
   onAuthExpired: () => void
   onShowKey: (k: KeySummary) => void
   onOpenStorage: (uid: string, email: string, name?: string) => void
+  onOpenDevices: (uid: string, email: string) => void
 }) {
   const [busy, setBusy] = useState<
     null | 'block' | 'device' | 'role' | 'plan' | 'storage' | 'delete'
@@ -469,6 +492,13 @@ function UserRow({
 
   const isAdmin = user.role === 'admin' || isAdminEmail(user.email)
   const isDrive = user.storageBackend === 'drive'
+  // Legacy accounts have a single `deviceId` and no map yet — count that as
+  // one machine so the row doesn't read "0 מחשבים" for someone plainly signed in.
+  const deviceCount = user.devices
+    ? Object.keys(user.devices).length
+    : user.deviceId
+      ? 1
+      : 0
   const onTrial = isTrialActive(user)
   // Effective tier = the higher of the subscription field and an active key.
   const TIER_RANK: Record<string, number> = { free: 0, basic: 1, pro: 2, ultra: 3 }
@@ -583,6 +613,22 @@ function UserRow({
             <span>תוכנה: {relTime(user.lastSeenAt)}</span>
             <span>·</span>
             <span>אתר: {relTime(user.lastSeenWebAt)}</span>
+            {/* Last SIGN-IN (a seat claim), distinct from the last-seen
+                heartbeat above — plus how many machines hold a seat. */}
+            {user.lastSignInAt && (
+              <>
+                <span>·</span>
+                <span>נכנס: {relTime(user.lastSignInAt)}</span>
+              </>
+            )}
+            {deviceCount > 0 && (
+              <>
+                <span>·</span>
+                <span>
+                  {deviceCount === 1 ? 'מחשב אחד' : `${deviceCount} מחשבים`}
+                </span>
+              </>
+            )}
             {user.lastSeenAt && user.lastSeenVersion && (
               <>
                 <span>·</span>
@@ -730,14 +776,10 @@ function UserRow({
               <Ban className="h-3.5 w-3.5" />
             </IconBtn>
             <IconBtn
-              title={user.deviceId ? 'שחרר נעילת מכשיר' : 'אין מכשיר נעול'}
-              busy={busy === 'device'}
-              active={!!user.deviceId}
-              disabled={!user.deviceId}
+              title="מחשבים מחוברים"
+              active={deviceCount > 0}
               activeClass="border-accent/30 bg-accent/10 text-accent"
-              onClick={() =>
-                run('device', 'admin-clear-user-device', { uid: user.uid })
-              }
+              onClick={() => onOpenDevices(user.uid, user.email || '')}
             >
               <Monitor className="h-3.5 w-3.5" />
             </IconBtn>

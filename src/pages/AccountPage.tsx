@@ -28,6 +28,7 @@ import {
   normalizeTier,
   type Tier,
 } from '../lib/tiers'
+import { MyComputers } from '../components/account/MyComputers'
 
 /**
  * /account — full account dashboard.
@@ -1146,6 +1147,9 @@ export default function AccountPage() {
                 </ul>
               )}
             </section>
+
+            {/* Computers signed in to this account */}
+            {token && <MyComputers token={token} />}
 
             {/* Billing history (collapsed by default) */}
             <section className="rounded-2xl border border-border/60 bg-white/[0.015] p-6 md:p-8">

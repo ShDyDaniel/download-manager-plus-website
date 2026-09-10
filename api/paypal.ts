@@ -4,6 +4,7 @@ import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
 import {
   getFirestore,
   FieldValue,
+  FieldPath,
   Timestamp,
   type Firestore,
 } from 'firebase-admin/firestore'
@@ -1835,6 +1836,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminDeviceCheckCreate(req, res)
       case 'admin-device-check-get':
         return await handleAdminDeviceCheckGet(req, res)
+      case 'device-list':
+        return await handleDeviceList(req, res)
+      case 'device-claim':
+        return await handleDeviceClaim(req, res)
+      case 'device-release-request-code':
+        return await handleDeviceReleaseRequestCode(req, res)
+      case 'device-release-confirm':
+        return await handleDeviceReleaseConfirm(req, res)
+      case 'admin-device-list':
+        return await handleAdminDeviceList(req, res)
+      case 'admin-device-revoke':
+        return await handleAdminDeviceRevoke(req, res)
+      case 'admin-set-device-seats':
+        return await handleAdminSetDeviceSeats(req, res)
       case 'device-check-report':
         return await handleDeviceCheckReport(req, res)
       case 'admin-list-keys':
@@ -9447,6 +9462,473 @@ async function handleAdminDeviceCheckGet(
  * trial on that machine. The matched account is NEVER returned to
  * the caller — only stored for the admin to read.
  */
+/* ══════════════════════════════════════════════════════════════════
+ *  DEVICE SEATS — how many computers one account may use at once.
+ *
+ *  A "seat" is claimed by a machine's frozen hardware signature on its first
+ *  sign-in and is released ONLY deliberately (by the user behind an emailed
+ *  code, or by the admin). Nothing expires on its own — a formatted machine
+ *  keeps its seat until someone frees it.
+ *
+ *  Allowance = tier (free/basic 1, pro 2, ultra 3) + users/{uid}.extraDeviceSeats
+ *  (admin-granted, ADDITIVE so it survives plan changes).
+ *
+ *  Storage is a MAP on the user doc (`devices`), not a subcollection: the cap is
+ *  a handful of entries, so one doc read yields both entitlement and devices,
+ *  and — because the desktop already holds a live onSnapshot on its user doc —
+ *  revoking a device kicks that machine within seconds at ZERO extra cost.
+ *
+ *  Downgrades need no cleanup: the seats that survive are the EARLIEST-claimed
+ *  ones, computed on read (`activeSeatIds`). Re-upgrading restores the rest.
+ *
+ *  This mirrors src/lib/tiers.ts in the desktop repo — keep the two in sync.
+ * ══════════════════════════════════════════════════════════════════ */
+type SeatTier = 'free' | 'basic' | 'pro' | 'ultra'
+const SEAT_TIER_ORDER: readonly SeatTier[] = ['free', 'basic', 'pro', 'ultra']
+const TIER_DEVICE_SEATS: Record<SeatTier, number> = { free: 1, basic: 1, pro: 2, ultra: 3 }
+interface SeatDevice {
+  claimedAt: string
+  lastSeenAt?: string
+  platform?: string
+  appVersion?: string
+  model?: string
+}
+type SeatDeviceMap = Record<string, SeatDevice>
+
+function seatNormTier(v: unknown): SeatTier {
+  if (v === true) return 'pro'
+  const t = String(v ?? '').toLowerCase()
+  return (SEAT_TIER_ORDER as readonly string[]).includes(t) ? (t as SeatTier) : 'free'
+}
+function seatMaxTier(a: SeatTier, b: SeatTier): SeatTier {
+  return SEAT_TIER_ORDER.indexOf(a) >= SEAT_TIER_ORDER.indexOf(b) ? a : b
+}
+/** Seat holders, oldest claim first — everything past `seats` is locked out. */
+function activeSeatIds(devices: SeatDeviceMap | undefined, seats: number): string[] {
+  return Object.entries(devices || {})
+    .sort((a, b) => {
+      const ta = Date.parse(a[1]?.claimedAt || '') || 0
+      const tb = Date.parse(b[1]?.claimedAt || '') || 0
+      return ta - tb || a[0].localeCompare(b[0])
+    })
+    .slice(0, Math.max(0, seats))
+    .map(([id]) => id)
+}
+/** Legacy accounts stored ONE `deviceId`. Fold it in as the first seat so the
+ *  migration to seats never locks an existing user out of their own machine. */
+function seatDevicesOf(u: Record<string, unknown>): SeatDeviceMap {
+  const map = (u.devices as SeatDeviceMap) || {}
+  if (Object.keys(map).length > 0) return map
+  const legacy = String(u.deviceId || '')
+  if (!legacy) return {}
+  return {
+    [legacy]: {
+      claimedAt: String(u.deviceLockedAt || new Date(0).toISOString()),
+      lastSeenAt: String(u.deviceLockedAt || ''),
+    },
+  }
+}
+
+async function seatBetaOn(): Promise<boolean> {
+  try {
+    const snap = await getDb().collection('appConfig').doc('global').get()
+    return snap.exists && snap.data()?.betaMode === true
+  } catch {
+    return false
+  }
+}
+
+/** Effective tier for seat purposes (mirrors the desktop resolveTier). */
+async function resolveSeatTier(
+  uid: string,
+  email: string,
+  user: Record<string, unknown>,
+): Promise<SeatTier> {
+  if (await seatBetaOn()) return 'ultra'
+  if (user.role === 'admin' || ADMIN_EMAILS.includes((email || '').toLowerCase())) return 'ultra'
+  let t: SeatTier = seatNormTier(user.subscription)
+  try {
+    const keys = await getDb()
+      .collection('productKeys')
+      .where('redeemedBy', '==', uid)
+      .limit(1)
+      .get()
+    if (!keys.empty) {
+      const k = keys.docs[0].data() as { tier?: string; expiresAt?: string; subscriptionStatus?: string }
+      const exp = k.expiresAt ? Date.parse(k.expiresAt) : NaN
+      const live =
+        !k.expiresAt ||
+        !Number.isFinite(exp) ||
+        exp > Date.now() ||
+        (k.subscriptionStatus === 'active' && Date.now() - exp <= 24 * 60 * 60 * 1000)
+      if (live) t = seatMaxTier(t, seatNormTier(k.tier || 'pro'))
+    }
+  } catch {
+    /* fail-closed: no key credit on error */
+  }
+  // NOTE: a trial deliberately does NOT raise the seat count. It unlocks Pro
+  // FEATURES, but a 7-day trial is worth exactly one computer — otherwise a
+  // free account could be used on two machines for a week at a time. So the
+  // seat tier is the PAID standing only (subscription + redeemed key); a
+  // trial-only user stays 'free' here, which is 1 seat.
+  return t
+}
+
+function isSeatAdmin(email: string, user: Record<string, unknown>): boolean {
+  return user.role === 'admin' || ADMIN_EMAILS.includes((email || '').toLowerCase())
+}
+
+/** Identify the caller from EITHER credential the two surfaces carry: the
+ *  desktop app holds a Firebase ID token, while the website's personal area
+ *  holds the session JWT it exchanged at sign-in. Both prove the same thing —
+ *  which account is asking — so both are accepted. */
+async function seatVerifyUser(body: {
+  idToken?: string
+  sessionToken?: string
+}): Promise<{ uid: string; email: string } | null> {
+  if (body.sessionToken) {
+    const claims = verifySessionToken(String(body.sessionToken).trim())
+    if (claims?.uid && claims.email) {
+      return { uid: claims.uid, email: String(claims.email).toLowerCase().trim() }
+    }
+  }
+  if (body.idToken) {
+    try {
+      const { getAuth } = await import('firebase-admin/auth')
+      // checkRevoked=true: these calls gate entitlement and can free a seat, so
+      // a token from a session that was signed out or disabled must not work.
+      const dec = await getAuth(getFirebase()).verifyIdToken(String(body.idToken), true)
+      return { uid: dec.uid, email: (dec.email || '').toLowerCase().trim() }
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+/** action=device-list (user) → this account's computers, read-only.
+ *  Deliberately does NOT claim: a browser has no hardware signature, and
+ *  seats belong to desktop installs. */
+async function handleDeviceList(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { idToken?: string; sessionToken?: string }
+  const who = await seatVerifyUser(body)
+  if (!who) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const snap = await getDb().collection('users').doc(who.uid).get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'no_user' })
+  const user = snap.data() as Record<string, unknown>
+  if (isSeatAdmin(who.email, user)) {
+    return res.status(200).json({ ok: true, exempt: true, seats: null, devices: [] })
+  }
+  const tier = await resolveSeatTier(who.uid, who.email, user)
+  const seats =
+    TIER_DEVICE_SEATS[tier] + Math.max(0, Math.floor(Number(user.extraDeviceSeats) || 0))
+  const devices = seatDevicesOf(user)
+  return res.status(200).json({
+    ok: true,
+    seats,
+    devices: seatDeviceView(devices, activeSeatIds(devices, seats)),
+  })
+}
+
+/** Shape the device list for a client/admin view (newest activity first). */
+function seatDeviceView(devices: SeatDeviceMap, activeIds: string[]) {
+  return Object.entries(devices)
+    .map(([id, d]) => ({
+      deviceId: id,
+      claimedAt: d.claimedAt || null,
+      lastSeenAt: d.lastSeenAt || null,
+      platform: d.platform || null,
+      appVersion: d.appVersion || null,
+      model: d.model || null,
+      active: activeIds.includes(id),
+    }))
+    .sort((a, b) => (Date.parse(b.lastSeenAt || '') || 0) - (Date.parse(a.lastSeenAt || '') || 0))
+}
+
+/** action=device-claim (desktop, on every sign-in) → claim or refresh a seat.
+ *  FAIL-CLOSED: anything unexpected refuses the seat rather than granting it. */
+async function handleDeviceClaim(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    sessionToken?: string
+    deviceId?: string
+    platform?: string
+    appVersion?: string
+    model?: string
+  }
+  const deviceId = String(body.deviceId || '').trim()
+  if (!deviceId || deviceId.length < 16) {
+    return res.status(400).json({ ok: false, error: 'device_missing' })
+  }
+  const who = await seatVerifyUser(body)
+  if (!who) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  // A doc read plus a transaction per call, so cap the rate: a real user signs
+  // in a handful of times a day, and this stops a patched client from grinding
+  // the endpoint (and our Firestore quota) in a loop.
+  if (!tryRateLimit(`device-claim_${who.uid}`, 60, 60 * 60)) {
+    return res.status(429).json({ ok: false, error: 'rate_limited' })
+  }
+
+  const db = getDb()
+  const ref = db.collection('users').doc(who.uid)
+  const snap = await ref.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'no_user' })
+  const user = snap.data() as Record<string, unknown>
+
+  // Admins are exempt from the seat cap entirely.
+  if (isSeatAdmin(who.email, user)) {
+    return res.status(200).json({ ok: true, exempt: true, seats: null, devices: [] })
+  }
+
+  const tier = await resolveSeatTier(who.uid, who.email, user)
+  const extra = Math.max(0, Math.floor(Number(user.extraDeviceSeats) || 0))
+  const seats = TIER_DEVICE_SEATS[tier] + extra
+  const now = new Date().toISOString()
+
+  // The seat decision runs in a TRANSACTION. Read-then-write outside one lets
+  // two machines that start together both see the last seat free and both take
+  // it, quietly putting the account over its limit — the exact thing this
+  // feature exists to prevent. (The tier above is resolved outside the
+  // transaction on purpose: it doesn't depend on the device map, and querying
+  // productKeys inside would only widen the contention window.)
+  let status = 500
+  let payload: Record<string, unknown> = { ok: false, error: 'failed' }
+  await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(ref)
+    const u = (fresh.data() as Record<string, unknown>) || {}
+    const devices = seatDevicesOf(u)
+    const known = Object.prototype.hasOwnProperty.call(devices, deviceId)
+
+    if (!known && activeSeatIds(devices, seats).length >= seats) {
+      // No room. Report the occupying machines so the app can name them.
+      status = 409
+      payload = {
+        ok: false,
+        error: 'device_limit',
+        tier,
+        seats,
+        devices: seatDeviceView(devices, activeSeatIds(devices, seats)),
+      }
+      return
+    }
+
+    const entry: SeatDevice = {
+      claimedAt: known ? devices[deviceId].claimedAt || now : now,
+      lastSeenAt: now,
+      platform: String(body.platform || '').slice(0, 40) || devices[deviceId]?.platform || '',
+      appVersion: String(body.appVersion || '').slice(0, 20) || devices[deviceId]?.appVersion || '',
+      model: String(body.model || '').slice(0, 120) || devices[deviceId]?.model || '',
+    }
+    const next: SeatDeviceMap = { ...devices, [deviceId]: entry }
+    const activeIds = activeSeatIds(next, seats)
+    // A machine that only just claimed can still be inactive if the allowance
+    // already shrank below the number of held seats (a downgrade).
+    if (!activeIds.includes(deviceId)) {
+      status = 409
+      payload = {
+        ok: false,
+        error: 'device_limit',
+        tier,
+        seats,
+        devices: seatDeviceView(next, activeIds),
+      }
+      return
+    }
+    // Keep the legacy single `deviceId` pointing at the PRIMARY (earliest) seat
+    // so older app versions, which still enforce that field, keep working.
+    tx.set(
+      ref,
+      {
+        devices: next,
+        deviceId: activeIds[0] || deviceId,
+        lastSignInAt: now,
+        // The authoritative allowance, published so the desktop's "my
+        // computers" card and the admin row can state it without re-deriving
+        // it (and getting it subtly wrong for, say, a trial).
+        deviceSeats: seats,
+      },
+      { merge: true },
+    )
+    status = 200
+    payload = { ok: true, tier, seats, devices: seatDeviceView(next, activeIds) }
+  })
+  return res.status(status).json(payload)
+}
+
+/** action=device-release-request-code → email the account owner a 6-digit code.
+ *  Releasing a seat must prove control of the MAILBOX, not just the session. */
+async function handleDeviceReleaseRequestCode(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as { idToken?: string; sessionToken?: string }
+  const who = await seatVerifyUser(body)
+  if (!who || !who.email) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (!tryRateLimit(`device-release_${sanitizeEmailKey(who.email)}`, 5, 60 * 60)) {
+    return res.status(429).json({ ok: false, error: 'יותר מדי בקשות. נסו שוב בעוד שעה.' })
+  }
+  const code = String(Math.floor(100000 + Math.random() * 900000))
+  const salt = process.env.RENEW_TOKEN_SECRET || 'unset'
+  await getDb()
+    .collection('emailVerifications')
+    .doc(`devrel_${sanitizeEmailKey(who.email)}`)
+    .set({
+      email: who.email,
+      codeHash: hashCode(code, salt),
+      expiresAt: Date.now() + 15 * 60 * 1000,
+      attempts: 0,
+      createdAt: Date.now(),
+    })
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) {
+    return res.status(500).json({ ok: false, error: 'שירות שליחת המייל לא מוגדר.' })
+  }
+  const transporter = makeCountedTransport({
+    service: 'gmail',
+    auth: { user, pass: pass.replace(/\s+/g, '') },
+  })
+  await transporter.sendMail({
+    from: `"ניהול הורדות פלוס" <${user}>`,
+    to: who.email,
+    subject: `${code} — קוד לשחרור מחשב`,
+    html: renderEmail({
+      heading: 'שחרור מחשב מהחשבון',
+      contentHtml: `
+        <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
+          ביקשת לשחרר מחשב מהחשבון שלך. הקוד לאישור:
+        </p>
+        <p style="font-size:30px;font-weight:700;letter-spacing:6px;margin:0 0 14px;color:#E8DCC0;" dir="ltr">${code}</p>
+        <p style="font-size:12px;margin:0;color:#5C5444;">
+          הקוד תקף ל-15 דקות. אם לא ביקשת זאת — אפשר להתעלם מהמייל, ולא בוצע שום שינוי.
+        </p>`,
+    }),
+  })
+  return res.status(200).json({ ok: true })
+}
+
+/** action=device-release-confirm → verify the code, then free the seat. */
+async function handleDeviceReleaseConfirm(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    sessionToken?: string
+    code?: string
+    deviceId?: string
+  }
+  const who = await seatVerifyUser(body)
+  if (!who || !who.email) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const target = String(body.deviceId || '').trim()
+  const code = String(body.code || '').trim()
+  if (!target || !code) return res.status(400).json({ ok: false, error: 'missing' })
+
+  const db = getDb()
+  const codeRef = db.collection('emailVerifications').doc(`devrel_${sanitizeEmailKey(who.email)}`)
+  const codeSnap = await codeRef.get()
+  if (!codeSnap.exists) return res.status(400).json({ ok: false, error: 'קוד לא נמצא. בקשו קוד חדש.' })
+  const cd = codeSnap.data() as { codeHash?: string; expiresAt?: number; attempts?: number }
+  if ((cd.attempts || 0) >= 5) {
+    return res.status(429).json({ ok: false, error: 'יותר מדי ניסיונות. בקשו קוד חדש.' })
+  }
+  if (!cd.expiresAt || cd.expiresAt < Date.now()) {
+    return res.status(410).json({ ok: false, error: 'הקוד פג תוקף. בקשו קוד חדש.' })
+  }
+  const salt = process.env.RENEW_TOKEN_SECRET || 'unset'
+  if (cd.codeHash !== hashCode(code, salt)) {
+    await codeRef.set({ attempts: (cd.attempts || 0) + 1 }, { merge: true })
+    return res.status(400).json({ ok: false, error: 'קוד שגוי.' })
+  }
+
+  const ref = db.collection('users').doc(who.uid)
+  const snap = await ref.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'no_user' })
+  const user = snap.data() as Record<string, unknown>
+  const devices = seatDevicesOf(user)
+  if (!Object.prototype.hasOwnProperty.call(devices, target)) {
+    return res.status(404).json({ ok: false, error: 'המחשב לא נמצא בחשבון.' })
+  }
+  delete devices[target]
+  const tier = await resolveSeatTier(who.uid, who.email, user)
+  const seats = TIER_DEVICE_SEATS[tier] + Math.max(0, Math.floor(Number(user.extraDeviceSeats) || 0))
+  const activeIds = activeSeatIds(devices, seats)
+  // MUST be an explicit field delete: `set(..., {merge:true})` MERGES nested
+  // maps, so writing the trimmed map back would leave the removed machine in
+  // place and the release would silently do nothing.
+  await ref.update(
+    new FieldPath('devices', target),
+    FieldValue.delete(),
+    'deviceId',
+    activeIds[0] || null,
+  )
+  await codeRef.delete().catch(() => {})
+  return res.status(200).json({ ok: true, devices: seatDeviceView(devices, activeIds) })
+}
+
+/** action=admin-device-list → devices + seat maths for one user. */
+async function handleAdminDeviceList(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const uid = String((req.body as { uid?: string })?.uid || '').trim()
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
+  const snap = await getDb().collection('users').doc(uid).get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'not-found' })
+  const user = snap.data() as Record<string, unknown>
+  const email = String(user.email || '')
+  const tier = await resolveSeatTier(uid, email, user)
+  const extra = Math.max(0, Math.floor(Number(user.extraDeviceSeats) || 0))
+  const seats = TIER_DEVICE_SEATS[tier] + extra
+  const devices = seatDevicesOf(user)
+  return res.status(200).json({
+    ok: true,
+    tier,
+    seats,
+    baseSeats: TIER_DEVICE_SEATS[tier],
+    extraSeats: extra,
+    exempt: isSeatAdmin(email, user),
+    devices: seatDeviceView(devices, activeSeatIds(devices, seats)),
+  })
+}
+
+/** action=admin-device-revoke → free one machine's seat. The desktop's live
+ *  user-doc listener kicks that machine within seconds. */
+async function handleAdminDeviceRevoke(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { uid?: string; deviceId?: string }
+  const uid = String(body.uid || '').trim()
+  const target = String(body.deviceId || '').trim()
+  if (!uid || !target) return res.status(400).json({ ok: false, error: 'missing' })
+  const db = getDb()
+  const ref = db.collection('users').doc(uid)
+  const snap = await ref.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'not-found' })
+  const user = snap.data() as Record<string, unknown>
+  const devices = seatDevicesOf(user)
+  delete devices[target]
+  const tier = await resolveSeatTier(uid, String(user.email || ''), user)
+  const seats = TIER_DEVICE_SEATS[tier] + Math.max(0, Math.floor(Number(user.extraDeviceSeats) || 0))
+  const activeIds = activeSeatIds(devices, seats)
+  // Explicit field delete — see the note in the user-release handler.
+  await ref.update(
+    new FieldPath('devices', target),
+    FieldValue.delete(),
+    'deviceId',
+    activeIds[0] || null,
+  )
+  return res.status(200).json({ ok: true, devices: seatDeviceView(devices, activeIds) })
+}
+
+/** action=admin-set-device-seats → grant/remove EXTRA seats (additive). */
+async function handleAdminSetDeviceSeats(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { uid?: string; extraSeats?: number }
+  const uid = String(body.uid || '').trim()
+  if (!uid) return res.status(400).json({ ok: false, error: 'uid' })
+  const extra = Math.max(0, Math.min(20, Math.floor(Number(body.extraSeats) || 0)))
+  await getDb().collection('users').doc(uid).set({ extraDeviceSeats: extra }, { merge: true })
+  return res.status(200).json({ ok: true, extraSeats: extra })
+}
+
 async function handleDeviceCheckReport(
   req: VercelRequest,
   res: VercelResponse,
