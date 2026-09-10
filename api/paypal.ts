@@ -1836,6 +1836,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminDeviceCheckCreate(req, res)
       case 'admin-device-check-get':
         return await handleAdminDeviceCheckGet(req, res)
+      case 'prefs-pull':
+        return await handlePrefsPull(req, res)
+      case 'prefs-push':
+        return await handlePrefsPush(req, res)
       case 'device-list':
         return await handleDeviceList(req, res)
       case 'device-claim':
@@ -9631,6 +9635,172 @@ async function seatVerifyUser(body: {
     }
   }
   return null
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ *  ACCOUNT PREFERENCES — the authored settings that follow a user
+ *  between their computers.
+ *
+ *  Scope (round 1): sort rules, the transcription glossary + term packs,
+ *  price lists, and saved quotes. Deliberately NOT here: anything naming a
+ *  place on one machine (watch folder, editor path, project paths) or chosen
+ *  for that machine's hardware — syncing those would hand a Windows path to a
+ *  Mac and break the app.
+ *
+ *  Sync is INCREMENTAL, never a blob overwrite. Lists merge per item by
+ *  timestamp with tombstones for deletions, because the obvious design —
+ *  "push my whole local list" — silently destroys work: open the desktop after
+ *  saving a quote on the laptop and its older list would wipe the new draft.
+ * ══════════════════════════════════════════════════════════════════ */
+const PREFS_MAX_ITEMS = 200
+const PREFS_MAX_ITEM_BYTES = 96 * 1024
+const PREFS_MAX_BODY_BYTES = 700 * 1024
+
+interface PrefItem {
+  data: unknown
+  updatedAt: number
+}
+interface PrefsDoc {
+  routingRules?: { value: unknown; updatedAt: number }
+  transcriptionGlossary?: { value: string; updatedAt: number }
+  transcriptionPacks?: { value: string[]; updatedAt: number }
+  pricingProfiles?: Record<string, PrefItem>
+  quoteDrafts?: Record<string, PrefItem>
+  /** id → deletion time. Keeps a delete from being undone by another machine
+   *  that still holds the item. */
+  deleted?: Record<string, number>
+  updatedAt?: number
+}
+
+function prefsRef(uid: string) {
+  return getDb().collection('userPrefs').doc(uid)
+}
+
+/** Merge one incoming collection into the stored one: newest write per id
+ *  wins, and a tombstone newer than the item removes it. */
+function mergePrefCollection(
+  current: Record<string, PrefItem>,
+  incoming: Array<{ id?: string; data?: unknown; updatedAt?: number }>,
+  tombstones: Record<string, number>,
+): Record<string, PrefItem> {
+  const out: Record<string, PrefItem> = { ...current }
+  for (const raw of incoming.slice(0, PREFS_MAX_ITEMS)) {
+    const id = String(raw?.id || '').slice(0, 120)
+    if (!id || raw?.data === undefined) continue
+    if (JSON.stringify(raw.data).length > PREFS_MAX_ITEM_BYTES) continue
+    const at = Number(raw.updatedAt) || Date.now()
+    // A delete that happened AFTER this version of the item stands.
+    if ((tombstones[id] || 0) > at) continue
+    if (!out[id] || (out[id].updatedAt || 0) <= at) out[id] = { data: raw.data, updatedAt: at }
+  }
+  for (const id of Object.keys(tombstones)) {
+    if (out[id] && (out[id].updatedAt || 0) <= tombstones[id]) delete out[id]
+  }
+  // Bound the stored set: drop the oldest beyond the cap.
+  const ids = Object.keys(out)
+  if (ids.length > PREFS_MAX_ITEMS) {
+    ids
+      .sort((a, b) => (out[a].updatedAt || 0) - (out[b].updatedAt || 0))
+      .slice(0, ids.length - PREFS_MAX_ITEMS)
+      .forEach((id) => delete out[id])
+  }
+  return out
+}
+
+/** Flatten the stored shape into what the app actually applies. */
+function prefsView(d: PrefsDoc) {
+  const list = (m?: Record<string, PrefItem>) =>
+    Object.entries(m || {}).map(([id, v]) => ({ id, data: v.data, updatedAt: v.updatedAt }))
+  return {
+    routingRules: d.routingRules?.value ?? null,
+    transcriptionGlossary: d.transcriptionGlossary?.value ?? null,
+    transcriptionPacks: d.transcriptionPacks?.value ?? null,
+    pricingProfiles: list(d.pricingProfiles),
+    quoteDrafts: list(d.quoteDrafts),
+    deleted: d.deleted || {},
+    updatedAt: d.updatedAt || 0,
+  }
+}
+
+/** action=prefs-pull → everything this account has synced. */
+async function handlePrefsPull(req: VercelRequest, res: VercelResponse) {
+  const who = await seatVerifyUser((req.body || {}) as Record<string, string>)
+  if (!who) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const snap = await prefsRef(who.uid).get()
+  const doc = (snap.exists ? (snap.data() as PrefsDoc) : {}) || {}
+  return res.status(200).json({ ok: true, prefs: prefsView(doc) })
+}
+
+/** action=prefs-push → apply a local change, then return the merged truth. */
+async function handlePrefsPush(req: VercelRequest, res: VercelResponse) {
+  const body = (req.body || {}) as {
+    idToken?: string
+    sessionToken?: string
+    routingRules?: unknown
+    transcriptionGlossary?: string
+    transcriptionPacks?: string[]
+    pricingProfiles?: Array<{ id?: string; data?: unknown; updatedAt?: number }>
+    quoteDrafts?: Array<{ id?: string; data?: unknown; updatedAt?: number }>
+    deleted?: string[]
+  }
+  const who = await seatVerifyUser(body)
+  if (!who) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  if (JSON.stringify(body).length > PREFS_MAX_BODY_BYTES) {
+    return res.status(413).json({ ok: false, error: 'too_large' })
+  }
+  if (!tryRateLimit(`prefs-push_${who.uid}`, 120, 60 * 60)) {
+    return res.status(429).json({ ok: false, error: 'rate_limited' })
+  }
+
+  const ref = prefsRef(who.uid)
+  const now = Date.now()
+  let view: ReturnType<typeof prefsView> | null = null
+  await getDb().runTransaction(async (tx) => {
+    const snap = await tx.get(ref)
+    const cur = ((snap.exists ? (snap.data() as PrefsDoc) : {}) || {}) as PrefsDoc
+    const next: PrefsDoc = { ...cur }
+
+    // Scalars: the sender only includes one when the USER just changed it, so
+    // "latest push wins" is the whole rule — no client clock involved.
+    if (body.routingRules !== undefined) {
+      next.routingRules = { value: body.routingRules, updatedAt: now }
+    }
+    if (typeof body.transcriptionGlossary === 'string') {
+      next.transcriptionGlossary = {
+        value: body.transcriptionGlossary.slice(0, 20000),
+        updatedAt: now,
+      }
+    }
+    if (Array.isArray(body.transcriptionPacks)) {
+      next.transcriptionPacks = {
+        value: body.transcriptionPacks.slice(0, 100).map((p) => String(p).slice(0, 80)),
+        updatedAt: now,
+      }
+    }
+
+    const tombs: Record<string, number> = { ...(cur.deleted || {}) }
+    for (const id of (body.deleted || []).slice(0, PREFS_MAX_ITEMS)) {
+      const k = String(id || '').slice(0, 120)
+      if (k) tombs[k] = now
+    }
+    next.deleted = tombs
+
+    if (Array.isArray(body.pricingProfiles)) {
+      next.pricingProfiles = mergePrefCollection(cur.pricingProfiles || {}, body.pricingProfiles, tombs)
+    } else if (Object.keys(tombs).length) {
+      next.pricingProfiles = mergePrefCollection(cur.pricingProfiles || {}, [], tombs)
+    }
+    if (Array.isArray(body.quoteDrafts)) {
+      next.quoteDrafts = mergePrefCollection(cur.quoteDrafts || {}, body.quoteDrafts, tombs)
+    } else if (Object.keys(tombs).length) {
+      next.quoteDrafts = mergePrefCollection(cur.quoteDrafts || {}, [], tombs)
+    }
+
+    next.updatedAt = now
+    tx.set(ref, next)
+    view = prefsView(next)
+  })
+  return res.status(200).json({ ok: true, prefs: view })
 }
 
 /** action=device-list (user) → this account's computers, read-only.
