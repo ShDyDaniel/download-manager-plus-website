@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { LifeBuoy, RefreshCw, Copy, Check, Square, Download, Loader2, Monitor, X, TerminalSquare, CornerDownLeft, Cpu, MonitorOff, AppWindow } from 'lucide-react'
+import { LifeBuoy, RefreshCw, Copy, Check, Square, Download, Loader2, Monitor, X, TerminalSquare, CornerDownLeft, Cpu, MonitorOff, AppWindow, Sparkles } from 'lucide-react'
 import { buildZip } from '../lib/zip'
 
 /**
@@ -24,6 +24,126 @@ function screenLabel(name: string): string {
   if (name === 'app.jpg') return 'חלון התוכנה'
   const m = name.match(/screen-(\d+)/)
   return m ? `מסך ${m[1]}` : name
+}
+
+/**
+ * The diagnosis, rendered. Deliberately a tiny hand-rolled reader rather than
+ * a markdown dependency: the answer only ever uses headings, bullets and
+ * fenced code, and everything is printed as TEXT — no html is interpreted —
+ * so a log line that happens to contain markup can't become markup here.
+ */
+function Diagnosis({
+  text,
+  onRun,
+}: {
+  text: string
+  /** Present when the command console is live. Loads the command into the
+   *  console input — it does NOT run it. The operator reads it and presses
+   *  send: the model proposes, a human commits. Absent = read-only block. */
+  onRun?: (cmd: string) => void
+}) {
+  const blocks: React.ReactNode[] = []
+  const lines = text.split('\n')
+  let code: string[] | null = null
+  let bullets: string[] = []
+
+  const codeBlock = (body: string[], key: string) => {
+    const joined = body.join('\n')
+    // A single line is a command we can hand to the console as-is. Anything
+    // multi-line is a script: shells differ on how they take those (cmd.exe
+    // chains with & and would mangle it), so it stays copy-only.
+    const single = body.filter((l) => l.trim()).length === 1
+    const cmd = joined.trim()
+    return (
+      <div key={key} className="space-y-1">
+        <pre
+          dir="ltr"
+          className="overflow-x-auto rounded-lg border border-border bg-background px-3 py-2 text-left text-[11px] leading-relaxed text-foreground"
+        >
+          {joined}
+        </pre>
+        <div className="flex items-center gap-2">
+          {onRun && single && cmd && (
+            <button
+              onClick={() => onRun(cmd)}
+              className="inline-flex items-center gap-1 rounded-md bg-primary/15 px-2 py-1 text-[11px] text-primary ring-1 ring-primary/40 transition hover:bg-primary/25"
+            >
+              <CornerDownLeft className="h-3 w-3" /> העבר לטרמינל
+            </button>
+          )}
+          <button
+            onClick={() => void navigator.clipboard.writeText(cmd).catch(() => undefined)}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary"
+          >
+            <Copy className="h-3 w-3" /> העתק
+          </button>
+          {onRun && !single && (
+            <span className="text-[11px] text-muted-foreground">
+              רצף פקודות — הריצו אותן אחת-אחת בטרמינל
+            </span>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  const flushBullets = () => {
+    if (!bullets.length) return
+    blocks.push(
+      <ul key={`u${blocks.length}`} className="me-4 list-disc space-y-1 text-xs text-foreground">
+        {bullets.map((b, i) => (
+          <li key={i}>{b}</li>
+        ))}
+      </ul>,
+    )
+    bullets = []
+  }
+
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '')
+    if (line.trimStart().startsWith('```')) {
+      if (code) {
+        blocks.push(codeBlock(code, `c${blocks.length}`))
+        code = null
+      } else {
+        flushBullets()
+        code = []
+      }
+      continue
+    }
+    if (code) {
+      code.push(raw)
+      continue
+    }
+    if (/^#{1,4}\s/.test(line)) {
+      flushBullets()
+      blocks.push(
+        <h3 key={`h${blocks.length}`} className="pt-1 text-xs font-bold text-primary">
+          {line.replace(/^#{1,4}\s+/, '')}
+        </h3>,
+      )
+      continue
+    }
+    if (/^\s*[-*•]\s+/.test(line)) {
+      bullets.push(line.replace(/^\s*[-*•]\s+/, ''))
+      continue
+    }
+    if (!line.trim()) {
+      flushBullets()
+      continue
+    }
+    flushBullets()
+    blocks.push(
+      <p key={`p${blocks.length}`} className="text-xs leading-relaxed text-foreground">
+        {line}
+      </p>,
+    )
+  }
+  flushBullets()
+  // An unterminated fence still gets rendered — a truncated answer shouldn't
+  // silently swallow the command it was in the middle of suggesting.
+  if (code) blocks.push(codeBlock(code, `c${blocks.length}`))
+  return <div className="space-y-2">{blocks}</div>
 }
 
 function viewToken(): string {
@@ -65,6 +185,9 @@ export default function AdminSupportSessionPage() {
   const [screenMode, setScreenMode] = useState<ScreenMode>('app')
   const [screenDisplay, setScreenDisplay] = useState(-1)
   const [screenPerm, setScreenPerm] = useState('granted')
+  const [ai, setAi] = useState({ busy: false, answer: '', error: '' })
+  const [aiQuestion, setAiQuestion] = useState('')
+  const [aiScreens, setAiScreens] = useState(false)
   const [purgeAt, setPurgeAt] = useState<number | null>(null)
   const [purged, setPurged] = useState(false)
   const cmdEnabledRef = useRef(false) // drives the faster poll while the console is open
@@ -216,6 +339,36 @@ export default function AdminSupportSessionPage() {
     } finally {
       setCmdSending(false)
     }
+  }
+
+  /** Ask for a written diagnosis of everything the session has gathered.
+   *  On demand rather than continuous: the logs re-upload every couple of
+   *  seconds, and analysing each round would cost a fortune to tell you the
+   *  same thing over and over. */
+  async function analyze() {
+    if (ai.busy) return
+    setAi({ busy: true, answer: '', error: '' })
+    try {
+      const j = await api<{ answer?: string; error?: string }>('support-analyze', {
+        code: cleanCode,
+        question: aiQuestion.trim() || undefined,
+        // Opt-in per run: images cost several times a page of text, and a
+        // customer's desktop holds plenty that has nothing to do with the fault.
+        includeScreens: aiScreens && Object.keys(shots).length > 0,
+      })
+      setAi({ busy: false, answer: j.answer || '', error: '' })
+    } catch (e) {
+      setAi({ busy: false, answer: '', error: (e as Error).message || 'הניתוח נכשל' })
+    }
+  }
+
+  /** Put a suggested command into the console input rather than firing it.
+   *  The operator still presses send — one deliberate act, never two clicks
+   *  from a model's sentence to a stranger's shell. */
+  function stageCmd(text: string) {
+    setCmdInput(text)
+    document.getElementById('support-cmd-input')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    ;(document.getElementById('support-cmd-input') as HTMLInputElement | null)?.focus()
   }
 
   async function copyLink() {
@@ -404,6 +557,65 @@ export default function AdminSupportSessionPage() {
           </div>
         )}
 
+        {/* AI diagnosis — reads the logs + machine profile, writes an opinion.
+            Never acts: any command it proposes is printed for the operator to
+            run deliberately, because the material it reads comes from someone
+            else's computer and can say anything. */}
+        <div className="mb-4 rounded-xl border border-border bg-card p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Sparkles className="h-3.5 w-3.5" /> אבחון אוטומטי
+            </span>
+            <input
+              value={aiQuestion}
+              onChange={(e) => setAiQuestion(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void analyze()
+              }}
+              placeholder="שאלה ממוקדת (לא חובה) — למשל: למה ההפרדה רצה על מעבד?"
+              className="min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/50"
+            />
+            <button
+              onClick={() => void analyze()}
+              disabled={ai.busy}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-3 py-1.5 text-xs text-primary ring-1 ring-primary/40 transition hover:bg-primary/25 disabled:opacity-50"
+            >
+              {ai.busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+              {ai.busy ? 'מנתח…' : 'נתח את הסשן'}
+            </button>
+          </div>
+          {Object.keys(shots).length > 0 && (
+            <label className="mb-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={aiScreens}
+                onChange={(e) => setAiScreens(e.target.checked)}
+                className="accent-primary"
+              />
+              כלול גם את צילומי המסך בניתוח (למשל תקלה שרואים ולא כתובה בלוג)
+            </label>
+          )}
+          {ai.error && <p className="text-xs text-red-400">{ai.error}</p>}
+          {ai.answer ? (
+            <>
+              <Diagnosis
+                text={ai.answer}
+                onRun={cmd.enabled && cmd.consent ? stageCmd : undefined}
+              />
+              <p className="mt-2 border-t border-border pt-2 text-[11px] text-muted-foreground">
+                נכתב על ידי מודל שקרא את הלוגים — הוא לא הריץ כלום ולא נגע במחשב. פקודה שהוא מציע נטענת לטרמינל ורצה רק כשאתם שולחים אותה, אז קראו אותה קודם.
+              </p>
+            </>
+          ) : (
+            !ai.busy &&
+            !ai.error && (
+              <p className="text-[11px] text-muted-foreground">
+                קורא את כל הלוגים שנאספו ואת פרטי המחשב, ומחזיר אבחון עם הראיות שעליהן הוא מסתמך.
+              </p>
+            )
+          )}
+        </div>
+
         {/* Screen-capture controls — what the app should stream */}
         <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2.5">
           <span className="me-1 text-xs font-medium text-muted-foreground">שיתוף מסך:</span>
@@ -498,6 +710,7 @@ export default function AdminSupportSessionPage() {
                 </div>
                 <div className="flex items-center gap-2 border-t border-amber-500/20 p-2">
                   <input
+                    id="support-cmd-input"
                     dir="ltr"
                     value={cmdInput}
                     onChange={(e) => setCmdInput(e.target.value)}
