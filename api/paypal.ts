@@ -9877,7 +9877,10 @@ async function handleDeviceReleaseConfirm(req: VercelRequest, res: VercelRespons
 
 /** action=admin-device-list → devices + seat maths for one user. */
 async function handleAdminDeviceList(req: VercelRequest, res: VercelResponse) {
-  if (!(await verifyAdminStepUp(req))) {
+  // A READ — gated by the 12h admin 2FA session, like admin-list-users. Only
+  // the mutations below step up, so merely opening the panel doesn't demand a
+  // passkey every time.
+  if (!(await verifyAdmin2FA(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const uid = String((req.body as { uid?: string })?.uid || '').trim()
