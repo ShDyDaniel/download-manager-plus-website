@@ -1663,6 +1663,62 @@ function ReviewWorkspace({
    *  black frame with a small video in the corner. */
   const boxReserved =
     !fsActive && !!project.videoWidth && !!project.videoHeight
+  /** A load failure, phrased for the client rather than the console.
+   *  Until now this page had none: when the source failed the player just sat
+   *  there black and silent, which is indistinguishable from a video that
+   *  hasn't started — so the reviewer had no idea anything was wrong, and the
+   *  editor only found out if they picked up the phone. */
+  const [videoError, setVideoError] = useState<string | null>(null)
+  const [retrying, setRetrying] = useState(false)
+
+  function describeVideoError(el: HTMLVideoElement): string {
+    const code = el.error?.code
+    if (code === 2) return 'החיבור נקטע באמצע טעינת הסרטון. נסו שוב.'
+    if (code === 3) {
+      return 'הסרטון נטען אך לא ניתן לנגן אותו — ייתכן שהקובץ פגום. פנו לעורך ששלח לכם את הקישור.'
+    }
+    // code 4 / networkState 3 do NOT mean what they look like they mean. The
+    // browser reports the same "no supported source" both when it never
+    // reached the file and when it fetched one it can't decode — measured:
+    // a corrupt file lands on exactly the same values as an unreachable host.
+    // So name both causes instead of asserting the wrong one; a blocked
+    // network is much the likelier of the two, so it goes first.
+    return 'לא הצלחנו לטעון את הסרטון. לרוב זה חיבור שחוסם את הנגן — נסו רשת אחרת, או כבו VPN וסינון תוכן. אם זה נמשך, ייתכן שיש בעיה בקובץ עצמו, ואז כדאי לפנות לעורך.'
+  }
+
+  async function retryVideo() {
+    const el = videoRef.current
+    if (!el || retrying) return
+    setRetrying(true)
+    setVideoError(null)
+    try {
+      el.load()
+      // Hold briefly before declaring success, so the button doesn't flash
+      // back to a working state on a host that is still dead.
+      await new Promise((r) => setTimeout(r, 1500))
+      if (!el.readyState) setVideoError(describeVideoError(el))
+    } finally {
+      setRetrying(false)
+    }
+  }
+
+  // A host that can't be reached does not always raise an error — measured: a
+  // dead hostname sat in networkState LOADING with no event for as long as we
+  // watched. Without this the reviewer stares at a black rectangle with no
+  // explanation and no idea whether to keep waiting, which is exactly the
+  // failure this whole thing is meant to stop being invisible.
+  useEffect(() => {
+    setVideoError(null)
+    const t = setTimeout(() => {
+      const el = videoRef.current
+      if (el && !el.readyState) {
+        setVideoError(
+          'הסרטון לא נטען. ייתכן שהחיבור איטי מאוד, או שהרשת שאתם מחוברים אליה חוסמת את הנגן.',
+        )
+      }
+    }, 15000)
+    return () => clearTimeout(t)
+  }, [streamUrl])
   useEffect(() => {
     const onChange = () => setIsFs(Boolean(document.fullscreenElement))
     document.addEventListener('fullscreenchange', onChange)
@@ -2151,8 +2207,46 @@ function ReviewWorkspace({
             ref={playerWrapRef}
             className={`relative overflow-hidden border border-white/5 bg-black ${
               fsActive ? 'flex h-full w-full items-center justify-center rounded-none' : 'rounded-2xl'
+            } ${
+              // A failed source can leave the video box with no height at all,
+              // so give the surface something to be — otherwise the message
+              // below would have nowhere to appear.
+              videoError && !fsActive ? 'min-h-[240px]' : ''
             }`}
           >
+            {videoError && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/85 px-6 text-center backdrop-blur-sm">
+                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-destructive/15 text-destructive">
+                  <AlertTriangle className="h-5 w-5" />
+                </div>
+                <p className="max-w-sm text-sm leading-relaxed text-fg">{videoError}</p>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void retryVideo()}
+                    disabled={retrying}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-bg transition-colors hover:bg-primary-hover disabled:opacity-60"
+                  >
+                    {retrying ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    )}
+                    נסו שוב
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.location.reload()}
+                    className="rounded-lg border border-border px-4 py-2 text-xs text-fg-muted transition-colors hover:bg-bg-elevated hover:text-fg"
+                  >
+                    רענון הדף
+                  </button>
+                </div>
+                <p className="text-[11px] text-fg-muted">
+                  אם זה חוזר — צלמו מסך ושלחו לעורך שממנו קיבלתם את הקישור.
+                </p>
+              </div>
+            )}
             <div
               className={`flex items-center justify-center ${
                 fsActive ? 'h-full w-full' : 'max-h-[72vh]'
@@ -2221,6 +2315,8 @@ function ReviewWorkspace({
                   // that is itself sizing to the child. Measured, not guessed.
                   // The reservation is done on the box below instead.
                   onContextMenu={(e) => e.preventDefault()}
+                  onError={(e) => setVideoError(describeVideoError(e.currentTarget))}
+                  onLoadedMetadata={() => setVideoError(null)}
                   className={`review-video block ${
                     boxReserved
                       ? 'h-full w-full object-contain'
