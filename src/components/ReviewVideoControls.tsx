@@ -11,6 +11,7 @@ import {
   VolumeX,
   Maximize2,
   Minimize2,
+  Loader2,
 } from 'lucide-react'
 
 /**
@@ -42,6 +43,7 @@ export function ReviewVideoControls({
   onToggleFullscreen,
   showFullscreen = true,
   fps = 25,
+  busy = false,
 }: {
   videoRef: RefObject<HTMLVideoElement | null>
   fsActive: boolean
@@ -50,7 +52,25 @@ export function ReviewVideoControls({
   showFullscreen?: boolean
   /** Frames-per-second for the single-frame step buttons. */
   fps?: number
+  /** The video has nothing to play yet — still fetching, or stalled mid-play.
+   *  Shows a spinner where the play button would be, because a play button on
+   *  a video that cannot start yet invites a click that does nothing. */
+  busy?: boolean
 }) {
+  // The bar lives inside the video box, so a PORTRAIT video gives it barely
+  // 380px while the viewport is still "desktop" — every sm: breakpoint stays
+  // true and the whole row crams together, wrapping the timecode onto two
+  // lines. Measure the bar's OWN width instead and drop the least essential
+  // controls when there isn't room.
+  const barRef = useRef<HTMLDivElement>(null)
+  const [narrow, setNarrow] = useState(false)
+  useEffect(() => {
+    const el = barRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(([e]) => setNarrow(e.contentRect.width < 420))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   const [playing, setPlaying] = useState(false)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -231,7 +251,14 @@ export function ReviewVideoControls({
 
       {/* Center play button when paused — big, obvious affordance. On touch
           it follows the same auto-hide as the bar. */}
-      {!playing && (!isTouch || visible) && (
+      {busy && (
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur">
+            <Loader2 className="h-7 w-7 animate-spin" />
+          </div>
+        </div>
+      )}
+      {!busy && !playing && (!isTouch || visible) && (
         <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
           <button
             type="button"
@@ -250,6 +277,7 @@ export function ReviewVideoControls({
       {/* Control bar — bottom overlay with a scrim so it reads over any
           frame. On touch it fades out 3s after the last interaction. */}
       <div
+        ref={barRef}
         dir="ltr"
         onPointerDown={show}
         className={
@@ -302,13 +330,15 @@ export function ReviewVideoControls({
             >
               <Rewind className="h-5 w-5" />
             </button>
-            <span
-              dir="ltr"
-              className="inline-flex select-none items-center gap-1 font-sans text-[11px] font-medium leading-none tracking-tight text-white/80"
-            >
-              <span>15</span>
-              <span>שנ׳</span>
-            </span>
+            {!narrow && (
+              <span
+                dir="ltr"
+                className="inline-flex select-none items-center gap-1 font-sans text-[11px] font-medium leading-none tracking-tight text-white/80"
+              >
+                <span>15</span>
+                <span>שנ׳</span>
+              </span>
+            )}
             <button
               type="button"
               onClick={() => skip(15)}
@@ -323,7 +353,7 @@ export function ReviewVideoControls({
           {/* Single-frame step — same shape (buttons flanking a label).
               Hidden on phones (sm:) where the bar is tight and
               frame-nudging isn't practical. */}
-          <div className="hidden items-center gap-0.5 sm:flex">
+          <div className={`items-center gap-0.5 ${narrow ? 'hidden' : 'hidden sm:flex'}`}>
             <button
               type="button"
               onClick={() => stepFrame(-1)}
@@ -357,6 +387,7 @@ export function ReviewVideoControls({
               min={0}
               max={1}
               step={0.05}
+              hidden={narrow}
               value={muted ? 0 : volume}
               aria-label="עוצמת שמע"
               onChange={(e) => onVolumeInput(Number(e.target.value))}
@@ -364,7 +395,7 @@ export function ReviewVideoControls({
             />
           </div>
 
-          <span className="mx-1 select-none font-mono text-[11px] tabular-nums text-white/85">
+          <span className="mx-1 select-none whitespace-nowrap font-mono text-[11px] tabular-nums text-white/85">
             {fmt(current)} / {fmt(duration)}
           </span>
 

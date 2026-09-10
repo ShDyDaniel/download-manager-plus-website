@@ -1670,6 +1670,10 @@ function ReviewWorkspace({
    *  editor only found out if they picked up the phone. */
   const [videoError, setVideoError] = useState<string | null>(null)
   const [retrying, setRetrying] = useState(false)
+  /** Nothing to play yet — the first bytes are still on their way, or playback
+   *  stalled waiting for more. Starts true so the spinner is up on the very
+   *  first paint rather than appearing a beat later. */
+  const [videoBusy, setVideoBusy] = useState(true)
 
   function describeVideoError(el: HTMLVideoElement): string {
     const code = el.error?.code
@@ -1709,6 +1713,7 @@ function ReviewWorkspace({
   // failure this whole thing is meant to stop being invisible.
   useEffect(() => {
     setVideoError(null)
+    setVideoBusy(true)
     const t = setTimeout(() => {
       const el = videoRef.current
       if (el && !el.readyState) {
@@ -2315,8 +2320,18 @@ function ReviewWorkspace({
                   // that is itself sizing to the child. Measured, not guessed.
                   // The reservation is done on the box below instead.
                   onContextMenu={(e) => e.preventDefault()}
-                  onError={(e) => setVideoError(describeVideoError(e.currentTarget))}
+                  onError={(e) => {
+                    setVideoBusy(false)
+                    setVideoError(describeVideoError(e.currentTarget))
+                  }}
                   onLoadedMetadata={() => setVideoError(null)}
+                  // canplay, not loadedmetadata: metadata only means we know the
+                  // shape and duration, not that a single frame can be shown.
+                  onLoadStart={() => setVideoBusy(true)}
+                  onWaiting={() => setVideoBusy(true)}
+                  onStalled={() => setVideoBusy(true)}
+                  onCanPlay={() => setVideoBusy(false)}
+                  onPlaying={() => setVideoBusy(false)}
                   className={`review-video block ${
                     boxReserved
                       ? 'h-full w-full object-contain'
@@ -2334,6 +2349,7 @@ function ReviewWorkspace({
                   videoRef={videoRef}
                   fsActive={fsActive}
                   onToggleFullscreen={toggleFullscreen}
+                  busy={videoBusy && !videoError}
                 />
               </div>
             </div>
