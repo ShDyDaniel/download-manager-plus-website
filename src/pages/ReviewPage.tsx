@@ -398,6 +398,11 @@ export function ReviewPage() {
                 allowDownload?: boolean
                 driveViewUrl?: string | null
                 clientFinalizedBy?: string
+                // The stored pixel size of the video. The server has always
+                // sent these; the page just never read them, which is why the
+                // player had no shape until the file's metadata arrived.
+                videoWidth?: number
+                videoHeight?: number
               }
             }
           | {
@@ -414,6 +419,8 @@ export function ReviewPage() {
                 allowDownload?: boolean
                 driveViewUrl?: string | null
                 clientFinalizedBy?: string
+                videoWidth?: number
+                videoHeight?: number
               } | null
             }
           | { ok: false; error: string }
@@ -469,6 +476,12 @@ export function ReviewPage() {
           allowDownload: proj.allowDownload === true,
           driveViewUrl: proj.driveViewUrl ?? null,
           clientFinalizedBy: proj.clientFinalizedBy ?? '',
+          // Carried so the player can reserve the right box on the FIRST
+          // paint. Without them the page renders a shapeless video element,
+          // then snaps to the real aspect ratio once the browser has read
+          // enough of the file — which is the jump the client sees.
+          videoWidth: proj.videoWidth,
+          videoHeight: proj.videoHeight,
         }
         const groupContext =
           json.kind === 'group'
@@ -513,6 +526,8 @@ export function ReviewPage() {
         allowDownload: boolean
         driveViewUrl: string | null
         clientFinalizedBy?: string
+        videoWidth?: number
+        videoHeight?: number
       },
     ) {
       const passwordToken = localStorage.getItem(PWD_TOKEN_KEY_PREFIX + token)
@@ -558,6 +573,8 @@ export function ReviewPage() {
           watermark: flags.watermark,
           allowDownload: flags.allowDownload,
           driveViewUrl: flags.driveViewUrl,
+          videoWidth: flags.videoWidth,
+          videoHeight: flags.videoHeight,
           groupContext,
         },
         viewerEmail,
@@ -2155,11 +2172,16 @@ function ReviewWorkspace({
                   // frame arrives. CSS max-w/max-h then scale it down to fit.
                   width={project.videoWidth || undefined}
                   height={project.videoHeight || undefined}
-                  style={
-                    project.videoWidth && project.videoHeight
-                      ? { aspectRatio: `${project.videoWidth} / ${project.videoHeight}` }
-                      : undefined
-                  }
+                  // Falls back to 16/9 for rounds uploaded before the size was
+                  // recorded, and for Drive imports that never carried one. A
+                  // box of the usual shape is far better than no box: an
+                  // unshaped video element is the "strange format" the client
+                  // sees for the first second. The browser corrects it from the
+                  // file's own metadata anyway, so the only cost is a jump in
+                  // the rare portrait case — exactly what happens today.
+                  style={{
+                    aspectRatio: `${project.videoWidth || 16} / ${project.videoHeight || 9}`,
+                  }}
                   onContextMenu={(e) => e.preventDefault()}
                   className={`review-video block h-auto w-auto max-w-full ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`}
                 />

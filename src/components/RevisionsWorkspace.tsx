@@ -175,6 +175,8 @@ async function uploadRoundVideo(
       videoFileName: imported.videoFileName,
       videoSizeBytes: imported.videoSizeBytes,
       videoMime: imported.videoMime,
+      videoWidth: imported.videoWidth || undefined,
+      videoHeight: imported.videoHeight || undefined,
     }
   }
   if (source.kind !== 'upload') {
@@ -2021,6 +2023,8 @@ function ReplaceVideoModal({
         videoFileName: loc.videoFileName,
         videoSizeBytes: loc.videoSizeBytes,
         videoMime: loc.videoMime,
+        videoWidth: loc.videoWidth,
+        videoHeight: loc.videoHeight,
       })
       if (!r.ok) throw new Error(r.error)
       onReplaced()

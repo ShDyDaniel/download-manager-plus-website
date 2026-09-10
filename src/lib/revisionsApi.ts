@@ -164,6 +164,11 @@ export async function importDriveLinkToR2(
   videoFileName: string
   videoSizeBytes: number
   videoMime: string
+  /** From Drive's own metadata — the bytes stream Google → Cloudflare → R2
+   *  without touching the browser, so this is the only chance to learn the
+   *  video's size. Zero when Drive doesn't report it. */
+  videoWidth: number
+  videoHeight: number
 }> {
   const token = getSessionToken()
   if (!token) throw new Error('יש להתחבר מחדש לאתר ולנסות שוב')
@@ -182,6 +187,8 @@ export async function importDriveLinkToR2(
     sizeBytes?: number
     fileName?: string
     mimeType?: string
+    width?: number
+    height?: number
   }
   if (!initResp.ok || !init.ok || !init.importUrl || !init.r2Key) {
     throw new Error(init.message || init.error || 'הייבוא נכשל')
@@ -204,6 +211,8 @@ export async function importDriveLinkToR2(
     videoFileName: init.fileName || 'video.mp4',
     videoSizeBytes: Number(init.sizeBytes) || 0,
     videoMime: init.mimeType || 'video/mp4',
+    videoWidth: Number(init.width) || 0,
+    videoHeight: Number(init.height) || 0,
   }
 }
 
@@ -809,6 +818,11 @@ export interface ReplaceVideoInput {
   videoFileName: string
   videoSizeBytes: number
   videoMime: string
+  /** The NEW file's pixel size. Always send it — the server overwrites the
+   *  stored pair, so omitting it correctly clears a stale one rather than
+   *  leaving the previous video's shape behind. */
+  videoWidth?: number
+  videoHeight?: number
   /** When true (default server-side), the old R2 object is deleted
    *  after the swap so it stops counting against quota. Pass false
    *  to keep it. */

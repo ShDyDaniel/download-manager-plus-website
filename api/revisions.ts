@@ -327,25 +327,39 @@ function extractDriveFileId(input: string): string | null {
 /** Read a public Drive file's metadata via the API key. Returns null
  *  when the file isn't reachable (not shared publicly / wrong id /
  *  key missing). `size` is bytes (Drive returns it as a string). */
-async function fetchDrivePublicMeta(
-  fileId: string,
-): Promise<{ name: string; size: number; mimeType: string } | null> {
+async function fetchDrivePublicMeta(fileId: string): Promise<{
+  name: string
+  size: number
+  mimeType: string
+  width: number
+  height: number
+} | null> {
   if (!DRIVE_API_KEY) return null
   try {
+    // videoMediaMetadata is Drive's own probe of the file — width, height and
+    // duration, already computed on their side. Asking for it costs nothing
+    // extra and is the ONLY way an imported video can carry its pixel size:
+    // the bytes go Google → Cloudflare → R2 without ever passing through a
+    // browser or this server, so nothing here could measure it.
     const url =
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}` +
-      `?fields=id,name,size,mimeType&supportsAllDrives=true&key=${DRIVE_API_KEY}`
+      `?fields=id,name,size,mimeType,videoMediaMetadata&supportsAllDrives=true&key=${DRIVE_API_KEY}`
     const r = await fetch(url)
     if (!r.ok) return null
     const j = (await r.json()) as {
       name?: string
       size?: string
       mimeType?: string
+      videoMediaMetadata?: { width?: number; height?: number }
     }
     return {
       name: String(j.name || 'video.mp4'),
       size: Math.max(0, Math.floor(Number(j.size) || 0)),
       mimeType: String(j.mimeType || 'video/mp4'),
+      // Absent for a file Drive hasn't finished processing, or for a
+      // non-video — zero, and the player falls back to its default shape.
+      width: Math.max(0, Math.floor(Number(j.videoMediaMetadata?.width) || 0)),
+      height: Math.max(0, Math.floor(Number(j.videoMediaMetadata?.height) || 0)),
     }
   } catch {
     return null
@@ -905,6 +919,8 @@ async function handleDriveImportInit(req: VercelRequest, res: VercelResponse) {
     sizeBytes: meta.size,
     fileName: meta.name,
     mimeType: meta.mimeType,
+    width: meta.width,
+    height: meta.height,
   })
 }
 
@@ -6469,6 +6485,8 @@ async function handleReplaceProjectVideo(
     videoFileName?: string
     videoSizeBytes?: number
     videoMime?: string
+    videoWidth?: number
+    videoHeight?: number
     trashOldFile?: boolean
   }
   const verified = await verifyOwnerAuth(req)
@@ -6514,6 +6532,13 @@ async function handleReplaceProjectVideo(
     videoFileName: videoFileName || undefined,
     videoSizeBytes: videoSizeBytes || undefined,
     videoMime: videoMime || undefined,
+    // Always overwritten, and zeroed when the new file's size is unknown.
+    // Leaving the previous values in place was worse than having none: swap a
+    // landscape round for a portrait one and the review page would reserve the
+    // old shape forever, with no way for the client's browser to be right
+    // before the file loaded.
+    videoWidth: Math.max(0, Math.floor(Number(body.videoWidth) || 0)),
+    videoHeight: Math.max(0, Math.floor(Number(body.videoHeight) || 0)),
     videoStatus: 'ready',
     updatedAt: now,
   })
