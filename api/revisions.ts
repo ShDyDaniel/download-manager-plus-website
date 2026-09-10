@@ -9740,6 +9740,10 @@ async function handleSupportPurge(req: VercelRequest, res: VercelResponse) {
  * ══════════════════════════════════════════════════════════════════ */
 const HISTORY_MAX_ENTRIES = 300
 const HISTORY_MAX_BYTES = 40 * 1024 * 1024
+/** How long a run's body is kept in the cloud. Transcripts are heavy, and the
+ *  cloud copy exists to move a run BETWEEN machines — not to archive it. After
+ *  this the body is dropped and the machines that already have it keep it. */
+const HISTORY_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 interface HistoryMeta {
   id: string
@@ -9789,6 +9793,22 @@ async function handleHistorySync(req: VercelRequest, res: VercelResponse) {
     }
   }
 
+  // Age out the cloud copies FIRST, so nothing below re-uploads a run that is
+  // already past its TTL.
+  //
+  // Expiry is emphatically NOT a deletion: it drops the body and the index
+  // entry, but records NO tombstone. A tombstone means "the user deleted this"
+  // and instructs every other machine to erase its local copy — which is the
+  // exact opposite of what expiry is for. The local copies are the point.
+  const expiredBefore = now - HISTORY_TTL_MS
+  for (const [id, e] of Object.entries(entries)) {
+    const at = Number(e.updatedAt) || Number(e.createdAt) || now
+    if (at < expiredBefore) {
+      delete entries[id]
+      await r2DeleteObject(historyKey(v.uid, id)).catch(() => false)
+    }
+  }
+
   const local = new Set<string>()
   const upload: Array<{ id: string; url: string }> = []
   for (const m of (b.entries || []).slice(0, HISTORY_MAX_ENTRIES)) {
@@ -9798,6 +9818,9 @@ async function handleHistorySync(req: VercelRequest, res: VercelResponse) {
     // A run deleted elsewhere stays deleted — don't let this machine revive it.
     if (tombs[id]) continue
     const at = Number(m.updatedAt) || Number(m.createdAt) || now
+    // Already older than the TTL — uploading it would only have it swept on
+    // the next pass. It simply stays local, which is the intended end state.
+    if (at < expiredBefore) continue
     const known = entries[id]
     if (!known || (Number(known.updatedAt) || 0) < at) {
       entries[id] = {
@@ -9838,9 +9861,12 @@ async function handleHistorySync(req: VercelRequest, res: VercelResponse) {
   await ref.set({ entries, deleted: tombs, updatedAt: now })
   return res.status(200).json({
     ok: true,
+    // `index` is exactly what the cloud still holds — the app marks anything
+    // local that isn't in here as "this machine only".
     index: Object.values(entries),
     upload,
     download,
+    ttlDays: Math.round(HISTORY_TTL_MS / 86_400_000),
     maxBytes: HISTORY_MAX_BYTES,
   })
 }

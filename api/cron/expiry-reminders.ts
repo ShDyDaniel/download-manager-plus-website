@@ -491,6 +491,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // slipped through (app closed, admin tab shut) is still wiped.
     const supportPurge = await runSupportPurgeSweep(db)
 
+    // ─── Transcription-history cloud expiry ───────────────────
+    const historyExpiry = await runHistoryExpirySweep(db)
+
     // NOTE: Firestore backups used to run here too. They've moved
     // entirely to the dedicated Cloudflare backup worker
     // (dmplus-backup-cron → admin-run-auto-backup), so the two systems
@@ -510,6 +513,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       janitor: janitorResults,
       audit: auditResults,
       supportPurge,
+      historyExpiry,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
@@ -722,6 +726,48 @@ function getR2OrNull(): S3Client | null {
 async function r2Delete(r2: S3Client, key: string): Promise<void> {
   if (!key) return
   await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }))
+}
+
+/** Age out cloud copies of saved transcriptions.
+ *
+ *  The cloud copy exists to carry a run BETWEEN a user's machines, not to
+ *  archive it — transcripts are heavy. After 30 days the body is dropped and
+ *  the index entry removed; the machines that already downloaded it keep their
+ *  copies, and the app marks those as local-only.
+ *
+ *  Deliberately writes NO tombstone: that would read as "the user deleted this"
+ *  and make every other machine erase its local copy. Without this sweep a user
+ *  who stops opening the app would leave their transcripts in R2 forever. */
+async function runHistoryExpirySweep(
+  db: ReturnType<typeof getFirestore>,
+): Promise<{ ran: boolean; purged: number }> {
+  const r2 = getR2OrNull()
+  if (!r2) return { ran: false, purged: 0 }
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000
+  let purged = 0
+  try {
+    const snap = await db.collection('userHistory').get()
+    for (const doc of snap.docs) {
+      const d = doc.data() as {
+        entries?: Record<string, { id?: string; updatedAt?: number; createdAt?: number }>
+      }
+      const entries = { ...(d.entries || {}) }
+      let changed = false
+      for (const [id, e] of Object.entries(entries)) {
+        const at = Number(e?.updatedAt) || Number(e?.createdAt) || 0
+        if (at && at < cutoff) {
+          await r2Delete(r2, `history/${doc.id}/${id}.json`).catch(() => {})
+          delete entries[id]
+          changed = true
+          purged++
+        }
+      }
+      if (changed) await doc.ref.set({ entries, updatedAt: Date.now() }, { merge: true })
+    }
+  } catch {
+    /* best-effort backstop */
+  }
+  return { ran: true, purged }
 }
 
 /** Backstop for the remote-support 5-min purge: wipe R2 data for any stopped,
