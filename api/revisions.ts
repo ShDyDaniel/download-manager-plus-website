@@ -9774,7 +9774,16 @@ function safeHistoryId(raw: unknown): string | null {
 async function handleHistorySync(req: VercelRequest, res: VercelResponse) {
   const v = await verifyOwnerAuth(req)
   if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
-  const b = (req.body || {}) as { entries?: HistoryMeta[]; deleted?: string[] }
+  const b = (req.body || {}) as {
+    entries?: HistoryMeta[]
+    deleted?: string[]
+    /** Runs that predate cloud sync on this machine: drop them from the cloud
+     *  WITHOUT a tombstone, so the local copies everywhere are untouched. */
+    localOnly?: string[]
+    /** Ids whose body this machine has just finished uploading. Only these
+     *  enter the index — see the note below. */
+    confirmed?: string[]
+  }
 
   const ref = getDb().collection('userHistory').doc(v.uid)
   const snap = await ref.get()
@@ -9809,6 +9818,24 @@ async function handleHistorySync(req: VercelRequest, res: VercelResponse) {
     }
   }
 
+  // Runs the user wants kept off the cloud. Same shape as expiry: body and
+  // index entry go, NO tombstone — a tombstone would order every other machine
+  // to erase its local copy, which is the opposite of "keep it local".
+  for (const raw of (b.localOnly || []).slice(0, HISTORY_MAX_ENTRIES)) {
+    const id = safeHistoryId(raw)
+    if (!id || !entries[id]) continue
+    delete entries[id]
+    await r2DeleteObject(historyKey(v.uid, id)).catch(() => false)
+  }
+
+  // Only a CONFIRMED upload counts as being in the cloud. Indexing an entry at
+  // the moment we hand out its upload URL — as this did — makes the index lie
+  // whenever the upload then fails: the app shows the run as backed up, and
+  // another machine tries to download a body that was never written.
+  const confirmed = new Set(
+    (b.confirmed || []).map((c) => safeHistoryId(c)).filter((c): c is string => !!c),
+  )
+
   const local = new Set<string>()
   const upload: Array<{ id: string; url: string }> = []
   for (const m of (b.entries || []).slice(0, HISTORY_MAX_ENTRIES)) {
@@ -9823,18 +9850,23 @@ async function handleHistorySync(req: VercelRequest, res: VercelResponse) {
     if (at < expiredBefore) continue
     const known = entries[id]
     if (!known || (Number(known.updatedAt) || 0) < at) {
-      entries[id] = {
-        id,
-        name: String(m.name || '').slice(0, 200),
-        createdAt: Number(m.createdAt) || now,
-        updatedAt: at,
-        sourceName: String(m.sourceName || '').slice(0, 200),
-        speechDurationSec: Number(m.speechDurationSec) || 0,
-        wordCount: Number(m.wordCount) || 0,
-        cueCount: Number(m.cueCount) || 0,
+      if (confirmed.has(id)) {
+        // The body is in R2 — now it's true to say the cloud has this run.
+        entries[id] = {
+          id,
+          name: String(m.name || '').slice(0, 200),
+          createdAt: Number(m.createdAt) || now,
+          updatedAt: at,
+          sourceName: String(m.sourceName || '').slice(0, 200),
+          speechDurationSec: Number(m.speechDurationSec) || 0,
+          wordCount: Number(m.wordCount) || 0,
+          cueCount: Number(m.cueCount) || 0,
+        }
+      } else {
+        // Newer here than in the account → this machine owns the body. Hand
+        // out the URL and wait to be told it landed.
+        upload.push({ id, url: await r2PresignPut(historyKey(v.uid, id), 60 * 60) })
       }
-      // Newer here than in the account → this machine owns the body.
-      upload.push({ id, url: await r2PresignPut(historyKey(v.uid, id), 60 * 60) })
     }
   }
 
