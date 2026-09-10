@@ -2210,8 +2210,23 @@ function ReviewWorkspace({
               side-bars. */}
           <div
             ref={playerWrapRef}
+            style={
+              boxReserved
+                ? {
+                    // The black surface is sized to the video itself, so a
+                    // portrait clip is a tall centred rectangle instead of a
+                    // narrow picture stranded in a wide black band. Same
+                    // formula the box used: smallest of the column, the
+                    // video's own width, and what 72vh of height allows.
+                    width: `min(100%, ${project.videoWidth}px, calc(72vh * ${project.videoWidth} / ${project.videoHeight}))`,
+                    aspectRatio: `${project.videoWidth} / ${project.videoHeight}`,
+                  }
+                : undefined
+            }
             className={`relative overflow-hidden border border-white/5 bg-black ${
-              fsActive ? 'flex h-full w-full items-center justify-center rounded-none' : 'rounded-2xl'
+              fsActive
+                ? 'flex h-full w-full items-center justify-center rounded-none'
+                : `rounded-2xl ${boxReserved ? 'mx-auto' : ''}`
             } ${
               // A failed source can leave the video box with no height at all,
               // so give the surface something to be — otherwise the message
@@ -2254,7 +2269,7 @@ function ReviewWorkspace({
             )}
             <div
               className={`flex items-center justify-center ${
-                fsActive ? 'h-full w-full' : 'max-h-[72vh]'
+                fsActive || boxReserved ? 'h-full w-full' : 'max-h-[72vh]'
               }`}
             >
               {/* Video-box: shrinks to the video itself, so the watermark overlays
@@ -2277,24 +2292,7 @@ function ReviewWorkspace({
                   move the jump somewhere else. */}
               <div
                 className="review-player group relative flex max-w-full"
-                style={
-                  boxReserved
-                    ? {
-                        aspectRatio: `${project.videoWidth} / ${project.videoHeight}`,
-                        // WIDTH is the definite axis and the height follows the
-                        // ratio, so the shape can never come out wrong. Pinning
-                        // the height instead looked equivalent and wasn't: on a
-                        // column narrower than the video, max-width squashed the
-                        // box (measured 1.389 where 1.778 was wanted).
-                        // Smallest of: the column, the video's own width, and
-                        // what 72vh of height allows — so it still never
-                        // upscales a small video and still never exceeds the
-                        // same height cap as before.
-                        width: `min(100%, ${project.videoWidth}px, calc(72vh * ${project.videoWidth} / ${project.videoHeight}))`,
-                        height: 'auto',
-                      }
-                    : undefined
-                }
+                style={boxReserved ? { width: '100%', height: '100%' } : undefined}
               >
                 <video
                   ref={videoRef}
