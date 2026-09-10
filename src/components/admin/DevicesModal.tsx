@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Monitor, X, Loader2, Trash2, Minus, Plus, ShieldCheck } from 'lucide-react'
+import { Monitor, X, Loader2, Trash2, Minus, Plus, ShieldCheck, Ban, RotateCcw } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Portal } from '@/components/ui/Portal'
 import { adminApi } from '../../lib/adminApi'
@@ -12,6 +12,9 @@ interface SeatDevice {
   platform: string | null
   appVersion: string | null
   model: string | null
+  /** Barred from the account: holds no seat and can't sign in again. */
+  blocked: boolean
+  blockedAt: string | null
   /** False when a downgrade pushed this machine past the allowance. */
   active: boolean
 }
@@ -85,19 +88,22 @@ export function DevicesModal({
     void load()
   }, [load])
 
-  async function revoke(deviceId: string) {
+  async function act(action: string, deviceId: string, failMsg: string) {
     setBusy(deviceId)
     setError('')
     try {
-      await adminApi('admin-device-revoke', { uid, deviceId })
+      await adminApi(action, { uid, deviceId })
       await load()
       onChanged?.()
     } catch (e) {
-      setError((e as Error).message || 'השחרור נכשל')
+      setError((e as Error).message || failMsg)
     } finally {
       setBusy('')
     }
   }
+  const revoke = (id: string) => act('admin-device-revoke', id, 'השחרור נכשל')
+  const block = (id: string) => act('admin-device-block', id, 'החסימה נכשלה')
+  const unblock = (id: string) => act('admin-device-unblock', id, 'ביטול החסימה נכשל')
 
   async function setExtra(next: number) {
     if (next < 0 || next > 20) return
@@ -213,7 +219,11 @@ export function DevicesModal({
                       <div
                         key={d.deviceId}
                         className={`rounded-xl border px-3 py-2.5 ${
-                          d.active ? 'border-border bg-background' : 'border-border/60 bg-background/40'
+                          d.blocked
+                            ? 'border-destructive/30 bg-destructive/[0.06]'
+                            : d.active
+                              ? 'border-border bg-background'
+                              : 'border-border/60 bg-background/40'
                         }`}
                       >
                         <div className="flex items-start justify-between gap-3">
@@ -222,10 +232,16 @@ export function DevicesModal({
                               <span className="truncate text-sm font-medium text-fg">
                                 {d.model || 'מחשב ללא שם'}
                               </span>
-                              {!d.active && (
+                              {d.blocked ? (
                                 <span className="shrink-0 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] text-destructive">
-                                  מעל המכסה
+                                  חסום
                                 </span>
+                              ) : (
+                                !d.active && (
+                                  <span className="shrink-0 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] text-destructive">
+                                    מעל המכסה
+                                  </span>
+                                )
                               )}
                             </div>
                             <p className="mt-0.5 text-[11px] text-fg-muted">
@@ -241,19 +257,38 @@ export function DevicesModal({
                               {d.deviceId}
                             </p>
                           </div>
-                          <button
-                            type="button"
-                            disabled={busy === d.deviceId}
-                            onClick={() => void revoke(d.deviceId)}
-                            title="שחרר את המחשב הזה"
-                            className="shrink-0 rounded-lg border border-border p-1.5 text-fg-muted transition-colors hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-                          >
+                          <div className="flex shrink-0 items-center gap-1.5">
                             {busy === d.deviceId ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              <Loader2 className="h-3.5 w-3.5 animate-spin text-fg-muted" />
+                            ) : d.blocked ? (
+                              <button
+                                type="button"
+                                onClick={() => void unblock(d.deviceId)}
+                                title="בטל חסימה — המחשב יוכל להתחבר שוב"
+                                className="rounded-lg border border-border p-1.5 text-fg-muted transition-colors hover:bg-popover hover:text-fg"
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                              </button>
                             ) : (
-                              <Trash2 className="h-3.5 w-3.5" />
+                              <button
+                                type="button"
+                                onClick={() => void block(d.deviceId)}
+                                title="חסום — מפנה את המושב ומונע מהמחשב הזה להתחבר שוב"
+                                className="rounded-lg border border-border p-1.5 text-fg-muted transition-colors hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+                              >
+                                <Ban className="h-3.5 w-3.5" />
+                              </button>
                             )}
-                          </button>
+                            <button
+                              type="button"
+                              disabled={busy === d.deviceId}
+                              onClick={() => void revoke(d.deviceId)}
+                              title="הסר מהחשבון — מפנה את המושב, והמחשב יוכל להתחבר שוב"
+                              className="rounded-lg border border-border p-1.5 text-fg-muted transition-colors hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -261,8 +296,11 @@ export function DevicesModal({
                 )}
 
                 <p className="mt-4 text-[10px] leading-relaxed text-fg-faint">
-                  שחרור מנתק את המחשב תוך שניות, גם אם התוכנה פתוחה אצלו. מושב
-                  מתפנה רק בשחרור יזום — אין פקיעה אוטומטית.
+                  שתי הפעולות מנתקות את המחשב תוך שניות, גם אם התוכנה פתוחה
+                  אצלו, ומפנות את המושב. ההבדל: <strong className="text-fg">הסרה</strong>{' '}
+                  (פח) מאפשרת למחשב להתחבר שוב ולתפוס מושב פנוי, ואילו{' '}
+                  <strong className="text-fg">חסימה</strong> מונעת ממנו להתחבר
+                  לחשבון הזה בכלל. מושב מתפנה רק ביוזמה — אין פקיעה אוטומטית.
                 </p>
               </div>
             )}

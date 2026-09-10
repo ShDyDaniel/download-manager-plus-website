@@ -8,6 +8,7 @@ interface SeatDevice {
   platform: string | null
   appVersion: string | null
   model: string | null
+  blocked: boolean
   active: boolean
 }
 
@@ -158,10 +159,16 @@ export function MyComputers({ token }: { token: string }) {
                 <div className="min-w-0">
                   <p className="flex items-center gap-2 truncate text-sm font-medium text-fg">
                     {d.model || 'מחשב ללא שם'}
-                    {!d.active && (
+                    {d.blocked ? (
                       <span className="shrink-0 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] text-destructive">
-                        מעל המכסה
+                        נחסם
                       </span>
+                    ) : (
+                      !d.active && (
+                        <span className="shrink-0 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] text-destructive">
+                          מעל המכסה
+                        </span>
+                      )
                     )}
                   </p>
                   <p className="mt-0.5 text-xs text-fg-muted">
@@ -172,7 +179,8 @@ export function MyComputers({ token }: { token: string }) {
                 </div>
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={busy || d.blocked}
+                  title={d.blocked ? 'נחסם על ידי מנהל המערכת' : undefined}
                   onClick={() => void startRelease(d.deviceId)}
                   className="shrink-0 rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:border-destructive/40 hover:text-destructive disabled:opacity-50"
                 >

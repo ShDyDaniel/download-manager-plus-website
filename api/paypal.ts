@@ -1846,6 +1846,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleDeviceReleaseConfirm(req, res)
       case 'admin-device-list':
         return await handleAdminDeviceList(req, res)
+      case 'admin-device-block':
+        return await handleAdminDeviceBlock(req, res, true)
+      case 'admin-device-unblock':
+        return await handleAdminDeviceBlock(req, res, false)
       case 'admin-device-revoke':
         return await handleAdminDeviceRevoke(req, res)
       case 'admin-set-device-seats':
@@ -9492,6 +9496,11 @@ interface SeatDevice {
   platform?: string
   appVersion?: string
   model?: string
+  /** Barred from this account: frees the seat AND is refused on sign-in. The
+   *  entry is kept (not deleted) so the ban survives — deleting it would let
+   *  the machine simply claim a free seat again. */
+  blocked?: boolean
+  blockedAt?: string
 }
 type SeatDeviceMap = Record<string, SeatDevice>
 
@@ -9505,7 +9514,10 @@ function seatMaxTier(a: SeatTier, b: SeatTier): SeatTier {
 }
 /** Seat holders, oldest claim first — everything past `seats` is locked out. */
 function activeSeatIds(devices: SeatDeviceMap | undefined, seats: number): string[] {
+  // Blocked machines drop out BEFORE the cap, so a block really does free the
+  // seat rather than parking it.
   return Object.entries(devices || {})
+    .filter(([, d]) => !d?.blocked)
     .sort((a, b) => {
       const ta = Date.parse(a[1]?.claimedAt || '') || 0
       const tb = Date.parse(b[1]?.claimedAt || '') || 0
@@ -9655,6 +9667,8 @@ function seatDeviceView(devices: SeatDeviceMap, activeIds: string[]) {
       platform: d.platform || null,
       appVersion: d.appVersion || null,
       model: d.model || null,
+      blocked: d.blocked === true,
+      blockedAt: d.blockedAt || null,
       active: activeIds.includes(id),
     }))
     .sort((a, b) => (Date.parse(b.lastSeenAt || '') || 0) - (Date.parse(a.lastSeenAt || '') || 0))
@@ -9713,6 +9727,14 @@ async function handleDeviceClaim(req: VercelRequest, res: VercelResponse) {
     const u = (fresh.data() as Record<string, unknown>) || {}
     const devices = seatDevicesOf(u)
     const known = Object.prototype.hasOwnProperty.call(devices, deviceId)
+
+    // Barred machine — refused outright, and NOT by falling through to the
+    // capacity check: a block must hold even when seats are free.
+    if (known && devices[deviceId]?.blocked) {
+      status = 403
+      payload = { ok: false, error: 'device_blocked' }
+      return
+    }
 
     if (!known && activeSeatIds(devices, seats).length >= seats) {
       // No room. Report the occupying machines so the app can name them.
@@ -9858,6 +9880,14 @@ async function handleDeviceReleaseConfirm(req: VercelRequest, res: VercelRespons
   if (!Object.prototype.hasOwnProperty.call(devices, target)) {
     return res.status(404).json({ ok: false, error: 'המחשב לא נמצא בחשבון.' })
   }
+  // A blocked machine may NOT be released by the user: releasing deletes the
+  // entry, and the entry IS the ban — so this would let the owner of a barred
+  // machine lift its block from any other computer. Only the admin can undo it.
+  if (devices[target]?.blocked) {
+    return res
+      .status(403)
+      .json({ ok: false, error: 'המחשב הזה נחסם על ידי מנהל המערכת.' })
+  }
   delete devices[target]
   const tier = await resolveSeatTier(who.uid, who.email, user)
   const seats = TIER_DEVICE_SEATS[tier] + seatExtras(user)
@@ -9931,6 +9961,45 @@ async function handleAdminDeviceRevoke(req: VercelRequest, res: VercelResponse) 
     'deviceId',
     activeIds[0] || null,
   )
+  return res.status(200).json({ ok: true, devices: seatDeviceView(devices, activeIds) })
+}
+
+/** action=admin-device-block / admin-device-unblock → bar a machine from this
+ *  account (or lift the ban). Blocking frees the seat immediately AND stops
+ *  that machine signing in again — unlike a plain revoke, after which it could
+ *  simply take a free seat back. */
+async function handleAdminDeviceBlock(
+  req: VercelRequest,
+  res: VercelResponse,
+  blocked: boolean,
+) {
+  if (!(await verifyAdminStepUp(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const body = (req.body || {}) as { uid?: string; deviceId?: string }
+  const uid = String(body.uid || '').trim()
+  const target = String(body.deviceId || '').trim()
+  if (!uid || !target) return res.status(400).json({ ok: false, error: 'missing' })
+  const db = getDb()
+  const ref = db.collection('users').doc(uid)
+  const snap = await ref.get()
+  if (!snap.exists) return res.status(404).json({ ok: false, error: 'not-found' })
+  const user = snap.data() as Record<string, unknown>
+  const devices = seatDevicesOf(user)
+  if (!Object.prototype.hasOwnProperty.call(devices, target)) {
+    return res.status(404).json({ ok: false, error: 'המחשב לא נמצא בחשבון.' })
+  }
+  devices[target] = {
+    ...devices[target],
+    blocked,
+    blockedAt: blocked ? new Date().toISOString() : '',
+  }
+  const tier = await resolveSeatTier(uid, String(user.email || ''), user)
+  const seats = TIER_DEVICE_SEATS[tier] + seatExtras(user)
+  const activeIds = activeSeatIds(devices, seats)
+  // Write the whole map: we're mutating an entry, not removing a key, so the
+  // merge semantics that break deletes are harmless here.
+  await ref.set({ devices, deviceId: activeIds[0] || null }, { merge: true })
   return res.status(200).json({ ok: true, devices: seatDeviceView(devices, activeIds) })
 }
 

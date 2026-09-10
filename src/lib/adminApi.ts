@@ -345,6 +345,8 @@ const STEPUP_ACTIONS = new Set<string>([
   // Device seats: the MUTATIONS step up (they change what a user can run).
   // Listing is a plain read on the 12h session — see handleAdminDeviceList.
   'admin-device-revoke',
+  'admin-device-block',
+  'admin-device-unblock',
   'admin-set-device-seats',
   'admin-delete-user',
   'admin-approve-trial',
