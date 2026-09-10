@@ -1655,6 +1655,14 @@ function ReviewWorkspace({
   const playerWrapRef = useRef<HTMLDivElement>(null)
   const [isFs, setIsFs] = useState(false)
   const fsActive = isFs
+  /** Can the video-box be given its final shape before the video loads?
+   *  Only when the round carries a stored pixel size, and only windowed —
+   *  fullscreen already has a definite box from the viewport. Both the box
+   *  style and the video's own classes hang off this one flag: reserving the
+   *  box without also letting the video fill it leaves a correctly-sized
+   *  black frame with a small video in the corner. */
+  const boxReserved =
+    !fsActive && !!project.videoWidth && !!project.videoHeight
   useEffect(() => {
     const onChange = () => setIsFs(Boolean(document.fullscreenElement))
     document.addEventListener('fullscreenchange', onChange)
@@ -2153,7 +2161,42 @@ function ReviewWorkspace({
               {/* Video-box: shrinks to the video itself, so the watermark overlays
                   exactly the VIDEO (not the letterbox bars). Keeps the watermark
                   IDENTICAL windowed vs fullscreen. */}
-              <div className="review-player group relative flex max-w-full">
+              {/* When the stored size is known, the BOX carries the shape so
+                  it exists at full size before a single byte of video has
+                  been decoded — that is what stops the player resizing under
+                  the client a second after the page opens.
+
+                  Anchored on HEIGHT (the video's own pixel height, capped at
+                  the same 72vh as before) with the width derived from the
+                  ratio, so sizing is unchanged from today: a small video still
+                  renders small, a 4K one is still capped, and a portrait one is
+                  still a narrow centred rectangle rather than a full-width bar.
+                  max-w-full then shrinks it, ratio intact, on a narrow column.
+
+                  Unknown size → no reservation, exactly as before. Guessing
+                  16/9 here would hand a portrait video a wrong box and simply
+                  move the jump somewhere else. */}
+              <div
+                className="review-player group relative flex max-w-full"
+                style={
+                  boxReserved
+                    ? {
+                        aspectRatio: `${project.videoWidth} / ${project.videoHeight}`,
+                        // WIDTH is the definite axis and the height follows the
+                        // ratio, so the shape can never come out wrong. Pinning
+                        // the height instead looked equivalent and wasn't: on a
+                        // column narrower than the video, max-width squashed the
+                        // box (measured 1.389 where 1.778 was wanted).
+                        // Smallest of: the column, the video's own width, and
+                        // what 72vh of height allows — so it still never
+                        // upscales a small video and still never exceeds the
+                        // same height cap as before.
+                        width: `min(100%, ${project.videoWidth}px, calc(72vh * ${project.videoWidth} / ${project.videoHeight}))`,
+                        height: 'auto',
+                      }
+                    : undefined
+                }
+              >
                 <video
                   ref={videoRef}
                   src={streamUrl}
@@ -2170,20 +2213,19 @@ function ReviewWorkspace({
                   // Intrinsic dimensions (when known) reserve the correct aspect
                   // ratio BEFORE the video loads — no resize/jump when the first
                   // frame arrives. CSS max-w/max-h then scale it down to fit.
-                  width={project.videoWidth || undefined}
-                  height={project.videoHeight || undefined}
-                  // Falls back to 16/9 for rounds uploaded before the size was
-                  // recorded, and for Drive imports that never carried one. A
-                  // box of the usual shape is far better than no box: an
-                  // unshaped video element is the "strange format" the client
-                  // sees for the first second. The browser corrects it from the
-                  // file's own metadata anyway, so the only cost is a jump in
-                  // the rare portrait case — exactly what happens today.
-                  style={{
-                    aspectRatio: `${project.videoWidth || 16} / ${project.videoHeight || 9}`,
-                  }}
+                  // NO width/height attributes here. They look like the obvious
+                  // way to reserve the box, and they collapse this player to
+                  // 0×0: the video sits in a shrink-to-fit flex box (so the
+                  // watermark can hug the picture), and an intrinsic size
+                  // inside `w-auto` + `max-w-full` resolves against a parent
+                  // that is itself sizing to the child. Measured, not guessed.
+                  // The reservation is done on the box below instead.
                   onContextMenu={(e) => e.preventDefault()}
-                  className={`review-video block h-auto w-auto max-w-full ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`}
+                  className={`review-video block ${
+                    boxReserved
+                      ? 'h-full w-full object-contain'
+                      : `h-auto w-auto max-w-full ${fsActive ? 'max-h-screen' : 'max-h-[72vh]'}`
+                  }`}
                 />
                 {/* Watermark is per-project. Inside the video-box so it tracks the
                     video in every mode. */}
