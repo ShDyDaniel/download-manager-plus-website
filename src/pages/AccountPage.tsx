@@ -1628,7 +1628,17 @@ function SubscriptionCard({
         </div>
         <div>
           <div className="text-fg-muted">
-            {isCancelled ? 'מסתיים ב-' : 'מתחדש ב-'}
+            {/* The tense has to follow the date. "מסתיים ב-" beside a date
+                that has already gone by reads as if the plan were still
+                running. An active plan whose renewal date has passed is a
+                payment still being retried — it hasn't ended, so it gets its
+                own wording rather than "הסתיים". */}
+            {(() => {
+              const t = Date.parse(String(sub.expiresAt ?? ''))
+              const past = Number.isFinite(t) && t < Date.now()
+              if (isCancelled) return past ? 'הסתיים ב-' : 'מסתיים ב-'
+              return past ? 'היה אמור להתחדש ב-' : 'מתחדש ב-'
+            })()}
           </div>
           <div className="mt-0.5 text-fg">{formatDate(sub.expiresAt)}</div>
         </div>
