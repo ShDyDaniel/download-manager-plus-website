@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { LifeBuoy, RefreshCw, Copy, Check, Square, Download, Loader2, Monitor, X, TerminalSquare, CornerDownLeft, Cpu, MonitorOff, AppWindow, Sparkles } from 'lucide-react'
+import { LifeBuoy, RefreshCw, Copy, Check, Square, Download, Loader2, Monitor, X, TerminalSquare, CornerDownLeft, Cpu, MonitorOff, AppWindow, Sparkles, ArrowLeftRight, Upload } from 'lucide-react'
 import { buildZip } from '../lib/zip'
+import {
+  createPeer,
+  makeAnswer,
+  waitOpen,
+  sendPayload,
+  receivePayload,
+  BlockedNetworkError,
+  IntegrityError,
+  MAX_TRANSFER_BYTES,
+  formatBytes,
+} from '../lib/supportTransfer'
 
 /**
  * Dedicated live remote-support session page (admin, opens in its own tab from
@@ -19,6 +30,32 @@ type Hardware = { model: string; cpu: string; cores: string; ram: string; gpu: s
 type SystemRow = { s: string; k: string; v: string }
 type DisplayInfo = { id: string; index: number; w: number; h: number; primary: boolean }
 type ScreenMode = 'off' | 'app' | 'desktop'
+/** The current peer-to-peer transfer (server keeps only its handshake). */
+type Xfer = {
+  id: string
+  direction: 'to-admin' | 'to-customer'
+  state: 'requested' | 'offered' | 'answered' | 'sending' | 'done' | 'failed' | 'declined' | 'cancelled'
+  kind: 'file' | 'text' | null
+  name: string | null
+  size: number | null
+  mime: string | null
+  offerSdp: string | null
+  answerSdp: string | null
+  reason: string | null
+}
+const XFER_TERMINAL: Xfer['state'][] = ['done', 'failed', 'declined', 'cancelled']
+const XFER_BLOCKED_NOTE =
+  'הרשת של הלקוח (או שלך) חוסמת חיבור ישיר בין המחשבים, ולכן אי אפשר להעביר קבצים בסשן הזה. שאר הסשן ממשיך לעבוד.'
+
+function joinBytes(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0))
+  let o = 0
+  for (const p of parts) {
+    out.set(p, o)
+    o += p.byteLength
+  }
+  return out
+}
 
 function screenLabel(name: string): string {
   if (name === 'app.jpg') return 'חלון התוכנה'
@@ -193,6 +230,19 @@ export default function AdminSupportSessionPage() {
   const [purgeAt, setPurgeAt] = useState<number | null>(null)
   const [purged, setPurged] = useState(false)
   const cmdEnabledRef = useRef(false) // drives the faster poll while the console is open
+  // ── Peer-to-peer transfer ──
+  const [xfer, setXfer] = useState<Xfer | null>(null)
+  const [xferNote, setXferNote] = useState('')
+  const [xferError, setXferError] = useState('')
+  const [xferProgress, setXferProgress] = useState<number | null>(null)
+  const [xferReceivedText, setXferReceivedText] = useState<string | null>(null)
+  const [xferBusy, setXferBusy] = useState(false)
+  const [xferCopied, setXferCopied] = useState(false)
+  const xferActiveRef = useRef(false) // drives the faster poll mid-handshake
+  const xferFileRef = useRef<File | null>(null) // the file queued for the customer
+  const xferHandledRef = useRef('') // transfer id already answered automatically
+  const peerRef = useRef<RTCPeerConnection | null>(null)
+  const xferInputRef = useRef<HTMLInputElement | null>(null)
   const urlsRef = useRef<Record<string, string>>({})
   const screenUrlsRef = useRef<Record<string, string>>({}) // name -> presigned GET
   const shotObjRef = useRef<Record<string, string>>({}) // name -> objectURL (to revoke)
@@ -212,6 +262,7 @@ export default function AdminSupportSessionPage() {
         cmdConsent?: boolean
         cmdPending?: boolean
         cmdLog?: CmdEntry[]
+        xfer?: Xfer | null
         hardware?: Hardware | null
         system?: SystemRow[]
         displays?: DisplayInfo[]
@@ -225,6 +276,8 @@ export default function AdminSupportSessionPage() {
       setCmd({ enabled: !!j.cmdEnabled, consent: !!j.cmdConsent, pending: !!j.cmdPending })
       cmdEnabledRef.current = !!j.cmdEnabled
       setCmdLog(j.cmdLog || [])
+      setXfer(j.xfer || null)
+      xferActiveRef.current = !!j.xfer && !XFER_TERMINAL.includes(j.xfer.state)
       setHardware(j.hardware || null)
       setSystem(j.system || [])
       setDisplays(j.displays || [])
@@ -306,7 +359,7 @@ export default function AdminSupportSessionPage() {
     // While the command console is enabled, pull the session doc faster so
     // command output shows up quickly (admin-only, short-lived — not the hot path).
     const cm = setInterval(() => {
-      if (cmdEnabledRef.current) void pullMeta()
+      if (cmdEnabledRef.current || xferActiveRef.current) void pullMeta()
     }, 2000)
     return () => {
       clearInterval(m)
@@ -417,6 +470,232 @@ export default function AdminSupportSessionPage() {
     document.getElementById('support-cmd-input')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     ;(document.getElementById('support-cmd-input') as HTMLInputElement | null)?.focus()
   }
+
+  // ── Peer-to-peer transfer ────────────────────────────────────────────
+  function closePeer() {
+    try {
+      peerRef.current?.close()
+    } catch {
+      /* already closed */
+    }
+    peerRef.current = null
+  }
+
+  function xferSignal(id: string, body: Record<string, unknown>) {
+    return api('support-xfer-signal', { code: cleanCode, id, ...body })
+  }
+
+  async function startXferRequest(direction: 'to-admin' | 'to-customer', file?: File) {
+    setXferError('')
+    setXferNote('')
+    setXferProgress(null)
+    setXferReceivedText(null)
+    xferFileRef.current = file ?? null
+    try {
+      await api('support-xfer-request', {
+        code: cleanCode,
+        direction,
+        ...(file
+          ? { name: file.name, size: file.size, mime: file.type || 'application/octet-stream' }
+          : {}),
+      })
+      xferActiveRef.current = true
+      void pullMeta()
+    } catch (e) {
+      setXferError((e as Error).message || 'הבקשה נכשלה')
+    }
+  }
+
+  /** The customer offered a file or text — take it. The click is also the
+   *  user gesture the browser demands before opening a save-file picker, so
+   *  the destination is chosen here, before a single byte moves. */
+  async function acceptFromCustomer(x: Xfer) {
+    if (!x.offerSdp || xferBusy) return
+    setXferBusy(true)
+    setXferError('')
+    type Writable = { write(data: unknown): Promise<void>; close(): Promise<void>; abort?(): Promise<void> }
+    let fileSink: Writable | null = null
+    let answered = false
+    const parts: Uint8Array[] = []
+    try {
+      if (x.kind === 'file') {
+        const picker = (
+          window as unknown as {
+            showSaveFilePicker?: (o: { suggestedName: string }) => Promise<{ createWritable(): Promise<Writable> }>
+          }
+        ).showSaveFilePicker
+        if (picker) {
+          const handle = await picker({ suggestedName: x.name || 'file' })
+          fileSink = await handle.createWritable()
+        }
+      }
+      const pc = createPeer()
+      peerRef.current = pc
+      const { link, sdp } = await makeAnswer(pc, x.offerSdp)
+      await xferSignal(x.id, { answerSdp: sdp })
+      answered = true
+      setXferNote('מתחבר ישירות למחשב של הלקוח…')
+      const l = await link
+      await waitOpen(pc, l.channel)
+      setXferNote('מקבל…')
+      const meta = await receivePayload(
+        l,
+        {
+          begin: (m) => m.kind === x.kind && (x.size == null || m.size === x.size),
+          write: async (chunk) => {
+            if (fileSink) await fileSink.write(chunk)
+            else parts.push(chunk)
+          },
+          end: async (ok) => {
+            if (!fileSink) return
+            if (ok) await fileSink.close()
+            else await fileSink.abort?.()
+          },
+        },
+        (got, total) => setXferProgress(total ? got / total : 1),
+      )
+      if (meta.kind === 'text') {
+        setXferReceivedText(new TextDecoder().decode(joinBytes(parts)))
+        setXferNote('הטקסט התקבל.')
+      } else if (fileSink) {
+        setXferNote('הקובץ התקבל ונשמר במחשב שלך.')
+      } else {
+        // No save-file picker in this browser — hand it over as a download.
+        const url = URL.createObjectURL(new Blob(parts as BlobPart[], { type: meta.mime }))
+        const a = document.createElement('a')
+        a.href = url
+        a.download = meta.name
+        a.click()
+        // Revoking right after the click can cancel the download in some browsers.
+        setTimeout(() => URL.revokeObjectURL(url), 60_000)
+        setXferNote('הקובץ התקבל.')
+      }
+      await xferSignal(x.id, { state: 'done' }).catch(() => undefined)
+      // Let the acknowledgement leave before tearing the connection down.
+      await new Promise((r) => setTimeout(r, 1500))
+    } catch (e) {
+      // Closing the save picker before answering isn't a failure — nothing started.
+      if (!answered && (e as Error).name === 'AbortError') return
+      if (fileSink?.abort) await fileSink.abort().catch(() => undefined)
+      await reportXferFailure(
+        x.id,
+        e,
+        e instanceof IntegrityError ? 'הקובץ הגיע פגום, ולכן לא נשמר. בקשו אותו שוב.' : 'ההעברה נכשלה.',
+      )
+    } finally {
+      closePeer()
+      setXferBusy(false)
+      setXferProgress(null)
+      void pullMeta()
+    }
+  }
+
+  /** Report a failure this side saw. When the customer's app already ended the
+   *  transfer, its own account (cancelled, couldn't save) is what the status
+   *  line shows, so the generic error gives way to it. */
+  async function reportXferFailure(id: string, e: unknown, message: string) {
+    const blocked = e instanceof BlockedNetworkError
+    closePeer()
+    setXferNote('')
+    setXferError(blocked ? XFER_BLOCKED_NOTE : message)
+    // Both ends see a blocked network at once. For anything else, give the
+    // customer's app a moment to report the more specific reason first.
+    if (!blocked) await new Promise((r) => setTimeout(r, 1500))
+    try {
+      await xferSignal(id, { state: 'failed', reason: blocked ? 'blocked' : 'error' })
+    } catch (err) {
+      const m = (err as Error).message
+      if (m === 'ended' || m === 'stale') setXferError('')
+    }
+  }
+
+  async function cancelXfer() {
+    if (!xfer) return
+    closePeer()
+    await xferSignal(xfer.id, { state: 'cancelled' }).catch(() => undefined)
+    void pullMeta()
+  }
+
+  // Operator → customer: once the customer approves and picks where to save,
+  // their app offers; answer it and push the file the operator already chose.
+  useEffect(() => {
+    const x = xfer
+    if (!x || x.direction !== 'to-customer' || x.state !== 'offered' || !x.offerSdp) return
+    if (xferHandledRef.current === x.id) return
+    xferHandledRef.current = x.id
+    const file = xferFileRef.current
+    if (!file) {
+      setXferError('הקובץ שבחרת כבר לא זמין בטאב הזה. בחר אותו שוב ושלח מחדש.')
+      void xferSignal(x.id, { state: 'cancelled', reason: 'file-lost' }).catch(() => undefined)
+      return
+    }
+    const offerSdp = x.offerSdp
+    void (async () => {
+      setXferBusy(true)
+      try {
+        const pc = createPeer()
+        peerRef.current = pc
+        const { link, sdp } = await makeAnswer(pc, offerSdp)
+        await xferSignal(x.id, { answerSdp: sdp })
+        setXferNote('הלקוח אישר. מתחבר ישירות למחשב שלו…')
+        const l = await link
+        await waitOpen(pc, l.channel)
+        setXferNote('שולח…')
+        await sendPayload(
+          l,
+          { kind: 'file', blob: file, name: file.name, mime: file.type || 'application/octet-stream' },
+          (sent, total) => setXferProgress(total ? sent / total : 1),
+        )
+        setXferNote('הקובץ נמסר ללקוח.')
+        await xferSignal(x.id, { state: 'done' }).catch(() => undefined)
+      } catch (e) {
+        await reportXferFailure(
+          x.id,
+          e,
+          e instanceof IntegrityError ? 'הקובץ הגיע אצל הלקוח פגום. נסו לשלוח שוב.' : 'ההעברה נכשלה.',
+        )
+      } finally {
+        closePeer()
+        setXferBusy(false)
+        setXferProgress(null)
+        void pullMeta()
+      }
+    })()
+  }, [xfer])
+
+  const xferLive = !!xfer && !XFER_TERMINAL.includes(xfer.state)
+  const xferStatus = (() => {
+    if (!xfer) return ''
+    const what =
+      xfer.kind === 'text'
+        ? 'טקסט'
+        : `${xfer.name || 'קובץ'}${xfer.size != null ? ` (${formatBytes(xfer.size)})` : ''}`
+    switch (xfer.state) {
+      case 'requested':
+        return xfer.direction === 'to-admin'
+          ? 'ממתין שהלקוח יבחר מה לשלוח…'
+          : `ממתין שהלקוח יאשר קבלה של ${what}…`
+      case 'offered':
+        return xfer.direction === 'to-admin' ? `הלקוח רוצה לשלוח לך ${what}.` : 'הלקוח אישר…'
+      case 'answered':
+      case 'sending':
+        return 'מעביר…'
+      case 'done':
+        return 'ההעברה הושלמה.'
+      case 'declined':
+        return 'הלקוח דחה את ההעברה.'
+      case 'cancelled':
+        return 'ההעברה בוטלה.'
+      case 'failed':
+        return xfer.reason === 'blocked'
+          ? XFER_BLOCKED_NOTE
+          : xfer.reason === 'disk'
+            ? 'ההעברה נכשלה: לא היה אפשר לשמור את הקובץ במחשב של הלקוח (אולי אין מספיק מקום).'
+            : 'ההעברה נכשלה.'
+      default:
+        return ''
+    }
+  })()
 
   async function copyLink() {
     try {
@@ -660,6 +939,112 @@ export default function AdminSupportSessionPage() {
                 קורא את כל הלוגים שנאספו ואת פרטי המחשב, ומחזיר אבחון עם הראיות שעליהן הוא מסתמך.
               </p>
             )
+          )}
+        </div>
+
+        {/* Peer-to-peer transfer — files and text move straight between the two
+            machines over an encrypted WebRTC channel. Nothing is stored; the
+            server only carries the handshake. */}
+        <div className="mb-4 rounded-xl border border-border bg-card p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <ArrowLeftRight className="h-3.5 w-3.5" /> העברת קבצים וטקסט
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              ישירות בין המחשבים, מוצפן — לא נשמר בשום שרת
+            </span>
+          </div>
+          {status !== 'active' ? (
+            <p className="text-[11px] text-muted-foreground">זמין כשהסשן פעיל.</p>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void startXferRequest('to-admin')}
+                disabled={xferLive || xferBusy}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-foreground transition hover:bg-secondary disabled:opacity-50"
+              >
+                <Upload className="h-3.5 w-3.5" /> בקשת קובץ או טקסט מהלקוח
+              </button>
+              <button
+                type="button"
+                onClick={() => xferInputRef.current?.click()}
+                disabled={xferLive || xferBusy}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-foreground transition hover:bg-secondary disabled:opacity-50"
+              >
+                <Download className="h-3.5 w-3.5" /> שליחת קובץ ללקוח
+              </button>
+              <input
+                ref={xferInputRef}
+                type="file"
+                hidden
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  e.target.value = ''
+                  if (!f) return
+                  if (f.size > MAX_TRANSFER_BYTES) {
+                    setXferError('אפשר לשלוח קבצים עד 2GB.')
+                    return
+                  }
+                  void startXferRequest('to-customer', f)
+                }}
+              />
+              {xferLive && (
+                <button
+                  type="button"
+                  onClick={() => void cancelXfer()}
+                  className="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                >
+                  ביטול
+                </button>
+              )}
+            </div>
+          )}
+          {xfer && (xferNote || xferStatus) && (
+            <p className="mt-2 text-xs text-foreground">{xferNote || xferStatus}</p>
+          )}
+          {xfer && xfer.state === 'offered' && xfer.direction === 'to-admin' && (
+            <button
+              type="button"
+              onClick={() => void acceptFromCustomer(xfer)}
+              disabled={xferBusy}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-3 py-1.5 text-xs text-primary ring-1 ring-primary/40 transition hover:bg-primary/25 disabled:opacity-50"
+            >
+              {xferBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              {xfer.kind === 'text' ? 'קבלת הטקסט' : 'קבלה ושמירה'}
+            </button>
+          )}
+          {xferProgress != null && (
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-secondary">
+              <div className="h-full bg-primary" style={{ width: `${Math.round(xferProgress * 100)}%` }} />
+            </div>
+          )}
+          {xferError && <p className="mt-2 text-xs text-red-400">{xferError}</p>}
+          {xferReceivedText != null && (
+            <div className="mt-2 space-y-1">
+              <pre
+                dir="auto"
+                className="max-h-60 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-background px-3 py-2 text-[11px] text-foreground"
+              >
+                {xferReceivedText}
+              </pre>
+              <button
+                type="button"
+                onClick={() =>
+                  void navigator.clipboard
+                    .writeText(xferReceivedText)
+                    .then(() => {
+                      setXferCopied(true)
+                      setTimeout(() => setXferCopied(false), 1500)
+                    })
+                    .catch(() => undefined)
+                }
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary"
+              >
+                {xferCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                {xferCopied ? 'הועתק' : 'העתק'}
+              </button>
+            </div>
           )}
         </div>
 

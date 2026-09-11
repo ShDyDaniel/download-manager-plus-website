@@ -9248,7 +9248,7 @@ function verifySupportViewToken(
 }
 /** Admin auth for the support panel: a fresh step-up token OR a valid
  *  session-scoped view token for THIS code. */
-async function writeSupportControl(code: string, action: 'stop' | 'refresh' | 'cmd-enable' | 'cmd' | 'screen'): Promise<void> {
+async function writeSupportControl(code: string, action: 'stop' | 'refresh' | 'cmd-enable' | 'cmd' | 'screen' | 'xfer' | 'xfer-answer'): Promise<void> {
   // Push channel: clients watch appConfig/supportControl via onSnapshot (the
   // same cheap mechanism as the pull-responders). Bumping issuedAt notifies the
   // one client whose active session matches `code`. No polling on the app side.
@@ -9337,6 +9337,9 @@ type SupportSession = {
   stoppedAt?: number
   purgeAt?: number
   purged?: boolean
+  /** The current peer-to-peer transfer. Only its handshake lives here — the
+   *  file or text itself never reaches this server. */
+  xfer?: SupportXfer | null
 }
 
 async function loadSupportSession(code: string): Promise<SupportSession | null> {
@@ -9409,6 +9412,7 @@ async function handleSupportGet(req: VercelRequest, res: VercelResponse) {
     screenPermission: s.screenPermission || 'granted',
     purgeAt: s.purgeAt || null,
     purged: s.purged === true,
+    xfer: s.xfer || null,
   })
 }
 
@@ -9436,7 +9440,7 @@ async function maybePurgeSupport(code: string, s: SupportSession): Promise<Suppo
     ...(s.logManifest || []).map((l) => r2DeleteObject(l.key).catch(() => false)),
     ...(s.screenManifest || []).map((sc) => r2DeleteObject(sc.key).catch(() => false)),
   ])
-  const patch = { purged: true, logManifest: [], screenManifest: [], cmdLog: [], updatedAt: Date.now() }
+  const patch = { purged: true, logManifest: [], screenManifest: [], cmdLog: [], xfer: null, updatedAt: Date.now() }
   await getDb().collection('supportSessions').doc(code).set(patch, { merge: true })
   return { ...s, ...patch }
 }
@@ -9458,6 +9462,7 @@ async function endSupportSession(code: string, s: SupportSession, by: string) {
       pendingCmd: null,
       cmdEnabled: false,
       cmdConsent: false,
+      xfer: null,
       updatedAt: now,
     }, { merge: true })
   await writeSupportControl(code, 'stop')
@@ -9974,6 +9979,216 @@ async function handleSupportReportInfo(req: VercelRequest, res: VercelResponse) 
   return res.status(200).json({ ok: true })
 }
 
+/* ──────────────────────────────────────────────────────────────
+ *  Support session — peer-to-peer file & text transfer (handshake only)
+ *
+ *  The bytes never come near this server: they move over a WebRTC data
+ *  channel straight between the customer's app and the operator's browser.
+ *  What passes through here is one offer and one answer so the peers can find
+ *  each other — a few kilobytes and a handful of writes per transfer. The SDPs
+ *  carry both peers' network addresses, so they are wiped the moment a
+ *  transfer ends and never outlive the session.
+ *
+ *  Roles are fixed: the customer's app always offers, the operator's browser
+ *  always answers. Each side may only write its own half.
+ * ────────────────────────────────────────────────────────────── */
+type SupportXferState =
+  | 'requested'
+  | 'offered'
+  | 'answered'
+  | 'sending'
+  | 'done'
+  | 'failed'
+  | 'declined'
+  | 'cancelled'
+interface SupportXfer {
+  id: string
+  direction: 'to-admin' | 'to-customer'
+  state: SupportXferState
+  kind: 'file' | 'text' | null
+  name: string | null
+  size: number | null
+  mime: string | null
+  offerSdp: string | null
+  answerSdp: string | null
+  reason: string | null
+  createdAt: number
+  updatedAt: number
+}
+const SUPPORT_XFER_MAX_BYTES = 2 * 1024 * 1024 * 1024
+const SUPPORT_XFER_TEXT_MAX = 1024 * 1024
+const SUPPORT_SDP_MAX = 16_000
+const XFER_TERMINAL: SupportXferState[] = ['done', 'failed', 'declined', 'cancelled']
+
+/** action=support-xfer-request (admin) → ask the customer for a file/text, or
+ *  offer them one. Nothing moves until the customer acts on it. */
+async function handleSupportXferRequest(req: VercelRequest, res: VercelResponse) {
+  const b = (req.body || {}) as {
+    stepUpToken?: string
+    viewToken?: string
+    code?: string
+    direction?: string
+    name?: string
+    size?: number
+    mime?: string
+  }
+  const code = String(b.code || '').trim().toUpperCase()
+  if (!supportAdminOk(b, code)) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const s = await loadSupportSession(code)
+  if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
+  if (s.status !== 'active') {
+    return res.status(409).json({ ok: false, error: 'הסשן אינו פעיל.' })
+  }
+  const direction = b.direction === 'to-customer' ? 'to-customer' : 'to-admin'
+  const now = Date.now()
+  const xfer: SupportXfer = {
+    id: crypto.randomBytes(6).toString('hex'),
+    direction,
+    state: 'requested',
+    kind: direction === 'to-customer' ? 'file' : null,
+    name: null,
+    size: null,
+    mime: null,
+    offerSdp: null,
+    answerSdp: null,
+    reason: null,
+    createdAt: now,
+    updatedAt: now,
+  }
+  if (direction === 'to-customer') {
+    const size = Math.floor(Number(b.size) || 0)
+    if (size <= 0 || size > SUPPORT_XFER_MAX_BYTES) {
+      return res.status(400).json({ ok: false, error: 'אפשר לשלוח קבצים עד 2GB.' })
+    }
+    xfer.name = String(b.name || 'file').slice(0, 200)
+    xfer.size = size
+    xfer.mime = String(b.mime || 'application/octet-stream').slice(0, 120)
+  }
+  // The full object is always written, so a merge can't leave a previous
+  // transfer's fields (or its addresses) behind.
+  await getDb().collection('supportSessions').doc(code).set({ xfer, updatedAt: now }, { merge: true })
+  await writeSupportControl(code, 'xfer')
+  return res.status(200).json({ ok: true, xfer })
+}
+
+/** action=support-xfer-get (app) → the current transfer, for the customer. */
+async function handleSupportXferGet(req: VercelRequest, res: VercelResponse) {
+  const v = await verifyOwnerAuth(req)
+  if (!v) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const code = String((req.body as { code?: string })?.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s || s.uid !== v.uid) return res.status(404).json({ ok: false, error: 'not-found' })
+  const x = s.status === 'active' ? s.xfer || null : null
+  // The customer never needs its own offer back.
+  return res.status(200).json({ ok: true, xfer: x ? { ...x, offerSdp: null } : null })
+}
+
+/** action=support-xfer-signal (app or admin) → one half of the handshake, or a
+ *  state change. The customer writes the offer; the operator writes the
+ *  answer; neither can write the other's. */
+async function handleSupportXferSignal(req: VercelRequest, res: VercelResponse) {
+  const b = (req.body || {}) as {
+    stepUpToken?: string
+    viewToken?: string
+    code?: string
+    id?: string
+    offerSdp?: string
+    answerSdp?: string
+    state?: string
+    reason?: string
+    kind?: string
+    name?: string
+    size?: number
+    mime?: string
+  }
+  const code = String(b.code || '').trim().toUpperCase()
+  const s = await loadSupportSession(code)
+  if (!s) return res.status(404).json({ ok: false, error: 'not-found' })
+  let role: 'admin' | 'owner' | null = null
+  if (supportAdminOk(b, code)) role = 'admin'
+  else {
+    const v = await verifyOwnerAuth(req)
+    if (v && v.uid === s.uid) role = 'owner'
+  }
+  if (!role) return res.status(403).json({ ok: false, error: 'forbidden' })
+  const sdp = (v: unknown) => {
+    const t = String(v || '')
+    return t && t.length <= SUPPORT_SDP_MAX ? t : null
+  }
+  // Transitions that only make sense from particular states.
+  const fromStates: Partial<Record<SupportXferState, SupportXferState[]>> = {
+    sending: ['answered'],
+    done: ['answered', 'sending'],
+    declined: ['requested'],
+  }
+
+  // Read and write in one transaction. The two sides write at nearly the same
+  // moment (an answer crossing a cancel), and a lost update would bring a
+  // cancelled transfer back to life with both machines' addresses in it.
+  const ref = getDb().collection('supportSessions').doc(code)
+  type Outcome = { status: number; error: string; wake: 'xfer' | 'xfer-answer' | null }
+  const out = await getDb().runTransaction(async (tx): Promise<Outcome> => {
+    const fail = (status: number, error: string): Outcome => ({ status, error, wake: null })
+    const snap = await tx.get(ref)
+    const fresh = snap.exists ? (snap.data() as SupportSession) : null
+    if (!fresh || fresh.status !== 'active') return fail(409, 'הסשן אינו פעיל.')
+    const cur = fresh.xfer
+    if (!cur || cur.id !== String(b.id || '')) return fail(409, 'stale')
+    if (XFER_TERMINAL.includes(cur.state)) return fail(409, 'ended')
+    const next: SupportXfer = { ...cur, updatedAt: Date.now() }
+    let wake: Outcome['wake'] = null
+
+    if (role === 'owner' && b.offerSdp !== undefined) {
+      const offer = sdp(b.offerSdp)
+      if (!offer || cur.state !== 'requested') return fail(400, 'bad-offer')
+      next.offerSdp = offer
+      next.state = 'offered'
+      if (cur.direction === 'to-admin') {
+        // What the customer chose to send — the operator sees it before accepting.
+        next.kind = b.kind === 'text' ? 'text' : 'file'
+        const size = Math.floor(Number(b.size) || 0)
+        const cap = next.kind === 'text' ? SUPPORT_XFER_TEXT_MAX : SUPPORT_XFER_MAX_BYTES
+        if (size < 0 || size > cap) return fail(400, 'too-large')
+        next.size = size
+        next.name = next.kind === 'file' ? String(b.name || 'file').slice(0, 200) : null
+        next.mime =
+          next.kind === 'file' ? String(b.mime || 'application/octet-stream').slice(0, 120) : null
+      }
+    } else if (role === 'admin' && b.answerSdp !== undefined) {
+      const answer = sdp(b.answerSdp)
+      if (!answer || cur.state !== 'offered') return fail(400, 'bad-answer')
+      next.answerSdp = answer
+      next.state = 'answered'
+      wake = 'xfer-answer'
+    } else if (b.state) {
+      const st = String(b.state) as SupportXferState
+      const allowed: SupportXferState[] =
+        role === 'owner'
+          ? ['sending', 'done', 'failed', 'declined', 'cancelled']
+          : ['sending', 'done', 'failed', 'cancelled']
+      const from = fromStates[st]
+      if (!allowed.includes(st) || (from && !from.includes(cur.state))) return fail(400, 'bad-state')
+      next.state = st
+      next.reason = b.reason ? String(b.reason).slice(0, 60) : null
+      // The customer's app learns about operator-side endings by push.
+      if (role === 'admin' && XFER_TERMINAL.includes(st)) wake = 'xfer'
+    } else {
+      return fail(400, 'nothing-to-do')
+    }
+
+    // A finished transfer keeps no network addresses.
+    if (XFER_TERMINAL.includes(next.state)) {
+      next.offerSdp = null
+      next.answerSdp = null
+    }
+    tx.set(ref, { xfer: next, updatedAt: next.updatedAt }, { merge: true })
+    return { status: 200, error: '', wake }
+  })
+  if (out.status !== 200) return res.status(out.status).json({ ok: false, error: out.error })
+  if (out.wake) await writeSupportControl(code, out.wake)
+  return res.status(200).json({ ok: true })
+}
+
 /** action=support-screen-get (app) → the admin's current capture preference. */
 async function handleSupportScreenGet(req: VercelRequest, res: VercelResponse) {
   const v = await verifyOwnerAuth(req)
@@ -10309,6 +10524,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleSupportReportInfo(req, res)
       case 'support-screen-get':
         return await handleSupportScreenGet(req, res)
+      case 'support-xfer-request':
+        return await handleSupportXferRequest(req, res)
+      case 'support-xfer-get':
+        return await handleSupportXferGet(req, res)
+      case 'support-xfer-signal':
+        return await handleSupportXferSignal(req, res)
       case 'support-screen-mode':
         return await handleSupportScreenMode(req, res)
       case 'support-purge':
