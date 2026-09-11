@@ -230,3 +230,21 @@ export const TIER_LABEL: Record<Tier, string> = {
   pro: "Pro",
   ultra: "Ultra",
 };
+
+/**
+ * How many computers one account may be signed in on, per tier.
+ *
+ * Mirror of TIER_DEVICE_SEATS in the desktop src/lib/tiers.ts — and of
+ * the server's copy in api/paypal.ts, which is the one that actually
+ * grants or refuses a seat. Keep all three in step.
+ *
+ * The admin can grant extra seats per user on top of these
+ * (`users/{uid}.extraDeviceSeats`), so the buy page states the plan's
+ * allowance, not necessarily what a given account ends up with.
+ */
+export const TIER_DEVICE_SEATS: Record<Tier, number> = {
+  free: 1,
+  basic: 1,
+  pro: 2,
+  ultra: 3,
+};

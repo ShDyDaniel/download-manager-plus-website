@@ -8,6 +8,7 @@ import {
   DEFAULT_TIER_CONFIG,
   tierAllows,
   tierPrice,
+  TIER_DEVICE_SEATS,
   type Tier,
   type TierConfig,
 } from '@/lib/tiers'
@@ -47,6 +48,11 @@ function fmtMinutes(sec: number | null): string {
 function fmtCount(n: number | null, unit: string): string {
   return n == null ? `${unit} ללא הגבלה` : `${n} ${unit}`
 }
+/** How many computers the plan covers, phrased for a buyer. */
+function fmtSeats(n: number): string {
+  return n === 1 ? 'מחשב אחד' : `${n} מחשבים`;
+}
+
 /** GB value → "NGB" / "ללא הגבלה" (null) / "—" (0). */
 function fmtGb(v: number | null): string {
   return v == null ? 'ללא הגבלה' : v > 0 ? `${v}GB` : '—'
@@ -56,7 +62,7 @@ function fmtGb(v: number | null): string {
 const TAGLINE: Record<Tier, string> = {
   free: 'להתחיל לעבוד — בלי לשלם',
   basic: 'עבודת לקוחות בקנה מידה קטן',
-  pro: 'הערכת העריכה המלאה + AI',
+  pro: 'ערכת העריכה המלאה',
   ultra: 'העוצמה המלאה, בלי גבולות',
 }
 
@@ -78,6 +84,7 @@ function highlights(tier: Tier, c: TierConfig): string[] {
         'המרת קבצים',
         `תמלול חכם — ${fmtMinutes(c.transcriptionMonthlySec)}`,
         'הצעת מחיר אחת בחודש',
+        fmtSeats(TIER_DEVICE_SEATS.free),
       ]
     case 'basic':
       return [
@@ -87,20 +94,21 @@ function highlights(tier: Tier, c: TierConfig): string[] {
         `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
         `תמלול חכם — ${fmtMinutes(c.transcriptionMonthlySec)}`,
         'מעקב זמן עבודה',
+        fmtSeats(TIER_DEVICE_SEATS.basic),
       ]
     case 'pro':
       return [
         'סנכרון אוטומטי',
         'תמלול ללא הגבלה + מתקדם (דוברים, מדויק, מילון)',
-        'העורך האוטומטי (AI) + AI יוצר',
         `${fmtGb(c.storageGb)} אחסון`,
         `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
+        fmtSeats(TIER_DEVICE_SEATS.pro),
       ]
     case 'ultra':
       return [
         `${fmtGb(c.storageGb)} אחסון — הגדול ביותר`,
-        'מכסת טוקני AI מוגדלת לעורך ול-AI יוצר',
         `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
+        fmtSeats(TIER_DEVICE_SEATS.ultra),
         'עדיפות בתמיכה',
       ]
   }
@@ -137,8 +145,6 @@ const TABLE_ROWS: { label: string; render: (t: Tier, c: TierConfig) => ReactNode
   { label: 'מסירה ללקוח', render: (t) => (tierAllows(t, 'deliveries') ? yes() : no()) },
   { label: 'מעקב זמן עבודה', render: (t) => (tierAllows(t, 'timeTracking') ? yes() : no()) },
   { label: 'חוקי מיון בהורדות', render: (t) => (tierAllows(t, 'routingRules') ? yes() : no()) },
-  { label: 'העורך האוטומטי (AI)', render: (t) => (tierAllows(t, 'autoEditor') ? yes() : no()) },
-  { label: 'AI יוצר', render: (t) => (tierAllows(t, 'aiCreator') ? yes() : no()) },
   {
     label: 'אחסון (תיקונים + מסירה)',
     render: (_t, c) => (c.storageGb == null ? 'ללא הגבלה' : c.storageGb > 0 ? `${c.storageGb}GB` : no()),
@@ -153,13 +159,8 @@ const TABLE_ROWS: { label: string; render: (t: Tier, c: TierConfig) => ReactNode
           : no(),
   },
   {
-    label: 'מכסת טוקני AI לחודש',
-    render: (_t, c) =>
-      c.aiMonthlyTokens == null
-        ? 'ללא הגבלה'
-        : c.aiMonthlyTokens > 0
-          ? c.aiMonthlyTokens.toLocaleString('en-US')
-          : no(),
+    label: 'מחשבים בחשבון',
+    render: (t) => fmtSeats(TIER_DEVICE_SEATS[t]),
   },
 ]
 
