@@ -642,7 +642,24 @@ async function sendRenewalEmail(
   })
 }
 
+/** Retired one-shot checkout. Kept deployed only to refuse.
+ *
+ *  Every purchase and renewal now runs through PayPal subscriptions
+ *  (api/paypal.ts create-subscription), priced from the tier table. This
+ *  endpoint still validated the paid amount against the OLD single-product
+ *  table (appConfig/pricing: ₪45 / ₪55 monthly, ₪290 / ₪390 yearly) and
+ *  minted a Pro key — while no page calls it any more. That made it a public
+ *  side door: create a one-shot PayPal order for ₪45, post the orderID here,
+ *  receive Pro. It refuses BEFORE capturing, so no money is ever taken. */
+const CAPTURE_RETIRED = true
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (CAPTURE_RETIRED) {
+    return res.status(410).json({
+      ok: false,
+      error: 'ערוץ התשלום הזה הוסר. לרכישה או חידוש היכנסו לדף המנויים באתר.',
+    })
+  }
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
   }

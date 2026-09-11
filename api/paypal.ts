@@ -3335,7 +3335,7 @@ async function ensureIntroPlan(
 /** Public: validate a code + preview the price. Never reveals WHY an
  *  unknown code failed (anti-scanning), throttled per IP. */
 async function handleCouponCheck(req: VercelRequest, res: VercelResponse) {
-  const b = (req.body || {}) as { code?: string; plan?: string }
+  const b = (req.body || {}) as { code?: string; plan?: string; tier?: string }
   const plan: 'monthly' | 'yearly' = b.plan === 'yearly' ? 'yearly' : 'monthly'
   const ip = String(req.headers['x-forwarded-for'] || '')
     .split(',')[0]
@@ -3354,8 +3354,20 @@ async function handleCouponCheck(req: VercelRequest, res: VercelResponse) {
     couponRegisterMiss(ip)
     return res.status(200).json({ ok: true, valid: false, error: r.error })
   }
-  const regular = pricing[plan].regular
-  const sale = pricing[plan].sale
+  // Preview from the TIER table — the same numbers create-subscription
+  // charges. This used the old single-product table, so a coupon preview could
+  // quote a discount off ₪45 / ₪290 on a checkout that then billed the tier
+  // price.
+  const tier = normTier(b.tier)
+  const tcfg = await loadTierConfig()
+  const regular = plan === 'monthly' ? tcfg[tier].priceMonthly : tcfg[tier].priceYearly
+  const saleRaw = plan === 'monthly' ? tcfg[tier].priceMonthlySale : tcfg[tier].priceYearlySale
+  const sale: number | null = saleRaw > 0 && saleRaw < regular ? saleRaw : null
+  if (!(regular > 0)) {
+    return res
+      .status(200)
+      .json({ ok: true, valid: false, error: 'המחיר למסלול הזה אינו זמין כרגע' })
+  }
   const effective = sale != null ? sale : regular
   if (r.duration === 'first') {
     // First period discounted off the CURRENT effective price; then the
@@ -3525,17 +3537,19 @@ async function handleCreateSubscription(
   }
   const currency = pricing.currency
 
-  // Which tier is being purchased. Absent → 'pro' (the legacy checkout).
+  // Which tier is being purchased. Absent → 'pro'.
   const tier = normTier(body.tier)
   const tcfg = await loadTierConfig()
   const tierRegular = plan === 'monthly' ? tcfg[tier].priceMonthly : tcfg[tier].priceYearly
   const tierSaleRaw = plan === 'monthly' ? tcfg[tier].priceMonthlySale : tcfg[tier].priceYearlySale
   // Sale wins only when positive AND strictly below regular.
   const tierEffective = tierSaleRaw > 0 && tierSaleRaw < tierRegular ? tierSaleRaw : tierRegular
-  // Per-tier path for any non-Pro tier, and for Pro once its per-tier price is
-  // configured in the admin panel. Otherwise the legacy single-product Pro
-  // path (sale slots) is used byte-for-byte as before.
-  const perTier = tier !== 'pro' || tierRegular > 0
+  // The price ALWAYS comes from the tier table. There used to be a fallback
+  // to the old single-product Pro pricing (appConfig/pricing) whenever Pro's
+  // tier price was 0 — and that table still holds the pre-tier numbers
+  // (₪45 / ₪290). A zeroed or unset tier price would silently have sold Pro
+  // at those, and the renewal page even advertised them. An unpriced tier is
+  // now refused outright below; there is no second price list to fall into.
 
   let lockedPrice: number
   let planId: string | null
@@ -3560,7 +3574,7 @@ async function handleCreateSubscription(
     isTierDowngrade && currentKeyExpiresAt && Date.parse(currentKeyExpiresAt) > Date.now()
       ? currentKeyExpiresAt
       : null
-  if (perTier) {
+  {
     if (!(tierRegular > 0)) {
       return res
         .status(400)
@@ -3599,19 +3613,6 @@ async function handleCreateSubscription(
       lockedPrice = tierEffective
       planId = await ensurePlanForAmount(plan, tierEffective, currency)
     }
-  } else {
-    const usingSale = pricing[plan].sale != null
-    lockedPrice = usingSale ? pricing[plan].sale! : pricing[plan].regular
-    regularBase = pricing[plan].regular
-    const plans = await syncPlansForPricing(pricing)
-    planId =
-      plan === 'monthly'
-        ? usingSale
-          ? plans.monthlySalePlanId
-          : plans.monthlyRegularPlanId
-        : usingSale
-          ? plans.yearlySalePlanId
-          : plans.yearlyRegularPlanId
   }
   if (!planId) {
     return res
@@ -3632,7 +3633,7 @@ async function handleCreateSubscription(
     if (r.duration === 'first') {
       // First period discounted off the current effective price; the
       // effective price recurs. Two-cycle PayPal plan. `lockedPrice` is the
-      // current effective (post-sale for legacy Pro, the tier price otherwise).
+      // current effective tier price.
       const effective = lockedPrice
       const introPrice = couponPriceFrom(effective, r.pct)
       if (introPrice < effective) {

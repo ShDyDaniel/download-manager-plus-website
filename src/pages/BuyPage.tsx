@@ -14,7 +14,6 @@ import {
 } from 'lucide-react'
 import {
   currencySymbol,
-  effectivePrice,
   fetchLivePricingStrict,
   formatPrice,
   writePricingCache,
@@ -267,6 +266,9 @@ export function BuyPage() {
   // Live per-tier config (prices) for the checkout display — same public
   // source the comparison cards read. Falls back to code defaults.
   const [tierCfg, setTierCfg] = useState<Record<Tier, TierConfig>>(DEFAULT_TIER_CONFIG)
+  // The code defaults carry price 0, so until the live prices arrive the
+  // checkout must not render at all — otherwise it has no honest number to show.
+  const [tiersState, setTiersState] = useState<'loading' | 'ready' | 'failed'>('loading')
   useEffect(() => {
     let alive = true
     void (async () => {
@@ -279,9 +281,15 @@ export function BuyPage() {
         const j = (await r.json().catch(() => null)) as
           | { ok?: boolean; tiers?: Record<Tier, TierConfig> }
           | null
-        if (alive && j?.ok && j.tiers) setTierCfg(j.tiers)
+        if (!alive) return
+        if (j?.ok && j.tiers) {
+          setTierCfg(j.tiers)
+          setTiersState('ready')
+        } else {
+          setTiersState('failed')
+        }
       } catch {
-        /* keep defaults */
+        if (alive) setTiersState('failed')
       }
     })()
     return () => {
@@ -677,6 +685,10 @@ export function BuyPage() {
           return
         }
         setRenewInfo(json)
+        // No ?tier= (e.g. the renewal email link): renew at the KEY's own
+        // tier. Leaving the 'pro' default would price a Basic key's renewal
+        // as an upgrade to Pro and charge the difference.
+        if (!tierParam) setTier(normalizeTier(json.tier))
         // Auto-lock current plan when the buyer arrived via an
         // email-link renewal AND still has an active sub. Same
         // logic as pickRenewableKey above — the explicit URL
@@ -1229,69 +1241,11 @@ export function BuyPage() {
           </div>
         ) : (
         <>
-        {/* Plan toggle — two cards side by side, click to select.
-            DOM order matters: in RTL, the first child renders on the
-            right (where the reader's eye lands first), so the yearly
-            card — the better deal we want most buyers on — goes
-            first. It also carries the floating 'מומלץ' flag so the
-            preference reads at a glance.
-            Yearly is preselected for the same reason.
-            `items-stretch` + `h-full` on the cards guarantees both
-            cards render at the same height regardless of how much
-            content each one carries — the recommended card has the
-            extra floating flag overhead and the discount badge, but
-            the monthly card now stretches to match it instead of
-            sitting visibly shorter beside it. The shared `mt-3` on
-            the grid reserves space for the floating 'מומלץ' ribbon
-            so it doesn't visually overlap with anything above. */}
-        {/* Legacy monthly/yearly cycle selector — only for the renewal /
-            plan-switch flow (arrived with ?renew / ?switchTo). On a NEW
-            purchase the tier comparison above is the selector, so these are
-            hidden to avoid a duplicate set of "purchase options". */}
-        {renewToken && (
-        <div
-          dir="rtl"
-          className="mb-6 mt-3 grid grid-cols-1 items-stretch gap-4 md:grid-cols-2"
-        >
-          <PlanCard
-            plan="yearly"
-            active={plan === 'yearly'}
-            onSelect={() => setPlan('yearly')}
-            title="שנתי"
-            regularPrice={pricing.yearly.regular}
-            salePrice={pricing.yearly.sale}
-            currency={pricing.currency}
-            saleLabel={pricing.saleLabel}
-            cycle="לשנה"
-            monthlyEquivalent
-            note="מתחדש אוטומטית מדי שנה"
-            comparisonMonthly={pricing.monthly}
-            recommended
-            loading={false}
-            // Plan-switch flow: when user is switching TO monthly,
-            // their current plan is yearly — this card needs the
-            // "המנוי הנוכחי" badge + non-clickable styling so they
-            // can only pick the other one.
-            currentPlanBadge={switchTo === 'monthly'}
-          />
-          <PlanCard
-            plan="monthly"
-            active={plan === 'monthly'}
-            onSelect={() => setPlan('monthly')}
-            title="חודשי"
-            regularPrice={pricing.monthly.regular}
-            salePrice={pricing.monthly.sale}
-            currency={pricing.currency}
-            saleLabel={pricing.saleLabel}
-            cycle="לחודש"
-            note="מתחדש אוטומטית מדי 30 יום"
-            loading={false}
-            // Mirror of the yearly card: switching TO yearly =
-            // current is monthly = this card locks.
-            currentPlanBadge={switchTo === 'yearly'}
-          />
-        </div>
-        )}
+        {/* No separate monthly/yearly picker here. The renewal flow used to
+            show the old single-product cards, priced from the pre-tier table
+            (₪45 / ₪290) while the server charged the tier price — a buyer saw
+            one number and paid another. The tier comparison above is the one
+            selector for every flow, renewals included. */}
 
         <motion.div
           id="tier-checkout"
@@ -1532,7 +1486,7 @@ export function BuyPage() {
                     ? tierChange.kind === 'upgrade'
                       ? `המשך לשדרוג: ${formatPrice(tierChange.payNow)} ${curSym}`
                       : 'אישור הורדת המסלול'
-                    : `המשך לחידוש: ${formatPrice(effectivePrice(pricing[plan]))} ${currencySymbol(pricing.currency)}`}
+                    : `המשך לחידוש: ${formatPrice(selectedTierPrice)} ${currencySymbol(pricing.currency)}`}
                 </button>
               </form>
             ) : (
@@ -1559,6 +1513,18 @@ export function BuyPage() {
             )
           ) : (
             /* ─── SUBSCRIPTION MODE (new auto-renewing flow) ─── */
+            selectedTierPrice <= 0 ? (
+              <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-elevated px-4 py-6 text-sm text-fg-muted">
+                {tiersState === 'loading' ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    טוען את המחיר…
+                  </>
+                ) : (
+                  'המחיר למסלול הזה אינו זמין כרגע. נסו שוב בעוד כמה דקות.'
+                )}
+              </div>
+            ) : (
             <SubscriptionFlow
               postReturn={postReturn}
               email={email}
@@ -1576,6 +1542,7 @@ export function BuyPage() {
               sdkError={sdkError}
               purchaseContext={purchaseContext}
             />
+            )
           )}
         </motion.div>
         </>
@@ -1849,246 +1816,6 @@ export function BuyPage() {
   )
 }
 
-function PlanCard({
-  active,
-  onSelect,
-  title,
-  regularPrice,
-  salePrice,
-  currency,
-  saleLabel,
-  cycle,
-  note,
-  monthlyEquivalent,
-  comparisonMonthly,
-  recommended,
-  loading,
-  currentPlanBadge,
-}: {
-  plan: Plan
-  active: boolean
-  onSelect: () => void
-  title: string
-  /** The sticker price before any discount, in the currency
-   *  given. Always shown — struck-through when there's a sale. */
-  regularPrice: number
-  /** When set, this is what the buyer pays; the regular price
-   *  gets a strike-through and a "save X%" badge appears. */
-  salePrice: number | null
-  currency: string
-  /** Admin-controlled badge text for the sale (e.g. "מבצע חורף").
-   *  When set AND a sale price is active, replaces the auto-
-   *  generated "X% הנחה" label so the admin's marketing copy wins. */
-  saleLabel?: string
-  cycle: string
-  /** Static note line at the bottom of the card (e.g. the auto-renewal
-   *  cadence). Can be combined with `monthlyEquivalent` — when both are
-   *  set, the equivalent line renders first and the note below it. */
-  note?: string
-  /** When true, the bottom note is auto-generated as "שווה ערך ל-X ₪/חודש"
-   *  using the effective price ÷ 12. Designed for the yearly plan to
-   *  show the per-month equivalent — gives buyers an apples-to-apples
-   *  comparison against the monthly card without manual math. */
-  monthlyEquivalent?: boolean
-  /** Used together with `monthlyEquivalent` to compute the
-   *  yearly-vs-monthly savings percent for the "חיסכון X%" badge.
-   *  The badge appears only when (a) there's no active sale (so the
-   *  "save X%" badge isn't crowding things), and (b) the effective
-   *  monthly equivalent is actually lower than buying monthly. */
-  comparisonMonthly?: { regular: number; sale: number | null }
-  recommended?: boolean
-  loading?: boolean
-  /** When true, this card represents the buyer's CURRENT plan in a
-   *  plan-switch flow (?switchTo=... on the URL). The card becomes
-   *  non-interactive (no onSelect) and shows a "המנוי הנוכחי" pill
-   *  so the user understands why they can't pick it. Used by /buy
-   *  when the user arrives via the /account "שינוי תוכנית" link. */
-  currentPlanBadge?: boolean
-}) {
-  // Effective values used everywhere — these abstract away
-  // "is there a sale or not" so each render block doesn't have to
-  // repeat the conditional.
-  const onSale = salePrice != null
-  const effective = onSale ? salePrice : regularPrice
-  const sym = currencySymbol(currency)
-
-  // Save-percent computed from regular vs sale prices. We round to
-  // an integer because "29% הנחה" reads cleaner than "29.41%".
-  const savePct = onSale
-    ? Math.round(((regularPrice - salePrice) / regularPrice) * 100)
-    : 0
-
-  // Yearly-vs-monthly badge — only relevant when `comparisonMonthly`
-  // is passed (the yearly card). Compares the per-month equivalent
-  // of THIS plan's effective price against the monthly plan's
-  // effective price. Hidden if a sale badge is already showing.
-  let yearlyVsMonthly: number | null = null
-  if (monthlyEquivalent && comparisonMonthly && !onSale) {
-    const monthlyEff =
-      comparisonMonthly.sale ?? comparisonMonthly.regular
-    const thisPerMonth = effective / 12
-    if (thisPerMonth < monthlyEff) {
-      yearlyVsMonthly = Math.round(
-        ((monthlyEff - thisPerMonth) / monthlyEff) * 100,
-      )
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={currentPlanBadge ? undefined : onSelect}
-      disabled={currentPlanBadge}
-      aria-disabled={currentPlanBadge || undefined}
-      dir="rtl"
-      className={`relative flex h-full flex-col rounded-2xl border p-5 text-right transition-all ${
-        currentPlanBadge
-          ? 'cursor-not-allowed border-border bg-bg-elevated/30 opacity-55'
-          : active
-            ? 'border-primary bg-primary/[0.06] shadow-lg'
-            : 'border-border bg-bg-elevated/50 hover:border-border-strong hover:bg-bg-elevated'
-      } ${loading ? 'opacity-70' : ''}`}
-    >
-      {/* "המנוי הנוכחי" — sticker on plan-switch flow. Anchored
-          top-left so it sits opposite the 'מומלץ' ribbon (which
-          floats top-right in RTL). The two never collide because
-          you can't be BOTH "currently on this plan" AND "the
-          recommended one to switch to" at the same time — switchTo
-          locks the current card and disables 'מומלץ'-driven styling. */}
-      {currentPlanBadge && (
-        <div className="absolute -top-3 right-4 z-10 rounded-full border border-fg-muted/30 bg-bg px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-fg-muted shadow">
-          המנוי הנוכחי
-        </div>
-      )}
-      {/* 'מומלץ' flag — floats above the card edge like a ribbon. */}
-      {recommended && !currentPlanBadge && (
-        <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-primary px-3 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-bg">
-          ✨ מומלץ
-        </span>
-      )}
-
-      {/* Top-left badge — priority: sale label > sale percent >
-          yearly-vs-monthly savings. Only one shows at a time so the
-          card doesn't look like a flash-sale circular. */}
-      {onSale && (saleLabel || savePct > 0) && (
-        <span className="absolute left-3 top-3 rounded-full border border-success/50 bg-success/20 px-2 py-0.5 text-[10px] font-bold text-success">
-          {saleLabel || `${savePct}% הנחה`}
-        </span>
-      )}
-      {!onSale && yearlyVsMonthly != null && yearlyVsMonthly > 0 && (
-        <span className="absolute left-3 top-3 rounded-full border border-success/40 bg-success/15 px-2 py-0.5 text-[10px] font-medium text-success">
-          <bdi>{yearlyVsMonthly}%</bdi> חיסכון
-        </span>
-      )}
-
-      {/* Title row. */}
-      <div className="mb-3 flex items-center gap-2">
-        <span className="text-base font-semibold">{title}</span>
-        <div
-          className={`h-4 w-4 shrink-0 rounded-full border-2 transition-colors ${
-            active ? 'border-primary bg-primary' : 'border-fg-faint'
-          }`}
-        >
-          {active && (
-            <div className="m-auto mt-[3px] h-1.5 w-1.5 rounded-full bg-bg" />
-          )}
-        </div>
-      </div>
-
-      {/* Price row. When pricing is still loading (no cache + no
-          response yet) we render a shimmer skeleton instead of the
-          numbers — the previous version flashed the hardcoded
-          DEFAULT_PRICING for ~200ms which read as "the price just
-          changed" when it actually didn't. Skeleton is sized to
-          match the real price block so the layout doesn't jump
-          when the data arrives. */}
-      {loading ? (
-        <div className="mb-1" dir="ltr">
-          <div className="flex items-baseline justify-end gap-1.5">
-            <span className="h-3 w-10 animate-pulse rounded bg-fg-muted/10" />
-            <span className="h-9 w-16 animate-pulse rounded bg-fg-muted/20" />
-            <span className="h-5 w-3 animate-pulse rounded bg-fg-muted/15" />
-          </div>
-        </div>
-      ) : onSale ? (
-        <div className="mb-1" dir="ltr">
-          <div className="flex items-baseline justify-end gap-1.5 text-fg-muted">
-            <span className="text-base font-medium tabular-nums line-through decoration-fg-muted/60">
-              {formatPrice(regularPrice)}
-            </span>
-            <span className="text-sm">{sym}</span>
-          </div>
-          <div className="flex items-baseline justify-end gap-1.5">
-            <span className="text-xs text-fg-muted">{cycle}</span>
-            <span className="text-xs text-fg-muted">/</span>
-            <span className="text-4xl font-bold tabular-nums text-success">
-              {formatPrice(salePrice)}
-            </span>
-            <span className="text-lg text-success/80">{sym}</span>
-          </div>
-        </div>
-      ) : (
-        <div
-          className="mb-1 flex items-baseline justify-end gap-1.5"
-          dir="ltr"
-        >
-          <span className="text-xs text-fg-muted">{cycle}</span>
-          <span className="text-xs text-fg-muted">/</span>
-          <span className="text-4xl font-bold tabular-nums">
-            {formatPrice(regularPrice)}
-          </span>
-          <span className="text-lg text-fg-secondary">{sym}</span>
-        </div>
-      )}
-
-      {/* Bottom note — either the static `note` prop or the auto-
-          generated monthly-equivalent calculation for the yearly
-          plan. We compute the equivalent against the EFFECTIVE
-          price (sale if active) so a yearly sale doesn't show a
-          stale "5 ₪/חודש" when it's actually less. While loading,
-          render a skeleton placeholder of similar visual weight so
-          the card's vertical rhythm doesn't shift. */}
-      <div className="mt-auto text-[11px] text-fg-muted">
-        {loading ? (
-          <span className="inline-block h-3 w-32 animate-pulse rounded bg-fg-muted/15" />
-        ) : (
-          <>
-            {monthlyEquivalent && (
-              <div>
-                {`שווה ערך ל-${formatPrice(
-                  Math.round((effective / 12) * 100) / 100,
-                )} ${sym}/חודש`}
-              </div>
-            )}
-            {note && (
-              <div className={monthlyEquivalent ? "mt-0.5" : undefined}>{note}</div>
-            )}
-          </>
-        )}
-      </div>
-    </button>
-  )
-}
-
-/* ─────────────────────────────────────────────────────────────
- *  SubscriptionFlow — the new auto-renewing payment flow.
- *
- *  Renders ONE of three states:
- *    1. Subscribed success (returned from PayPal with ?subscribed=1)
- *    2. User cancelled at PayPal (?cancelled=1)
- *    3. Default — the email + auto-renew checkbox + submit form
- *
- *  Legal-compliance disclosures embedded directly in the form
- *  (Israeli consumer-protection law sec. 13ג, 13ד):
- *    - Plan + price + currency clearly stated
- *    - Auto-renewal disclosure with the exact billing cycle
- *    - How to cancel (link to /manage)
- *    - Separate explicit consent checkbox (NOT pre-ticked)
- *    - No-refund policy disclosure
- *
- *  The actual price comes from `pricing` so admin changes (including
- *  active sales) propagate to the form immediately.
- * ───────────────────────────────────────────────────────────── */
 function SubscriptionFlow({
   postReturn,
   email,
@@ -2178,10 +1905,12 @@ function SubscriptionFlow({
   const perTierPrice = typeof tierPrice === 'number' && tierPrice > 0 ? tierPrice : null
   const isPerTier = perTierPrice != null
   const planLabelText = tierLabel ?? 'Pro'
-  const eff = perTierPrice ?? effectivePrice(pricing[plan])
+  // Tier price only. The caller renders this flow solely once a real tier
+  // price is known, so there is no second price list to fall back to.
+  const eff = perTierPrice ?? 0
   const sym = currencySymbol(pricing.currency)
   const cycleLabel = plan === 'monthly' ? 'חודש' : 'שנה'
-  const onSale = !isPerTier && pricing[plan].sale != null
+  const onSale = false // legacy single-product sale slots no longer apply
   // Terms modal — replaces the previously-inline "סיכום העסקה"
   // block. The legal requirement (sec. 13ג) is that the user has
   // ACCESS to the disclosures before paying, not that they're
@@ -2216,7 +1945,8 @@ function SubscriptionFlow({
         const r = await fetch('/api/paypal?action=coupon-check', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code, plan: planNow }),
+          // The tier matters: the preview is priced per tier, like the charge.
+          body: JSON.stringify({ code, plan: planNow, tier }),
         })
         const j = (await r.json()) as {
           ok: boolean
