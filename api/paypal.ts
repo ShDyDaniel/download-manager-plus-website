@@ -2606,6 +2606,59 @@ async function ensureKeyForSubscription(
         reminderSentAt: null,
       })
 
+      // Re-attach the key to the account that just paid for it. The renewal
+      // extended the key but never touched who holds it, so a key an admin
+      // had released — or one bought and never redeemed — came out of a
+      // successful payment still detached: charged, and no access.
+      // linkToUid is verified upstream (session or renew-token owner). Only a
+      // DETACHED key is attached: one already held by this account needs
+      // nothing, and one held by a different account is never taken.
+      const holder = (existing as { redeemedBy?: string | null }).redeemedBy || null
+      if (linkToUid && !holder) {
+        const relinkAt = new Date().toISOString()
+        try {
+          // Account-lock, as a first purchase does: this key becomes the
+          // account's primary; any other key it holds steps aside, kept for
+          // audit via replacedAt / replacedByKey.
+          const others = await db
+            .collection('productKeys')
+            .where('redeemedBy', '==', linkToUid)
+            .get()
+          for (const d of others.docs) {
+            if (d.id === renewKeyId) continue
+            await d.ref
+              .update({
+                redeemedBy: null,
+                redeemedByEmail: null,
+                replacedAt: relinkAt,
+                replacedByKey: renewKeyId,
+              })
+              .catch((err) =>
+                console.warn(`[webhook/renew] failed to unlink prior key ${d.id}:`, err),
+              )
+          }
+          await existingRef.update({
+            redeemedBy: linkToUid,
+            redeemedByEmail:
+              buyerEmail || existing.redeemedByEmail || existing.buyerEmail || null,
+            // Keep the ORIGINAL redemption date when there is one.
+            redeemedAt:
+              (existing as { redeemedAt?: string | null }).redeemedAt || relinkAt,
+            releasedAt: null,
+            releasedByAdmin: null,
+            releasedFromUid: null,
+            releasedFromEmail: null,
+            releaseReason: null,
+            relinkedByRenewalAt: relinkAt,
+          })
+        } catch (err) {
+          console.error(
+            `[webhook/renew] re-link of ${renewKeyId} to ${linkToUid} failed:`,
+            err,
+          )
+        }
+      }
+
       // Durable tax ledger — this renewal charge (mirrors the
       // billingHistory push above, same `renew-<subId>` id).
       await recordCasualCharge({
@@ -7688,14 +7741,34 @@ async function handleMintRenewToken(req: VercelRequest, res: VercelResponse) {
     .where('redeemedBy', '==', claims.uid)
     .limit(50)
     .get()
-  if (snap.empty) {
+  // ALSO the keys this account BOUGHT but doesn't currently hold — exactly the
+  // set the account page lists, since it finds subscriptions by buyer email
+  // too. Without this the page shows a subscription card whose renew button
+  // then reports there's nothing to renew. A key held by a DIFFERENT account
+  // is excluded: having bought with an address doesn't entitle anyone to take
+  // a key someone else redeemed.
+  const boughtSnap = claims.email
+    ? await db
+        .collection('productKeys')
+        .where('buyerEmail', '==', String(claims.email).toLowerCase())
+        .limit(50)
+        .get()
+    : null
+  const candidates = [
+    ...snap.docs,
+    ...(boughtSnap?.docs || []).filter((d) => {
+      const holder = (d.data() as { redeemedBy?: string | null }).redeemedBy
+      return !holder || holder === claims.uid
+    }),
+  ]
+  if (candidates.length === 0) {
     return res
       .status(404)
       .json({ ok: false, error: 'אין לך מפתח קיים לחדש. בצע רכישה חדשה.' })
   }
   let primaryKey: string | null = null
   let primaryExpMs = 0
-  for (const d of snap.docs) {
+  for (const d of candidates) {
     const data = d.data() as { key?: string; expiresAt?: string }
     const k = typeof data.key === 'string' ? data.key : d.id
     const expMs = typeof data.expiresAt === 'string' ? Date.parse(data.expiresAt) : 0
@@ -9130,6 +9203,31 @@ async function handleAdminSetUserStorage(
   return res.status(200).json({ ok: true })
 }
 
+/** Detach a key from an account WITHOUT erasing that it was ever held.
+ *
+ *  The old write nulled redeemedAt along with the holder, so a spent key read
+ *  as "לא מומש" in the panel and nothing recorded who released it or when — a
+ *  key linked by an admin and later released by "set to free" became
+ *  indistinguishable from one nobody had ever used. The holder is still
+ *  cleared (that's what removes access); the history is kept beside it. */
+function releaseKeyFields(
+  current: Record<string, unknown>,
+  uid: string,
+  adminEmail: string,
+  reason: string,
+): Record<string, unknown> {
+  return {
+    redeemedBy: null,
+    redeemedByEmail: null,
+    // redeemedAt is deliberately left untouched.
+    releasedAt: new Date().toISOString(),
+    releasedByAdmin: adminEmail,
+    releasedFromUid: uid,
+    releasedFromEmail: (current.redeemedByEmail as string | null | undefined) ?? null,
+    releaseReason: reason,
+  }
+}
+
 /** Free/Pro flip. On demote to free we ALSO release every product
  *  key this user redeemed + reject any active trial — otherwise the
  *  demotion is cosmetic (key/trial would still grant Pro). Mirrors
@@ -9138,7 +9236,8 @@ async function handleAdminSetUserSubscription(
   req: VercelRequest,
   res: VercelResponse,
 ) {
-  if (!(await verifyAdminStepUp(req))) {
+  const adminEmail = await verifyAdminStepUp(req)
+  if (!adminEmail) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
   const body = (req.body || {}) as { uid?: string; subscription?: string }
@@ -9160,11 +9259,9 @@ async function handleAdminSetUserSubscription(
         .get()
       await Promise.all(
         keysSnap.docs.map((k) =>
-          k.ref.update({
-            redeemedBy: null,
-            redeemedByEmail: null,
-            redeemedAt: null,
-          }),
+          k.ref.update(
+            releaseKeyFields(k.data(), uid, String(adminEmail), 'admin-set-free'),
+          ),
         ),
       )
     } catch (err) {
@@ -9229,11 +9326,9 @@ async function handleAdminApproveTrial(
         .get()
       await Promise.all(
         keysSnap.docs.map((k) =>
-          k.ref.update({
-            redeemedBy: null,
-            redeemedByEmail: null,
-            redeemedAt: null,
-          }),
+          k.ref.update(
+            releaseKeyFields(k.data(), uid, String(admin), 'admin-trial-demote'),
+          ),
         ),
       )
     } catch (err) {

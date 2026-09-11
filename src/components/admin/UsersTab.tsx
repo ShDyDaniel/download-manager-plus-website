@@ -507,6 +507,40 @@ function UserRow({
   const effectiveTier =
     (TIER_RANK[keyTier] ?? 0) > (TIER_RANK[subTier] ?? 0) ? keyTier : subTier
   const isPro = (TIER_RANK[effectiveTier] ?? 0) >= TIER_RANK.pro
+  // Paying right now: an unexpired key with a real PayPal subscription behind
+  // it — not an admin grant.
+  const hasPaidSub =
+    !!redeemedKey &&
+    isKeyActive(redeemedKey) &&
+    !!redeemedKey.subscriptionId &&
+    !redeemedKey.nonPaidGrant
+  const TIER_NAME: Record<string, string> = {
+    free: 'חינם',
+    basic: 'Basic',
+    pro: 'Pro',
+    ultra: 'Ultra',
+  }
+  /** Ask before taking a paying customer down. These chips sit side by side,
+   *  one slip from "חינם", and that path releases the key the customer paid
+   *  for — while PayPal keeps charging them, because nothing here cancels the
+   *  subscription. Returns true when it's fine to proceed. */
+  function confirmDowngrade(targetLabel: string, releasesKey: boolean): boolean {
+    if (!hasPaidSub || !redeemedKey) return true
+    const until = redeemedKey.expiresAt
+      ? new Date(redeemedKey.expiresAt).toLocaleDateString('he-IL')
+      : '—'
+    const effect = releasesKey
+      ? 'המפתח ששילם עליו ישוחרר מהחשבון, והוא יאבד את הגישה מיד.'
+      : 'שים לב: המנוי בתשלום נשאר בתוקף וממשיך לקבוע את הרמה, כך שהשינוי הזה לא יוריד אותו בפועל.'
+    const billing =
+      redeemedKey.subscriptionStatus === 'active'
+        ? 'המנוי ב-PayPal ממשיך לחייב אותו — הפעולה הזאת לא מבטלת אותו.'
+        : 'המנוי ב-PayPal כבר בוטל, אבל התקופה ששילם עליה עדיין בתוקף.'
+    return window.confirm(
+      `${user.email} משלם כרגע על מסלול ${TIER_NAME[effectiveTier] || effectiveTier}, בתוקף עד ${until}.\n\n` +
+        `להעביר אותו ל${targetLabel}?\n\n${effect}\n${billing}`,
+    )
+  }
   // Allocated bytes reflect the account's CURRENT state:
   //   Pro            → full pro quota
   //   active trial   → trial quota
@@ -671,23 +705,27 @@ function UserRow({
                 label="חינם"
                 active={effectiveTier === 'free' && !onTrial}
                 disabled={!!busy}
-                onClick={() =>
-                  run('plan', 'admin-set-user-subscription', {
+                onClick={() => {
+                  if (!confirmDowngrade('חינם', true)) return
+                  void run('plan', 'admin-set-user-subscription', {
                     uid: user.uid,
                     subscription: 'free',
                   })
-                }
+                }}
               />
               <PlanChip
                 label="ניסיון"
                 active={onTrial}
                 disabled={!!busy}
-                onClick={() =>
-                  run('plan', 'admin-approve-trial', {
+                onClick={() => {
+                  // Only demotes (and releases the key) when the user is Pro+;
+                  // a paid Basic user just gets a trial on top.
+                  if (isPro && !confirmDowngrade('ניסיון', true)) return
+                  void run('plan', 'admin-approve-trial', {
                     uid: user.uid,
                     demoteFirst: isPro,
                   })
-                }
+                }}
               />
               {(['basic', 'pro', 'ultra'] as const).map((t) => (
                 <PlanChip
@@ -695,12 +733,18 @@ function UserRow({
                   label={t === 'basic' ? 'Basic' : t === 'pro' ? 'Pro' : 'Ultra'}
                   active={effectiveTier === t && !onTrial}
                   disabled={!!busy}
-                  onClick={() =>
-                    run('plan', 'admin-set-user-subscription', {
+                  onClick={() => {
+                    if (
+                      (TIER_RANK[t] ?? 0) < (TIER_RANK[effectiveTier] ?? 0) &&
+                      !confirmDowngrade(t === 'basic' ? 'Basic' : t === 'pro' ? 'Pro' : 'Ultra', false)
+                    ) {
+                      return
+                    }
+                    void run('plan', 'admin-set-user-subscription', {
                       uid: user.uid,
                       subscription: t,
                     })
-                  }
+                  }}
                 />
               ))}
             </div>

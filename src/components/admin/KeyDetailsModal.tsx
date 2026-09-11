@@ -31,6 +31,18 @@ export interface KeyDetailsData {
   autoRedeemedFromWebhook?: boolean
   billingHistory?: unknown[]
   replacedPriorKeys?: unknown[]
+  /** Stamped when an admin releases the key from an account — recorded beside
+   *  redeemedAt instead of erasing it, so a spent key never reads as unused. */
+  releasedAt?: string | null
+  releasedByAdmin?: string | null
+  releasedFromEmail?: string | null
+  releaseReason?: string | null
+  /** A renewal re-attached a detached key to the account that paid. */
+  relinkedByRenewalAt?: string | null
+  /** The admin "link subscription" stamp. For a key released BEFORE release
+   *  history existed, this is the only surviving proof it was ever held. */
+  linkedByAdmin?: string | null
+  linkedAt?: string | null
 }
 
 function fmtDateTime(s?: string | null): string {
@@ -235,6 +247,35 @@ export function KeyDetailsModal({
                           (אוטומטי דרך webhook)
                         </span>
                       )}
+                      {/* Held once, not now — and by whom it was let go. */}
+                      {!keyDoc.redeemedBy && keyDoc.releasedAt && (
+                        <span className="text-[10px] text-destructive/80">
+                          שוחרר <span dir="ltr">{fmtDateTime(keyDoc.releasedAt)}</span>
+                          {keyDoc.releasedByAdmin && (
+                            <>
+                              {' · '}
+                              <span dir="ltr">{keyDoc.releasedByAdmin}</span>
+                            </>
+                          )}
+                        </span>
+                      )}
+                      {keyDoc.relinkedByRenewalAt && (
+                        <span className="text-[10px] text-muted-foreground/70">
+                          קושר מחדש בחידוש{' '}
+                          <span dir="ltr">{fmtDateTime(keyDoc.relinkedByRenewalAt)}</span>
+                        </span>
+                      )}
+                    </div>
+                  ) : !keyDoc.redeemedBy && keyDoc.linkedAt ? (
+                    // Released before release history was recorded: the old
+                    // write wiped redeemedAt, but the admin link stamp survived
+                    // and proves the key WAS held. Say that, not "לא מומש".
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span className="text-xs text-foreground">קושר ושוחרר</span>
+                      <span className="text-[10px] text-muted-foreground/70">
+                        קושר <span dir="ltr">{fmtDateTime(keyDoc.linkedAt)}</span> · מועד
+                        השחרור לא נשמר
+                      </span>
                     </div>
                   ) : (
                     <span className="text-xs text-muted-foreground">לא מומש</span>
