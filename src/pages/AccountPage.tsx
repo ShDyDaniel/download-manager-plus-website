@@ -1528,6 +1528,11 @@ function SubscriptionCard({
   const isCancelled = status === 'CANCELLED' || sub.cancelledAt
   const isPastDue = status === 'PAST_DUE'
   const isSuspended = status === 'SUSPENDED'
+  // Ended = nothing left to switch FROM, so offer a way back in instead.
+  // Deliberately NOT past-due or suspended: those are a live subscription
+  // with a payment still owed, and starting a fresh one on top would bill
+  // the buyer twice. Their fix is the payment method, not a renewal.
+  const isEnded = !!isCancelled || status === 'EXPIRED'
   const statusLabel = isCancelled
     ? 'בוטל'
     : isActive
@@ -1548,9 +1553,9 @@ function SubscriptionCard({
         : 'text-accent'
 
   // The "שינוי תוכנית" affordance only makes sense while the
-  // subscription is ACTIVE — once it's cancelled/suspended/expired
-  // the user goes through the renewal flow instead (handled by the
-  // main "חידוש המנוי שלי" button elsewhere on the page).
+  // subscription is ACTIVE. An ended one gets "חידוש המנוי" instead —
+  // the page's other renewal button renders only when there are NO
+  // subscriptions at all, so a cancelled card used to offer no way back.
   const canSwitch = isActive && !isCancelled
 
   // Current tier of this subscription (falls back to "pro" for legacy
@@ -1602,6 +1607,32 @@ function SubscriptionCard({
                   </>
                 ) : (
                   'שינוי תוכנית'
+                )}
+              </button>
+              <span className="text-xs text-fg-faint" aria-hidden>
+                ·
+              </span>
+            </>
+          )}
+          {isEnded && (
+            <>
+              <button
+                type="button"
+                // Renews at the SAME tier the plan ended on, so a lapsed Pro
+                // buyer isn't dropped onto some other default plan. Runs
+                // through the renewal token: the existing key is extended,
+                // not a second one minted.
+                onClick={() => onChangeTier(currentTier)}
+                disabled={switchingThisSub}
+                className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-bg transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {switchingThisSub ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    טוען…
+                  </>
+                ) : (
+                  'חידוש המנוי'
                 )}
               </button>
               <span className="text-xs text-fg-faint" aria-hidden>
