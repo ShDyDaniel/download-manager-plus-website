@@ -17,6 +17,7 @@ import {
   ArrowDown,
   ShieldAlert,
   Power,
+  Youtube,
 } from 'lucide-react'
 import {
   adminApi,
@@ -241,6 +242,12 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [freeTtransMin, setFreeTransMin] = useState('')
   const [transBusy, setTransBusy] = useState(false)
   const [transMsg, setTransMsg] = useState('')
+  // Emergency valve for YouTube extraction. Held as the plain text an operator
+  // types; sent as a flag/value list.
+  const [ytArgs, setYtArgs] = useState('')
+  const [ytBusy, setYtBusy] = useState(false)
+  const [ytMsg, setYtMsg] = useState('')
+  const [ytErr, setYtErr] = useState('')
 
   useEffect(() => {
     void (async () => {
@@ -251,6 +258,7 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
           proStorageGb?: number
           trialStorageGb?: number
           freeTranscriptionWeeklySec?: number
+          ytExtractorArgs?: string[]
         }>('admin-get-app-config')
         setBeta(r.betaMode)
         setLogsPw(r.logsPassword || '')
@@ -259,6 +267,8 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
           setTrialGb(String(r.trialStorageGb))
         if (typeof r.freeTranscriptionWeeklySec === 'number')
           setFreeTransMin(String(Math.round(r.freeTranscriptionWeeklySec / 60)))
+        if (Array.isArray(r.ytExtractorArgs))
+          setYtArgs(r.ytExtractorArgs.join(' '))
       } catch (e) {
         onErr(e)
       } finally {
@@ -334,6 +344,26 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
       setTransMsg(err.message || 'שמירה נכשלה')
     } finally {
       setTransBusy(false)
+    }
+  }
+
+  async function saveYtArgs(clear = false) {
+    const text = clear ? '' : ytArgs.trim()
+    const parts = text ? text.split(/\s+/) : []
+    setYtBusy(true)
+    setYtMsg('')
+    setYtErr('')
+    try {
+      await adminApi('admin-set-app-config', { ytExtractorArgs: parts })
+      if (clear) setYtArgs('')
+      setYtMsg(parts.length ? 'נשמר ✓ — יחול על כל מחשב בהפעלה הבאה' : 'נוקה ✓ — חזרה לברירת המחדל')
+      setTimeout(() => setYtMsg(''), 4000)
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onErr(err)
+      setYtErr(err.message || 'שמירה נכשלה')
+    } finally {
+      setYtBusy(false)
     }
   }
 
@@ -556,6 +586,58 @@ function AppConfigCard({ onErr }: { onErr: (e: unknown) => void }) {
           </Button>
         </div>
         {transMsg && <div className="text-xs text-success">{transMsg}</div>}
+      </div>
+
+      {/* YouTube extraction override — the emergency valve */}
+      <div className="space-y-3 rounded-2xl border border-border bg-card p-4 text-right">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-red-500 to-red-600 shadow-md shadow-red-500/40">
+            <Youtube className="h-5 w-5 text-white" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-bold text-foreground">
+              הגדרת חילוץ מיוטיוב — שסתום חירום
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              ריק זה המצב הנכון, ואז התוכנה משתמשת בברירת המחדל של כלי ההורדה.
+              השדה הזה קיים למקרה שיוטיוב משנה משהו ושובר הורדות — אפשר לתקן מכאן
+              תוך דקה, בלי להוציא גרסה. חל על גרסה 1.9.513 ומעלה בהפעלה הבאה של
+              התוכנה.
+            </p>
+          </div>
+        </div>
+        <Input
+          value={ytArgs}
+          onChange={(e) => setYtArgs(e.target.value)}
+          placeholder="--extractor-args youtube:player_client=tv"
+          className="font-mono text-xs"
+          dir="ltr"
+        />
+        <p className="text-[11px] leading-relaxed text-amber-500">
+          ערך שגוי כאן ישבור הורדות אצל כל המשתמשים. מותרים רק שלושה דגלים
+          (--extractor-args, --impersonate, --user-agent), כל אחד עם ערך אחריו,
+          והשרת דוחה כל דבר אחר.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={() => void saveYtArgs()} disabled={ytBusy} size="sm">
+            {ytBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Save className="h-3.5 w-3.5" />
+            )}
+            שמור
+          </Button>
+          <Button
+            onClick={() => void saveYtArgs(true)}
+            disabled={ytBusy || !ytArgs.trim()}
+            size="sm"
+            variant="outline"
+          >
+            ניקוי (חזרה לברירת מחדל)
+          </Button>
+        </div>
+        {ytMsg && <div className="text-xs text-success">{ytMsg}</div>}
+        {ytErr && <div className="text-xs text-destructive">{ytErr}</div>}
       </div>
     </>
   )

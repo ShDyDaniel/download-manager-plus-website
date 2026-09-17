@@ -11055,6 +11055,34 @@ async function handleAdminIssueUsagePull(
  *  (Pricing edits stay desktop-only — they touch PayPal plan sync.)
  * ────────────────────────────────────────────────────────────── */
 
+/**
+ * The only yt-dlp flags the server will ever hand a desktop client, mirroring
+ * the allowlist the client enforces again on arrival. Anything else — `--exec`
+ * above all — would make this config document a way to run commands on every
+ * machine running the app, so a list containing one bad entry is rejected
+ * whole rather than filtered down to its acceptable parts.
+ */
+const PUSHABLE_EXTRACTOR_FLAGS = new Set([
+  '--extractor-args',
+  '--impersonate',
+  '--user-agent',
+])
+function sanitizeExtractorArgs(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null
+  if (value.length === 0) return []
+  if (value.length > 8 || value.length % 2 !== 0) return null
+  const out: string[] = []
+  for (let i = 0; i < value.length; i += 2) {
+    const flag = value[i]
+    const val = value[i + 1]
+    if (typeof flag !== 'string' || typeof val !== 'string') return null
+    if (!PUSHABLE_EXTRACTOR_FLAGS.has(flag)) return null
+    if (!val || val.length > 200 || val.startsWith('-')) return null
+    out.push(flag, val)
+  }
+  return out
+}
+
 async function handleAdminGetAppConfig(
   req: VercelRequest,
   res: VercelResponse,
@@ -11079,6 +11107,7 @@ async function handleAdminGetAppConfig(
     syncTelemetryDisabled?: boolean
     clientLogsDisabled?: boolean
     freeTranscriptionWeeklySec?: number
+    ytExtractorArgs?: unknown
   }
   // Sensitive fields (logs password + storage quotas) now live in the
   // admin-only adminConfig/global (clients can't read it). Prefer those;
@@ -11143,6 +11172,9 @@ async function handleAdminGetAppConfig(
       d.freeTranscriptionWeeklySec >= 0
         ? Math.floor(d.freeTranscriptionWeeklySec)
         : 300,
+    // Emergency valve for YouTube extraction (desktop 1.9.513+). Empty is the
+    // normal, healthy state: yt-dlp's own defaults.
+    ytExtractorArgs: sanitizeExtractorArgs(d.ytExtractorArgs) ?? [],
   })
 }
 
@@ -11169,6 +11201,7 @@ async function handleAdminSetAppConfig(
     syncTelemetryDisabled?: boolean
     clientLogsDisabled?: boolean
     freeTranscriptionWeeklySec?: number
+    ytExtractorArgs?: unknown
   }
   const patch: Record<string, unknown> = {}
   // Sensitive fields go to the admin-only adminConfig/global, NOT the
@@ -11196,6 +11229,20 @@ async function handleAdminSetAppConfig(
   }
   if (body.planMode === 'hybrid' || body.planMode === 'subscription') {
     patch.planMode = body.planMode
+  }
+  // Extra yt-dlp extractor args pushed to every desktop client. Validated HERE
+  // as well as on the client, so a bad value never reaches a machine: the app
+  // would otherwise be asked to run flags it should never run.
+  if (body.ytExtractorArgs !== undefined) {
+    const clean = sanitizeExtractorArgs(body.ytExtractorArgs)
+    if (!clean) {
+      return res.status(400).json({
+        ok: false,
+        error:
+          'הגדרת חילוץ לא תקינה. מותר רק --extractor-args / --impersonate / --user-agent, כל דגל עם ערך אחריו.',
+      })
+    }
+    patch.ytExtractorArgs = clean
   }
   // Logs/DevTools password for the desktop Ctrl+Shift+1 shortcut —
   // admin-only (verified server-side via verify-logs-password).
