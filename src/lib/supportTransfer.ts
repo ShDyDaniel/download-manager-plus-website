@@ -25,7 +25,11 @@ const CHUNK_BYTES = 64 * 1024;
 const HASH_BLOCK_BYTES = 1024 * 1024;
 const HIGH_WATER_BYTES = 8 * 1024 * 1024;
 const CONNECT_TIMEOUT_MS = 25_000;
-const GATHER_TIMEOUT_MS = 4_000;
+// Gathering usually finishes in well under a second (measured: 225ms on a
+// plain home connection). The cap exists for networks that never report
+// "complete" at all — but cutting it too early ships an SDP with no public
+// address in it, which is an unfixable failure, so it is generous.
+const GATHER_TIMEOUT_MS = 8_000;
 
 export const ICE_SERVERS: RTCIceServer[] = [
   { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
@@ -170,6 +174,45 @@ export async function makeAnswer(
 
 export async function acceptAnswer(pc: RTCPeerConnection, answerSdp: string): Promise<void> {
   await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+}
+
+/**
+ * The answerer doesn't create the data channel — it receives one, and only once
+ * the connection is actually up. So waiting for that event needs the SAME
+ * deadline as waitOpen: without it, a connection that never forms leaves the
+ * operator watching "connecting…" forever while the customer's side has long
+ * since given up and reported a blocked network. That asymmetry is exactly what
+ * a real failed transfer looked like.
+ */
+export function awaitChannel(pc: RTCPeerConnection, link: Promise<Link>): Promise<Link> {
+  return new Promise<Link>((resolve, reject) => {
+    let settled = false;
+    const finish = (act: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      pc.removeEventListener("iceconnectionstatechange", onIce);
+      act();
+    };
+    const onIce = () => {
+      if (pc.iceConnectionState !== "failed") return;
+      finish(() => reject(new BlockedNetworkError(`ice=failed ${candidateSummary(pc)}`)));
+    };
+    const timer = setTimeout(
+      () =>
+        finish(() =>
+          reject(
+            new BlockedNetworkError(`no-channel ice=${pc.iceConnectionState} ${candidateSummary(pc)}`),
+          ),
+        ),
+      CONNECT_TIMEOUT_MS,
+    );
+    pc.addEventListener("iceconnectionstatechange", onIce);
+    link.then(
+      (l) => finish(() => resolve(l)),
+      (e) => finish(() => reject(e)),
+    );
+  });
 }
 
 /** Wait for the channel to open, or fail with BlockedNetworkError when the two

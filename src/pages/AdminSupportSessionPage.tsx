@@ -5,6 +5,7 @@ import { buildZip } from '../lib/zip'
 import {
   createPeer,
   makeAnswer,
+  awaitChannel,
   waitOpen,
   sendPayload,
   receivePayload,
@@ -535,7 +536,7 @@ export default function AdminSupportSessionPage() {
       await xferSignal(x.id, { answerSdp: sdp })
       answered = true
       setXferNote('מתחבר ישירות למחשב של הלקוח…')
-      const l = await link
+      const l = await awaitChannel(pc, link)
       await waitOpen(pc, l.channel)
       setXferNote('מקבל…')
       const meta = await receivePayload(
@@ -645,7 +646,7 @@ export default function AdminSupportSessionPage() {
         const { link, sdp } = await makeAnswer(pc, offerSdp)
         await xferSignal(x.id, { answerSdp: sdp })
         setXferNote('הלקוח אישר. מתחבר ישירות למחשב שלו…')
-        const l = await link
+        const l = await awaitChannel(pc, link)
         await waitOpen(pc, l.channel)
         setXferNote('שולח…')
         await sendPayload(
