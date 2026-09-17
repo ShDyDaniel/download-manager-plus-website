@@ -595,14 +595,21 @@ export default function AdminSupportSessionPage() {
    *  line shows, so the generic error gives way to it. */
   async function reportXferFailure(id: string, e: unknown, message: string) {
     const blocked = e instanceof BlockedNetworkError
+    const detail = blocked ? e.detail : ''
     closePeer()
     setXferNote('')
-    setXferError(blocked ? XFER_BLOCKED_NOTE : message)
+    // Show the operator what this side actually managed. "srflx=0" means the
+    // STUN servers never answered from here, which is a different problem from
+    // two NATs that can't meet.
+    setXferError(blocked ? `${XFER_BLOCKED_NOTE}${detail ? ` (${detail})` : ''}` : message)
     // Both ends see a blocked network at once. For anything else, give the
     // customer's app a moment to report the more specific reason first.
     if (!blocked) await new Promise((r) => setTimeout(r, 1500))
     try {
-      await xferSignal(id, { state: 'failed', reason: blocked ? 'blocked' : 'error' })
+      await xferSignal(id, {
+        state: 'failed',
+        reason: blocked ? `blocked ${detail}`.trim().slice(0, 60) : 'error',
+      })
     } catch (err) {
       const m = (err as Error).message
       if (m === 'ended' || m === 'stale') setXferError('')
@@ -687,8 +694,8 @@ export default function AdminSupportSessionPage() {
       case 'cancelled':
         return 'ההעברה בוטלה.'
       case 'failed':
-        return xfer.reason === 'blocked'
-          ? XFER_BLOCKED_NOTE
+        return xfer.reason?.startsWith('blocked')
+          ? `${XFER_BLOCKED_NOTE}${xfer.reason.length > 8 ? ` · ${xfer.reason.slice(8)}` : ''}`
           : xfer.reason === 'disk'
             ? 'ההעברה נכשלה: לא היה אפשר לשמור את הקובץ במחשב של הלקוח (אולי אין מספיק מקום).'
             : 'ההעברה נכשלה.'

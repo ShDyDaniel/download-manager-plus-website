@@ -40,12 +40,31 @@ export type TransferPayload =
   | { kind: "file"; blob: Blob; name: string; mime: string }
   | { kind: "text"; text: string };
 
-/** The two networks can't reach each other without a relay. */
+/** The two networks can't reach each other without a relay. `detail` says what
+ *  the local side actually managed before giving up, which is the difference
+ *  between "a firewall ate our STUN requests" and "both sides are behind NATs
+ *  that only a relay can cross" — two very different fixes. */
 export class BlockedNetworkError extends Error {
-  constructor() {
-    super("blocked");
+  readonly detail: string;
+  constructor(detail = "") {
+    super(detail ? `blocked ${detail}` : "blocked");
     this.name = "BlockedNetworkError";
+    this.detail = detail;
   }
+}
+
+/**
+ * What this side gathered, compactly, for diagnosis:
+ *   host  — our own addresses. Always present; only useful on the same network.
+ *   srflx — our public address, learned from a STUN server. **Zero means the
+ *           STUN servers never answered**, so we were never reachable from
+ *           outside and no relay would have been needed to notice.
+ *   relay — a TURN server. Always zero: we don't run one on purpose.
+ */
+export function candidateSummary(pc: RTCPeerConnection): string {
+  const sdp = pc.localDescription?.sdp || "";
+  const n = (t: string) => (sdp.match(new RegExp(`typ ${t}`, "g")) || []).length;
+  return `host=${n("host")} srflx=${n("srflx")} relay=${n("relay")}`;
 }
 
 /** Bytes arrived, but not the bytes that were sent. */
@@ -170,11 +189,13 @@ export function waitOpen(pc: RTCPeerConnection, channel: RTCDataChannel): Promis
     const onIce = () => {
       if (pc.iceConnectionState !== "failed") return;
       cleanup();
-      reject(new BlockedNetworkError());
+      reject(new BlockedNetworkError(`ice=failed ${candidateSummary(pc)}`));
     };
     const timer = setTimeout(() => {
       cleanup();
-      reject(new BlockedNetworkError());
+      reject(
+        new BlockedNetworkError(`timeout ice=${pc.iceConnectionState} ${candidateSummary(pc)}`),
+      );
     }, CONNECT_TIMEOUT_MS);
     channel.addEventListener("open", onOpen);
     pc.addEventListener("iceconnectionstatechange", onIce);
