@@ -19,6 +19,7 @@
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.38.0",
     "class-variance-authority": "^0.7.1",
+    "client-zip": "^2.5.1",
     "clsx": "^2.1.1",
     "firebase": "^12.14.0",
     "firebase-admin": "^12.7.0",

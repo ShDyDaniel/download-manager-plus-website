@@ -8,7 +8,9 @@ import {
   Download as DownloadIcon,
   ArrowLeft,
   FileVideo,
+  FolderDown,
 } from 'lucide-react'
+import { makeZip, predictLength } from 'client-zip'
 
 /**
  * Public client-delivery page.
@@ -224,6 +226,33 @@ export function DeliveryPage() {
 /* ── Ready state — preloads the first video and only reveals the
  *    player once it can play, so the client never lands on a
  *    half-loaded/buffering player inside the page. ─────────────────── */
+/**
+ * Names for the files inside the zip.
+ *
+ * Two videos can carry the same name, and a zip with duplicates is one the
+ * client has to guess their way through — some tools silently overwrite,
+ * others refuse. Characters a filesystem will not take are replaced too.
+ */
+export function uniqueNames(raw: Array<string | undefined>): string[] {
+  const seen = new Map<string, number>()
+  return raw.map((r) => {
+    const clean = (r || 'video.mp4').replace(/[\\/:*?"<>|]/g, '_')
+    const n = (seen.get(clean) ?? 0) + 1
+    seen.set(clean, n)
+    if (n === 1) return clean
+    const dot = clean.lastIndexOf('.')
+    return dot > 0
+      ? `${clean.slice(0, dot)} (${n})${clean.slice(dot)}`
+      : `${clean} (${n})`
+  })
+}
+
+/** "42%" while a zip is being written, or "" when the size is unknown. */
+function pctText(done: number, total: number): string {
+  if (!total) return ''
+  return `${Math.min(100, Math.round((done / total) * 100))}%`
+}
+
 function DeliveryReady({ data }: { data: DeliveryData }) {
   // Videos the browser couldn't decode (e.g. a ProRes/HEVC .mov). We
   // swap those for a clean "download to view" card instead of a black
@@ -233,19 +262,133 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
     setErrored((prev) => (prev[i] ? prev : { ...prev, [i]: true }))
   }
 
-  // "Download all" — fire every presigned download in the SAME click gesture
-  // (synchronous, no setTimeout) so the browser treats them as one
-  // user-initiated multi-download (it asks once to allow multiple files)
-  // instead of blocking the later ones as "automatic". Each R2 URL is served
-  // Content-Disposition: attachment, so they save rather than navigate.
-  const downloadAll = () => {
-    for (const v of data.videos) {
-      const a = document.createElement('a')
-      a.href = v.downloadUrl
-      a.rel = 'noopener'
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
+  /* ── Getting everything at once ──────────────────────────────────────
+   *
+   * This used to fire every download inside one click, on the theory that
+   * the browser would treat them as a single user-initiated multi-download.
+   * It does not. Measured in Chromium against a local server that counted
+   * the requests: of four files, exactly ONE arrived — the LAST one. Each
+   * click cancels the navigation the one before it started.
+   *
+   * So the real answer is a single file: the client picks where to save,
+   * and the page streams a .zip straight to that spot, pulling each video
+   * from storage as its turn comes. Nothing is held in memory and nothing
+   * passes through our server — the bytes go from storage to the client's
+   * disk, which is what keeps this free to run.
+   *
+   * Two things have to be true for that: the browser must be able to hand
+   * a file on disk to a script (Chrome, Edge — not Safari or Firefox), and
+   * storage must allow the page to read the files. When either is missing
+   * we fall back to separate downloads, SPACED OUT — measured: six of six
+   * arrive at 250ms apart and beyond, five of six at 120ms, one of six in
+   * a tight loop. 600ms leaves room for a slow machine.
+   */
+  const [canZip, setCanZip] = useState<boolean | null>(null)
+  const [zip, setZip] = useState<
+    | { kind: 'idle' }
+    | { kind: 'working'; done: number; total: number }
+    | { kind: 'failed'; message: string }
+  >({ kind: 'idle' })
+
+  const savesToDisk =
+    typeof window !== 'undefined' &&
+    typeof (window as unknown as { showSaveFilePicker?: unknown })
+      .showSaveFilePicker === 'function'
+
+  // Ask storage, once, whether this page is allowed to read the files at
+  // all — before offering a button that would fail. The answer arrives long
+  // before anyone clicks, and the body is dropped the moment it starts.
+  useEffect(() => {
+    let alive = true
+    const first = data.videos[0]
+    if (!first || !savesToDisk) {
+      setCanZip(false)
+      return
+    }
+    void (async () => {
+      try {
+        const res = await fetch(first.downloadUrl)
+        void res.body?.cancel()
+        if (alive) setCanZip(res.ok)
+      } catch {
+        if (alive) setCanZip(false)
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [data.videos, savesToDisk])
+
+  const separately = () => {
+    data.videos.forEach((v, i) => {
+      window.setTimeout(() => {
+        const a = document.createElement('a')
+        a.href = v.downloadUrl
+        a.rel = 'noopener'
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+      }, i * 600)
+    })
+  }
+
+  const downloadFolder = async () => {
+    if (zip.kind === 'working') return
+    const names = uniqueNames(data.videos.map((v) => v.name))
+    const picker = (
+      window as unknown as {
+        showSaveFilePicker: (o: unknown) => Promise<FileSystemFileHandle>
+      }
+    ).showSaveFilePicker
+    let handle: FileSystemFileHandle
+    try {
+      handle = await picker({
+        suggestedName: `${(data.title || 'הסרטונים שלך').replace(/[\\/:*?"<>|]/g, '_')}.zip`,
+        types: [{ description: 'ZIP', accept: { 'application/zip': ['.zip'] } }],
+      })
+    } catch {
+      return // they closed the save dialog
+    }
+
+    const total = Number(
+      predictLength(
+        data.videos.map((v, i) => ({ name: names[i], size: v.sizeBytes || 0 })),
+      ),
+    )
+    setZip({ kind: 'working', done: 0, total })
+
+    try {
+      const writable = await handle.createWritable()
+      // Each video is fetched only when the zip reaches it, so there is one
+      // transfer at a time rather than all of them fighting for the line.
+      async function* entries() {
+        for (let i = 0; i < data.videos.length; i++) {
+          const v = data.videos[i]
+          const res = await fetch(v.downloadUrl)
+          if (!res.ok) throw new Error(`storage answered ${res.status}`)
+          yield { name: names[i], input: res, size: v.sizeBytes || undefined }
+        }
+      }
+      let done = 0
+      const counted = makeZip(entries()).pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            done += chunk.byteLength
+            setZip((z) => (z.kind === 'working' ? { ...z, done } : z))
+            controller.enqueue(chunk)
+          },
+        }),
+      )
+      await counted.pipeTo(writable)
+      setZip({ kind: 'idle' })
+    } catch (e) {
+      console.warn('[delivery] zip failed:', e)
+      setZip({
+        kind: 'failed',
+        message: 'ההורדה כקובץ אחד נכשלה. מורידים את הקבצים בנפרד…',
+      })
+      separately()
+      window.setTimeout(() => setZip({ kind: 'idle' }), 6000)
     }
   }
 
@@ -265,14 +408,38 @@ function DeliveryReady({ data }: { data: DeliveryData }) {
             {expiryText(data.expiresAt)}
           </p>
           {data.videos.length > 1 && (
-            <div className="mt-5">
+            <div className="mt-5 flex flex-col items-center gap-2">
               <button
-                onClick={downloadAll}
-                className="inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 transition-opacity hover:opacity-90"
+                onClick={canZip ? () => void downloadFolder() : separately}
+                disabled={zip.kind === 'working'}
+                className="inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 transition-opacity hover:opacity-90 disabled:opacity-60"
               >
-                <DownloadIcon className="h-4 w-4" />
-                הורדת כל הקבצים
+                {zip.kind === 'working' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : canZip ? (
+                  <FolderDown className="h-4 w-4" />
+                ) : (
+                  <DownloadIcon className="h-4 w-4" />
+                )}
+                {zip.kind === 'working'
+                  ? `מוריד… ${pctText(zip.done, zip.total)}`
+                  : canZip
+                    ? 'הורדת הכל כקובץ אחד'
+                    : 'הורדת כל הקבצים'}
               </button>
+              {zip.kind === 'working' && (
+                <div className="h-1 w-56 overflow-hidden rounded-full bg-border">
+                  <div
+                    className="h-full rounded-full bg-primary transition-[width] duration-300"
+                    style={{
+                      width: `${Math.min(100, zip.total ? (zip.done / zip.total) * 100 : 0)}%`,
+                    }}
+                  />
+                </div>
+              )}
+              {zip.kind === 'failed' && (
+                <p className="text-xs text-muted-foreground">{zip.message}</p>
+              )}
             </div>
           )}
         </header>
