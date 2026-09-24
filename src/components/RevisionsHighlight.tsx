@@ -37,9 +37,11 @@ const STEPS: Step[] = [
 type Stat = { stat: string; label: string }
 
 const STATS: Stat[] = [
-  { stat: '100GB', label: 'נפח אחסון לסבבי התיקונים ולמסירות' },
+  // Storage and project counts differ per plan (Basic 10GB / Pro 50GB /
+  // Ultra 100GB), so the headline stats stick to what every plan gets.
+  { stat: 'עד 100GB', label: 'אחסון לסבבים ולמסירות, לפי המסלול' },
   { stat: '4K', label: 'תמיכה בסרטונים באיכות גבוהה' },
-  { stat: 'ללא הגבלה', label: 'מספר הפרויקטים שתוכלו לפתוח' },
+  { stat: 'בלי הרשמה', label: 'הלקוח צופה, מעיר ומצייר על הפריים' },
 ]
 
 export function RevisionsHighlight() {

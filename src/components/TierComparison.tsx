@@ -42,10 +42,12 @@ function perMonth(amount: number, cycle: Cycle): string {
 function fmtMinutes(sec: number | null): string {
   if (sec == null) return 'ללא הגבלה'
   const m = Math.round(sec / 60)
+  if (m === 60) return 'שעה/חודש'
   if (m >= 60 && m % 60 === 0) return `${m / 60} שעות/חודש`
   return `${m} דק׳/חודש`
 }
 function fmtCount(n: number | null, unit: string): string {
+  if (n === 1 && unit === 'פרויקטים') return 'פרויקט אחד'
   return n == null ? `${unit} ללא הגבלה` : `${n} ${unit}`
 }
 /** How many computers the plan covers, phrased for a buyer. */
@@ -319,6 +321,7 @@ export default function TierComparison({
                 ) : price > 0 ? (
                   // Price FIRST, then the period. AnimatePresence fades the
                   // amount when the buyer flips monthly ↔ yearly.
+                  <div>
                   <AnimatePresence mode="wait" initial={false}>
                     <motion.div
                       key={cycle}
@@ -346,6 +349,19 @@ export default function TierComparison({
                       <span className="text-xs text-fg-muted">/ לחודש</span>
                     </motion.div>
                   </AnimatePresence>
+                  {/* What is actually charged sits right under the per-month
+                      figure — Israeli price rules want the full price (incl.
+                      VAT) as visible as the per-month one. */}
+                  <div className="mt-1 text-[11px] text-fg-muted" dir="rtl">
+                    {cycle === 'yearly' ? (
+                      <>
+                        חיוב שנתי של <span dir="ltr">₪{price}</span> · כולל מע״מ
+                      </>
+                    ) : (
+                      'חיוב חודשי · כולל מע״מ'
+                    )}
+                  </div>
+                  </div>
                 ) : (
                   <span className="inline-flex items-center rounded-md bg-bg-elevated px-2 py-0.5 text-xs text-fg-muted">
                     בקרוב

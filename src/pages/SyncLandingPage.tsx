@@ -618,7 +618,7 @@ function FinalCta() {
             <Download className="h-5 w-5" />
             הורדת המערכת
           </Link>
-          <span className="text-sm text-fg-muted">תומך macOS ו-Windows</span>
+          <span className="text-sm text-fg-muted">Mac עם שבב M1 ומעלה · Windows 10/11</span>
         </div>
       </div>
     </section>

@@ -2167,8 +2167,14 @@ function SubscriptionFlow({
         </div>
         <p className="text-[11px] leading-relaxed text-fg-muted">
           החיוב הראשון עכשיו, ואז {formatPrice(eff)} {sym} כל {cycleLabel} עד לביטול.
-          שדרוג מסלול נכנס לתוקף מיד (משלמים רק את ההפרש); הורדת מסלול נכנסת לתוקף
-          בסוף התקופה ששולמה — עד אז נשארים במסלול הנוכחי.
+          המחירים כוללים מע״מ. שדרוג מסלול נכנס לתוקף מיד (משלמים רק את ההפרש);
+          הורדת מסלול נכנסת לתוקף בסוף התקופה ששולמה — עד אז נשארים במסלול הנוכחי.
+        </p>
+        {/* Said before the pay button, not after: an Intel-Mac owner must
+            not be able to pay for an app that won't run on their machine. */}
+        <p className="text-[11px] leading-relaxed text-fg-muted">
+          התוכנה פועלת על Mac עם שבב M1 ומעלה ועל Windows 10/11 בגרסת 64 ביט.
+          מחשבי Mac עם מעבד Intel אינם נתמכים.
         </p>
       </div>
       <label className="block">
@@ -2449,8 +2455,8 @@ function SubscriptionFlow({
           />
           <PaymentTrustStrip />
           <p className="text-center text-[11px] text-fg-muted">
-            {formatPrice(eff)} {sym} / {cycleLabel} · מתחדש אוטומטית · ביטול בכל
-            עת
+            {formatPrice(eff)} {sym} / {cycleLabel} · כולל מע״מ · מתחדש אוטומטית ·
+            ביטול בכל עת
           </p>
         </>
       )}

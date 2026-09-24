@@ -9,12 +9,8 @@ import {
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import {
-  currencySymbol,
-  formatPrice,
-  minPricePerMonth,
-  useLivePricing,
-} from '../lib/pricing'
+import { useLiveTiers } from '../lib/liveTiers'
+import { tierPrice } from '../lib/tiers'
 import { getSession } from '../lib/webSession'
 import { DownloadAuthModal } from './DownloadAuthModal'
 
@@ -29,15 +25,11 @@ import { DownloadAuthModal } from './DownloadAuthModal'
  */
 
 export function Hero() {
-  // Live pricing for the Pro CTA's "starting from X ₪/month" line.
-  // Returns null on the very-first-ever visit (no localStorage
-  // cache, no fetch yet) — in that case we omit the price line
-  // entirely rather than flashing hardcoded defaults. Subsequent
-  // visits read the cached value synchronously and render the
-  // right number on the first paint.
-  const pricing = useLivePricing()
-  const minPerMonth = pricing ? minPricePerMonth(pricing) : null
-  const sym = pricing ? currencySymbol(pricing.currency) : ''
+  // The Pro CTA quotes the same monthly price /buy charges (admin-set tier
+  // config). Until it arrives the price line is left out — a missing number
+  // is better than a wrong one on the button that leads to checkout.
+  const tiers = useLiveTiers()
+  const proMonthly = tiers ? tierPrice(tiers.pro, 'monthly').effective : null
 
   // Download gating: a website account is required before download so
   // a partner referral (?ref=...) always binds to a real account. If
@@ -242,9 +234,9 @@ export function Hero() {
               <Crown className="h-3.5 w-3.5 shrink-0 text-primary md:h-5 md:w-5" />
               <span className="flex items-baseline gap-2 whitespace-nowrap">
                 <span className="text-xs md:text-lg">רכישת מנוי Pro</span>
-                {minPerMonth !== null && (
+                {proMonthly !== null && proMonthly > 0 && (
                   <span className="text-xs font-medium text-fg-muted">
-                    · מ-{formatPrice(minPerMonth)} {sym}/חודש
+                    · <bdi dir="ltr">₪{proMonthly}</bdi> לחודש, כולל מע״מ
                   </span>
                 )}
               </span>
@@ -254,7 +246,10 @@ export function Hero() {
             {/* Sub-meta — platform support note. Drive lives in the
                 button now, no need to re-mention it here. */}
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-muted">
-              <span>תומך macOS ו-Windows</span>
+              {/* The Mac build is arm64-only — say so before anyone downloads
+                  660 MB onto an Intel Mac. */}
+              <span>Mac עם שבב M1 ומעלה · Windows 10/11</span>
+              <span>7 ימי ניסיון חינם, בלי כרטיס אשראי</span>
             </div>
           </motion.div>
 
@@ -519,9 +514,9 @@ function DownloadPicker({
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-fg transition-colors hover:bg-bg-elevated"
             >
               <Apple className="h-4 w-4 text-fg-secondary" />
-              <span className="flex-1 text-right">macOS</span>
+              <span className="flex-1 text-right">Mac · M1 ומעלה</span>
               <span className="text-[10px] uppercase tracking-wider text-fg-faint">
-                .dmg
+                .pkg
               </span>
             </button>
             <button
