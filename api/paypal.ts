@@ -1184,6 +1184,7 @@ const KILL_BLOCKED_ACTIONS = new Set<string>([
   'sso',
   'status',
   'cancel',
+  'cancel-preview',
   'billing-history',
   'signup-request-code',
   'signup-verify-code',
@@ -1700,6 +1701,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleStatus(req, res)
       case 'cancel':
         return await handleCancel(req, res)
+      case 'cancel-preview':
+        return await handleCancelPreview(req, res)
       case 'billing-history':
         return await handleBillingHistory(req, res)
       case 'sync-plans':
@@ -2981,10 +2984,35 @@ async function handleSubscriptionEnded(
   // visible to subsequent reads — so if status was already
   // `cancelled` at the time of this snapshot, the in-account path
   // already handled the email and we must NOT re-send.
+  // Our own cancel flow holds cancelLockAt while it cancels and refunds; a
+  // webhook that lands inside that window belongs to it, not to PayPal-direct.
+  const lockAt = Date.parse(String((keyData as { cancelLockAt?: string }).cancelLockAt || ''))
+  const ourFlowInProgress = Number.isFinite(lockAt) && Date.now() - lockAt < 2 * 60 * 1000
   if (
     event.event_type === 'BILLING.SUBSCRIPTION.CANCELLED' &&
-    keyData.subscriptionStatus !== 'cancelled'
+    keyData.subscriptionStatus !== 'cancelled' &&
+    !ourFlowInProgress
   ) {
+    // Cancelled inside PayPal: the prorated refund the account page would
+    // have issued is still owed. Webhooks retry, so no money moves here — the
+    // admin gets the computed amount and refunds it by hand.
+    let owed: CancelTerms | null = null
+    try {
+      const { terms } = await computeCancelTerms(
+        keyData as KeyDoc & { billingHistory?: unknown[] },
+        resource.id,
+      )
+      if (terms.mode === 'refund' || terms.mode === 'manual') owed = terms
+    } catch (err) {
+      console.warn('[webhook] cancel terms failed:', err)
+    }
+    if (owed) {
+      await keyDocSnap.ref.update({ refundPending: { at: new Date().toISOString(), terms: owed } })
+      const who = keyData.buyerEmail || keyData.redeemedByEmail || resource.id
+      void sendTelegramAlert(
+        `⚠️ בוטל ישירות בפייפאל — מגיע החזר: ${who} · ${tierLabelS(owed.tier)} ${owed.plan === 'yearly' ? 'שנתי' : 'חודשי'} · ${owed.mode === 'refund' ? `להחזיר ₪${owed.refund}` : 'חיוב לא סטנדרטי, לחשב ידנית'}. להחזיר מפאנל הניהול.`,
+      )
+    }
     const recipient =
       keyData.buyerEmail || keyData.redeemedByEmail || null
     if (recipient) {
@@ -2997,6 +3025,7 @@ async function handleSubscriptionEnded(
         reason: null,
         cancelledFrom: 'paypal-direct',
         tier: keyData.tier,
+        refund: owed ? { status: 'manual' } : undefined,
       }).catch((err) => {
         console.error(
           '[webhook] cancellation email failed for',
@@ -4259,11 +4288,321 @@ async function handleStatus(req: VercelRequest, res: VercelResponse) {
  *  Cancel (action=cancel) — user cancels their subscription
  * ───────────────────────────────────────────────────────────── */
 
+/* ─────────────────────────────────────────────────────────────
+ *  Cancellation with a prorated refund
+ *
+ *  A subscription is an ongoing deal with no end date, billed per cycle.
+ *  Cancelling ends it (Consumer Protection Law s.13ד) and the unused part
+ *  of a prepaid year comes back. That refund is what keeps a yearly plan an
+ *  open-ended subscription instead of a fixed one-year deal, whose automatic
+ *  renewal would need fresh consent near the end of the year (s.13א) — the
+ *  MyHeritage class-action settlement moved to exactly this model.
+ *
+ *  Rules (Daniel, 2026-09-25):
+ *   - within 14 days of the first purchase (the cooling-off period): the
+ *     whole charge back, minus the cancellation fee;
+ *   - yearly, later: the charge minus the tier's REGULAR monthly price for
+ *     every month started (a started month counts in full), minus the fee —
+ *     so buying yearly and leaving early costs what monthly would have;
+ *   - monthly, later: no refund; access runs to the end of the paid month.
+ *  Fee = the admin-set % of the regular monthly price, never more than 5% of
+ *  the charge or ₪100, the statutory cap on cancellation fees.
+ *  A charge that isn't a plain full-price cycle (an upgrade difference, a
+ *  first-period coupon) is refunded by hand: the flow cancels, tells the
+ *  customer, and alerts the admin.
+ * ───────────────────────────────────────────────────────────── */
+const COOLING_OFF_DAYS = 14
+const DAY_MS = 24 * 60 * 60 * 1000
+const AVG_MONTH_DAYS = 365.25 / 12
+
+interface CancelTerms {
+  plan: 'monthly' | 'yearly'
+  tier: TierS
+  /** refund = automatic refund now; no-refund = nothing comes back, access
+   *  runs to the end of the paid period; manual = the admin computes it. */
+  mode: 'refund' | 'no-refund' | 'manual'
+  coolingOff: boolean
+  charge: { amount: number; currency: string; at: string } | null
+  monthsUsed: number
+  monthlyPrice: number
+  usedValue: number
+  fee: number
+  refund: number
+  /** When access stops: now for a refund, the end of the paid period otherwise. */
+  accessEndsAt: string | null
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100
+
+/** Work out what cancelling this subscription right now means, from the
+ *  real last PayPal charge. Server-only data (the capture id) stays out of
+ *  what the customer sees. */
+async function computeCancelTerms(
+  key: KeyDoc & { billingHistory?: unknown[] },
+  subscriptionId: string,
+): Promise<{ terms: CancelTerms; captureId: string | null }> {
+  const planDays = key.planDays || key.subscriptionPlanDays || 30
+  const plan: 'monthly' | 'yearly' = planDays >= 360 ? 'yearly' : 'monthly'
+  const tier = normTier(key.tier)
+  const base: CancelTerms = {
+    plan,
+    tier,
+    mode: 'no-refund',
+    coolingOff: false,
+    charge: null,
+    monthsUsed: 0,
+    monthlyPrice: 0,
+    usedValue: 0,
+    fee: 0,
+    refund: 0,
+    accessEndsAt: key.expiresAt || null,
+  }
+
+  // The last completed charge on this subscription, straight from PayPal.
+  const end = new Date()
+  const start = new Date(end.getTime() - 730 * DAY_MS)
+  let latest: { id: string; amount: number; currency: string; time: string } | null = null
+  let completedCount = 0
+  const payload = await paypalCall<PaypalTransactionPayload>(
+    'GET',
+    `/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}/transactions?start_time=${encodeURIComponent(
+      start.toISOString(),
+    )}&end_time=${encodeURIComponent(end.toISOString())}`,
+  )
+  for (const t of payload.transactions ?? []) {
+    if ((t.status || '').toUpperCase() !== 'COMPLETED') continue
+    const g = t.amount_with_breakdown?.gross_amount
+    const amount = Number(g?.value)
+    if (!t.id || !(amount > 0)) continue
+    completedCount++
+    if (!latest || String(t.time || '') > latest.time) {
+      latest = { id: t.id, amount, currency: g?.currency_code || 'ILS', time: String(t.time || '') }
+    }
+  }
+  if (!latest) return { terms: base, captureId: null }
+
+  const { tiers, settings } = await loadTierDocRaw()
+  const finalCfg = withVatS(tiers, settings)
+  const terms = cancelMath({
+    plan,
+    tier,
+    charge: { amount: latest.amount, currency: latest.currency, at: latest.time },
+    completedCount,
+    priorCharges: Array.isArray(key.billingHistory) ? key.billingHistory.length : 0,
+    subscriptionPrice: key.subscriptionPrice,
+    regularMonthly: finalCfg[tier].priceMonthly,
+    feePct: settings.cancelFeePct,
+    nowMs: Date.now(),
+    expiresAt: key.expiresAt || null,
+  })
+  return { terms, captureId: latest.id }
+}
+
+/** The refund arithmetic, pure — every rule from the block comment above,
+ *  and nothing that talks to PayPal or Firestore (so it can be tested). */
+function cancelMath(a: {
+  plan: 'monthly' | 'yearly'
+  tier: TierS
+  charge: { amount: number; currency: string; at: string }
+  /** Completed charges on this PayPal subscription. */
+  completedCount: number
+  /** Charges recorded on the key (all subscriptions it ever had). */
+  priorCharges: number
+  subscriptionPrice?: number
+  /** The tier's regular monthly price, final (incl. VAT); 0 = not set. */
+  regularMonthly: number
+  feePct: number
+  nowMs: number
+  expiresAt: string | null
+}): CancelTerms {
+  const { plan, tier, charge } = a
+  const base: CancelTerms = {
+    plan,
+    tier,
+    mode: 'no-refund',
+    coolingOff: false,
+    charge,
+    monthsUsed: 0,
+    monthlyPrice: 0,
+    usedValue: 0,
+    fee: 0,
+    refund: 0,
+    accessEndsAt: a.expiresAt,
+  }
+  const monthlyPrice =
+    a.regularMonthly > 0 ? a.regularMonthly : round2(charge.amount / (plan === 'yearly' ? 12 : 1))
+  const fee = round2(Math.min((a.feePct / 100) * monthlyPrice, 0.05 * charge.amount, 100))
+  const chargedMs = Date.parse(charge.at)
+  const days = Number.isFinite(chargedMs) ? Math.max(0, (a.nowMs - chargedMs) / DAY_MS) : 9999
+  const coolingOff = a.completedCount === 1 && a.priorCharges <= 1 && days <= COOLING_OFF_DAYS
+  // A plain full-price cycle: what PayPal charged is the plan's own price.
+  const standard =
+    !(typeof a.subscriptionPrice === 'number' && a.subscriptionPrice > 0) ||
+    Math.abs(charge.amount - a.subscriptionPrice) <= 0.5
+  const nowIso = new Date(a.nowMs).toISOString()
+
+  if (coolingOff) {
+    const refund = round2(Math.max(0, charge.amount - fee))
+    return {
+      ...base,
+      mode: refund > 0 ? 'refund' : 'no-refund',
+      coolingOff: true,
+      monthlyPrice,
+      fee: refund > 0 ? fee : 0,
+      refund,
+      accessEndsAt: refund > 0 ? nowIso : base.accessEndsAt,
+    }
+  }
+  if (plan === 'monthly') return { ...base, monthlyPrice }
+  if (!standard) return { ...base, mode: 'manual', monthlyPrice }
+  const monthsUsed = Math.min(12, Math.floor(days / AVG_MONTH_DAYS) + 1)
+  const usedValue = round2(monthsUsed * monthlyPrice)
+  const left = round2(charge.amount - usedValue)
+  const refund = left > 0 ? round2(Math.max(0, left - fee)) : 0
+  return {
+    ...base,
+    mode: refund > 0 ? 'refund' : 'no-refund',
+    monthsUsed,
+    monthlyPrice,
+    usedValue,
+    fee: refund > 0 ? fee : 0,
+    refund,
+    accessEndsAt: refund > 0 ? nowIso : base.accessEndsAt,
+  }
+}
+
+/** Partial refund of one captured subscription payment. The request id makes
+ *  a retry of the same refund a no-op at PayPal instead of a second refund.
+ *  Falls back to the v1 sale endpoint for older subscription payments. */
+async function refundSubscriptionCharge(
+  captureId: string,
+  amount: number,
+  currency: string,
+  note: string,
+): Promise<{ id: string }> {
+  const requestId = `dmp-refund-${captureId}-${amount.toFixed(2)}`
+  try {
+    const r = await paypalCall<{ id?: string }>(
+      'POST',
+      `/v2/payments/captures/${encodeURIComponent(captureId)}/refund`,
+      { amount: { value: amount.toFixed(2), currency_code: currency }, note_to_payer: note.slice(0, 250) },
+      { 'PayPal-Request-Id': requestId },
+    )
+    return { id: r?.id || requestId }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (!/RESOURCE_NOT_FOUND|INVALID_RESOURCE_ID|404/.test(message)) throw err
+    const r = await paypalCall<{ id?: string }>(
+      'POST',
+      `/v1/payments/sale/${encodeURIComponent(captureId)}/refund`,
+      { amount: { total: amount.toFixed(2), currency }, description: note.slice(0, 250) },
+      { 'PayPal-Request-Id': requestId },
+    )
+    return { id: r?.id || requestId }
+  }
+}
+
+/** Put a refund on the tax ledger so revenue, VAT and partner commission stop
+ *  counting money that went back. It lands on the ledger entry of the charge
+ *  it refunds (the latest charge of that subscription); if that charge only
+ *  lives in the key's billingHistory, the ledger entry is created from it. */
+async function recordCasualRefund(args: {
+  subscriptionId: string
+  key: KeyDoc & { billingHistory?: Array<{ at?: string; amount?: number; currency?: string; fee?: number; eventId?: string }>; buyerName?: string; referredBy?: string }
+  amount: number
+  refundId: string
+}): Promise<void> {
+  try {
+    const db = getDb()
+    const at = new Date().toISOString()
+    const snap = await db
+      .collection('casualLedger')
+      .where('subscriptionId', '==', args.subscriptionId)
+      .get()
+    let target = snap.docs
+      .map((d) => ({ ref: d.ref, at: String((d.data() as { at?: string }).at || '') }))
+      .sort((a, b) => b.at.localeCompare(a.at))[0]?.ref
+    if (!target) {
+      const hist = Array.isArray(args.key.billingHistory) ? args.key.billingHistory : []
+      const last = hist
+        .filter((h) => typeof h.amount === 'number' && h.amount > 0 && h.at)
+        .sort((a, b) => String(b.at).localeCompare(String(a.at)))[0]
+      if (!last) return
+      const id = last.eventId || `${args.subscriptionId}:${last.at}:${last.amount}`
+      target = db.collection('casualLedger').doc(id)
+      await target.set(
+        {
+          eventId: id,
+          at: last.at,
+          email: args.key.buyerEmail || args.key.redeemedByEmail || '',
+          name: args.key.buyerName || '',
+          amount: last.amount,
+          currency: (last.currency || 'ILS').toUpperCase(),
+          fee: typeof last.fee === 'number' ? last.fee : 0,
+          subscriptionId: args.subscriptionId,
+          kind: id.startsWith('initial-') ? 'initial' : 'renewal',
+          referredBy: args.key.referredBy || null,
+        },
+        { merge: true },
+      )
+    }
+    await target.set(
+      {
+        refundedAmount: FieldValue.increment(args.amount),
+        refunds: FieldValue.arrayUnion({ id: args.refundId, amount: args.amount, at }),
+      },
+      { merge: true },
+    )
+  } catch (err) {
+    console.warn('[casualLedger] refund write failed (ignored):', err)
+    void sendTelegramAlert(
+      `⚠️ החזר של ${args.amount} בוצע אבל לא נרשם ביומן ההכנסות (מנוי ${args.subscriptionId}). צריך לרשום ידנית.`,
+    )
+  }
+}
+
+/** Cancel-flow preview: exactly what cancelling now would do, so the account
+ *  page can show it before the customer confirms. Same session gate as cancel. */
+async function handleCancelPreview(req: VercelRequest, res: VercelResponse) {
+  const body = req.body as { token?: string; subscriptionId?: string }
+  const token = (body.token || '').trim()
+  const subscriptionId = (body.subscriptionId || '').trim()
+  if (!token || !subscriptionId) {
+    return res.status(400).json({ ok: false, error: 'חסרים פרטי בקשה' })
+  }
+  const claims = verifySessionToken(token)
+  if (!claims) {
+    return res.status(401).json({ ok: false, error: 'הסשן פג. חזור לדף הניהול והתחבר שוב.' })
+  }
+  if (!claims.subscriptionIds.includes(subscriptionId)) {
+    return res.status(403).json({ ok: false, error: 'אין הרשאה למנוי הזה.' })
+  }
+  const snap = await getDb()
+    .collection('productKeys')
+    .where('subscriptionId', '==', subscriptionId)
+    .limit(1)
+    .get()
+  if (snap.empty) return res.status(404).json({ ok: false, error: 'מנוי לא נמצא' })
+  const key = snap.docs[0].data() as KeyDoc & { billingHistory?: unknown[] }
+  try {
+    const { terms } = await computeCancelTerms(key, subscriptionId)
+    return res.status(200).json({ ok: true, terms })
+  } catch (err) {
+    console.error('[cancel-preview] failed:', err)
+    return res
+      .status(502)
+      .json({ ok: false, error: 'לא הצלחנו לחשב כרגע את פרטי הביטול. נסו שוב בעוד רגע.' })
+  }
+}
+
 async function handleCancel(req: VercelRequest, res: VercelResponse) {
   const body = req.body as {
     token?: string
     subscriptionId?: string
     reason?: string
+    /** The refund the customer was shown and confirmed. If today's number
+     *  differs, nothing happens and the fresh terms go back for a re-confirm. */
+    expectedRefund?: number
   }
   const token = (body.token || '').trim()
   const subscriptionId = (body.subscriptionId || '').trim()
@@ -4310,6 +4649,53 @@ async function handleCancel(req: VercelRequest, res: VercelResponse) {
   ) {
     return res.status(200).json({ ok: true, alreadyCancelled: true })
   }
+
+  // One cancellation at a time per key: a double click must never become
+  // two refunds. The lock is taken in a transaction and expires on its own.
+  const LOCK_MS = 2 * 60 * 1000
+  const gotLock = await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(keyDoc.ref)
+    const lockedAt = Date.parse(String((fresh.data() as { cancelLockAt?: string })?.cancelLockAt || ''))
+    if (Number.isFinite(lockedAt) && Date.now() - lockedAt < LOCK_MS) return false
+    tx.update(keyDoc.ref, { cancelLockAt: new Date().toISOString() })
+    return true
+  })
+  if (!gotLock) {
+    return res
+      .status(409)
+      .json({ ok: false, error: 'הביטול כבר מתבצע. רעננו את הדף בעוד רגע.' })
+  }
+  const releaseLock = () => keyDoc.ref.update({ cancelLockAt: null }).catch(() => {})
+
+  // What cancelling now means — computed here, never trusted from the page.
+  let computed: { terms: CancelTerms; captureId: string | null }
+  try {
+    computed = await computeCancelTerms(
+      key as KeyDoc & { billingHistory?: unknown[] },
+      subscriptionId,
+    )
+  } catch (err) {
+    console.error('[paypal/cancel] terms failed:', err)
+    await releaseLock()
+    return res
+      .status(502)
+      .json({ ok: false, error: 'לא הצלחנו לחשב כרגע את פרטי הביטול. נסו שוב בעוד רגע.' })
+  }
+  const { terms, captureId } = computed
+  if (
+    typeof body.expectedRefund === 'number' &&
+    Math.abs(body.expectedRefund - terms.refund) > 1
+  ) {
+    await releaseLock()
+    return res.status(409).json({
+      ok: false,
+      changed: true,
+      terms,
+      error: 'סכום ההחזר התעדכן. בדקו את הפרטים ואשרו שוב.',
+    })
+  }
+
+  let alreadyCancelledAtPaypal = false
   try {
     await paypalCall(
       'POST',
@@ -4319,40 +4705,101 @@ async function handleCancel(req: VercelRequest, res: VercelResponse) {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה לא ידועה'
     if (message.includes('SUBSCRIPTION_STATUS_INVALID')) {
-      await keyDoc.ref.update({
-        subscriptionStatus: 'cancelled',
-        subscriptionCancelledAt: new Date().toISOString(),
-        subscriptionCancelReason: reason,
-      })
-      return res.status(200).json({ ok: true, alreadyCancelled: true })
+      alreadyCancelledAtPaypal = true
+    } else {
+      await releaseLock()
+      return res
+        .status(502)
+        .json({ ok: false, error: `ביטול דרך PayPal נכשל: ${message}` })
     }
-    return res
-      .status(502)
-      .json({ ok: false, error: `ביטול דרך PayPal נכשל: ${message}` })
   }
+
+  // The refund. If PayPal refuses it, the cancellation still stands and the
+  // admin gets the exact amount to refund by hand.
+  let refunded: { amount: number; id: string } | null = null
+  let refundStatus: 'done' | 'manual' | 'none' = 'none'
+  if (terms.mode === 'refund' && terms.refund > 0 && captureId && terms.charge) {
+    try {
+      const r = await refundSubscriptionCharge(
+        captureId,
+        terms.refund,
+        terms.charge.currency,
+        'Prorated refund on cancellation — ניהול הורדות פלוס',
+      )
+      refunded = { amount: terms.refund, id: r.id }
+      refundStatus = 'done'
+    } catch (err) {
+      console.error('[paypal/cancel] refund failed:', err)
+      refundStatus = 'manual'
+    }
+  } else if (terms.mode === 'manual') {
+    refundStatus = 'manual'
+  }
+
+  const nowIso = new Date().toISOString()
   await keyDoc.ref.update({
     subscriptionStatus: 'cancelled',
-    subscriptionCancelledAt: new Date().toISOString(),
+    subscriptionCancelledAt: nowIso,
     subscriptionCancelReason: reason,
+    cancelLockAt: null,
+    // A refunded period is no longer paid for — access ends now.
+    ...(refunded ? { expiresAt: nowIso } : {}),
+    ...(refunded
+      ? { lastRefund: { amount: refunded.amount, id: refunded.id, at: nowIso, terms } }
+      : {}),
+    ...(refundStatus === 'manual' ? { refundPending: { at: nowIso, terms } } : {}),
   })
+  if (refunded) {
+    await recordCasualRefund({
+      subscriptionId,
+      key: key as Parameters<typeof recordCasualRefund>[0]['key'],
+      amount: refunded.amount,
+      refundId: refunded.id,
+    })
+  }
 
-  // Fire confirmation email (legally required per Israeli
-  // consumer-protection sec. 14ט(ב)). Best-effort — a mail
-  // failure shouldn't reverse the cancellation. The user already
-  // got HTTP 200 + sees the cancel succeed in the UI.
+  const who = key.buyerEmail || key.redeemedByEmail || claims.email
+  const cur = terms.charge?.currency === 'ILS' || !terms.charge ? '₪' : terms.charge.currency + ' '
+  if (refundStatus === 'done' && refunded) {
+    void sendTelegramAlert(
+      `↩️ ביטול עם החזר: ${who} · ${tierLabelS(terms.tier)} ${terms.plan === 'yearly' ? 'שנתי' : 'חודשי'} · הוחזרו ${cur}${refunded.amount}`,
+    )
+  } else if (refundStatus === 'manual') {
+    void sendTelegramAlert(
+      `⚠️ ביטול שדורש החזר ידני: ${who} · ${tierLabelS(terms.tier)} ${terms.plan === 'yearly' ? 'שנתי' : 'חודשי'} · חיוב אחרון ${cur}${terms.charge?.amount ?? '?'} · ${terms.mode === 'manual' ? 'חיוב לא סטנדרטי (שדרוג/קופון)' : `ההחזר האוטומטי של ${cur}${terms.refund} נכשל`}. להחזיר מפאנל הניהול.`,
+    )
+  }
+
+  // Confirmation email (Israeli consumer-protection s.14ט(ב)). Best-effort —
+  // a mail failure must not reverse a cancellation that already happened.
   const recipient = key.buyerEmail || key.redeemedByEmail || claims.email
-  const validUntilDate = key.expiresAt ? new Date(key.expiresAt) : null
+  const validUntilDate = refunded
+    ? new Date(nowIso)
+    : key.expiresAt
+      ? new Date(key.expiresAt)
+      : null
   void sendCancellationEmail({
     to: recipient,
     validUntil: validUntilDate,
     reason,
     cancelledFrom: 'account',
     tier: key.tier,
+    refund: refunded
+      ? { status: 'done', amount: refunded.amount, currency: terms.charge?.currency || 'ILS' }
+      : refundStatus === 'manual'
+        ? { status: 'manual' }
+        : undefined,
   }).catch((err) => {
     console.error('[paypal/cancel] confirmation email failed:', err)
   })
 
-  return res.status(200).json({ ok: true, alreadyCancelled: false })
+  return res.status(200).json({
+    ok: true,
+    alreadyCancelled: alreadyCancelledAtPaypal,
+    refundStatus,
+    refunded: refunded?.amount ?? 0,
+    accessEndsAt: refunded ? nowIso : key.expiresAt || null,
+  })
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -4595,8 +5042,16 @@ function maxTierS(a: TierS, b: TierS): TierS {
 interface TierPriceSettingsS {
   pricesIncludeVat: boolean
   vatPercent: number
+  /** Cancellation fee, as a % of the tier's regular monthly price. The
+   *  statutory cap (5% of the charge, ₪100) is applied on top — see
+   *  computeCancelTerms. */
+  cancelFeePct: number
 }
-const DEFAULT_PRICE_SETTINGS_S: TierPriceSettingsS = { pricesIncludeVat: true, vatPercent: 18 }
+const DEFAULT_PRICE_SETTINGS_S: TierPriceSettingsS = {
+  pricesIncludeVat: true,
+  vatPercent: 18,
+  cancelFeePct: 10,
+}
 const PRICE_FIELDS_S = ['priceMonthly', 'priceMonthlySale', 'priceYearly', 'priceYearlySale'] as const
 
 /** appConfig/tiers exactly as the admin saved it, merged over the code
@@ -4614,8 +5069,12 @@ async function loadTierDocRaw(): Promise<{
         tiers?: Partial<Record<TierS, Partial<TierConfigS>>>
         pricesIncludeVat?: unknown
         vatPercent?: unknown
+        cancelFeePct?: unknown
       }
       if (d.tiers && typeof d.tiers === 'object') stored = d.tiers
+      if (typeof d.cancelFeePct === 'number' && Number.isFinite(d.cancelFeePct) && d.cancelFeePct >= 0 && d.cancelFeePct <= 100) {
+        settings.cancelFeePct = d.cancelFeePct
+      }
       if (typeof d.pricesIncludeVat === 'boolean') settings.pricesIncludeVat = d.pricesIncludeVat
       if (typeof d.vatPercent === 'number' && Number.isFinite(d.vatPercent) && d.vatPercent >= 0 && d.vatPercent <= 100) {
         settings.vatPercent = d.vatPercent
@@ -4687,6 +5146,7 @@ async function handleAdminSetTiers(req: VercelRequest, res: VercelResponse) {
     tiers?: Partial<Record<TierS, Partial<TierConfigS>>>
     pricesIncludeVat?: unknown
     vatPercent?: unknown
+    cancelFeePct?: unknown
   }
   const incoming = body.tiers
   if (!incoming || typeof incoming !== 'object') {
@@ -4724,6 +5184,12 @@ async function handleAdminSetTiers(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ ok: false, error: 'vatPercent must be 0–100' })
     }
     vatUpdate.vatPercent = body.vatPercent
+  }
+  if (typeof body.cancelFeePct === 'number' && Number.isFinite(body.cancelFeePct)) {
+    if (body.cancelFeePct < 0 || body.cancelFeePct > 100) {
+      return res.status(400).json({ ok: false, error: 'cancelFeePct must be 0–100' })
+    }
+    vatUpdate.cancelFeePct = body.cancelFeePct
   }
   await getDb()
     .collection('appConfig')
@@ -5037,6 +5503,9 @@ async function loadAllChargesMerged(): Promise<MergedCharge[]> {
     db.collection('productKeys').get(),
   ])
   const byId = new Map<string, MergedCharge>()
+  // Charges refunded in full: gone from revenue, and must not re-enter
+  // from a key's billingHistory below.
+  const claimedRefunded = new Set<string>()
   // Ledger entries (by id) that arrived WITHOUT a referredBy. If we later
   // recover one (from a live key or the buyer's account), we write it back
   // to the ledger doc so the attribution becomes permanent — see step 5.
@@ -5055,10 +5524,20 @@ async function loadAllChargesMerged(): Promise<MergedCharge[]> {
       referredBy?: string
       subscriptionId?: string
       kind?: string
+      refundedAmount?: number
     }
-    const gross = typeof d.amount === 'number' ? d.amount : 0
-    if (!(gross > 0) || !d.at) continue
+    // Money that went back to the customer isn't revenue: a refunded charge
+    // counts only for what was kept (a full refund drops out entirely), so
+    // revenue, VAT and partner commission all follow it.
+    const refunded = typeof d.refundedAmount === 'number' && d.refundedAmount > 0 ? d.refundedAmount : 0
+    const gross = Math.round(((typeof d.amount === 'number' ? d.amount : 0) - refunded) * 100) / 100
     const id = d.eventId || doc.id
+    if (!(gross > 0) || !d.at) {
+      // Still claim the id, so the same charge in a key's billingHistory
+      // can't come back in at its full amount.
+      if (refunded > 0) claimedRefunded.add(id)
+      continue
+    }
     byId.set(id, {
       eventId: id,
       at: d.at,
@@ -5112,6 +5591,7 @@ async function loadAllChargesMerged(): Promise<MergedCharge[]> {
       const gross = typeof h.amount === 'number' ? h.amount : 0
       if (!(gross > 0) || !h.at) continue
       const id = h.eventId || `${doc.id}:${h.at}:${gross}`
+      if (claimedRefunded.has(id)) continue
       const existing = byId.get(id)
       if (existing) {
         if (!existing.referredBy && ref) existing.referredBy = ref
@@ -5920,11 +6400,15 @@ async function sendCancellationEmail(args: {
   cancelledFrom: 'account' | 'paypal-direct' | 'admin'
   /** The cancelled subscription's tier — names the plan instead of "Pro". */
   tier?: string
+  /** A prorated refund issued with the cancellation, or one the admin will
+   *  issue by hand. Absent = no refund due (the paid period runs out). */
+  refund?: { status: 'done'; amount: number; currency: string } | { status: 'manual' }
 }): Promise<void> {
   const user = process.env.GMAIL_USER
   const pass = process.env.GMAIL_APP_PASSWORD
   if (!user || !pass) throw new Error('GMAIL credentials not set')
   const tierName = tierLabelS(args.tier)
+  const refund = args.refund
   const transporter = makeCountedTransport({
     service: 'gmail',
     auth: { user, pass: pass.replace(/\s+/g, '') },
@@ -5949,16 +6433,27 @@ async function sendCancellationEmail(args: {
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
         קיבלנו את בקשת הביטול שלך למנוי <strong>ניהול הורדות פלוס ${tierName}</strong>. ${sourceLine} לא תחויב שוב.
       </p>
-      <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
+      ${
+        refund?.status === 'done'
+          ? `<div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
+        <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">החזר על החלק שלא נוצל</div>
+        <div style="font-size:18px;color:#F5EFE6;font-weight:600;" dir="ltr">${refund.currency === 'ILS' ? '₪' : refund.currency + ' '}${refund.amount.toFixed(2)}</div>
+        <div style="margin-top:10px;font-size:11px;line-height:1.6;color:#8B8170;">
+          ההחזר נשלח לאמצעי התשלום שבו שילמת דרך PayPal. בכרטיס אשראי הוא מופיע בדרך כלל תוך כמה ימי עסקים, ולפעמים רק בחיוב החודשי הבא. הגישה ל-${tierName} הסתיימה, והחשבון חזר למסלול החינמי.
+        </div>
+      </div>`
+          : `<div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
         <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה ל-${tierName} תפעל עד</div>
         <div style="font-size:18px;color:#F5EFE6;font-weight:600;">${validUntilStr}</div>
         <div style="margin-top:10px;font-size:11px;line-height:1.6;color:#8B8170;">
-          קיבלת את התקופה ששילמת עליה במלואה. לאחר מכן החשבון יחזור לחינם.
+          ${
+            refund?.status === 'manual'
+              ? 'את ההחזר על החלק שלא נוצל נחשב ונשלח אליך ידנית תוך שלושה ימי עסקים.'
+              : 'קיבלת את התקופה ששילמת עליה במלואה. לאחר מכן החשבון יחזור לחינם.'
+          }
         </div>
-      </div>
-      <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
-        <strong>אין החזר על תקופות ששולמו</strong>. מאחר שמדובר במוצר דיגיטלי שניתן לשימוש מיידי, אין מדיניות החזרים על תקופות שכבר חויבו ושולמו (תואם תנאי השימוש שאישרת בעת הרישום).
-      </p>
+      </div>`
+      }
       <p style="font-size:12px;line-height:1.7;margin:18px 0 0;color:#C9BFA8;">
         משנים את דעתכם? אפשר להירשם מחדש בכל עת ב-
         <a href="${WEBSITE_BASE}/buy" style="color:#D4A574;text-decoration:underline;">${WEBSITE_BASE}/buy</a>.
@@ -6889,7 +7384,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
               </div>
             </div>
             <p style="font-size:12px;line-height:1.7;margin:0 0 12px;color:#8B8170;">
-              <strong>אין החזר על תקופות ששולמו</strong>. מאחר שמדובר במוצר דיגיטלי שניתן לשימוש מיידי, אין מדיניות החזרים על תקופות שכבר חויבו ושולמו.
+              [בתצוגה: ביטול בלי החזר.] כשמגיע החזר יחסי — בתוך ארבעה עשר יום מהרכישה, או במנוי שנתי — במקום התיבה למעלה מופיע סכום ההחזר, והגישה מסתיימת מיד.
             </p>
             <p style="font-size:12px;line-height:1.7;margin:18px 0 0;color:#C9BFA8;">
               משנים את דעתכם? אפשר להירשם מחדש בכל עת ב-
@@ -10855,18 +11350,22 @@ async function handleAdminRefundSubscription(
     refundBody = { note_to_payer: String(body.note).slice(0, 250) }
   }
 
+  let adminRefundId = ''
   try {
-    await paypalCall(
+    const r = await paypalCall<{ id?: string }>(
       'POST',
       `/v2/payments/captures/${encodeURIComponent(latest.id)}/refund`,
       refundBody,
     )
+    adminRefundId = r?.id || ''
   } catch (err) {
     const message = err instanceof Error ? err.message : 'שגיאה'
     return res
       .status(502)
       .json({ ok: false, error: `החזר דרך PayPal נכשל: ${message}` })
   }
+  const adminRefundAmount =
+    Number.isFinite(reqAmount) && reqAmount > 0 ? reqAmount : Number(latest.value)
 
   // A refund always also STOPS the subscription — no point refunding a
   // charge and then letting it bill again. Best-effort: the refund
@@ -10881,6 +11380,14 @@ async function handleAdminRefundSubscription(
     if (!snap.empty) {
       const keyDoc = snap.docs[0]
       const key = keyDoc.data() as KeyDoc
+      // The refund leaves revenue, VAT and commission (same as a customer
+      // cancellation refund).
+      await recordCasualRefund({
+        subscriptionId,
+        key: key as Parameters<typeof recordCasualRefund>[0]['key'],
+        amount: adminRefundAmount,
+        refundId: adminRefundId || `admin-${latest.id}-${Date.now()}`,
+      })
       if (
         key.subscriptionStatus !== 'cancelled' &&
         key.subscriptionStatus !== 'expired'
@@ -14318,6 +14825,7 @@ async function handleAdminCasualReport(
   // because it also carries the customer name and survives key
   // deletion.
   const byId = new Map<string, Raw>()
+  const fullyRefunded = new Set<string>()
 
   // 1) Durable ledger — the source of truth. A single-field range
   //    query needs no composite index.
@@ -14335,10 +14843,16 @@ async function handleAdminCasualReport(
       amount?: number
       currency?: string
       reported?: boolean
+      refundedAmount?: number
     }
-    const gross = typeof d.amount === 'number' ? d.amount : 0
-    if (gross <= 0 || !d.at) continue
+    // A refund reduces the charge it refunds (see recordCasualRefund).
+    const refunded = typeof d.refundedAmount === 'number' && d.refundedAmount > 0 ? d.refundedAmount : 0
+    const gross = round2((typeof d.amount === 'number' ? d.amount : 0) - refunded)
     const id = d.eventId || doc.id
+    if (gross <= 0 || !d.at) {
+      if (refunded > 0) fullyRefunded.add(id)
+      continue
+    }
     byId.set(id, {
       eventId: id,
       at: d.at,
@@ -14376,7 +14890,7 @@ async function handleAdminCasualReport(
       if (gross <= 0) continue
       // Fall back to a natural key when an old entry has no eventId.
       const id = h.eventId || `${doc.id}:${h.at}:${gross}`
-      if (byId.has(id)) continue
+      if (byId.has(id) || fullyRefunded.has(id)) continue
       byId.set(id, {
         eventId: id,
         at: h.at as string,

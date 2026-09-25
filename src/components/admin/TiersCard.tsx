@@ -28,7 +28,13 @@ type Cfg = Record<Tier, TierConfig>
 /** Whether the typed prices already include VAT. When they don't, the server
  *  adds VAT to every customer-facing price and charge (Israeli consumers must
  *  see the full price); the typed values are stored as they are. */
-type VatSettings = { pricesIncludeVat: boolean; vatPercent: number }
+type VatSettings = {
+  pricesIncludeVat: boolean
+  vatPercent: number
+  /** Cancellation fee, % of the tier's regular monthly price. The server also
+   *  caps it at 5% of the charge or ₪100 (the statutory maximum). */
+  cancelFeePct: number
+}
 
 /** What the customer pays for a typed price — mirrors withVatS in api/paypal.ts. */
 function customerPrice(v: number, vat: VatSettings): number {
@@ -49,7 +55,7 @@ const NULLABLE = new Set<keyof TierConfig>([
 
 export default function TiersCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [cfg, setCfg] = useState<Cfg | null>(null)
-  const [vat, setVat] = useState<VatSettings>({ pricesIncludeVat: true, vatPercent: 18 })
+  const [vat, setVat] = useState<VatSettings>({ pricesIncludeVat: true, vatPercent: 18, cancelFeePct: 10 })
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
   const [err, setErr] = useState('')
@@ -62,6 +68,7 @@ export default function TiersCard({ onErr }: { onErr: (e: unknown) => void }) {
         setVat((v) => ({
           pricesIncludeVat: r.pricesIncludeVat ?? v.pricesIncludeVat,
           vatPercent: r.vatPercent ?? v.vatPercent,
+          cancelFeePct: r.cancelFeePct ?? v.cancelFeePct,
         }))
       } catch (e) {
         onErr(e)
@@ -97,6 +104,7 @@ export default function TiersCard({ onErr }: { onErr: (e: unknown) => void }) {
       setVat((v) => ({
         pricesIncludeVat: r.pricesIncludeVat ?? v.pricesIncludeVat,
         vatPercent: r.vatPercent ?? v.vatPercent,
+        cancelFeePct: r.cancelFeePct ?? v.cancelFeePct,
       }))
       setSaved(true)
     } catch (e) {
@@ -166,6 +174,27 @@ export default function TiersCard({ onErr }: { onErr: (e: unknown) => void }) {
               />
             </label>
           )}
+          <label className="flex items-center gap-2 text-[11px] text-fg-secondary">
+            דמי ביטול באחוזים מהמחיר החודשי
+            <Input
+              type="number"
+              min={0}
+              max={100}
+              value={String(vat.cancelFeePct)}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                if (!Number.isFinite(n) || n < 0 || n > 100) return
+                setSaved(false)
+                setVat((v) => ({ ...v, cancelFeePct: n }))
+              }}
+              dir="ltr"
+              className="h-8 w-16 text-sm"
+            />
+          </label>
+          <p className="w-full text-[11px] text-fg-muted">
+            דמי הביטול יורדים מההחזר כשמנוי מבוטל. המערכת לא תגבה יותר מחמישה אחוזים מהחיוב או מאה שקל,
+            הנמוך מביניהם — זו התקרה בחוק.
+          </p>
           <p className="w-full text-[11px] text-fg-muted">
             {vat.pricesIncludeVat
               ? 'המחיר שמוזן הוא המחיר הסופי שהלקוח רואה ומשלם.'

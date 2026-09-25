@@ -11,7 +11,6 @@ import {
   CheckCircle2,
   AlertTriangle,
   Crown,
-  X,
   Mail,
   Key as KeyIcon,
   Calendar,
@@ -29,6 +28,7 @@ import {
   type Tier,
 } from '../lib/tiers'
 import { MyComputers } from '../components/account/MyComputers'
+import { CancelSubscriptionModal } from '../components/account/CancelSubscriptionModal'
 
 /**
  * /account — full account dashboard.
@@ -199,11 +199,8 @@ export default function AccountPage() {
   const [authing, setAuthing] = useState(false)
   const [authError, setAuthError] = useState<string | null>(null)
 
-  // Cancel-subscription modal
+  // Cancel-subscription modal (the dialog itself owns its steps)
   const [pendingCancelId, setPendingCancelId] = useState<string | null>(null)
-  const [cancelReason, setCancelReason] = useState('')
-  const [cancelling, setCancelling] = useState(false)
-  const [cancelError, setCancelError] = useState<string | null>(null)
 
   // Reset-password state
   const [resetSending, setResetSending] = useState(false)
@@ -460,35 +457,6 @@ export default function AccountPage() {
       if (json.ok && json.subscriptions) setSubs(json.subscriptions)
     } catch {
       // Silent; the user already has stale-but-usable data.
-    }
-  }
-
-  async function handleCancel() {
-    if (!token || !pendingCancelId) return
-    setCancelling(true)
-    setCancelError(null)
-    try {
-      const r = await fetch('/api/paypal?action=cancel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          token,
-          subscriptionId: pendingCancelId,
-          reason: cancelReason.trim() || 'user requested',
-        }),
-      })
-      const json = (await r.json()) as { ok: boolean; error?: string }
-      if (!r.ok || !json.ok) {
-        setCancelError(json.error || 'ביטול נכשל')
-        return
-      }
-      setPendingCancelId(null)
-      setCancelReason('')
-      await refreshStatus()
-    } catch (err) {
-      setCancelError(err instanceof Error ? err.message : 'שגיאת רשת')
-    } finally {
-      setCancelling(false)
     }
   }
 
@@ -1270,82 +1238,15 @@ export default function AccountPage() {
         )}
       </div>
 
-      {/* Cancel-subscription confirm modal */}
-      {pendingCancelId && (
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
-          onClick={(e) => {
-            if (e.target === e.currentTarget && !cancelling) {
-              setPendingCancelId(null)
-              setCancelReason('')
-              setCancelError(null)
-            }
-          }}
-        >
-          <div className="card-elevated relative w-full max-w-md rounded-2xl border-border p-6 md:p-7">
-            <button
-              onClick={() => {
-                if (cancelling) return
-                setPendingCancelId(null)
-                setCancelReason('')
-                setCancelError(null)
-              }}
-              className="absolute left-3 top-3 rounded-md p-1 text-fg-muted hover:text-fg"
-              aria-label="סגור"
-            >
-              <X className="h-4 w-4" />
-            </button>
-            <h3 className="mb-3 flex items-center gap-2 text-base font-bold text-fg">
-              <AlertTriangle className="h-4 w-4 text-accent" />
-              ביטול המנוי
-            </h3>
-            <p className="mb-3 text-sm leading-relaxed text-fg-muted">
-              לאחר ביטול לא תחויב יותר. הגישה ל-Pro תישאר פעילה עד סוף התקופה
-              ששולמה. <strong className="text-fg">אין החזר על תקופות ששולמו.</strong>
-            </p>
-            <label className="block">
-              <span className="mb-1 block text-[11px] text-fg-muted">
-                סיבה לביטול (לא חובה)
-              </span>
-              <textarea
-                value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value.slice(0, 500))}
-                rows={3}
-                disabled={cancelling}
-                className="w-full resize-none rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
-                placeholder="לדוגמה: לא משתמש מספיק, יקר, חסרה תכונה…"
-              />
-            </label>
-            {cancelError && (
-              <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                {cancelError}
-              </div>
-            )}
-            <div className="mt-5 flex gap-2">
-              <button
-                onClick={handleCancel}
-                disabled={cancelling}
-                className="flex flex-1 items-center justify-center gap-2 rounded-md bg-destructive px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {cancelling ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : null}
-                כן, בטל את המנוי
-              </button>
-              <button
-                onClick={() => {
-                  setPendingCancelId(null)
-                  setCancelReason('')
-                  setCancelError(null)
-                }}
-                disabled={cancelling}
-                className="flex-1 rounded-md border border-border px-4 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-bg-elevated disabled:opacity-60"
-              >
-                ביטול
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Cancel-subscription dialog: shows exactly what cancelling means
+          (refund, fee, when access ends) before anything happens. */}
+      {pendingCancelId && token && (
+        <CancelSubscriptionModal
+          token={token}
+          subscriptionId={pendingCancelId}
+          onClose={() => setPendingCancelId(null)}
+          onCancelled={() => void refreshStatus()}
+        />
       )}
     </motion.div>
   )
