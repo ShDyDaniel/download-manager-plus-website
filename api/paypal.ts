@@ -2988,10 +2988,15 @@ async function handleSubscriptionEnded(
   // webhook that lands inside that window belongs to it, not to PayPal-direct.
   const lockAt = Date.parse(String((keyData as { cancelLockAt?: string }).cancelLockAt || ''))
   const ourFlowInProgress = Number.isFinite(lockAt) && Date.now() - lockAt < 2 * 60 * 1000
+  // A scheduled downgrade cancels the old subscription itself — that's a
+  // plan change, not the customer leaving.
+  const plannedPlanChange =
+    (keyData as { planChangeCancelledSubId?: string }).planChangeCancelledSubId === resource.id
   if (
     event.event_type === 'BILLING.SUBSCRIPTION.CANCELLED' &&
     keyData.subscriptionStatus !== 'cancelled' &&
-    !ourFlowInProgress
+    !ourFlowInProgress &&
+    !plannedPlanChange
   ) {
     // Cancelled inside PayPal: the prorated refund the account page would
     // have issued is still owed. Webhooks retry, so no money moves here — the
@@ -3753,6 +3758,16 @@ async function handleCreateSubscription(
   // recharge at the higher price. The key keeps the higher tier until its
   // expiresAt (unchanged); the scheduled lower sub then takes over at renewal.
   if (scheduledStartAt && currentKeySubId && currentKeySubId !== subscription.id) {
+    // Mark this cancellation as a planned plan change BEFORE it happens, so
+    // the CANCELLED webhook doesn't read it as the customer quitting inside
+    // PayPal (no "you're owed a refund" alert, no cancellation email).
+    if (renewKeyId) {
+      await getDb()
+        .collection('productKeys')
+        .doc(renewKeyId)
+        .update({ planChangeCancelledSubId: currentKeySubId })
+        .catch((e) => console.warn('[paypal/create-subscription] downgrade mark failed:', e))
+    }
     try {
       await paypalCall('POST', `/v1/billing/subscriptions/${currentKeySubId}/cancel`, {
         reason: `Scheduled downgrade to ${tier} at period end`,
