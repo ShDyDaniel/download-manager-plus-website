@@ -4587,24 +4587,73 @@ function maxTierS(a: TierS, b: TierS): TierS {
   return TIER_KEYS_S.indexOf(a) >= TIER_KEYS_S.indexOf(b) ? a : b
 }
 
-/** Read appConfig/tiers and merge the stored values over the code defaults,
- *  tier-by-tier, field-by-field (a missing field always falls back safely). */
-async function loadTierConfig(): Promise<Record<TierS, TierConfigS>> {
+/** Whether the prices the admin types already include VAT. When they don't,
+ *  every customer-facing price — the buy page, the PayPal charge, upgrade
+ *  differences — is the typed price plus VAT: Israeli consumers must be shown
+ *  and charged the full price. The stored values always stay as typed, so
+ *  flipping the switch never loses what the admin entered. */
+interface TierPriceSettingsS {
+  pricesIncludeVat: boolean
+  vatPercent: number
+}
+const DEFAULT_PRICE_SETTINGS_S: TierPriceSettingsS = { pricesIncludeVat: true, vatPercent: 18 }
+const PRICE_FIELDS_S = ['priceMonthly', 'priceMonthlySale', 'priceYearly', 'priceYearlySale'] as const
+
+/** appConfig/tiers exactly as the admin saved it, merged over the code
+ *  defaults tier-by-tier, field-by-field (a missing field falls back safely). */
+async function loadTierDocRaw(): Promise<{
+  tiers: Record<TierS, TierConfigS>
+  settings: TierPriceSettingsS
+}> {
   let stored: Partial<Record<TierS, Partial<TierConfigS>>> = {}
+  const settings = { ...DEFAULT_PRICE_SETTINGS_S }
   try {
     const snap = await getDb().collection('appConfig').doc('tiers').get()
     if (snap.exists) {
-      const d = snap.data() as { tiers?: Partial<Record<TierS, Partial<TierConfigS>>> }
+      const d = snap.data() as {
+        tiers?: Partial<Record<TierS, Partial<TierConfigS>>>
+        pricesIncludeVat?: unknown
+        vatPercent?: unknown
+      }
       if (d.tiers && typeof d.tiers === 'object') stored = d.tiers
+      if (typeof d.pricesIncludeVat === 'boolean') settings.pricesIncludeVat = d.pricesIncludeVat
+      if (typeof d.vatPercent === 'number' && Number.isFinite(d.vatPercent) && d.vatPercent >= 0 && d.vatPercent <= 100) {
+        settings.vatPercent = d.vatPercent
+      }
     }
   } catch {
     /* fall back to defaults */
   }
+  const tiers = {} as Record<TierS, TierConfigS>
+  for (const t of TIER_KEYS_S) {
+    tiers[t] = { ...DEFAULT_TIER_CONFIG_S[t], ...(stored[t] ?? {}) }
+  }
+  return { tiers, settings }
+}
+
+/** The typed prices turned into what the customer pays (to the agora). */
+function withVatS(
+  tiers: Record<TierS, TierConfigS>,
+  s: TierPriceSettingsS,
+): Record<TierS, TierConfigS> {
+  if (s.pricesIncludeVat || s.vatPercent <= 0) return tiers
+  const factor = 1 + s.vatPercent / 100
   const out = {} as Record<TierS, TierConfigS>
   for (const t of TIER_KEYS_S) {
-    out[t] = { ...DEFAULT_TIER_CONFIG_S[t], ...(stored[t] ?? {}) }
+    const c = { ...tiers[t] }
+    for (const f of PRICE_FIELDS_S) {
+      c[f] = c[f] > 0 ? Math.round(c[f] * factor * 100) / 100 : 0
+    }
+    out[t] = c
   }
   return out
+}
+
+/** The tier config every charge and every public price reads — prices are
+ *  final, including VAT. The admin editor reads the raw doc instead. */
+async function loadTierConfig(): Promise<Record<TierS, TierConfigS>> {
+  const { tiers, settings } = await loadTierDocRaw()
+  return withVatS(tiers, settings)
 }
 
 /** Public read — the buy page shows per-tier prices + what each includes. */
@@ -4624,15 +4673,21 @@ async function handleAdminGetTiers(req: VercelRequest, res: VercelResponse) {
   if (!(await verifyAdmin2FA(req))) {
     return res.status(403).json({ ok: false, error: 'forbidden' })
   }
-  const tiers = await loadTierConfig()
-  return res.status(200).json({ ok: true, tiers })
+  // Raw, as typed — plus the VAT switch, so the editor shows both what was
+  // entered and what the customer will pay.
+  const { tiers, settings } = await loadTierDocRaw()
+  return res.status(200).json({ ok: true, tiers, ...settings })
 }
 
 /** Admin write (step-up). Validates + persists the per-tier config. */
 async function handleAdminSetTiers(req: VercelRequest, res: VercelResponse) {
   const admin = await verifyAdminStepUp(req)
   if (!admin) return res.status(403).json({ ok: false, error: 'forbidden' })
-  const body = (req.body || {}) as { tiers?: Partial<Record<TierS, Partial<TierConfigS>>> }
+  const body = (req.body || {}) as {
+    tiers?: Partial<Record<TierS, Partial<TierConfigS>>>
+    pricesIncludeVat?: unknown
+    vatPercent?: unknown
+  }
   const incoming = body.tiers
   if (!incoming || typeof incoming !== 'object') {
     return res.status(400).json({ ok: false, error: 'tiers object required' })
@@ -4660,11 +4715,25 @@ async function handleAdminSetTiers(req: VercelRequest, res: VercelResponse) {
       aiMonthlyTokens: numOrNull(src.aiMonthlyTokens, def.aiMonthlyTokens),
     }
   }
+  // The VAT switch is optional in the request: an editor that doesn't send it
+  // leaves the stored setting alone.
+  const vatUpdate: Partial<TierPriceSettingsS> = {}
+  if (typeof body.pricesIncludeVat === 'boolean') vatUpdate.pricesIncludeVat = body.pricesIncludeVat
+  if (typeof body.vatPercent === 'number' && Number.isFinite(body.vatPercent)) {
+    if (body.vatPercent < 0 || body.vatPercent > 100) {
+      return res.status(400).json({ ok: false, error: 'vatPercent must be 0–100' })
+    }
+    vatUpdate.vatPercent = body.vatPercent
+  }
   await getDb()
     .collection('appConfig')
     .doc('tiers')
-    .set({ tiers: clean, updatedAt: new Date().toISOString(), updatedBy: admin }, { merge: true })
-  return res.status(200).json({ ok: true, tiers: clean })
+    .set(
+      { tiers: clean, ...vatUpdate, updatedAt: new Date().toISOString(), updatedBy: admin },
+      { merge: true },
+    )
+  const { settings } = await loadTierDocRaw()
+  return res.status(200).json({ ok: true, tiers: clean, ...settings })
 }
 
 async function handleSyncPlans(req: VercelRequest, res: VercelResponse) {

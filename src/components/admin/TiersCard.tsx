@@ -3,6 +3,7 @@ import { Loader2, AlertTriangle, Layers, Tag, SlidersHorizontal, Save, Check } f
 import { adminApi } from '../../lib/adminApi'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { Switch } from '@/components/ui/Switch'
 import {
   TIER_ORDER,
   PAID_TIERS,
@@ -24,6 +25,17 @@ import {
 
 type Cfg = Record<Tier, TierConfig>
 
+/** Whether the typed prices already include VAT. When they don't, the server
+ *  adds VAT to every customer-facing price and charge (Israeli consumers must
+ *  see the full price); the typed values are stored as they are. */
+type VatSettings = { pricesIncludeVat: boolean; vatPercent: number }
+
+/** What the customer pays for a typed price — mirrors withVatS in api/paypal.ts. */
+function customerPrice(v: number, vat: VatSettings): number {
+  if (vat.pricesIncludeVat || vat.vatPercent <= 0 || v <= 0) return v
+  return Math.round(v * (1 + vat.vatPercent / 100) * 100) / 100
+}
+
 // Empty input on any of these = "unlimited" (stored as null).
 const NULLABLE = new Set<keyof TierConfig>([
   'quotesPerMonth',
@@ -37,6 +49,7 @@ const NULLABLE = new Set<keyof TierConfig>([
 
 export default function TiersCard({ onErr }: { onErr: (e: unknown) => void }) {
   const [cfg, setCfg] = useState<Cfg | null>(null)
+  const [vat, setVat] = useState<VatSettings>({ pricesIncludeVat: true, vatPercent: 18 })
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
   const [err, setErr] = useState('')
@@ -44,8 +57,12 @@ export default function TiersCard({ onErr }: { onErr: (e: unknown) => void }) {
   useEffect(() => {
     void (async () => {
       try {
-        const r = await adminApi<{ tiers: Cfg }>('admin-get-tiers')
+        const r = await adminApi<{ tiers: Cfg } & Partial<VatSettings>>('admin-get-tiers')
         setCfg(r.tiers)
+        setVat((v) => ({
+          pricesIncludeVat: r.pricesIncludeVat ?? v.pricesIncludeVat,
+          vatPercent: r.vatPercent ?? v.vatPercent,
+        }))
       } catch (e) {
         onErr(e)
       }
@@ -72,8 +89,15 @@ export default function TiersCard({ onErr }: { onErr: (e: unknown) => void }) {
     setBusy(true)
     setErr('')
     try {
-      const r = await adminApi<{ tiers: Cfg }>('admin-set-tiers', { tiers: cfg })
+      const r = await adminApi<{ tiers: Cfg } & Partial<VatSettings>>('admin-set-tiers', {
+        tiers: cfg,
+        ...vat,
+      })
       setCfg(r.tiers)
+      setVat((v) => ({
+        pricesIncludeVat: r.pricesIncludeVat ?? v.pricesIncludeVat,
+        vatPercent: r.vatPercent ?? v.vatPercent,
+      }))
       setSaved(true)
     } catch (e) {
       const error = e as Error & { code?: string }
@@ -112,9 +136,45 @@ export default function TiersCard({ onErr }: { onErr: (e: unknown) => void }) {
             </p>
           </div>
         </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-border bg-bg-elevated px-3 py-2.5">
+          <label className="flex cursor-pointer items-center gap-2.5 text-sm text-fg">
+            <Switch
+              checked={vat.pricesIncludeVat}
+              onCheckedChange={(on) => {
+                setSaved(false)
+                setVat((v) => ({ ...v, pricesIncludeVat: on }))
+              }}
+            />
+            המחירים שאני מזין כוללים מע״מ
+          </label>
+          {!vat.pricesIncludeVat && (
+            <label className="flex items-center gap-2 text-[11px] text-fg-secondary">
+              שיעור המע״מ באחוזים
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                value={String(vat.vatPercent)}
+                onChange={(e) => {
+                  const n = Number(e.target.value)
+                  if (!Number.isFinite(n) || n < 0 || n > 100) return
+                  setSaved(false)
+                  setVat((v) => ({ ...v, vatPercent: n }))
+                }}
+                dir="ltr"
+                className="h-8 w-16 text-sm"
+              />
+            </label>
+          )}
+          <p className="w-full text-[11px] text-fg-muted">
+            {vat.pricesIncludeVat
+              ? 'המחיר שמוזן הוא המחיר הסופי שהלקוח רואה ומשלם.'
+              : 'המערכת מוסיפה מע״מ לכל מחיר: באתר, בחיוב ובשדרוגים. מתחת לכל שדה מופיע המחיר שהלקוח ישלם. מנויים קיימים ממשיכים במחיר שבו נרשמו.'}
+          </p>
+        </div>
         <div className="grid gap-3 md:grid-cols-3">
           {PAID_TIERS.map((tier) => (
-            <PriceColumn key={tier} tier={tier} cfg={cfg[tier]} onSet={set} />
+            <PriceColumn key={tier} tier={tier} cfg={cfg[tier]} vat={vat} onSet={set} />
           ))}
         </div>
       </div>
@@ -162,13 +222,18 @@ export default function TiersCard({ onErr }: { onErr: (e: unknown) => void }) {
 function PriceColumn({
   tier,
   cfg,
+  vat,
   onSet,
 }: {
   tier: Tier
   cfg: TierConfig
+  vat: VatSettings
   onSet: (tier: Tier, field: keyof TierConfig, raw: string) => void
 }) {
   const numOrEmpty = (v: number) => (v ? String(v) : '')
+  // Only when VAT is added on top — otherwise the typed price IS the price.
+  const hint = (v: number) =>
+    !vat.pricesIncludeVat && v > 0 ? `ללקוח: ₪${customerPrice(v, vat)}` : undefined
   return (
     <div className="space-y-2.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-3">
       <div className="flex items-center gap-2">
@@ -177,13 +242,13 @@ function PriceColumn({
       </div>
       <div className="text-[11px] font-semibold text-fg-secondary">חודשי</div>
       <div className="grid grid-cols-2 gap-2">
-        <Field label="רגיל (₪)" value={numOrEmpty(cfg.priceMonthly)} onChange={(v) => onSet(tier, 'priceMonthly', v)} />
-        <Field label="מבצע (₪)" value={numOrEmpty(cfg.priceMonthlySale)} placeholder="—" onChange={(v) => onSet(tier, 'priceMonthlySale', v)} />
+        <Field label="רגיל (₪)" value={numOrEmpty(cfg.priceMonthly)} hint={hint(cfg.priceMonthly)} onChange={(v) => onSet(tier, 'priceMonthly', v)} />
+        <Field label="מבצע (₪)" value={numOrEmpty(cfg.priceMonthlySale)} hint={hint(cfg.priceMonthlySale)} placeholder="—" onChange={(v) => onSet(tier, 'priceMonthlySale', v)} />
       </div>
       <div className="text-[11px] font-semibold text-fg-secondary">שנתי</div>
       <div className="grid grid-cols-2 gap-2">
-        <Field label="רגיל (₪)" value={numOrEmpty(cfg.priceYearly)} onChange={(v) => onSet(tier, 'priceYearly', v)} />
-        <Field label="מבצע (₪)" value={numOrEmpty(cfg.priceYearlySale)} placeholder="—" onChange={(v) => onSet(tier, 'priceYearlySale', v)} />
+        <Field label="רגיל (₪)" value={numOrEmpty(cfg.priceYearly)} hint={hint(cfg.priceYearly)} onChange={(v) => onSet(tier, 'priceYearly', v)} />
+        <Field label="מבצע (₪)" value={numOrEmpty(cfg.priceYearlySale)} hint={hint(cfg.priceYearlySale)} placeholder="—" onChange={(v) => onSet(tier, 'priceYearlySale', v)} />
       </div>
     </div>
   )
@@ -227,11 +292,14 @@ function Field({
   label,
   value,
   placeholder,
+  hint,
   onChange,
 }: {
   label: string
   value: string
   placeholder?: string
+  /** A line under the input — the customer-facing price when VAT is added. */
+  hint?: string
   onChange: (v: string) => void
 }) {
   return (
@@ -246,6 +314,7 @@ function Field({
         dir="ltr"
         className="mt-0.5 h-8 text-sm"
       />
+      {hint && <span className="mt-0.5 block text-[10px] font-medium text-primary">{hint}</span>}
     </label>
   )
 }
