@@ -88,7 +88,7 @@ export default function SupportPage() {
       </div>
 
       <p className="mt-5 text-center text-[11px] text-muted-foreground/70">
-        Download Manager Plus · קישור זה נשלח אליך על ידי צוות התמיכה
+        פריימליין · קישור זה נשלח אליך על ידי צוות התמיכה
       </p>
     </div>
   )

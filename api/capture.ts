@@ -566,7 +566,7 @@ async function sendLicenseEmail(
     heading: 'תודה על הרכישה 🎉',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-        מצורף מפתח <span style="color:#D4A574;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של ${durationLabel} מהיום <span style="color:#8B8170;">(תוקף עד ${expiryDate})</span>.
+        מצורף מפתח <span style="color:#D4A574;">Pro</span> לתוכנה <strong>פריימליין</strong> לתקופה של ${durationLabel} מהיום <span style="color:#8B8170;">(תוקף עד ${expiryDate})</span>.
       </p>
       <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
         <div style="font-size:11px;color:#8B8170;margin-bottom:8px;">מפתח המוצר</div>
@@ -585,9 +585,9 @@ async function sendLicenseEmail(
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to,
-    subject: 'מפתח ניהול הורדות פלוס Pro שלך',
+    subject: 'מפתח פריימליין Pro שלך',
     html,
   })
 }
@@ -621,7 +621,7 @@ async function sendRenewalEmail(
     heading: 'המנוי שלך הוארך ✓',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 20px;color:#C9BFA8;">
-        הוספנו <strong>${durationLabel}</strong> נוסף למפתח Pro שלך לתוכנה <strong>ניהול הורדות פלוס</strong>. המפתח עצמו נשאר זהה, אין מה לעדכן באפליקציה.
+        הוספנו <strong>${durationLabel}</strong> נוסף למפתח Pro שלך לתוכנה <strong>פריימליין</strong>. המפתח עצמו נשאר זהה, אין מה לעדכן באפליקציה.
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:18px;margin:0 0 24px;text-align:center;">
         <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">תוקף קודם</div>
@@ -635,9 +635,9 @@ async function sendRenewalEmail(
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to,
-    subject: 'חידוש מנוי ניהול הורדות פלוס · תוקף עד ' + newDate,
+    subject: 'חידוש מנוי פריימליין · תוקף עד ' + newDate,
     html,
   })
 }
@@ -819,12 +819,12 @@ function renderEmail(args: { heading: string; contentHtml: string }): string {
 <tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
 <tr><td style="padding:40px 36px;text-align:right;direction:rtl;">
-  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— ניהול הורדות פלוס</div>
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— פריימליין</div>
   <h1 style="font-size:28px;margin:0 0 22px;color:#F5EFE6;font-weight:500;line-height:1.18;letter-spacing:-0.015em;direction:rtl;text-align:right;">${args.heading}</h1>
   ${args.contentHtml}
 </td></tr>
 </table>
-<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— ניהול הורדות פלוס —</div>
+<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— פריימליין —</div>
 </td></tr>
 </table>
 </body>

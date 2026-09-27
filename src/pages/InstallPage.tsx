@@ -143,7 +143,7 @@ export default function InstallPage() {
         </div>
 
         <p className="mt-6 text-center text-[11px] text-muted-foreground/70">
-          Download Manager Plus
+          Frameline
         </p>
       </div>
     </div>

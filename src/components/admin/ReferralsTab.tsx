@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
 import { cachedAdminApi, peekAdminCache } from '../../lib/adminCache'
+import { SITE_HOST, SITE_ORIGIN } from '../../lib/site'
 
 interface ReferralDetail {
   accounts: {
@@ -52,7 +53,7 @@ interface Partner {
 }
 
 function referralLink(code: string): string {
-  return `https://dmplus.net/?ref=${encodeURIComponent(code)}`
+  return `${SITE_ORIGIN}/?ref=${encodeURIComponent(code)}`
 }
 function fmtMoney(rev?: Record<string, number>): string {
   const parts = Object.entries(rev || {})
@@ -596,7 +597,7 @@ function PartnerCard({
       }
       const esc = (s: string | number) =>
         String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      const link = `dmplus.net/?ref=${p.code}`
+      const link = `${SITE_HOST}/?ref=${p.code}`
       const rangeLabel =
         exportFrom || exportTo
           ? `${exportFrom || 'ההתחלה'} עד ${exportTo || 'היום'}`
@@ -682,7 +683,7 @@ function PartnerCard({
   .total b { font-size:20px; color:#E7B98A; }
   .foot { margin-top:26px; text-align:center; color:#9a8d7e; font-size:11px; }
 </style></head><body>
-  <div class="header">${logo ? `<img src="${logo}" alt="logo"/>` : ''}<div class="brand">דוח שותפים<b>ניהול הורדות פלוס</b></div></div>
+  <div class="header">${logo ? `<img src="${logo}" alt="logo"/>` : ''}<div class="brand">דוח שותפים<b>פריימליין</b></div></div>
   <div class="accent"></div>
   <div class="wrap">
     <h1>${esc(j.partner.name)}</h1>
@@ -692,7 +693,7 @@ function PartnerCard({
     ${usersSection}
     ${monthSection}
     ${totalLines}
-    <div class="foot">הופק ע״י ניהול הורדות פלוס · dmplus.net · ${esc(today)}</div>
+    <div class="foot">הופק ע״י פריימליין · ${SITE_HOST} · ${esc(today)}</div>
   </div>
   <script>window.onload=function(){setTimeout(function(){window.print()},300)}</script>
 </body></html>`

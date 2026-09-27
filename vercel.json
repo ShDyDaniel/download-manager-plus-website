@@ -1,4 +1,28 @@
 {
+  "redirects": [
+    {
+      "source": "/:path((?!api/|oauth/|admin|assets/|fonts/).*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "dmplus.net"
+        }
+      ],
+      "destination": "https://www.framelineapp.com/:path",
+      "permanent": true
+    },
+    {
+      "source": "/:path((?!api/|oauth/|admin|assets/|fonts/).*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "www.dmplus.net"
+        }
+      ],
+      "destination": "https://www.framelineapp.com/:path",
+      "permanent": true
+    }
+  ],
   "rewrites": [
     {
       "source": "/api/(.*)",
@@ -8,7 +32,10 @@
       "source": "/oauth/drive/callback",
       "destination": "/api/revisions?action=oauth-callback"
     },
-    { "source": "/(.*)", "destination": "/" }
+    {
+      "source": "/(.*)",
+      "destination": "/"
+    }
   ],
   "crons": [
     {

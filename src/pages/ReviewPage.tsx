@@ -40,13 +40,13 @@ import {
  *
  * This page is the END CLIENT'S touchpoint with the system — the
  * person who got a share link from a video editor. They are NOT a
- * paying user, may never have heard of ניהול הורדות פלוס, and
+ * paying user, may never have heard of פריימליין, and
  * shouldn't have to figure out the rest of the marketing site. So:
  *
  *   - The global SiteHeader is hidden on /review (handled in
  *     SiteHeader.tsx) — no "החשבון שלי" link confusing the viewer.
  *   - Local ReviewChrome header + footer ARE shown — they introduce
- *     the brand subtly ("מופעל על ידי ניהול הורדות פלוס") without
+ *     the brand subtly ("מופעל על ידי פריימליין") without
  *     pushing the viewer to convert mid-task.
  *   - The video player intentionally does NOT force 16:9. Drive-hosted
  *     content is often portrait (TikTok / Reels exports) and forcing
@@ -1281,7 +1281,7 @@ function ReviewHeader({
           target="_blank"
           rel="noopener noreferrer"
           className="group flex items-center gap-2.5 transition-opacity"
-          aria-label="ניהול הורדות פלוס · דף הבית"
+          aria-label="פריימליין · דף הבית"
         >
           <img
             src="/icon.png"
@@ -1291,7 +1291,7 @@ function ReviewHeader({
           />
           <div className="flex flex-col leading-tight">
             <span className="text-sm font-semibold text-fg group-hover:text-primary transition-colors">
-              ניהול הורדות פלוס
+              פריימליין
             </span>
             <span className="text-[10px] uppercase tracking-[0.18em] text-fg-muted">
               סבב תיקונים
@@ -1351,7 +1351,7 @@ function ReviewFooter() {
             className="h-4 w-4 rounded ring-1 ring-white/5"
           />
           <span className="font-semibold text-fg/85 group-hover:text-primary transition-colors">
-            ניהול הורדות פלוס
+            פריימליין
           </span>
           <span className="text-fg-muted/50">—</span>
           <span>תוכנה לעורכי וידאו ויוצרי תוכן</span>

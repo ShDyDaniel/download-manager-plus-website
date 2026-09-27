@@ -56,7 +56,7 @@ export function Footer() {
               />
               <div className="flex flex-col">
                 <span className="font-display text-lg text-fg">
-                  ניהול הורדות פלוס
+                  פריימליין
                 </span>
                 <span className="text-xs text-fg-muted">
                   כלי לעורכי וידאו ויוצרי תוכן

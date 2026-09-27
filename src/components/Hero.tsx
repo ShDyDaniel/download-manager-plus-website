@@ -98,7 +98,7 @@ export function Hero() {
           >
             <img
               src="/icon.png?v=2"
-              alt="לוגו ניהול הורדות פלוס"
+              alt="לוגו פריימליין"
               className="h-10 w-10 rounded-[10px]"
               style={{
                 boxShadow:
@@ -331,7 +331,7 @@ function HeroProductVisual() {
         />
         <span className="h-3 w-3 rounded-full bg-success opacity-70" />
         <div className="flex-1 text-center text-xs text-fg-muted" dir="rtl">
-          ניהול הורדות פלוס · טריילר_סרט_קיץ.proj
+          פריימליין · טריילר_סרט_קיץ.proj
         </div>
         <span className="w-12" aria-hidden />
       </div>

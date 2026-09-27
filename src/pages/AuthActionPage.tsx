@@ -18,7 +18,8 @@ import {
  * Wiring:
  *   1. Firebase Console → Authentication → Templates → Password
  *      reset → "Customize action URL" set to
- *      `https://dmplus.net/auth-action`.
+ *      `https://www.framelineapp.com/auth-action` (the old
+ *      `https://dmplus.net/auth-action` redirects there with its query).
  *   2. From then on, every `generatePasswordResetLink()` call in
  *      api/reset-password.ts produces a URL with our domain
  *      instead of `n-plus-64549.firebaseapp.com`.
@@ -61,7 +62,7 @@ export function AuthActionPage() {
         <div className="mb-8 text-center">
           <img
             src="/icon.png"
-            alt="ניהול הורדות פלוס"
+            alt="פריימליין"
             className="mx-auto h-16 w-16 rounded-2xl shadow-2xl"
           />
         </div>

@@ -248,14 +248,14 @@ function renderEmailPreview(heading: string, contentHtml: string): string {
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#16110D;padding:40px 16px;"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
 <tr><td style="padding:40px 36px;text-align:right;direction:rtl;">
-  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;">— ניהול הורדות פלוס</div>
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;">— פריימליין</div>
   <h1 style="font-size:28px;margin:0 0 22px;color:#F5EFE6;font-weight:500;line-height:1.18;letter-spacing:-0.015em;">${esc(
     heading,
   ) || 'כותרת ראשית'}</h1>
   ${contentHtml || '<p style="font-size:14px;line-height:1.7;color:#8B8170;">הוסף בלוקים כדי לבנות את גוף המייל…</p>'}
   ${footer}
 </td></tr></table>
-<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— ניהול הורדות פלוס —</div>
+<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— פריימליין —</div>
 </td></tr></table></body></html>`
 }
 

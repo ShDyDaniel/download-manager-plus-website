@@ -319,6 +319,8 @@ function uploadChunk(args: {
  *  show up in the SAME Drive folder structure the desktop sees.
  * ────────────────────────────────────────────────────────────── */
 
+// Keeps the old product name on purpose: the desktop finds the same folder
+// BY NAME, and renaming would give every existing user a second folder.
 const PROJECT_FOLDER_NAME = 'ניהול הורדות פלוס'
 const VIDEOS_SUBFOLDER_NAME = 'סרטונים'
 const NOTES_SUBFOLDER_NAME = 'קבצי תיקונים'

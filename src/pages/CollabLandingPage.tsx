@@ -559,7 +559,7 @@ function DeliveryMini() {
       >
         <Link2 className="h-3.5 w-3.5 shrink-0 text-accent" />
         <span className="truncate font-mono text-[12px] text-fg-secondary">
-          dmplus.net/deliver/9fb3…
+          framelineapp.com/deliver/9fb3…
         </span>
       </div>
       {/* meta chips */}
@@ -748,7 +748,7 @@ function FinalCta() {
           className="mx-auto mt-5 max-w-2xl text-fg-secondary"
           style={{ fontSize: '17px', lineHeight: 1.6 }}
         >
-          סבבי התיקונים והמסירה ללקוח הם חלק מ"ניהול הורדות פלוס", מערכת ליוצרי
+          סבבי התיקונים והמסירה ללקוח הם חלק מפריימליין, מערכת ליוצרי
           תוכן ולעורכי וידאו.
         </p>
         <div className="mt-8 flex flex-col items-center gap-3">

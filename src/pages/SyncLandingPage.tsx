@@ -606,7 +606,7 @@ function FinalCta() {
           שנתחיל <span className="accent-word">לסנכרן</span>?
         </h2>
         <p className="mx-auto mt-5 max-w-2xl text-fg-secondary" style={{ fontSize: '17px', lineHeight: 1.6 }}>
-          הסנכרון האוטומטי הוא חלק מ"ניהול הורדות פלוס", מערכת ליוצרי תוכן
+          הסנכרון האוטומטי הוא חלק מפריימליין, מערכת ליוצרי תוכן
           ולעורכי וידאו.
         </p>
         <div className="mt-8 flex flex-col items-center gap-3">

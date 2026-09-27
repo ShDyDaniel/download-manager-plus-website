@@ -332,7 +332,7 @@ const PAYPAL_PRODUCT_DOC = 'paypal'
  *  plan names in PayPal's own "you subscribed" / receipt emails. Safe to
  *  change — getOrCreateTierProduct mints fresh products when the name it
  *  stored no longer matches, and existing subscriptions keep their plans. */
-const PAYPAL_BRAND = 'ניהול הורדות פלוס'
+const PAYPAL_BRAND = 'פריימליין'
 
 // Legacy single product from before tiers — every plan hung off it, so PayPal
 // told every buyer they bought "Pro". Only the old appConfig/pricing slot sync
@@ -1049,7 +1049,10 @@ const ADMIN_EMAILS = ['dyshalts@gmail.com']
 // signed in on.
 const SESSION_TTL_SECONDS = 24 * 60 * 60
 const MAX_REASON_LENGTH = 500
-const WEBSITE_BASE = 'https://dmplus.net'
+// The site's public address: email links, PayPal return fallback, support
+// links. dmplus.net still serves the API (installed apps, webhooks) and
+// redirects its pages here.
+const WEBSITE_BASE = 'https://www.framelineapp.com'
 
 /** Where PayPal sends the buyer back to: the site origin they bought from,
  *  since their signed-in session lives in that origin's storage. Both the
@@ -2266,7 +2269,7 @@ async function handleSaleCompleted(
             recipient,
             amount,
             currency: resource.amount.currency,
-            description: 'ניהול הורדות פלוס · מנוי',
+            description: 'פריימליין · מנוי',
             subscriptionId,
           })
         }
@@ -2355,7 +2358,7 @@ async function handleSaleCompleted(
           recipient,
           amount: paidAmount,
           currency: resource.amount.currency,
-          description: `ניהול הורדות פלוס · ${planLabel}`,
+          description: `פריימליין · ${planLabel}`,
           subscriptionId,
         })
         if (url) {
@@ -4669,7 +4672,7 @@ async function handleCancel(req: VercelRequest, res: VercelResponse) {
   const subscriptionId = (body.subscriptionId || '').trim()
   const reason =
     (body.reason || '').slice(0, MAX_REASON_LENGTH).trim() ||
-    'User cancelled via dmplus.net/account'
+    'User cancelled via framelineapp.com/account'
   if (!token || !subscriptionId) {
     return res.status(400).json({ ok: false, error: 'חסרים פרטי בקשה' })
   }
@@ -4785,7 +4788,7 @@ async function handleCancel(req: VercelRequest, res: VercelResponse) {
         captureId,
         terms.refund,
         terms.charge.currency,
-        'Prorated refund on cancellation — ניהול הורדות פלוס',
+        'Prorated refund on cancellation — Frameline',
       )
       refunded = { amount: terms.refund, id: r.id }
       refundStatus = 'done'
@@ -5929,16 +5932,16 @@ async function sendReceiptEmail(args: {
     contentHtml: `
       ${draftNote}
       <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-        תודה על התשלום ל-<strong>ניהול הורדות פלוס</strong>. הקבלה הרשמית עבור: ${args.description}: <strong dir="ltr">${args.amount} ${sym}</strong>.
+        תודה על התשלום ל<strong>פריימליין</strong>. הקבלה הרשמית עבור: ${args.description}: <strong dir="ltr">${args.amount} ${sym}</strong>.
       </p>
       ${ctaHtml}
       <p style="font-size:11px;margin:0;color:#5C5444;">הקבלה הופקה דרך מערכת SUMIT.</p>
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
-    subject: 'הקבלה שלך · ניהול הורדות פלוס',
+    subject: 'הקבלה שלך · פריימליין',
     html,
     attachments: pdf
       ? [{ filename: 'קבלה.pdf', content: pdf, contentType: 'application/pdf' }]
@@ -5990,7 +5993,7 @@ async function sendPartnerWelcomeEmail(args: {
     heading: 'ברוכים הבאים לתוכנית השותפים 🤝',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-        שלום ${esc(args.name)}, צירפנו אתכם כשותפים של <strong>ניהול הורדות פלוס</strong>.
+        שלום ${esc(args.name)}, צירפנו אתכם כשותפים של <strong>פריימליין</strong>.
       </p>
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 16px;border-top:1px solid #2a2520;border-bottom:1px solid #2a2520;">
         ${row('קוד שותף', esc(args.code))}
@@ -6015,9 +6018,9 @@ async function sendPartnerWelcomeEmail(args: {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
-    subject: 'הצטרפתם כשותפים · ניהול הורדות פלוס',
+    subject: 'הצטרפתם כשותפים · פריימליין',
     html,
   })
 }
@@ -6066,9 +6069,9 @@ async function sendPartnerCommissionChangeEmail(args: {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
-    subject: 'עודכן הסכם העמלה שלכם · ניהול הורדות פלוס',
+    subject: 'עודכן הסכם העמלה שלכם · פריימליין',
     html,
   })
 }
@@ -6176,7 +6179,7 @@ async function sendSubscriptionWelcomeEmail(args: {
     heading: `ברוך הבא ל-${tierName} 🎉`,
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-        המנוי שלך פעיל! מצורף מפתח ${tierName} לתוכנה <strong>ניהול הורדות פלוס</strong>.
+        המנוי שלך פעיל! מצורף מפתח ${tierName} לתוכנה <strong>פריימליין</strong>.
       </p>
       <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
         <div style="font-size:11px;color:#8B8170;margin-bottom:8px;">מפתח המוצר</div>
@@ -6208,9 +6211,9 @@ async function sendSubscriptionWelcomeEmail(args: {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
-    subject: `המנוי שלך פעיל · ניהול הורדות פלוס ${tierName}`,
+    subject: `המנוי שלך פעיל · פריימליין ${tierName}`,
     html,
   })
 }
@@ -6346,9 +6349,9 @@ async function sendPlanSwitchEmail(args: {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
-    subject: `${titleEmoji} עברת ל${newPlanLabelLong} · ניהול הורדות פלוס`,
+    subject: `${titleEmoji} עברת ל${newPlanLabelLong} · פריימליין`,
     html,
   })
 }
@@ -6397,7 +6400,7 @@ async function sendProActivatedEmail(args: {
     heading: `✓ החשבון שלך עכשיו ${tierName}`,
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-        המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי ${tierName} בתוכנה <strong>ניהול הורדות פלוס</strong>.
+        המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי ${tierName} בתוכנה <strong>פריימליין</strong>.
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
         <div style="display:flex;justify-content:space-between;font-size:13px;line-height:1.8;color:#C9BFA8;">
@@ -6431,9 +6434,9 @@ async function sendProActivatedEmail(args: {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
-    subject: `✓ החשבון שלך פעיל · ניהול הורדות פלוס ${tierName}`,
+    subject: `✓ החשבון שלך פעיל · פריימליין ${tierName}`,
     html,
   })
 }
@@ -6486,13 +6489,13 @@ async function sendCancellationEmail(args: {
     args.cancelledFrom === 'account'
       ? 'הביטול בוצע מתוך דף החשבון באתר.'
       : args.cancelledFrom === 'admin'
-        ? 'הביטול בוצע על ידי צוות התמיכה של ניהול הורדות פלוס.'
+        ? 'הביטול בוצע על ידי צוות התמיכה של פריימליין.'
         : 'הביטול בוצע ישירות מתוך חשבון PayPal שלך.'
   const html = renderEmail({
     heading: 'המנוי שלך בוטל',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-        קיבלנו את בקשת הביטול שלך למנוי <strong>ניהול הורדות פלוס ${tierName}</strong>. ${sourceLine} לא תחויב שוב.
+        קיבלנו את בקשת הביטול שלך למנוי <strong>פריימליין ${tierName}</strong>. ${sourceLine} לא תחויב שוב.
       </p>
       ${
         refund?.status === 'done'
@@ -6525,9 +6528,9 @@ async function sendCancellationEmail(args: {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
-    subject: 'אישור ביטול מנוי · ניהול הורדות פלוס',
+    subject: 'אישור ביטול מנוי · פריימליין',
     html,
   })
 }
@@ -6572,7 +6575,7 @@ async function sendPaymentFailedEmail(args: {
     heading: '⚠ התשלום שלך נכשל',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-        ניסינו לחייב את אמצעי התשלום שלך לחידוש המנוי ב-<strong>ניהול הורדות פלוס ${tierName}</strong>, אבל החיוב נדחה (כרטיס פג תוקף, יתרה לא מספיקה, או חסום).
+        ניסינו לחייב את אמצעי התשלום שלך לחידוש המנוי ב<strong>פריימליין ${tierName}</strong>, אבל החיוב נדחה (כרטיס פג תוקף, יתרה לא מספיקה, או חסום).
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
         <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה ל-${tierName} פעילה עד</div>
@@ -6599,9 +6602,9 @@ async function sendPaymentFailedEmail(args: {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
-    subject: '⚠ עדכון אמצעי תשלום נדרש · ניהול הורדות פלוס',
+    subject: '⚠ עדכון אמצעי תשלום נדרש · פריימליין',
     html,
   })
 }
@@ -6648,7 +6651,7 @@ async function sendRenewalEmail(args: {
     heading: '✓ המנוי שלך חודש',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
-        החיוב התקופתי עבור <strong>ניהול הורדות פלוס ${tierName}</strong> בוצע בהצלחה, והמנוי ה${planLabel} שלך חודש אוטומטית. אין צורך לעשות דבר, הגישה ממשיכה ברצף מלא.
+        החיוב התקופתי עבור <strong>פריימליין ${tierName}</strong> בוצע בהצלחה, והמנוי ה${planLabel} שלך חודש אוטומטית. אין צורך לעשות דבר, הגישה ממשיכה ברצף מלא.
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:18px;margin:0 0 22px;">
         <div style="font-size:13px;line-height:1.85;color:#C9BFA8;">
@@ -6681,9 +6684,9 @@ async function sendRenewalEmail(args: {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
-    subject: `✓ המנוי ה${planLabel} שלך חודש · ניהול הורדות פלוס`,
+    subject: `✓ המנוי ה${planLabel} שלך חודש · פריימליין`,
     html,
   })
 }
@@ -6846,9 +6849,9 @@ async function handleSignupRequestCode(req: VercelRequest, res: VercelResponse) 
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: email,
-    subject: `קוד אימות: ${code} · ניהול הורדות פלוס`,
+    subject: `קוד אימות: ${code} · פריימליין`,
     html,
     text: `קוד האימות שלך: ${code}\nתקף ל-15 דקות.`,
   })
@@ -7122,9 +7125,9 @@ async function handleVerifyExistingRequestCode(
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: email,
-    subject: `קוד אימות: ${code} · ניהול הורדות פלוס`,
+    subject: `קוד אימות: ${code} · פריימליין`,
     html,
     text: `קוד אימות לחשבון שלך: ${code}\nתקף ל-15 דקות.`,
   })
@@ -7317,12 +7320,12 @@ function renderEmail(args: {
 <tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
 <tr><td style="padding:40px 36px;text-align:right;direction:rtl;">
-  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— ניהול הורדות פלוס</div>
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— פריימליין</div>
   <h1 style="font-size:28px;margin:0 0 22px;color:#F5EFE6;font-weight:500;line-height:1.18;letter-spacing:-0.015em;direction:rtl;text-align:right;">${args.heading}</h1>
   ${args.contentHtml}
 </td></tr>
 </table>
-<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— ניהול הורדות פלוס —</div>
+<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— פריימליין —</div>
 </td></tr>
 </table>
 </body>
@@ -7370,12 +7373,12 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
   switch (kind) {
     case 'welcome-subscription':
       return {
-        subject: '[בדיקה] המנוי שלך פעיל · ניהול הורדות פלוס Pro',
+        subject: '[בדיקה] המנוי שלך פעיל · פריימליין Pro',
         html: renderEmail({
           heading: 'ברוך הבא ל-Pro 🎉',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-              [תצוגת בדיקה] המנוי שלך פעיל! מצורף מפתח Pro לתוכנה <strong>ניהול הורדות פלוס</strong>.
+              [תצוגת בדיקה] המנוי שלך פעיל! מצורף מפתח Pro לתוכנה <strong>פריימליין</strong>.
             </p>
             <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
               <div style="font-size:11px;color:#8B8170;margin-bottom:8px;">מפתח המוצר</div>
@@ -7396,12 +7399,12 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'pro-activated':
       return {
-        subject: '[בדיקה] ✓ החשבון שלך פעיל · ניהול הורדות פלוס Pro',
+        subject: '[בדיקה] ✓ החשבון שלך פעיל · פריימליין Pro',
         html: renderEmail({
           heading: '✓ החשבון שלך עכשיו Pro',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-              [תצוגת בדיקה] המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי Pro בתוכנה <strong>ניהול הורדות פלוס</strong>.
+              [תצוגת בדיקה] המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי Pro בתוכנה <strong>פריימליין</strong>.
             </p>
             <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
               <div style="display:flex;justify-content:space-between;font-size:13px;line-height:1.8;color:#C9BFA8;">
@@ -7430,12 +7433,12 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'cancellation':
       return {
-        subject: '[בדיקה] אישור ביטול מנוי · ניהול הורדות פלוס',
+        subject: '[בדיקה] אישור ביטול מנוי · פריימליין',
         html: renderEmail({
           heading: 'המנוי שלך בוטל',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-              [תצוגת בדיקה] קיבלנו את בקשת הביטול שלך למנוי <strong>ניהול הורדות פלוס Pro</strong>. הביטול בוצע מתוך דף החשבון באתר. לא תחויב שוב.
+              [תצוגת בדיקה] קיבלנו את בקשת הביטול שלך למנוי <strong>פריימליין Pro</strong>. הביטול בוצע מתוך דף החשבון באתר. לא תחויב שוב.
             </p>
             <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
               <div style="font-size:11px;color:#8B8170;margin-bottom:6px;">הגישה ל-Pro תפעל עד</div>
@@ -7456,7 +7459,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'verify-signup':
       return {
-        subject: '[בדיקה] קוד אימות: 123456 · ניהול הורדות פלוס',
+        subject: '[בדיקה] קוד אימות: 123456 · פריימליין',
         html: renderEmail({
           heading: 'קוד האימות שלך',
           contentHtml: `
@@ -7492,12 +7495,12 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'reset-password':
       return {
-        subject: '[בדיקה] איפוס סיסמה · ניהול הורדות פלוס',
+        subject: '[בדיקה] איפוס סיסמה · פריימליין',
         html: renderEmail({
           heading: 'איפוס סיסמה',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-              [תצוגת בדיקה] קיבלנו בקשה לאיפוס הסיסמה לחשבון שלך ב-<strong>ניהול הורדות פלוס</strong>.
+              [תצוגת בדיקה] קיבלנו בקשה לאיפוס הסיסמה לחשבון שלך ב<strong>פריימליין</strong>.
             </p>
             <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
               לחץ על הכפתור כדי לקבוע סיסמה חדשה:
@@ -7515,12 +7518,12 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'capture-key':
       return {
-        subject: '[בדיקה] מפתח ניהול הורדות פלוס Pro שלך',
+        subject: '[בדיקה] מפתח פריימליין Pro שלך',
         html: renderEmail({
           heading: 'תודה על הרכישה 🎉',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-              [תצוגת בדיקה] מצורף מפתח <span style="color:#D4A574;">Pro</span> לתוכנה <strong>ניהול הורדות פלוס</strong> לתקופה של שנה מהיום (תוקף עד ${mockExpiry}).
+              [תצוגת בדיקה] מצורף מפתח <span style="color:#D4A574;">Pro</span> לתוכנה <strong>פריימליין</strong> לתקופה של שנה מהיום (תוקף עד ${mockExpiry}).
             </p>
             <div style="text-align:center;background:#16110D;border:1px solid rgba(212,165,116,0.45);border-radius:8px;padding:20px;margin:0 0 24px;">
               <div style="font-size:11px;color:#8B8170;margin-bottom:8px;">מפתח המוצר</div>
@@ -7537,7 +7540,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'renewal-extension':
       return {
-        subject: '[בדיקה] חידוש מנוי ניהול הורדות פלוס',
+        subject: '[בדיקה] חידוש מנוי פריימליין',
         html: renderEmail({
           heading: 'המנוי שלך הוארך ✓',
           contentHtml: `
@@ -7560,7 +7563,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
           heading: '⏳ המנוי שלך עומד להסתיים',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-              [תצוגת בדיקה] המפתח שלך לתוכנה <strong>ניהול הורדות פלוס</strong> פג בעוד <strong>2 ימים</strong> (${mockExpiry}).
+              [תצוגת בדיקה] המפתח שלך לתוכנה <strong>פריימליין</strong> פג בעוד <strong>2 ימים</strong> (${mockExpiry}).
             </p>
             <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
               לחיצה על הכפתור למטה תעביר אותך לעמוד החידוש. המפתח שלך נשאר אותו דבר.
@@ -7608,7 +7611,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
           heading: '⚠️ לא הצלחנו לחייב את המנוי',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-              [תצוגת בדיקה] ניסינו לחדש את המנוי שלך ל-<strong>ניהול הורדות פלוס Pro</strong>, אבל החיוב נכשל (כרטיס שפג תוקף / אין כיסוי).
+              [תצוגת בדיקה] ניסינו לחדש את המנוי שלך ל<strong>פריימליין Pro</strong>, אבל החיוב נכשל (כרטיס שפג תוקף / אין כיסוי).
             </p>
             <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
               PayPal ינסה שוב בימים הקרובים. כדי לא לאבד את הגישה, מומלץ לעדכן את אמצעי התשלום עכשיו.
@@ -7623,7 +7626,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
       }
     case 'plan-switch':
       return {
-        subject: '[בדיקה] ⬆️ עברת למסלול שנתי · ניהול הורדות פלוס',
+        subject: '[בדיקה] ⬆️ עברת למסלול שנתי · פריימליין',
         html: renderEmail({
           heading: '⬆️ עברת למסלול שנתי',
           contentHtml: `
@@ -7649,7 +7652,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
           heading: '⚠️ הגישה הסתיימה · סבבי התיקונים יימחקו בקרוב',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-              [תצוגת בדיקה] המנוי שלך ל-<strong>ניהול הורדות פלוס</strong> הסתיים, ואין יותר גישה לסבבי התיקונים שהעלית.
+              [תצוגת בדיקה] המנוי שלך ל<strong>פריימליין</strong> הסתיים, ואין יותר גישה לסבבי התיקונים שהעלית.
             </p>
             <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
               סבבי התיקונים שלך (הסרטונים, התמונות וההקלטות) יימחקו לצמיתות בעוד <strong>14 ימים</strong> (${mockExpiry}). חידוש המנוי לפני התאריך הזה ישמור את כל הסבבים.
@@ -7672,7 +7675,7 @@ function buildTestEmail(kind: TestEmailKind): { subject: string; html: string } 
           heading: '⚠️ הגישה הסתיימה · סבבי התיקונים יימחקו בקרוב',
           contentHtml: `
             <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-              [תצוגת בדיקה] תקופת הניסיון שלך ל-<strong>ניהול הורדות פלוס</strong> הסתיימה, ואין יותר גישה לסבבי התיקונים שהעלית.
+              [תצוגת בדיקה] תקופת הניסיון שלך ל<strong>פריימליין</strong> הסתיימה, ואין יותר גישה לסבבי התיקונים שהעלית.
             </p>
             <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
               סבבי התיקונים שלך (הסרטונים, התמונות וההקלטות) יימחקו לצמיתות בעוד <strong>14 ימים</strong> (${mockExpiry}). שדרוג למנוי לפני התאריך הזה ישמור את כל הסבבים.
@@ -7737,7 +7740,7 @@ async function handleAdminSendTestEmail(req: VercelRequest, res: VercelResponse)
   })
   try {
     await transporter.sendMail({
-      from: `"ניהול הורדות פלוס" <${user}>`,
+      from: `"פריימליין" <${user}>`,
       to: targetEmail,
       subject,
       html,
@@ -7773,7 +7776,7 @@ async function handleAdminTestSumit(req: VercelRequest, res: VercelResponse) {
   const receipt = await issueSumitReceipt({
     customerName: 'בדיקה · לקוח לדוגמה',
     customerEmail: recipient,
-    description: 'ניהול הורדות פלוס · מנוי חודשי (בדיקה)',
+    description: 'פריימליין · מנוי חודשי (בדיקה)',
     amount: 9,
     currency: 'ILS',
   })
@@ -7788,7 +7791,7 @@ async function handleAdminTestSumit(req: VercelRequest, res: VercelResponse) {
         url: receipt.url,
         amount: 9,
         currency: 'ILS',
-        description: 'ניהול הורדות פלוס · מנוי חודשי (בדיקה)',
+        description: 'פריימליין · מנוי חודשי (בדיקה)',
         draft: receipt.draft,
       })
       emailed = true
@@ -7806,7 +7809,7 @@ async function handleAdminTestSumit(req: VercelRequest, res: VercelResponse) {
           email: recipient,
           amount: 9,
           currency: 'ILS',
-          description: 'ניהול הורדות פלוס · מנוי חודשי (בדיקה)',
+          description: 'פריימליין · מנוי חודשי (בדיקה)',
           documentNumber: receipt.documentNumber ?? null,
           url: receipt.url,
           draft: receipt.draft,
@@ -8143,7 +8146,7 @@ async function handleAdminSendMarketingEmail(
     })
     try {
       await transporter.sendMail({
-        from: `"ניהול הורדות פלוס" <${user}>`,
+        from: `"פריימליין" <${user}>`,
         to: r.email,
         subject,
         html,
@@ -8193,7 +8196,7 @@ async function handleUnsubscribe(req: VercelRequest, res: VercelResponse) {
 </head>
 <body style="margin:0;padding:0;background:#16110D;color:#F5EFE6;font-family:'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;direction:rtl;min-height:100vh;display:flex;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased;">
 <div style="max-width:480px;width:90%;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);padding:48px 36px;text-align:center;box-shadow:0 24px 48px rgba(13,8,4,0.55);">
-  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 16px;font-weight:500;">— ניהול הורדות פלוס</div>
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 16px;font-weight:500;">— פריימליין</div>
   <div style="font-size:48px;margin:0 0 16px;color:${ok ? '#7DAA6B' : '#C16B5F'};line-height:1;">${ok ? '✓' : '⚠'}</div>
   <h1 style="font-size:22px;margin:0 0 14px;color:#F5EFE6;font-weight:500;line-height:1.3;letter-spacing:-0.01em;">${message}</h1>
   <p style="font-size:13px;color:#8B8170;margin:0;line-height:1.6;">ניתן להירשם מחדש מתוך הגדרות החשבון בכל עת.</p>
@@ -8570,7 +8573,7 @@ async function handleGetTerms(_req: VercelRequest, res: VercelResponse) {
           {
             title: 'תנאי השימוש טרם פורסמו',
             paragraphs: [
-              'תנאי השימוש המלאים זמינים בתוכנת ניהול הורדות פלוס לאחר התקנה.',
+              'תנאי השימוש המלאים זמינים בתוכנת פריימליין לאחר התקנה.',
               'בכל שאלה אפשר לפנות אלינו במייל: dyshalts@gmail.com',
             ],
           },
@@ -8620,7 +8623,7 @@ async function handleGetPrivacy(_req: VercelRequest, res: VercelResponse) {
           {
             title: 'מדיניות הפרטיות טרם פורסמה',
             paragraphs: [
-              'מדיניות הפרטיות המלאה זמינה בתוכנת ניהול הורדות פלוס לאחר התקנה.',
+              'מדיניות הפרטיות המלאה זמינה בתוכנת פריימליין לאחר התקנה.',
               'בכל שאלה אפשר לפנות אלינו במייל: dyshalts@gmail.com',
             ],
           },
@@ -8813,13 +8816,14 @@ async function handleAdminGrantPro(req: VercelRequest, res: VercelResponse) {
  *  Referral partners — attribute signups to a promoter.
  *
  *  Each partner has a short URL-safe code; the share link is
- *  dmplus.net/?ref=<code>. The code is captured in the browser and
+ *  framelineapp.com/?ref=<code> (old dmplus.net links redirect there with
+ *  the query intact). The code is captured in the browser and
  *  stamped onto the ACCOUNT at signup (see signup-verify-code), so
  *  any later purchase by that account is attributable to the partner
  *  (the account is the anchor — not the purchase).
  * ────────────────────────────────────────────────────────────── */
 
-const REFERRAL_LINK_BASE = 'https://dmplus.net'
+const REFERRAL_LINK_BASE = WEBSITE_BASE
 
 interface ReferralPartnerDoc {
   name: string
@@ -10030,7 +10034,7 @@ async function handleAdminResetTrial(req: VercelRequest, res: VercelResponse) {
  *  understand why they get no free trial on a new account.
  *
  *  Flow: admin generates a one-time code (admin-device-check-create),
- *  sends the link https://dmplus.net/device-check/<code> to the user.
+ *  sends the link https://www.framelineapp.com/device-check/<code> to the user.
  *  The link opens the desktop app (dmplus:// protocol) OR the user
  *  pastes the code into the app manually. The app reports its device
  *  signature (device-check-report, public). The server looks up the
@@ -10050,7 +10054,7 @@ function genDeviceCheckCode(): string {
 
 /* ──────────────────────────────────────────────────────────────
  *  Remote SYSTEM CHECK (support). Same rails as device-check: admin
- *  mints a one-time code + link (https://dmplus.net/system-check/<code>),
+ *  mints a one-time code + link (https://www.framelineapp.com/system-check/<code>),
  *  sends it to the user. The link opens the desktop app (dmplus://
  *  system-check?code=…), which runs a full component diagnostic and
  *  POSTs the results back (syscheck-report, public, code-gated). Admin
@@ -10079,7 +10083,7 @@ async function handleAdminSyscheckCreate(
   return res.status(200).json({
     ok: true,
     code,
-    url: `https://dmplus.net/system-check/${code}`,
+    url: `${WEBSITE_BASE}/system-check/${code}`,
     expiresAt: expiresAt.toISOString(),
   })
 }
@@ -10337,7 +10341,7 @@ async function handleAdminDeviceCheckCreate(
   return res.status(200).json({
     ok: true,
     code,
-    url: `https://dmplus.net/device-check/${code}`,
+    url: `${WEBSITE_BASE}/device-check/${code}`,
     expiresAt: expiresAt.toISOString(),
   })
 }
@@ -10895,7 +10899,7 @@ async function handleDeviceReleaseRequestCode(req: VercelRequest, res: VercelRes
     auth: { user, pass: pass.replace(/\s+/g, '') },
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: who.email,
     subject: `${code} — קוד לשחרור מחשב`,
     html: renderEmail({
@@ -13960,10 +13964,10 @@ async function sendContactReplyEmail(args: {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
     replyTo: user,
-    subject: `תשובה לפנייתך · ניהול הורדות פלוס${args.originalSubject ? ' · ' + args.originalSubject : ''}`,
+    subject: `תשובה לפנייתך · פריימליין${args.originalSubject ? ' · ' + args.originalSubject : ''}`,
     html,
   })
 }
@@ -14074,9 +14078,9 @@ async function handleAdmin2faRequest(req: VercelRequest, res: VercelResponse) {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: email,
-    subject: `קוד כניסה לאדמין: ${code} · ניהול הורדות פלוס`,
+    subject: `קוד כניסה לאדמין: ${code} · פריימליין`,
     html,
     text: `קוד הכניסה לפאנל הניהול: ${code}\nתקף ל-10 דקות.`,
   })
@@ -14150,7 +14154,7 @@ async function handleAdmin2faVerify(req: VercelRequest, res: VercelResponse) {
  * ────────────────────────────────────────────────────────────── */
 
 const WEBAUTHN_RP_ID = process.env.WEBAUTHN_RP_ID || 'dmplus.net'
-const WEBAUTHN_RP_NAME = 'ניהול הורדות פלוס'
+const WEBAUTHN_RP_NAME = 'פריימליין'
 const WEBAUTHN_ORIGINS = [
   'https://dmplus.net',
   'https://www.dmplus.net',
@@ -14988,7 +14992,7 @@ async function handleAdminCasualReport(
       at: r.at,
       email: r.email,
       name: r.name,
-      description: 'ניהול הורדות פלוס · מנוי',
+      description: 'פריימליין · מנוי',
       currency: r.currency,
       gross: round2(r.gross),
       vat: round2(r.gross - net),

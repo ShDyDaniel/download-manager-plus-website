@@ -112,6 +112,10 @@ const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 // and query strings have historically been a source of subtle
 // "redirect_uri_mismatch" failures (different encoding of `?`/`&`,
 // different ordering, etc.). A plain path always works.
+// Stays on dmplus.net after the move to framelineapp.com: it is registered
+// with Google, and changing it can trigger a new review of the Drive scope.
+// dmplus.net serves /oauth/* directly (never redirected), and the callback
+// sends the user on to WEBSITE_BASE.
 const REDIRECT_URI = 'https://dmplus.net/oauth/drive/callback'
 
 // State JWT lifetime — long enough for a slow user to complete the
@@ -3498,7 +3502,7 @@ async function handleCreateProject(req: VercelRequest, res: VercelResponse) {
   })
 }
 
-const WEBSITE_BASE = 'https://dmplus.net'
+const WEBSITE_BASE = 'https://www.framelineapp.com'
 
 /* ──────────────────────────────────────────────────────────────
  *  Action: get-project  (PUBLIC — no auth)
@@ -3874,7 +3878,7 @@ async function sendRoundReadyEmail(args: {
     ? `<p style="font-size:13px;line-height:1.7;margin:0 0 18px;color:#9A8F78;">סומן כמוכן על ידי: <strong dir="ltr">${args.viewerEmail}</strong></p>`
     : ''
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
     subject: `הסבב מוכן לתיקונים · ${safeTitle} (סבב ${args.roundNumber})`,
     html: `
@@ -3888,8 +3892,8 @@ async function sendRoundReadyEmail(args: {
           הסבב ננעל ולא ייכנסו אליו עוד תיקונים חדשים. אפשר להתחיל לעבוד עליו.
         </p>
         ${markedBy}
-        <a href="https://dmplus.net/revisions" style="display:inline-block;background:#B8794F;color:#1A140C;text-decoration:none;font-weight:bold;padding:10px 20px;border-radius:8px;font-size:14px;">מעבר לדף התיקונים</a>
-        <p style="font-size:11px;margin:18px 0 0;color:#5C5444;">ניהול הורדות פלוס · מערכת סבבי תיקונים.</p>
+        <a href="${WEBSITE_BASE}/revisions" style="display:inline-block;background:#B8794F;color:#1A140C;text-decoration:none;font-weight:bold;padding:10px 20px;border-radius:8px;font-size:14px;">מעבר לדף התיקונים</a>
+        <p style="font-size:11px;margin:18px 0 0;color:#5C5444;">פריימליין · מערכת סבבי תיקונים.</p>
       </div>
     `,
   })
@@ -9800,7 +9804,7 @@ async function askClaude(system: string, content: ClaudeBlock[]): Promise<string
   return text
 }
 
-const SUPPORT_AI_SYSTEM = `אתה עוזר אבחון לתוכנת דסקטופ בשם "ניהול הורדות פלוס" — אפליקציית Electron בעברית למפיקי תוכן ועורכי וידאו. היא כוללת ניהול הורדות, המרת קבצים, תמלול, הפרדת ערוצי מוזיקה, סנכרון אודיו, סבבי תיקונים ומסירה ללקוח. מנועי העיבוד הכבדים רצים ב-Python בסביבות וירטואליות תחת תיקיית הבית של המשתמש, ומשתמשים ב-torch/CUDA כשיש כרטיס NVIDIA.
+const SUPPORT_AI_SYSTEM = `אתה עוזר אבחון לתוכנת דסקטופ בשם "פריימליין" — אפליקציית Electron בעברית למפיקי תוכן ועורכי וידאו. היא כוללת ניהול הורדות, המרת קבצים, תמלול, הפרדת ערוצי מוזיקה, סנכרון אודיו, סבבי תיקונים ומסירה ללקוח. מנועי העיבוד הכבדים רצים ב-Python בסביבות וירטואליות תחת תיקיית הבית של המשתמש, ומשתמשים ב-torch/CUDA כשיש כרטיס NVIDIA.
 
 התפקיד שלך: לקרוא את הלוגים ואת פרטי המחשב של משתמש שפנה לתמיכה, ולהגיד למפעיל מה השתבש ומה לעשות.
 

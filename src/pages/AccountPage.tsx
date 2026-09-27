@@ -853,7 +853,7 @@ export default function AccountPage() {
             className="mx-auto max-w-md space-y-7"
           >
             <p className="text-xs text-fg-muted">
-              השתמש באותם פרטי גישה שאיתם נכנסת לתוכנת ניהול הורדות פלוס.
+              השתמש באותם פרטי גישה שאיתם נכנסת לתוכנת פריימליין.
             </p>
             {ssoState === 'failed' && ssoError && (
               <AuthError

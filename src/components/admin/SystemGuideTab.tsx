@@ -20,6 +20,7 @@ import { adminApi } from '../../lib/adminApi'
 import { buildZip } from '../../lib/zip'
 import { Button } from '@/components/ui/Button'
 import { Card } from './SettingsTab'
+import { SITE_HOST, SITE_ORIGIN } from '../../lib/site'
 
 /**
  * Admin → מדריך מערכת (web). A static support reference: every component
@@ -32,7 +33,7 @@ import { Card } from './SettingsTab'
  * store.ts, vendor/ + python/ layout) as of app v1.9.x.
  */
 
-const REINSTALL_URL = 'https://dmplus.net'
+const REINSTALL_URL = SITE_ORIGIN
 
 function CopyBtn({ text, label }: { text: string; label?: string }) {
   const [done, setDone] = useState(false)
@@ -254,8 +255,8 @@ const TROUBLES: Trouble[] = [
   },
   {
     symptom: 'אין הפעלה / אימות מנוי / עדכונים',
-    cause: 'אין גישה ל-dmplus.net: אינטרנט, חומת-אש/אנטי-וירוס, או VPN/פרוקסי.',
-    fix: 'לבדוק שהלקוח מגיע ל-https://dmplus.net מהדפדפן; לבטל חסימות.',
+    cause: `אין גישה לשרת ${SITE_HOST}, ובגרסאות ישנות לשרת dmplus.net. הסיבה: אינטרנט, חומת-אש/אנטי-וירוס, או VPN/פרוקסי.`,
+    fix: `לבדוק שהלקוח מגיע ל-${SITE_ORIGIN} מהדפדפן; לבטל חסימות.`,
   },
   {
     symptom: 'הכתוביות/וידאו לא נכנסות לטיימליין בעורך',
@@ -697,7 +698,7 @@ export default function SystemGuideTab({
           רוב הרכיבים <b>מובנים בתוכנה</b> ותמיד אמורים להיות שם. אם רכיב מובנה חסר, ההתקנה
           פגומה, והפתרון הוא <b>התקנה מחדש</b> מ-
           <a href={REINSTALL_URL} target="_blank" rel="noopener" className="text-accent underline">
-            dmplus.net
+            {SITE_HOST}
           </a>{' '}
           (לא הורדת קובץ בודד).
         </span>
@@ -760,13 +761,13 @@ export default function SystemGuideTab({
       </Card>
 
       {/* server */}
-      <Card title="חיבור לשרת (dmplus.net)">
+      <Card title={`חיבור לשרת (${SITE_HOST})`}>
         <div className="flex items-start gap-2 text-sm text-fg">
           <Server className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
           <span>
             הפעלה/אימות מנוי, עדכונים, סבבי-תיקונים, מסירות, הצעות-מחיר. בדיקת נגישות:{' '}
             <code dir="ltr" className="rounded bg-background/50 px-1.5 py-0.5 font-mono text-[11px]">
-              https://dmplus.net
+              {SITE_ORIGIN}
             </code>
             . אם אדום: אינטרנט / חומת-אש / VPN אצל הלקוח (לא רכיב שמתקינים).
           </span>
@@ -866,7 +867,7 @@ export default function SystemGuideTab({
       <Card title="נוהל טיפול מהיר">
         <ol className="list-inside list-decimal space-y-1 text-xs leading-relaxed text-fg">
           <li>הגדרות → בדיקת מערכת, לראות איזה רכיב אדום (חסר).</li>
-          <li>רכיב מובנה חסר → התקנה מחדש מ-dmplus.net.</li>
+          <li>רכיב מובנה חסר → התקנה מחדש מ-{SITE_HOST}.</li>
           <li>חיבור לשרת אדום → אינטרנט / חומת-אש / VPN אצל הלקוח.</li>
           <li>סנכרון נכשל אבל הכל ירוק → לבקש את sync-debug.log לבדיקה.</li>
           <li>תמלול נכשל → לבדוק שהמודלים ירדו (~/.dmp/transcribe, מטמון HF).</li>

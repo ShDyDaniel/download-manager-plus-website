@@ -22,9 +22,10 @@
  */
 
 import { getSessionToken, signOut } from './webSession'
+import { SITE_ORIGIN } from './site'
 
 const API_BASE = '/api/revisions'
-const WEBSITE_BASE = 'https://dmplus.net'
+const WEBSITE_BASE = SITE_ORIGIN
 
 /** Shorthand: every owner-side action takes the session token in
  *  the request body as `sessionToken`. Centralizes the lookup

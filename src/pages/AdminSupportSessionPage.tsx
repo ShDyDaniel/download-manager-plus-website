@@ -14,6 +14,7 @@ import {
   MAX_TRANSFER_BYTES,
   formatBytes,
 } from '../lib/supportTransfer'
+import { SITE_ORIGIN } from '../lib/site'
 
 /**
  * Dedicated live remote-support session page (admin, opens in its own tab from
@@ -247,7 +248,7 @@ export default function AdminSupportSessionPage() {
   const urlsRef = useRef<Record<string, string>>({})
   const screenUrlsRef = useRef<Record<string, string>>({}) // name -> presigned GET
   const shotObjRef = useRef<Record<string, string>>({}) // name -> objectURL (to revoke)
-  const url = `https://dmplus.net/support/${cleanCode}`
+  const url = `${SITE_ORIGIN}/support/${cleanCode}`
 
   // ~8s: refresh status + fresh presigned R2 urls (the only DB touch).
   const pullMeta = useCallback(async () => {
@@ -735,7 +736,7 @@ export default function AdminSupportSessionPage() {
   function machineReport(): string {
     const L: string[] = []
     const rule = '─'.repeat(46)
-    L.push('פרטי המחשב · ניהול הורדות פלוס', rule)
+    L.push('פרטי המחשב · פריימליין', rule)
     L.push(`קוד סשן: ${cleanCode}`)
     if (meta.email) L.push(`חשבון: ${meta.email}`)
     if (meta.appVersion) L.push(`גרסת התוכנה: ${meta.appVersion}`)

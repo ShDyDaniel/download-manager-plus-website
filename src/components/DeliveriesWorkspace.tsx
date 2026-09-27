@@ -33,6 +33,7 @@ import {
 } from '../lib/revisionsApi'
 import { uploadFileToR2 } from '../lib/r2Upload'
 import { cn } from '../lib/cn'
+import { SITE_ORIGIN } from '../lib/site'
 
 /**
  * DeliveriesWorkspace — the web editor side of "מסירה ללקוח".
@@ -44,7 +45,7 @@ import { cn } from '../lib/cn'
  * session JWT instead of a Firebase ID token.
  */
 
-const SITE = 'https://www.dmplus.net'
+const SITE = SITE_ORIGIN
 
 const EXPIRY_OPTIONS: Array<{ days: 3 | 7 | 14; label: string }> = [
   { days: 3, label: '3 ימים' },

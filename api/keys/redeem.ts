@@ -441,7 +441,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-const WEBSITE_BASE_REDEEM = 'https://dmplus.net'
+const WEBSITE_BASE_REDEEM = 'https://www.framelineapp.com'
 
 /**
  * Pro-activation email. Twin of the same-named function in
@@ -491,7 +491,7 @@ async function sendProActivatedEmail(args: {
     heading: `✓ החשבון שלך עכשיו ${tierName}`,
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 16px;color:#C9BFA8;">
-        המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי ${tierName} בתוכנה <strong>ניהול הורדות פלוס</strong>.
+        המפתח הופעל בהצלחה, וכעת יש לך גישה מלאה לכל היכולות של מנוי ${tierName} בתוכנה <strong>פריימליין</strong>.
       </p>
       <div style="background:#16110D;border:1px solid rgba(245,239,230,0.08);border-radius:8px;padding:20px;margin:0 0 24px;">
         <div style="display:flex;justify-content:space-between;font-size:13px;line-height:1.8;color:#C9BFA8;">
@@ -525,9 +525,9 @@ async function sendProActivatedEmail(args: {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
-    subject: `✓ החשבון שלך פעיל · ניהול הורדות פלוס ${tierName}`,
+    subject: `✓ החשבון שלך פעיל · פריימליין ${tierName}`,
     html,
   })
 }
@@ -551,12 +551,12 @@ function renderEmail(args: { heading: string; contentHtml: string }): string {
 <tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
 <tr><td style="padding:40px 36px;text-align:right;direction:rtl;">
-  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— ניהול הורדות פלוס</div>
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— פריימליין</div>
   <h1 style="font-size:28px;margin:0 0 22px;color:#F5EFE6;font-weight:500;line-height:1.18;letter-spacing:-0.015em;direction:rtl;text-align:right;">${args.heading}</h1>
   ${args.contentHtml}
 </td></tr>
 </table>
-<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— ניהול הורדות פלוס —</div>
+<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— פריימליין —</div>
 </td></tr>
 </table>
 </body>

@@ -443,7 +443,7 @@ function ConnectDriveEmptyState({
       const popup = window.open(url, '_blank', 'noopener')
       if (!popup) {
         throw new Error(
-          'נחסם פתיחת חלון חדש. אפשרו popups לדומיין dmplus.net ונסו שוב.',
+          'הדפדפן חסם פתיחה של חלון חדש. אפשרו חלונות קופצים לאתר הזה ונסו שוב.',
         )
       }
       setWaitingForOAuth(true)

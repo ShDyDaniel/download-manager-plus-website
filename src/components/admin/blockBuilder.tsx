@@ -20,6 +20,7 @@ import {
   Unlink,
 } from 'lucide-react'
 import { Input } from '@/components/ui/Input'
+import { SITE_ORIGIN } from '@/lib/site'
 
 /**
  * Shared VISUAL block builder — the same editor the admin newsletter uses
@@ -75,7 +76,7 @@ export function newBlock(type: Block['type']): Block {
     case 'heading':
       return { id, type, text: '' }
     case 'button':
-      return { id, type, text: 'לחצו כאן', href: 'https://dmplus.net', variant: 'copper' }
+      return { id, type, text: 'לחצו כאן', href: SITE_ORIGIN, variant: 'copper' }
     case 'image':
       return { id, type, driveLink: '', alt: '' }
     case 'raw':
@@ -478,7 +479,7 @@ function BlockEditor({
               <Input
                 value={block.href}
                 onChange={(e) => onChange({ href: e.target.value })}
-                placeholder="https://dmplus.net"
+                placeholder={SITE_ORIGIN}
                 dir="ltr"
                 disabled={disabled}
               />

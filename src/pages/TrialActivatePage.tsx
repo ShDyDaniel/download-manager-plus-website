@@ -146,7 +146,7 @@ export default function TrialActivatePage() {
       </div>
 
       <p className="mt-5 text-center text-[11px] text-muted-foreground/70">
-        Download Manager Plus
+        Frameline
       </p>
     </div>
   )

@@ -683,7 +683,7 @@ function SignupDetailsForm({
             >
               מדיניות הפרטיות
             </button>{' '}
-            של ניהול הורדות פלוס.
+            של פריימליין.
           </span>
         </label>
         <label className="flex items-start gap-2 text-xs leading-relaxed text-fg-muted">

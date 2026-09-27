@@ -109,7 +109,7 @@ async function sendResetEmail(to: string, resetUrl: string): Promise<void> {
     heading: 'איפוס סיסמה',
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-        קיבלנו בקשה לאיפוס הסיסמה לחשבון שלך ב-<strong>ניהול הורדות פלוס</strong>.
+        קיבלנו בקשה לאיפוס הסיסמה לחשבון שלך ב<strong>פריימליין</strong>.
       </p>
       <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
         לחץ על הכפתור כדי לקבוע סיסמה חדשה:
@@ -134,9 +134,9 @@ async function sendResetEmail(to: string, resetUrl: string): Promise<void> {
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to,
-    subject: 'איפוס סיסמה · ניהול הורדות פלוס',
+    subject: 'איפוס סיסמה · פריימליין',
     html,
   })
 }
@@ -215,12 +215,12 @@ function renderEmail(args: { heading: string; contentHtml: string }): string {
 <tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
 <tr><td style="padding:40px 36px;text-align:right;direction:rtl;">
-  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— ניהול הורדות פלוס</div>
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— פריימליין</div>
   <h1 style="font-size:28px;margin:0 0 22px;color:#F5EFE6;font-weight:500;line-height:1.18;letter-spacing:-0.015em;direction:rtl;text-align:right;">${args.heading}</h1>
   ${args.contentHtml}
 </td></tr>
 </table>
-<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— ניהול הורדות פלוס —</div>
+<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— פריימליין —</div>
 </td></tr>
 </table>
 </body>

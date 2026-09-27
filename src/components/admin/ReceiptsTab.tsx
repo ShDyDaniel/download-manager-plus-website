@@ -18,6 +18,7 @@ import {
   Coins,
 } from 'lucide-react'
 import { adminApi } from '../../lib/adminApi'
+import { SITE_HOST } from '../../lib/site'
 
 interface ReceiptRow {
   at: string
@@ -470,7 +471,7 @@ export default function ReceiptsTab({
   .sign .label { border-top:1px solid #c9bcab; padding-top:6px; font-size:12px; color:#7a6f64; }
   .foot { margin-top:26px; text-align:center; color:#9a8d7e; font-size:11px; }
 </style></head><body>
-  <div class="header">${logo ? `<img src="${logo}" alt="logo"/>` : ''}<div class="brand">דיווח עסקת אקראי<b>ניהול הורדות פלוס</b></div></div>
+  <div class="header">${logo ? `<img src="${logo}" alt="logo"/>` : ''}<div class="brand">דיווח עסקת אקראי<b>פריימליין</b></div></div>
   <div class="accent"></div>
   <div class="wrap">
     <h1>דיווח עסקת אקראי · טופס 8356</h1>
@@ -520,7 +521,7 @@ export default function ReceiptsTab({
       </div>
     </div>
 
-    <div class="foot">הופק ע״י ניהול הורדות פלוס · dmplus.net · ${esc(today)}</div>
+    <div class="foot">הופק ע״י פריימליין · ${SITE_HOST} · ${esc(today)}</div>
   </div>
   <script>window.onload=function(){setTimeout(function(){window.print()},300)}</script>
 </body></html>`

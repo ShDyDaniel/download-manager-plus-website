@@ -11,6 +11,7 @@ import {
   FolderDown,
 } from 'lucide-react'
 import { makeZip, predictLength } from 'client-zip'
+import { SITE_ORIGIN } from '../lib/site'
 
 /**
  * Public client-delivery page.
@@ -20,7 +21,7 @@ import { makeZip, predictLength } from 'client-zip'
  * The END CLIENT opens this link (sent by an editor) to watch + download
  * the final video(s). They are NOT a paying user. The page is chromeless
  * (no marketing SiteHeader — see isChromelessRoute in App.tsx) and leans
- * into a clean "powered by ניהול הורדות פלוס" promo, since the operator
+ * into a clean "powered by פריימליין" promo, since the operator
  * asked the client page to mainly advertise the product.
  *
  * Backend: action=delivery-view returns the bundle's videos with
@@ -29,7 +30,7 @@ import { makeZip, predictLength } from 'client-zip'
  */
 
 const API = '/api/revisions'
-const SITE_URL = 'https://www.dmplus.net'
+const SITE_URL = SITE_ORIGIN
 
 interface DeliveryVideo {
   name: string
@@ -573,7 +574,7 @@ function BrandFooter() {
         <p className="text-sm text-foreground">
           הסרטון נשלח אליך דרך{' '}
           <a href={SITE_URL} className="font-semibold text-primary underline underline-offset-2">
-            ניהול הורדות פלוס
+            פריימליין
           </a>
         </p>
         <p className="mt-1 text-xs text-muted-foreground">

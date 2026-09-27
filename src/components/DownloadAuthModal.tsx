@@ -340,7 +340,7 @@ export function DownloadAuthModal({
                   >
                     מדיניות הפרטיות
                   </button>{' '}
-                  של ניהול הורדות פלוס.
+                  של פריימליין.
                 </span>
               </label>
               <label className="flex cursor-pointer items-start gap-2 text-xs leading-relaxed text-fg-muted">

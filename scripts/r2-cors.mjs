@@ -25,7 +25,13 @@ import {
   PutBucketCorsCommand,
 } from '@aws-sdk/client-s3'
 
-const ORIGINS = ['https://www.dmplus.net', 'https://dmplus.net']
+const ORIGINS = [
+  'https://www.framelineapp.com',
+  'https://framelineapp.com',
+  // The old domain: admin still runs there, and old links load pages there.
+  'https://www.dmplus.net',
+  'https://dmplus.net',
+]
 const NEEDED_METHODS = ['GET', 'HEAD']
 
 const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET } =

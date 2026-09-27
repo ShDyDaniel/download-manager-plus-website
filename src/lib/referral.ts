@@ -1,6 +1,7 @@
 /**
  * Referral capture — when a visitor lands via a partner link
- * (dmplus.net/?ref=<code>), we remember the code so it can be stamped
+ * (framelineapp.com/?ref=<code>, or an old dmplus.net link, which
+ * redirects there with the query intact), we remember the code so it can be stamped
  * onto their account when they sign up, and kept sticky in the URL
  * while they browse.
  *
@@ -9,7 +10,7 @@
  *   - It survives navigation between pages and a page refresh (same
  *     tab), so the ?ref stays in the address bar everywhere you go.
  *   - It is cleared when the tab is closed. So if you later open the
- *     plain dmplus.net link in a fresh tab, you stay on the plain link
+ *     plain site link in a fresh tab, you stay on the plain link
  *     — a previous partner visit doesn't "stick" forever.
  * This matches the operator's intent: the link you came in with is the
  * one you keep, until you close the tab.

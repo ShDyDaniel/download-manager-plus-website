@@ -1,6 +1,6 @@
 /**
  * Cloudflare Worker — zero-egress video proxy for the
- * ניהול הורדות פלוס Revisions feature.
+ * פריימליין Revisions feature.
  *
  * VIDEO (?token=...) now streams straight from our own Cloudflare R2
  * bucket via the Worker's R2 binding — no access tokens, no Drive,

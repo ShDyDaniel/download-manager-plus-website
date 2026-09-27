@@ -90,7 +90,7 @@ function makeCountedTransport(
  */
 
 const REMINDER_TOKEN_TTL_DAYS = 14
-const WEBSITE_BASE = 'https://dmplus.net'
+const WEBSITE_BASE = 'https://www.framelineapp.com'
 
 /** Stages of the reminder pipeline. Order matters only for the
  *  loop below — we check them sequentially and break after the
@@ -271,7 +271,7 @@ async function sendReminderEmail(
     heading: `⏳ ${planPhrase} שלך עומד להסתיים`,
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 14px;color:#C9BFA8;">
-        ${tierName ? `מפתח <strong>${tierName}</strong>` : 'המפתח'} שלך לתוכנה <strong>ניהול הורדות פלוס</strong> פג בעוד <strong>${daysWord}</strong> (${dateStr}).
+        ${tierName ? `מפתח <strong>${tierName}</strong>` : 'המפתח'} שלך לתוכנה <strong>פריימליין</strong> פג בעוד <strong>${daysWord}</strong> (${dateStr}).
       </p>
       <p style="font-size:14px;line-height:1.7;margin:0 0 24px;color:#C9BFA8;">
         לחיצה על הכפתור למטה תעביר אותך לעמוד החידוש. המפתח שלך נשאר אותו דבר, אין מה לעדכן באפליקציה, פשוט מאריכים את התוקף.
@@ -293,7 +293,7 @@ async function sendReminderEmail(
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to,
     subject: `⏳ ${planPhrase} שלך מסתיים בעוד ${daysWord} · חידוש בלחיצה`,
     html,
@@ -655,7 +655,7 @@ async function sendAnnualReportEmail(args: {
     heading: `סיכום חיובים שנתי · ${args.year}`,
     contentHtml: `
       <p style="font-size:14px;line-height:1.7;margin:0 0 18px;color:#C9BFA8;">
-        ריכוז כל החיובים שבוצעו על המנוי שלך ל-<strong>ניהול הורדות פלוס</strong> במהלך ${args.year}.
+        ריכוז כל החיובים שבוצעו על המנוי שלך ל<strong>פריימליין</strong> במהלך ${args.year}.
         מסמך זה נשלח אליך אחת לשנה לפי דרישת חוק הגנת הצרכן.
       </p>
       <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 18px;border:1px solid rgba(245,239,230,0.08);border-radius:8px;overflow:hidden;">
@@ -674,12 +674,12 @@ async function sendAnnualReportEmail(args: {
         שאלות? תשובה ישירה למייל הזה תגיע לתמיכה.
       </p>
       <p style="margin:8px 0 0;font-size:11px;color:#5C5444;">
-        לניהול או ביטול המנוי: <a href="https://dmplus.net/account" style="color:#D4A574;text-decoration:underline;">החשבון שלי</a>
+        לניהול או ביטול המנוי: <a href="${WEBSITE_BASE}/account" style="color:#D4A574;text-decoration:underline;">החשבון שלי</a>
       </p>
     `,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to: args.to,
     subject: `סיכום חיובים שנתי · ${args.year}`,
     html,
@@ -1534,7 +1534,7 @@ async function sendPurgeWarningEmail(
     purgeAt,
   })
   await transporter.sendMail({
-    from: `"ניהול הורדות פלוס" <${user}>`,
+    from: `"פריימליין" <${user}>`,
     to,
     subject,
     html,
@@ -1555,8 +1555,8 @@ export function buildPurgeWarningEmail(args: {
   const daysWord = days === 1 ? 'יום אחד' : `${days} ימים`
   const sourceLine =
     args.kind === 'trial'
-      ? 'תקופת הניסיון שלך ל-<strong>ניהול הורדות פלוס</strong> הסתיימה, ואין יותר גישה לסבבי התיקונים שהעלית.'
-      : 'המנוי שלך ל-<strong>ניהול הורדות פלוס</strong> הסתיים, ואין יותר גישה לסבבי התיקונים שהעלית.'
+      ? 'תקופת הניסיון שלך ל<strong>פריימליין</strong> הסתיימה, ואין יותר גישה לסבבי התיקונים שהעלית.'
+      : 'המנוי שלך ל<strong>פריימליין</strong> הסתיים, ואין יותר גישה לסבבי התיקונים שהעלית.'
   const ctaLabel =
     args.kind === 'trial' ? 'שדרוג ושמירת הסבבים 👑' : 'חידוש ושמירת הסבבים 👑'
   const heading = args.isFinal
@@ -1612,12 +1612,12 @@ function renderEmail(args: { heading: string; contentHtml: string }): string {
 <tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:540px;background:#2A211A;border-radius:10px;border:1px solid rgba(245,239,230,0.08);box-shadow:0 24px 48px rgba(13,8,4,0.55);">
 <tr><td style="padding:40px 36px;text-align:right;direction:rtl;">
-  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— ניהול הורדות פלוס</div>
+  <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8B8170;margin:0 0 14px;font-weight:500;direction:rtl;text-align:right;">— פריימליין</div>
   <h1 style="font-size:28px;margin:0 0 22px;color:#F5EFE6;font-weight:500;line-height:1.18;letter-spacing:-0.015em;direction:rtl;text-align:right;">${args.heading}</h1>
   ${args.contentHtml}
 </td></tr>
 </table>
-<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— ניהול הורדות פלוס —</div>
+<div style="margin:24px auto 0;font-size:10px;letter-spacing:0.18em;color:#5C5444;text-align:center;">— פריימליין —</div>
 </td></tr>
 </table>
 </body>
