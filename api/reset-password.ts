@@ -141,6 +141,23 @@ async function sendResetEmail(to: string, resetUrl: string): Promise<void> {
   })
 }
 
+// The site's public address. Firebase builds the reset link on the action URL
+// set in its console (still https://dmplus.net/auth-action — the console
+// refuses template edits on this project), so the link is moved onto this
+// host here. Only the host changes: /auth-action and its query (mode,
+// oobCode, apiKey, lang) are kept, and the page there completes the reset.
+const WEBSITE_BASE = 'https://www.framelineapp.com'
+
+function onSiteHost(link: string): string {
+  try {
+    const u = new URL(link)
+    if (u.pathname !== '/auth-action') return link
+    return `${WEBSITE_BASE}/auth-action${u.search}`
+  } catch {
+    return link
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
@@ -177,7 +194,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ ok: true })
     }
 
-    await sendResetEmail(email, resetLink)
+    await sendResetEmail(email, onSiteHost(resetLink))
     return res.status(200).json({ ok: true })
   } catch (err) {
     // Genuine server failure (SMTP down, Firebase init, etc.). Log the raw
