@@ -407,7 +407,7 @@ export default function ReceiptsTab({
       })} ${row.currency}`
     let logo = ''
     try {
-      const lr = await fetch('/icon.png')
+      const lr = await fetch('/icon-small.png?v=3')
       if (lr.ok) {
         const b = await lr.blob()
         logo = await new Promise<string>((res) => {

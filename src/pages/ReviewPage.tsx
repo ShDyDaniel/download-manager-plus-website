@@ -1284,7 +1284,8 @@ function ReviewHeader({
           aria-label="פריימליין · דף הבית"
         >
           <img
-            src="/icon.png"
+            src="/icon-32.png?v=3"
+            srcSet="/icon-small.png?v=3 2x"
             alt=""
             aria-hidden
             className="h-8 w-8 rounded-lg ring-1 ring-white/5"
@@ -1345,7 +1346,8 @@ function ReviewFooter() {
         >
           <span>מופעל על ידי</span>
           <img
-            src="/icon.png"
+            src="/icon-16.png?v=3"
+            srcSet="/icon-32.png?v=3 2x"
             alt=""
             aria-hidden
             className="h-4 w-4 rounded ring-1 ring-white/5"

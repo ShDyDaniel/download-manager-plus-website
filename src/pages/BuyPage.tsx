@@ -1179,7 +1179,7 @@ export function BuyPage() {
           <div className="relative mx-auto mb-5 h-20 w-20">
             <div className="absolute inset-0 rounded-2xl blur-2xl" />
             <img
-              src="/icon.png"
+              src="/icon.png?v=3"
               alt="פריימליין"
               className="relative h-20 w-20 rounded-2xl shadow-2xl shadow-lg"
             />

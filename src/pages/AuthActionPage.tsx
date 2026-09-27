@@ -61,7 +61,7 @@ export function AuthActionPage() {
             the rest of the site even though there's no Hero here. */}
         <div className="mb-8 text-center">
           <img
-            src="/icon.png"
+            src="/icon-small.png?v=3"
             alt="פריימליין"
             className="mx-auto h-16 w-16 rounded-2xl shadow-2xl"
           />
