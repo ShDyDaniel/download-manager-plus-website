@@ -3390,7 +3390,7 @@ async function handleListGroupsOwner(
  *  Body: {
  *    idToken,
  *    driveFileId,           // ID of the file already uploaded to Drive
- *    driveFolderId,         // ID of the parent "ניהול הורדות פלוס" folder
+ *    driveFolderId,         // ID of the parent "פריימליין" folder
  *    title,
  *    videoFileName,
  *    videoSizeBytes,

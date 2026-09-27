@@ -59,7 +59,7 @@ export interface UploadArgs {
   /** The File the user picked. */
   file: File
   /** Drive folder ID the new file should land in. Usually the
-   *  videos subfolder under "ניהול הורדות פלוס". */
+   *  videos subfolder under "פריימליין". */
   folderId: string
   /** Optional override for the filename stored on Drive. Defaults
    *  to `file.name`. */
@@ -319,9 +319,13 @@ function uploadChunk(args: {
  *  show up in the SAME Drive folder structure the desktop sees.
  * ────────────────────────────────────────────────────────────── */
 
-// Keeps the old product name on purpose: the desktop finds the same folder
-// BY NAME, and renaming would give every existing user a second folder.
-const PROJECT_FOLDER_NAME = 'ניהול הורדות פלוס'
+const PROJECT_FOLDER_NAME = 'פריימליין'
+// The folder's name before the Frameline rename. Still searched so existing
+// users keep their folder: on first use it is renamed IN PLACE to
+// PROJECT_FOLDER_NAME (same ID, so shared links survive) instead of a second,
+// empty folder being created. The desktop finds the same folder BY NAME
+// (src/lib/revisions.ts) — both names and the lookup order must stay in step.
+const LEGACY_PROJECT_FOLDER_NAME = 'ניהול הורדות פלוס'
 const VIDEOS_SUBFOLDER_NAME = 'סרטונים'
 const NOTES_SUBFOLDER_NAME = 'קבצי תיקונים'
 const FOLDER_MIME = 'application/vnd.google-apps.folder'
@@ -342,11 +346,7 @@ export interface ProjectFolderIds {
 export async function ensureProjectFolders(
   accessToken: string,
 ): Promise<ProjectFolderIds> {
-  const rootFolderId = await findOrCreateFolder(
-    accessToken,
-    PROJECT_FOLDER_NAME,
-    null,
-  )
+  const rootFolderId = await findOrCreateRootProjectFolder(accessToken)
   // Subfolders are independent — create them in parallel to save
   // an RTT.
   const [videosFolderId, notesFolderId] = await Promise.all([
@@ -356,11 +356,70 @@ export async function ensureProjectFolders(
   return { rootFolderId, videosFolderId, notesFolderId }
 }
 
+/** Find-or-create the project folder at the user's Drive root.
+ *
+ *    1. "פריימליין" exists            → use it.
+ *    2. only the legacy name exists  → rename it in place, use it.
+ *    3. neither                      → create "פריימליין".
+ *
+ *  A failed rename still returns the legacy folder: a folder with
+ *  the old name is better than a duplicate, and the next call just
+ *  tries the rename again. The drive.file scope that limits us to
+ *  folders our app created is also what allows the rename. Must
+ *  match the desktop's ensureRootProjectFolder. */
+async function findOrCreateRootProjectFolder(
+  accessToken: string,
+): Promise<string> {
+  const current = await findFolder(accessToken, PROJECT_FOLDER_NAME, null)
+  if (current) return current
+
+  const legacy = await findFolder(accessToken, LEGACY_PROJECT_FOLDER_NAME, null)
+  if (legacy) {
+    try {
+      const renameResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(legacy)}`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ name: PROJECT_FOLDER_NAME }),
+        },
+      )
+      if (!renameResp.ok) {
+        console.warn(
+          `[driveUpload] project folder rename failed (${renameResp.status}) — using it under the old name`,
+        )
+      }
+    } catch (err) {
+      console.warn(
+        '[driveUpload] project folder rename failed — using it under the old name:',
+        err,
+      )
+    }
+    return legacy
+  }
+
+  return createFolder(accessToken, PROJECT_FOLDER_NAME, null)
+}
+
 async function findOrCreateFolder(
   accessToken: string,
   name: string,
   parentId: string | null,
 ): Promise<string> {
+  const existing = await findFolder(accessToken, name, parentId)
+  if (existing) return existing
+  // Doesn't exist yet — create it.
+  return createFolder(accessToken, name, parentId)
+}
+
+async function findFolder(
+  accessToken: string,
+  name: string,
+  parentId: string | null,
+): Promise<string | null> {
   // Search for an EXISTING folder with this name in the parent
   // (or at the user's Drive root if parentId is null). We only
   // see files our own app created because of the drive.file
@@ -388,8 +447,14 @@ async function findOrCreateFolder(
   if (searchJson.files && searchJson.files.length > 0) {
     return searchJson.files[0].id
   }
+  return null
+}
 
-  // Doesn't exist yet — create it.
+async function createFolder(
+  accessToken: string,
+  name: string,
+  parentId: string | null,
+): Promise<string> {
   const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: {
