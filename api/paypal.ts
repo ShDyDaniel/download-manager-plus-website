@@ -327,9 +327,52 @@ async function loadCurrentPricingStrict(): Promise<LivePricingLocal | null> {
 }
 
 const PAYPAL_PRODUCT_DOC = 'paypal'
+
+/** The name buyers see on PayPal: the checkout header, and the product +
+ *  plan names in PayPal's own "you subscribed" / receipt emails. Safe to
+ *  change — getOrCreateTierProduct mints fresh products when the name it
+ *  stored no longer matches, and existing subscriptions keep their plans. */
+const PAYPAL_BRAND = 'ניהול הורדות פלוס'
+
+// Legacy single product from before tiers — every plan hung off it, so PayPal
+// told every buyer they bought "Pro". Only the old appConfig/pricing slot sync
+// (handleSyncPlans) still uses it; purchases go through the per-tier products.
 const PAYPAL_PRODUCT_NAME = 'ניהול הורדות פלוס Pro'
 const PAYPAL_PRODUCT_DESCRIPTION =
   'Subscription to the Pro tier of Download Manager Plus desktop application'
+
+/** One PayPal product per paid tier, named after it, so PayPal names the plan
+ *  the buyer actually bought. Stored in appConfig/paypal.tierProducts as
+ *  { id, name }; a stored name that differs from the current one (brand
+ *  rename) mints a new product instead of reusing the old. */
+function tierProductName(tier: TierS): string {
+  return `${PAYPAL_BRAND} ${TIER_LABEL_S[tier]}`
+}
+
+async function getOrCreateTierProduct(tier: TierS): Promise<string> {
+  const db = getDb()
+  const ref = db.collection('appConfig').doc(PAYPAL_PRODUCT_DOC)
+  const snap = await ref.get()
+  const name = tierProductName(tier)
+  const stored = (
+    snap.data() as { tierProducts?: Record<string, { id?: string; name?: string }> } | undefined
+  )?.tierProducts?.[tier]
+  if (stored?.id && stored.name === name) return stored.id
+  const created = await paypalCall<{ id: string }>('POST', '/v1/catalogs/products', {
+    name,
+    description: `מנוי ${TIER_LABEL_S[tier]} לתוכנת ${PAYPAL_BRAND}`,
+    type: 'SERVICE',
+    category: 'SOFTWARE',
+  })
+  await ref.set({ tierProducts: { [tier]: { id: created.id, name } } }, { merge: true })
+  return created.id
+}
+
+/** Plan name shown to the buyer: brand + tier + billing cycle. The amount
+ *  lives in the plan's pricing (PayPal prints it), not in the name. */
+function tierPlanName(tier: TierS, interval: 'monthly' | 'yearly'): string {
+  return `${tierProductName(tier)} · ${interval === 'monthly' ? 'מנוי חודשי' : 'מנוי שנתי'}`
+}
 
 async function getOrCreateProduct(): Promise<string> {
   const db = getDb()
@@ -351,7 +394,8 @@ async function getOrCreateProduct(): Promise<string> {
 
 async function createPaypalPlan(args: {
   productId: string
-  label: string
+  /** Full plan name as PayPal shows it to the buyer. */
+  name: string
   amount: number
   currency: string
   interval: 'monthly' | 'yearly'
@@ -415,7 +459,7 @@ async function createPaypalPlan(args: {
     '/v1/billing/plans',
     {
       product_id: args.productId,
-      name: `${PAYPAL_PRODUCT_NAME} — ${args.label}`,
+      name: args.name,
       description: `${args.amount} ${args.currency} ${args.interval === 'monthly' ? 'per month' : 'per year'}`,
       // Explicitly create in ACTIVE state so the plan is ready for
       // subscriptions immediately. Without this PayPal's default
@@ -896,7 +940,7 @@ async function syncPlansForPricing(
     if (persisted) await deactivatePaypalPlan(persisted.planId)
     const newId = await createPaypalPlan({
       productId,
-      label,
+      name: `${PAYPAL_PRODUCT_NAME} — ${label}`,
       amount,
       currency: pricing.currency,
       interval,
@@ -1006,6 +1050,21 @@ const ADMIN_EMAILS = ['dyshalts@gmail.com']
 const SESSION_TTL_SECONDS = 24 * 60 * 60
 const MAX_REASON_LENGTH = 500
 const WEBSITE_BASE = 'https://dmplus.net'
+
+/** Where PayPal sends the buyer back to: the site origin they bought from,
+ *  since their signed-in session lives in that origin's storage. Both the
+ *  old and the new domain serve the site; anything else (the desktop app,
+ *  a missing header) gets WEBSITE_BASE. */
+const BUYER_ORIGINS = new Set([
+  'https://dmplus.net',
+  'https://www.dmplus.net',
+  'https://framelineapp.com',
+  'https://www.framelineapp.com',
+])
+function buyerOrigin(req: VercelRequest): string {
+  const origin = req.headers.origin
+  return typeof origin === 'string' && BUYER_ORIGINS.has(origin) ? origin : WEBSITE_BASE
+}
 
 /**
  *  Email-provider whitelist for signup.
@@ -3279,24 +3338,28 @@ async function consumeCoupon(
   })
 }
 
-/** Plan for an arbitrary (interval, amount) — reuses the same PayPal plan
- *  catalog as the regular/sale slots, so coupon prices never litter PayPal
- *  with duplicates. */
-async function ensurePlanForAmount(
-  interval: 'monthly' | 'yearly',
-  amount: number,
-  currency: string,
-): Promise<string> {
-  const db = getDb()
-  const ref = db.collection('appConfig').doc('pricing')
+/** The PayPal plan a purchase subscribes to. One catalog per tier product
+ *  (appConfig/paypal.tierPlans), keyed
+ *  `${productId}:${interval}:${recurring}[:intro${intro}]:${currency}`.
+ *  Keying by product keeps tiers apart even at equal prices (a coupon on Pro
+ *  can land exactly on Basic's price) and retires a renamed brand's plans.
+ *  Plans are reused across buyers, so coupon prices never litter PayPal. */
+async function ensureTierPlan(args: {
+  tier: TierS
+  interval: 'monthly' | 'yearly'
+  /** Recurring price. */
+  amount: number
+  /** One-cycle first price (upgrade difference / "first period" coupon). */
+  introAmount?: number
+  currency: string
+}): Promise<string> {
+  const productId = await getOrCreateTierProduct(args.tier)
+  const intro = args.introAmount != null ? `:intro${args.introAmount.toFixed(2)}` : ''
+  const k = `${productId}:${args.interval}:${args.amount.toFixed(2)}${intro}:${args.currency}`
+  const ref = getDb().collection('appConfig').doc(PAYPAL_PRODUCT_DOC)
   const snap = await ref.get()
-  const existing = snap.exists
-    ? (snap.data() as unknown as Record<string, unknown>)
-    : {}
-  const catalog =
-    ((existing.paypalPlansCatalog as Record<string, CatalogEntry> | undefined) ?? {})
-  const k = catalogKey(interval, amount, currency)
-  const hit = catalog[k]
+  const hit = (snap.data() as { tierPlans?: Record<string, CatalogEntry> } | undefined)
+    ?.tierPlans?.[k]
   if (hit) {
     try {
       await activatePaypalPlan(hit.planId)
@@ -3305,65 +3368,48 @@ async function ensurePlanForAmount(
       const msg = err instanceof Error ? err.message : String(err)
       const stale = msg.includes('404') || msg.includes('RESOURCE_NOT_FOUND')
       if (!stale) throw err
-      delete catalog[k]
+      // Deleted on PayPal's side — fall through; the new plan overwrites k.
     }
   }
-  const productId = await getOrCreateProduct()
   const planId = await createPaypalPlan({
     productId,
-    label: `קופון · ${interval === 'monthly' ? 'חודשי' : 'שנתי'} ${amount}`,
-    amount,
-    currency,
-    interval,
+    name: tierPlanName(args.tier, args.interval),
+    amount: args.amount,
+    introAmount: args.introAmount,
+    currency: args.currency,
+    interval: args.interval,
   })
-  catalog[k] = { planId, amount, interval, currency }
-  await ref.set({ paypalPlansCatalog: catalog }, { merge: true })
+  const entry: CatalogEntry = {
+    planId,
+    amount: args.amount,
+    interval: args.interval,
+    currency: args.currency,
+  }
+  await ref.set({ tierPlans: { [k]: entry } }, { merge: true })
   return planId
 }
 
-/** Plan for a "first period only" coupon: intro price for one cycle,
- *  then `recurring` forever. Keyed in the catalog by BOTH prices so an
- *  intro plan never collides with a plain plan at the same recurring
- *  price. */
-async function ensureIntroPlan(
+/** Plan that charges `amount` every cycle. */
+function ensurePlanForAmount(
+  tier: TierS,
+  interval: 'monthly' | 'yearly',
+  amount: number,
+  currency: string,
+): Promise<string> {
+  return ensureTierPlan({ tier, interval, amount, currency })
+}
+
+/** Plan for a "first period only" price: intro price for one cycle, then
+ *  `recurring` forever. Keyed by BOTH prices so an intro plan never collides
+ *  with a plain plan at the same recurring price. */
+function ensureIntroPlan(
+  tier: TierS,
   interval: 'monthly' | 'yearly',
   introAmount: number,
   recurringAmount: number,
   currency: string,
 ): Promise<string> {
-  const db = getDb()
-  const ref = db.collection('appConfig').doc('pricing')
-  const snap = await ref.get()
-  const existing = snap.exists
-    ? (snap.data() as unknown as Record<string, unknown>)
-    : {}
-  const catalog =
-    ((existing.paypalPlansCatalog as Record<string, CatalogEntry> | undefined) ?? {})
-  const k = `${interval}:${recurringAmount.toFixed(2)}:intro${introAmount.toFixed(2)}:${currency}`
-  const hit = catalog[k]
-  if (hit) {
-    try {
-      await activatePaypalPlan(hit.planId)
-      return hit.planId
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      const stale = msg.includes('404') || msg.includes('RESOURCE_NOT_FOUND')
-      if (!stale) throw err
-      delete catalog[k]
-    }
-  }
-  const productId = await getOrCreateProduct()
-  const planId = await createPaypalPlan({
-    productId,
-    label: `קופון היכרות · ${interval === 'monthly' ? 'חודשי' : 'שנתי'} ${introAmount}→${recurringAmount}`,
-    amount: recurringAmount,
-    introAmount,
-    currency,
-    interval,
-  })
-  catalog[k] = { planId, amount: recurringAmount, interval, currency }
-  await ref.set({ paypalPlansCatalog: catalog }, { merge: true })
-  return planId
+  return ensureTierPlan({ tier, interval, amount: recurringAmount, introAmount, currency })
 }
 
 /** Public: validate a code + preview the price. Never reveals WHY an
@@ -3633,19 +3679,19 @@ async function handleCreateSubscription(
       const diff = Math.round((tierEffective - oldEffective) * 100) / 100
       if (diff > 0) {
         // First charge = the full difference; then the new tier's full price.
-        planId = await ensureIntroPlan(plan, diff, tierEffective, currency)
+        planId = await ensureIntroPlan(tier, plan, diff, tierEffective, currency)
         lockedPrice = diff
       } else {
         // New tier isn't actually more expensive (unusual sale config) — never
         // hand out a higher tier for free; charge its full price outright.
         lockedPrice = tierEffective
-        planId = await ensurePlanForAmount(plan, tierEffective, currency)
+        planId = await ensurePlanForAmount(tier, plan, tierEffective, currency)
       }
     } else {
       // Charge the effective (sale-aware) price; coupon math still discounts
       // off the regular list price (regularBase).
       lockedPrice = tierEffective
-      planId = await ensurePlanForAmount(plan, tierEffective, currency)
+      planId = await ensurePlanForAmount(tier, plan, tierEffective, currency)
     }
   }
   if (!planId) {
@@ -3671,7 +3717,7 @@ async function handleCreateSubscription(
       const effective = lockedPrice
       const introPrice = couponPriceFrom(effective, r.pct)
       if (introPrice < effective) {
-        planId = await ensureIntroPlan(plan, introPrice, effective, currency)
+        planId = await ensureIntroPlan(tier, plan, introPrice, effective, currency)
         lockedPrice = introPrice // first charge; recurring stays `effective`
         couponApplied = { code: r.code, pct: r.pct }
       }
@@ -3681,7 +3727,7 @@ async function handleCreateSubscription(
       const couponPrice = couponPriceFrom(regularBase, r.pct)
       if (couponPrice < lockedPrice) {
         lockedPrice = couponPrice
-        planId = await ensurePlanForAmount(plan, couponPrice, currency)
+        planId = await ensurePlanForAmount(tier, plan, couponPrice, currency)
         couponApplied = { code: r.code, pct: r.pct }
       }
       // else: the active sale is already cheaper — proceed without the
@@ -3700,7 +3746,7 @@ async function handleCreateSubscription(
     // the first lower charge lands exactly at renewal.
     ...(scheduledStartAt ? { start_time: scheduledStartAt } : {}),
     application_context: {
-      brand_name: 'ניהול הורדות פלוס',
+      brand_name: PAYPAL_BRAND,
       locale: 'he-IL',
       shipping_preference: 'NO_SHIPPING',
       user_action: 'SUBSCRIBE_NOW',
@@ -3715,8 +3761,8 @@ async function handleCreateSubscription(
         payer_selected: 'PAYPAL',
         payee_preferred: 'IMMEDIATE_PAYMENT_REQUIRED',
       },
-      return_url: `${WEBSITE_BASE}/buy?subscribed=1`,
-      cancel_url: `${WEBSITE_BASE}/buy?cancelled=1`,
+      return_url: `${buyerOrigin(req)}/buy?subscribed=1`,
+      cancel_url: `${buyerOrigin(req)}/buy?cancelled=1`,
     },
   })
   const approval = subscription.links.find((l) => l.rel === 'approve')
