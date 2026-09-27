@@ -134,7 +134,7 @@ export default function SyncTelemetryPanel({
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `dmplus-sync-telemetry-${new Date().toISOString().slice(0, 10)}.zip`
+      a.download = `frameline-sync-telemetry-${new Date().toISOString().slice(0, 10)}.zip`
       document.body.appendChild(a)
       a.click()
       a.remove()

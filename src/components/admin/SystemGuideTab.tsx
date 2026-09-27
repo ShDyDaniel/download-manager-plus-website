@@ -399,7 +399,7 @@ function RemoteCheckCard({ onAuthExpired }: { onAuthExpired?: () => void }) {
       .slice(0, 8)
     const a = document.createElement('a')
     a.href = URL.createObjectURL(buildZip(entries))
-    a.download = `dmplus-syscheck-${idRaw || 'report'}.zip`
+    a.download = `frameline-syscheck-${idRaw || 'report'}.zip`
     a.click()
     URL.revokeObjectURL(a.href)
   }

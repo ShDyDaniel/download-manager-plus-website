@@ -802,7 +802,7 @@ export default function AdminSupportSessionPage() {
     })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(buildZip(entries))
-    a.download = `dmplus-support-${cleanCode}.zip`
+    a.download = `frameline-support-${cleanCode}.zip`
     a.click()
     URL.revokeObjectURL(a.href)
   }
