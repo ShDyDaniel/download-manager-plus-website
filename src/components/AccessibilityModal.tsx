@@ -214,11 +214,11 @@ function AccessibilityStatementBody() {
         <Section title="פנייה בנושא נגישות">
           נתקלתם בבעיית נגישות, או שיש לכם הצעה לשיפור? נשמח לקבל פנייה בכתובת{' '}
           <a
-            href="mailto:help.dm.plus@gmail.com"
+            href="mailto:help.frameline@gmail.com"
             className="text-primary hover:underline"
             dir="ltr"
           >
-            help.dm.plus@gmail.com
+            help.frameline@gmail.com
           </a>{' '}
           ונטפל בה בהקדם.
         </Section>

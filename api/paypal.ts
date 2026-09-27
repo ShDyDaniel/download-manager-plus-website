@@ -8574,7 +8574,7 @@ async function handleGetTerms(_req: VercelRequest, res: VercelResponse) {
             title: 'תנאי השימוש טרם פורסמו',
             paragraphs: [
               'תנאי השימוש המלאים זמינים בתוכנת פריימליין לאחר התקנה.',
-              'בכל שאלה אפשר לפנות אלינו במייל: help.dm.plus@gmail.com',
+              'בכל שאלה אפשר לפנות אלינו במייל: help.frameline@gmail.com',
             ],
           },
         ],
@@ -8624,7 +8624,7 @@ async function handleGetPrivacy(_req: VercelRequest, res: VercelResponse) {
             title: 'מדיניות הפרטיות טרם פורסמה',
             paragraphs: [
               'מדיניות הפרטיות המלאה זמינה בתוכנת פריימליין לאחר התקנה.',
-              'בכל שאלה אפשר לפנות אלינו במייל: help.dm.plus@gmail.com',
+              'בכל שאלה אפשר לפנות אלינו במייל: help.frameline@gmail.com',
             ],
           },
         ],

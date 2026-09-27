@@ -89,7 +89,7 @@ const ACCESSIBILITY_DEFAULT: { lastUpdated: string; sections: Section[] } = {
     {
       title: 'פנייה בנושא נגישות',
       paragraphs: [
-        'נתקלתם בבעיית נגישות, או שיש לכם הצעה לשיפור? נשמח לקבל פנייה בכתובת help.dm.plus@gmail.com ונטפל בה בהקדם.',
+        'נתקלתם בבעיית נגישות, או שיש לכם הצעה לשיפור? נשמח לקבל פנייה בכתובת help.frameline@gmail.com ונטפל בה בהקדם.',
       ],
     },
   ],

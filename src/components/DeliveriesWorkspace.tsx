@@ -283,7 +283,7 @@ function DriveNoAccessPanel() {
         אפשר לפנות לתמיכה.
       </p>
       <a
-        href="mailto:help.dm.plus@gmail.com?subject=פתיחת%20טאב%20מסירה%20ללקוח"
+        href="mailto:help.frameline@gmail.com?subject=פתיחת%20טאב%20מסירה%20ללקוח"
         className="mt-6 inline-flex items-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover"
       >
         <Mail className="h-4 w-4" />
