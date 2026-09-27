@@ -120,8 +120,8 @@ export function Hero() {
           </motion.div>
 
           {/* Display headline — Rubik, massive. Brand-led: the
-              product NAME is the headline (with "פלוס" carrying
-              the copper accent because that's the differentiator).
+              product NAME is the headline, with "ליין" (the line —
+              the path a project travels) carrying the copper accent.
               clamp() keeps it readable from 375px to 2560px
               without breakpoint babysitting; line-height tight
               (1.0) — at this size the standard 1.5 reads as airy
@@ -134,21 +134,15 @@ export function Hero() {
             style={{
               // Clamp evolved through several rounds of mobile
               // feedback. Final: 48 → 64. At 48px on a 375px
-              // viewport the headline wraps to two lines, which
-              // turns out to LOOK BETTER on mobile than a tightly-
-              // packed single line — "ניהול הורדות" / "פלוס"
-              // reads like an editorial display headline rather
-              // than a cramped product wordmark. Single-line is
-              // restored at md:+ via the [white-space:nowrap]
-              // utility class (desktop has the horizontal room to
-              // keep all 17 chars on one line).
+              // viewport the old three-word name wrapped to two
+              // lines; the one-word name fits on one. The
+              // [white-space:nowrap] at md:+ stays harmless.
               fontSize: 'clamp(48px, 11.5vw, 64px)',
               lineHeight: 1.05,
               letterSpacing: '-0.025em',
             }}
           >
-            ניהול הורדות{' '}
-            <span className="accent-word">פלוס</span>
+            פריימ<span className="accent-word">ליין</span>
           </motion.h1>
 
           {/* Secondary headline — the value-prop line that the

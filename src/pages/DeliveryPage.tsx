@@ -551,9 +551,9 @@ function BrandBar() {
           href={SITE_URL}
           className="flex items-baseline gap-1.5 text-lg font-bold tracking-tight"
         >
-          <span>ניהול</span>
-          <span>הורדות</span>
-          <span style={{ color: '#D4A574' }}>פלוס</span>
+          <span>
+            פריימ<span style={{ color: '#D4A574' }}>ליין</span>
+          </span>
         </a>
         <a
           href={SITE_URL}
