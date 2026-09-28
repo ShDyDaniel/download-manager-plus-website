@@ -75,7 +75,7 @@ function Dropdown({
   )
 }
 
-export function SiteHeader({ chrome }: { chrome: 'full' | 'min' }) {
+export function SiteHeader({ chrome, hideDownload = false }: { chrome: 'full' | 'min'; hideDownload?: boolean }) {
   const { requestDownload } = useDownload()
   const [scrolled, setScrolled] = useState(false)
   const [drawer, setDrawer] = useState(false)
@@ -145,10 +145,12 @@ export function SiteHeader({ chrome }: { chrome: 'full' | 'min' }) {
                     </Link>
                   ))}
                 </Dropdown>
-                <button type="button" className="btn btn-p btn-sm" onClick={() => requestDownload()}>
-                  <Download className="ic" aria-hidden />
-                  הורדה חינם
-                </button>
+                {!hideDownload && (
+                  <button type="button" className="btn btn-p btn-sm" onClick={() => requestDownload()}>
+                    <Download className="ic" aria-hidden />
+                    הורדה חינם
+                  </button>
+                )}
               </div>
               <button type="button" className="burger" aria-label="פתיחת התפריט" onClick={() => setDrawer(true)}>
                 <Menu className="ic" aria-hidden />
@@ -184,17 +186,19 @@ export function SiteHeader({ chrome }: { chrome: 'full' | 'min' }) {
                 {a.label}
               </Link>
             ))}
-            <button
-              type="button"
-              className="btn btn-p btn-block"
-              onClick={() => {
-                setDrawer(false)
-                requestDownload()
-              }}
-            >
-              <Download className="ic" aria-hidden />
-              הורדה חינם
-            </button>
+            {!hideDownload && (
+              <button
+                type="button"
+                className="btn btn-p btn-block"
+                onClick={() => {
+                  setDrawer(false)
+                  requestDownload()
+                }}
+              >
+                <Download className="ic" aria-hidden />
+                הורדה חינם
+              </button>
+            )}
           </nav>
         </div>
       )}

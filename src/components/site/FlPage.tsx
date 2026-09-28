@@ -17,12 +17,15 @@ export function FlPage({
   name,
   chrome = 'full',
   title,
+  hideDownload = false,
   children,
 }: {
   name: string
   chrome?: 'full' | 'min'
   /** Document title (without the site name). */
   title?: string
+  /** No "הורדה חינם" button in the header (the signed-in workspaces). */
+  hideDownload?: boolean
   children: React.ReactNode
 }) {
   const location = useLocation()
@@ -45,7 +48,7 @@ export function FlPage({
       <a className="skip" href="#main">
         דילוג לתוכן
       </a>
-      <SiteHeader chrome={chrome} />
+      <SiteHeader chrome={chrome} hideDownload={hideDownload} />
       <main id="main">
         <div className={`page pg-${name}`}>{children}</div>
       </main>

@@ -88,7 +88,7 @@ export function ProWorkspaceShell({
   useEffect(() => subscribeSession(() => setSession(getSession())), [])
 
   return (
-    <FlPage name="workspace" chrome="full" title={featureLabel}>
+    <FlPage name="workspace" chrome="full" title={featureLabel} hideDownload>
       {session ? (
         <>
           <ProGate session={session.claims} featureLabel={featureLabel}>

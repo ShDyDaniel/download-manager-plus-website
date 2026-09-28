@@ -260,7 +260,9 @@
    footer starts below it, instead of rising up into view */
 .fl:not(.fl-overlay){display:flex;flex-direction:column}
 .fl:not(.fl-overlay)>main{flex:1 0 auto}
-.fl[data-chrome=full]>main{min-height:calc(100dvh - 4.5rem)}
+/* …the footer's top edge shows near the bottom of the screen (10rem of it): not risen to
+   the middle, not hidden below the fold. 4.5rem = header; the clamp = the footer's margin. */
+.fl[data-chrome=full]>main{min-height:calc(100dvh - 4.5rem - 10rem - clamp(4rem,9vw,6.875rem))}
 html.a11y-stopmotion .fl .mrv .ink{stroke-dashoffset:0}
 html.a11y-stopmotion .fl .fls-pieces{opacity:0}
 html.a11y-contrast .fl{--tx:#fff;--tx2:#fbf7f1;--mu:#e2d8cb;--mu2:#cfc3b4;--ln:#8a7866;--ln2:#6e5f51;--cu:#ffcf99;--cta:#e0a06c;--card:#140f0c;--bg:#000;--bg2:#000}
