@@ -256,6 +256,11 @@
 /* page heroes paint their glow at z-index:-1; the root is the stacking context so that
    glow stays above the .fl background while in-page overlays can still cover the header */
 .fl{isolation:isolate}
+/* short pages (e.g. a workspace with one project): the page fills the screen and the
+   footer starts below it, instead of rising up into view */
+.fl:not(.fl-overlay){display:flex;flex-direction:column}
+.fl:not(.fl-overlay)>main{flex:1 0 auto}
+.fl[data-chrome=full]>main{min-height:calc(100dvh - 4.5rem)}
 html.a11y-stopmotion .fl .mrv .ink{stroke-dashoffset:0}
 html.a11y-stopmotion .fl .fls-pieces{opacity:0}
 html.a11y-contrast .fl{--tx:#fff;--tx2:#fbf7f1;--mu:#e2d8cb;--mu2:#cfc3b4;--ln:#8a7866;--ln2:#6e5f51;--cu:#ffcf99;--cta:#e0a06c;--card:#140f0c;--bg:#000;--bg2:#000}
