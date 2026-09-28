@@ -33,22 +33,24 @@
       property="og:description"
       content='תוכנה בעברית לעורכי וידאו ויוצרי תוכן: כתוביות ותמלול בעברית שרצים על המחשב ונכנסים ישר לדה וינצ׳י ולפרמייר, הצעות מחיר עם מחירון שוק, סבבי תיקונים ומסירה ללקוח, וסידור הקבצים לפי פרויקטים. Mac עם שבב Apple ו-Windows.'
     />
-    <meta property="og:image" content="https://www.framelineapp.com/icon.png?v=3" />
-    <meta property="og:image:width" content="384" />
-    <meta property="og:image:height" content="384" />
+    <!-- Under 300px on purpose: WhatsApp draws a 300px+ og:image as a big
+         banner above the message, and a smaller one as the thumbnail beside
+         the text. Full-bleed square (no transparent corners). -->
+    <meta property="og:image" content="https://www.framelineapp.com/og-image.png?v=1" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="256" />
+    <meta property="og:image:height" content="256" />
     <meta property="og:image:alt" content="פריימליין" />
     <meta property="og:type" content="website" />
-    <!-- twitter:card = "summary" forces a small square thumbnail next
-         to the text rather than a huge banner above it. WhatsApp/
-         Telegram pick the same hint up and shrink the preview image
-         to a proper inline size. -->
+    <!-- twitter:card = "summary" asks X/Twitter for the small square
+         thumbnail. WhatsApp ignores it and goes by the image size (above). -->
     <meta name="twitter:card" content="summary" />
     <meta name="twitter:title" content="פריימליין" />
     <meta
       name="twitter:description"
       content='תוכנה בעברית לעורכי וידאו ויוצרי תוכן: כתוביות ותמלול בעברית שרצים על המחשב ונכנסים ישר לדה וינצ׳י ולפרמייר, הצעות מחיר עם מחירון שוק, סבבי תיקונים ומסירה ללקוח, וסידור הקבצים לפי פרויקטים. Mac עם שבב Apple ו-Windows.'
     />
-    <meta name="twitter:image" content="https://www.framelineapp.com/icon.png?v=3" />
+    <meta name="twitter:image" content="https://www.framelineapp.com/og-image.png?v=1" />
     <meta name="twitter:image:alt" content="פריימליין" />
 
     <!-- ── SEO: canonical, crawl directives, brand identity ──
