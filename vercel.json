@@ -21,6 +21,28 @@
       ],
       "destination": "https://www.framelineapp.com/:path",
       "permanent": true
+    },
+    {
+      "source": "/admin/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "www.framelineapp.com"
+        }
+      ],
+      "destination": "https://dmplus.net/admin/:path*",
+      "permanent": false
+    },
+    {
+      "source": "/admin/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "framelineapp.com"
+        }
+      ],
+      "destination": "https://dmplus.net/admin/:path*",
+      "permanent": false
     }
   ],
   "rewrites": [
