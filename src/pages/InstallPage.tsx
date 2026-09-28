@@ -1,8 +1,6 @@
 import {
   Check,
-  Download,
   Laptop,
-  Loader2,
   Lock,
   Monitor,
   Package,
@@ -15,7 +13,6 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { getSession } from '../lib/webSession'
 import { FlPage } from '../components/site/FlPage'
-import { Seg } from '../components/site/Seg'
 import { detectPlatform, isPhoneOrTablet } from '../lib/detectPlatform'
 import { useDownload } from '../components/site/DownloadGate'
 import '../styles/pages/install.css'
@@ -65,11 +62,6 @@ function fileNameOf(url: string): string {
   }
 }
 
-/** Version from GitHub's /releases/download/<version>/ path. */
-function versionOf(url: string): string {
-  const m = /\/releases\/download\/v?([^/]+)\//.exec(url)
-  return m ? decodeURIComponent(m[1]) : ''
-}
 
 
 export default function InstallPage() {
@@ -96,9 +88,8 @@ export default function InstallPage() {
     state?.platform === 'mac' || state?.platform === 'win'
       ? state.platform
       : detectPlatform() ?? 'win'
-  // The Mac / Windows switch. Until the visitor uses it, follow `detected`.
-  const [chosen, setChosen] = useState<Platform | null>(null)
-  const platform = chosen ?? detected
+  // No manual Mac / Windows switch: the detected platform is the one served.
+  const platform = detected
   const platformRef = useRef(platform)
   platformRef.current = platform
 
@@ -197,8 +188,6 @@ export default function InstallPage() {
   const mac = platform === 'mac'
   const url = urlFor(release, platform)
   const fileName = url ? fileNameOf(url) : ''
-  const version = release ? release.version || versionOf(url) : ''
-  const isAuto = !chosen || chosen === detected
   // The installed app is called Frameline only from the renamed builds on.
   const framelineBuild = /^frameline/i.test(fileName)
 
@@ -206,72 +195,36 @@ export default function InstallPage() {
     <FlPage name="install" chrome="min" title="התקנת התוכנה">
       <div className="in-wrap">
         <div className="in-state">
-          <div className="card in-card">
+          {/* One compact intro row, then the setup steps side by side, so the
+              whole page fits on a laptop screen without scrolling. */}
+          <div className="card in-card in-top">
             <div className="in-mark">
-              <img src={MARK} alt="" width={68} height={68} />
+              <img src={MARK} alt="" width={56} height={56} />
               <span className="in-badge ok">
                 <Check className="ic" aria-hidden />
               </span>
             </div>
-            {isAuto && (
+            <div className="in-intro">
               <span className="chip ok in-started" role="status">
                 <Check className="ic" aria-hidden />
                 ההורדה מתחילה אוטומטית
               </span>
-            )}
-            <h1 className="in-h">
-              {mac ? 'התקנת התוכנה בפעם הראשונה ב-Mac' : 'התקנת התוכנה בפעם הראשונה ב-Windows'}
-            </h1>
-            <p className="in-lead">רק שלב קטן וחד-פעמי לפני שמתחילים.</p>
-
-            <div className="in-dl">
-              <div className="in-os">
-                <span>המחשב שלכם</span>
-                <Seg
-                  value={platform}
-                  onChange={(v) => setChosen(v)}
-                  label="המחשב שלכם"
-                  options={[
-                    { value: 'mac', label: 'Mac' },
-                    { value: 'win', label: 'Windows' },
-                  ]}
-                />
-              </div>
-              <div className="in-file">
-                <span className="in-fico">
-                  <Package className="ic" aria-hidden />
-                </span>
-                <div className="in-fname">
-                  <bdi>{fileName || (mac ? 'קובץ ההתקנה ל-Mac' : 'קובץ ההתקנה ל-Windows')}</bdi>
-                  <small>
-                    {version && (
-                      <>
-                        גרסה <bdi className="num">{version}</bdi> ·{' '}
-                      </>
-                    )}
-                    {mac ? (
-                      'Mac עם שבב M1 ומעלה'
-                    ) : (
-                      <>
-                        <bdi>Windows 10/11</bdi> · 64 ביט
-                      </>
-                    )}
-                  </small>
-                </div>
-                {url ? (
-                  <a className="btn btn-p in-dlbtn" href={url}>
-                    <Download className="ic" aria-hidden />
-                    {mac ? 'הורדה ל-Mac' : 'הורדה ל-Windows'}
-                  </a>
-                ) : (
-                  <span className="btn btn-p in-dlbtn in-wait" aria-disabled="true">
-                    <Loader2 className="ic in-spin" aria-hidden />
-                    {mac ? 'הורדה ל-Mac' : 'הורדה ל-Windows'}
-                  </span>
-                )}
-              </div>
+              <h1 className="in-h">
+                {mac ? 'התקנת התוכנה בפעם הראשונה ב-Mac' : 'התקנת התוכנה בפעם הראשונה ב-Windows'}
+              </h1>
+              <p className="in-lead">רק שלב קטן וחד-פעמי לפני שמתחילים.</p>
             </div>
-            {isAuto && <p className="in-fine">ההורדה לא התחילה? לחצו על הכפתור.</p>}
+            <p className="in-retry">
+              ההורדה לא התחילה?{' '}
+              {url ? (
+                <a className="link" href={url}>
+                  לחצו פה להורדה מחדש
+                </a>
+              ) : (
+                <span className="in-wait-link">לחצו פה להורדה מחדש</span>
+              )}
+              .
+            </p>
           </div>
 
           {mac ? <MacSetup fileName={fileName} /> : <WindowsSetup fileName={fileName} />}
