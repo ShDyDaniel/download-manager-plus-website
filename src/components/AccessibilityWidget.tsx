@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import {
   Accessibility,
   X,
@@ -8,6 +9,7 @@ import {
   Check,
 } from 'lucide-react'
 import { AccessibilityModal } from './AccessibilityModal'
+import '../styles/a11y-widget.css'
 
 /**
  * AccessibilityWidget — a self-hosted accessibility menu, as required
@@ -15,6 +17,12 @@ import { AccessibilityModal } from './AccessibilityModal'
  * opens a panel of adjustments that toggle `a11y-*` classes on
  * <html> (see index.css) + scale the root font size. Choices persist
  * in localStorage so they survive navigation + return visits.
+ *
+ * Look: the redesign's round copper button + panel (own `.fl` root, styles
+ * in src/styles/a11y-widget.css, so it looks the same on old-design pages
+ * too). The admin routes (/admin…) keep the original button and panel
+ * unchanged, including the statement link that opens AccessibilityModal;
+ * everywhere else that link goes to the /accessibility page.
  */
 
 const STORAGE_KEY = 'dmplus.a11y.v1'
@@ -79,6 +87,13 @@ function load(): A11yState {
 /** Event the app root listens to so it can drive framer-motion's
  *  MotionConfig — CSS alone can't stop JS-driven animations. */
 export const A11Y_MOTION_EVENT = 'dmplus-a11y-motion'
+
+/** Window event that opens the accessibility menu (e.g. the "פתיחת
+ *  התפריט" button on the /accessibility page). */
+export const A11Y_OPEN_EVENT = 'dmplus-a11y-open'
+export function openAccessibilityMenu(): void {
+  window.dispatchEvent(new Event(A11Y_OPEN_EVENT))
+}
 
 export function readStopMotion(): boolean {
   try {
@@ -153,8 +168,118 @@ export function AccessibilityWidget() {
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
 
+  // Opened from elsewhere on the site (see openAccessibilityMenu).
+  useEffect(() => {
+    const onOpen = () => setOpen(true)
+    window.addEventListener(A11Y_OPEN_EVENT, onOpen)
+    return () => window.removeEventListener(A11Y_OPEN_EVENT, onOpen)
+  }, [])
+
   const anyActive =
     state.fontScale !== 1 || Object.values(state.toggles).some(Boolean)
+
+  // The admin panel keeps the original widget exactly as it was.
+  const { pathname } = useLocation()
+  if (!pathname.startsWith('/admin')) {
+    return (
+      <div className="fl fl-overlay a11yw">
+        {/* Floating trigger — bottom-LEFT on mobile (out of the way of the
+            right-aligned footer), bottom-right on desktop. */}
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-label="תפריט נגישות"
+          aria-expanded={open}
+          className={'fab a11y' + (anyActive ? ' on' : '')}
+        >
+          <Accessibility className="ic" strokeWidth={2} aria-hidden />
+          {anyActive && <span className="dot" />}
+        </button>
+
+        {open && (
+          <>
+            {/* Scrim */}
+            <div className="a11y-scrim" onClick={() => setOpen(false)} aria-hidden />
+            <div
+              ref={panelRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label="התאמות נגישות"
+              dir="rtl"
+              className="a11y-panel"
+            >
+              <div className="hd">
+                <span className="ttl">
+                  <Accessibility className="ic" aria-hidden />
+                  <b>התאמות נגישות</b>
+                </span>
+                <button
+                  type="button"
+                  className="x"
+                  onClick={() => setOpen(false)}
+                  aria-label="סגור"
+                >
+                  <X className="ic" aria-hidden />
+                </button>
+              </div>
+
+              {/* Font size */}
+              <div className="size">
+                <span>גודל טקסט</span>
+                <div className="ctl">
+                  <button
+                    type="button"
+                    onClick={() => setFont(state.fontScale - 0.1)}
+                    disabled={state.fontScale <= 1}
+                    aria-label="הקטנת טקסט"
+                  >
+                    <Minus className="ic" aria-hidden />
+                  </button>
+                  <bdi className="pct num">{Math.round(state.fontScale * 100)}%</bdi>
+                  <button
+                    type="button"
+                    onClick={() => setFont(state.fontScale + 0.1)}
+                    disabled={state.fontScale >= 1.6}
+                    aria-label="הגדלת טקסט"
+                  >
+                    <Plus className="ic" aria-hidden />
+                  </button>
+                </div>
+              </div>
+
+              {/* Toggles */}
+              <div className="tgs">
+                {TOGGLE_LABELS.map(({ key, label }) => {
+                  const on = state.toggles[key]
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      className="tg"
+                      onClick={() => toggle(key)}
+                      aria-pressed={on}
+                    >
+                      <span>{label}</span>
+                      <i aria-hidden>{on && <Check className="ic" strokeWidth={3} />}</i>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <button type="button" className="reset" onClick={reset}>
+                <RotateCcw className="ic" aria-hidden />
+                איפוס הכל
+              </button>
+
+              <Link className="link small stmt" to="/accessibility" onClick={() => setOpen(false)}>
+                הצהרת הנגישות שלנו
+              </Link>
+            </div>
+          </>
+        )}
+      </div>
+    )
+  }
 
   return (
     <>

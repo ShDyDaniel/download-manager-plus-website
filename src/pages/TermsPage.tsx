@@ -1,12 +1,19 @@
-import { FlPage } from '../components/site/FlPage'
+import '../styles/pages/terms.css'
+import { LegalDocPage } from '../components/LegalDocPage'
 
-// Placeholder while the page is being built.
+/** /terms — the live Terms of Use (edited in the admin panel). */
 export default function TermsPage() {
   return (
-    <FlPage name="terms" title="תנאי שימוש">
-      <div className="narrow phero">
-        <h1 className="display">תנאי שימוש</h1>
-      </div>
-    </FlPage>
+    <LegalDocPage
+      kind="terms"
+      pageTitle="תנאי שימוש"
+      heading="תנאי השימוש"
+      prefix="t"
+      emptyCopy="התנאים טרם פורסמו."
+      others={[
+        { to: '/privacy', label: 'מדיניות פרטיות' },
+        { to: '/accessibility', label: 'הצהרת נגישות' },
+      ]}
+    />
   )
 }

@@ -1,0 +1,41 @@
+/* Floating accessibility menu (src/components/AccessibilityWidget.tsx) in the
+ * redesign's look — from the prototype's a11y_widget() / A11Y_CSS
+ * (scratchpad/site/gen_site.py), rem units. It renders on EVERY page, old
+ * design included, so it carries its own `.fl` root (`.fl.fl-overlay.a11yw`)
+ * and every rule is scoped to it. Positions and z-order are the widget's
+ * original ones: bottom-left on phones, bottom-right from 768px, above the
+ * site's modals (z 200). */
+.fl.a11yw .fab.a11y{position:fixed;bottom:1rem;left:1rem;right:auto;z-index:300;width:3rem;height:3rem;padding:0;border-radius:50%;border:0.0625rem solid var(--cta);background:var(--cta);color:var(--bg);display:grid;place-items:center;cursor:pointer;box-shadow:0 0.625rem 1.875rem rgba(0,0,0,.45);transition:background .15s}
+.fl.a11yw .fab.a11y:hover{background:var(--cta2);border-color:var(--cta2)}
+.fl.a11yw .fab.a11y:focus-visible{outline:0.125rem solid var(--cu);outline-offset:0.1875rem;border-radius:50%}
+.fl.a11yw .fab.a11y .ic{width:1.375rem;height:1.375rem}
+.fl.a11yw .fab.a11y .dot{position:absolute;top:0.1875rem;right:0.1875rem;width:0.6875rem;height:0.6875rem;border-radius:50%;background:var(--ok);border:0.125rem solid var(--bg)}
+.fl.a11yw .a11y-scrim{position:fixed;inset:0;z-index:300;background:rgba(0,0,0,.35)}
+.fl.a11yw .a11y-panel{position:fixed;bottom:4.75rem;left:1rem;right:auto;z-index:300;width:min(92vw,21.25rem);max-height:80vh;overflow-y:auto;overscroll-behavior:contain;background:var(--card);border:0.0625rem solid var(--ln);border-radius:1.125rem;padding:0.875rem;box-shadow:0 1.875rem 5rem rgba(0,0,0,.6);display:grid;gap:0.625rem;text-align:start;font-size:0.9062rem;line-height:1.45;color:var(--tx)}
+.fl.a11yw .a11y-panel .hd{display:flex;justify-content:space-between;align-items:center}
+.fl.a11yw .a11y-panel .ttl{display:flex;align-items:center;gap:0.5rem;color:var(--cu)}
+.fl.a11yw .a11y-panel .ttl b{color:var(--tx);font-size:1rem;font-weight:700}
+.fl.a11yw .a11y-panel button{font:inherit;margin:0}
+.fl.a11yw .a11y-panel .x{width:2.125rem;height:2.125rem;padding:0;border:0;background:none;color:var(--mu);border-radius:0.5625rem;display:grid;place-items:center;cursor:pointer}
+.fl.a11yw .a11y-panel .x:hover{color:var(--tx);background:rgba(255,255,255,.04)}
+.fl.a11yw .a11y-panel .size{display:flex;justify-content:space-between;align-items:center;background:var(--bg);border:0.0625rem solid var(--ln2);border-radius:0.75rem;padding:0.5rem 0.625rem}
+.fl.a11yw .a11y-panel .ctl{display:flex;align-items:center;gap:0.375rem}
+.fl.a11yw .a11y-panel .ctl button{width:2.125rem;height:2.125rem;padding:0;border:0.0625rem solid var(--ln);background:var(--card);border-radius:0.5625rem;display:grid;place-items:center;cursor:pointer;color:var(--tx)}
+.fl.a11yw .a11y-panel .ctl button:hover:not([disabled]){border-color:var(--mu2)}
+.fl.a11yw .a11y-panel .ctl button[disabled]{opacity:.35;cursor:not-allowed}
+.fl.a11yw .a11y-panel .ctl .ic{width:1rem;height:1rem}
+.fl.a11yw .a11y-panel .pct{min-width:3rem;text-align:center;font-weight:600}
+.fl.a11yw .a11y-panel .tgs{display:grid;gap:0.375rem}
+.fl.a11yw .a11y-panel .tg{display:flex;justify-content:space-between;align-items:center;gap:0.75rem;width:100%;border:0.0625rem solid var(--ln2);background:var(--bg);border-radius:0.75rem;padding:0.6875rem 0.75rem;color:var(--tx2);cursor:pointer;text-align:start;transition:border-color .15s,color .15s}
+.fl.a11yw .a11y-panel .tg:hover{color:var(--tx)}
+.fl.a11yw .a11y-panel .tg i{flex:none;width:1.25rem;height:1.25rem;border-radius:0.375rem;border:0.0938rem solid var(--mu2);display:grid;place-items:center;font-style:normal}
+.fl.a11yw .a11y-panel .tg i .ic{width:0.8125rem;height:0.8125rem}
+.fl.a11yw .a11y-panel .tg[aria-pressed=true]{border-color:rgba(212,165,116,.5);color:var(--tx)}
+.fl.a11yw .a11y-panel .tg[aria-pressed=true] i{background:var(--cta);border-color:var(--cta);color:var(--bg)}
+.fl.a11yw .a11y-panel .reset{display:flex;align-items:center;justify-content:center;gap:0.5rem;border:0.0625rem solid var(--ln);background:none;border-radius:0.75rem;padding:0.625rem;cursor:pointer;color:var(--tx)}
+.fl.a11yw .a11y-panel .reset:hover{border-color:var(--mu2)}
+.fl.a11yw .a11y-panel .reset .ic{width:1rem;height:1rem}
+.fl.a11yw .a11y-panel .stmt{display:block;text-align:center;padding:0.125rem 0 0.25rem}
+@media (min-width:768px){.fl.a11yw .fab.a11y{left:auto;right:1rem}
+.fl.a11yw .a11y-panel{left:auto;right:1rem}
+}

@@ -49,7 +49,3 @@
 .fl .pg-contact .ct-code .txt small{display:none}
 @media (max-width:900px){.fl .pg-contact .ct-grid{grid-template-columns:1fr;max-width:42.5rem}
 }
-.fl .pg-contact .proto{display:grid;gap:0.5rem;justify-items:center;margin:1rem auto 0;padding:0.5rem 0.75rem;border:0.0625rem dashed #4a3c30;border-radius:0.875rem;background:rgba(0,0,0,.2);color:var(--mu);font-size:0.7812rem;text-align:center;width:max-content;max-width:100%}
-.fl .pg-contact .proto .seg{display:flex;flex-wrap:wrap;justify-content:center;gap:0.25rem;border:0;background:none;padding:0}
-.fl .pg-contact .proto .seg button{border:0.0625rem solid var(--ln);border-radius:62.4375rem;padding:0.25rem 0.6875rem;font-size:0.75rem}
-.fl .pg-contact .proto .seg button.on{background:#3a2d22;border-color:var(--cu);color:var(--tx);font-weight:500}

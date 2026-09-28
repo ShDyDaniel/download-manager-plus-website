@@ -3,12 +3,18 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   AlertCircle,
-  CheckCircle2,
+  AlertTriangle,
+  Check,
   Eye,
   EyeOff,
+  KeyRound,
   Loader2,
   Lock,
+  RefreshCw,
+  Unlink,
 } from 'lucide-react'
+import { FlPage } from '../components/site/FlPage'
+import '../styles/pages/auth-action.css'
 
 /**
  * Custom action handler — replaces Firebase Auth's default
@@ -43,6 +49,15 @@ import {
  *     currently shown as "unsupported" so we fail loud rather than
  *     drop the user into a broken flow)
  */
+const MARK = '/logo-mark.svg?v=1'
+const HELP = 'help.frameline@gmail.com'
+
+/** What went wrong with the link, and how the card should look:
+ *   expired — expired / used code: "no longer valid" + ask for a new link
+ *   link    — missing details, disabled / unknown account
+ *   error   — network, rate limit, anything unknown: offer a retry */
+type LinkProblem = { kind: 'expired' | 'link' | 'error'; msg: string }
+
 export function AuthActionPage() {
   const [params] = useSearchParams()
   const mode = params.get('mode')
@@ -50,30 +65,29 @@ export function AuthActionPage() {
   const apiKey = params.get('apiKey')
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.35 }}
-      className="min-h-screen px-6 py-12 md:py-20"
-    >
-      <div className="mx-auto max-w-md">
-        {/* Brand chip — keeps the page from feeling orphaned from
-            the rest of the site even though there's no Hero here. */}
-        <div className="mb-8 text-center">
-          <img
-            src="/icon-small.png?v=3"
-            alt="פריימליין"
-            className="mx-auto h-16 w-16 rounded-2xl shadow-2xl"
-          />
-        </div>
-
+    <FlPage name="auth-action" chrome="min" title="איפוס סיסמה">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.35 }}
+        className="aa-wrap"
+      >
         {mode === 'resetPassword' ? (
           <ResetPasswordHandler oobCode={oobCode} apiKey={apiKey} />
         ) : (
           <UnsupportedMode mode={mode} />
         )}
-      </div>
-    </motion.div>
+      </motion.div>
+    </FlPage>
+  )
+}
+
+function Mark({ badge, cls = '' }: { badge: React.ReactNode; cls?: string }) {
+  return (
+    <div className="aa-mark">
+      <img src={MARK} alt="פריימליין" width={68} height={68} />
+      <span className={`aa-badge ${cls}`}>{badge}</span>
+    </div>
   )
 }
 
@@ -99,7 +113,7 @@ function ResetPasswordHandler({
 }) {
   const [email, setEmail] = useState<string | null>(null)
   const [verifying, setVerifying] = useState(true)
-  const [verifyError, setVerifyError] = useState<string | null>(null)
+  const [verifyError, setVerifyError] = useState<LinkProblem | null>(null)
 
   const [newPassword, setNewPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -112,9 +126,10 @@ function ResetPasswordHandler({
   // immediately instead of after typing a new password.
   useEffect(() => {
     if (!oobCode || !apiKey) {
-      setVerifyError(
-        'הקישור פגום או חסר פרטים. בקש איפוס סיסמה חדש מדף ההתחברות.',
-      )
+      setVerifyError({
+        kind: 'link',
+        msg: 'הקישור פגום או שחסרים בו פרטים. בקשו איפוס סיסמה חדש מדף ההתחברות.',
+      })
       setVerifying(false)
       return
     }
@@ -140,8 +155,7 @@ function ResetPasswordHandler({
         setEmail(json.email || null)
       } catch (err) {
         if (cancelled) return
-        const msg = err instanceof Error ? err.message : 'שגיאה לא ידועה'
-        setVerifyError(translateFirebaseError(msg))
+        setVerifyError(translateFirebaseError(err, 'verify'))
       } finally {
         if (!cancelled) setVerifying(false)
       }
@@ -158,7 +172,7 @@ function ResetPasswordHandler({
     // limit pre-flight so the user doesn't waste a round-trip and
     // then see a generic English error.
     if (newPassword.length < 6) {
-      setSubmitError('הסיסמה חייבת להיות לפחות 6 תווים')
+      setSubmitError('הסיסמה צריכה להכיל לפחות 6 תווים.')
       return
     }
     setSubmitting(true)
@@ -178,8 +192,7 @@ function ResetPasswordHandler({
       }
       setSuccess(true)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'שגיאה לא ידועה'
-      setSubmitError(translateFirebaseError(msg))
+      setSubmitError(translateFirebaseError(err, 'save').msg)
     } finally {
       setSubmitting(false)
     }
@@ -188,30 +201,54 @@ function ResetPasswordHandler({
   // ── Loading state — verifying the code on mount ──
   if (verifying) {
     return (
-      <div className="card-elevated flex flex-col items-center gap-3 rounded-2xl border-border p-6 py-12 text-center md:p-8">
-        <Loader2 className="h-5 w-5 animate-spin text-accent" />
-        <div className="text-sm text-fg-muted">בודק את הקישור…</div>
+      <div className="card aa-card" role="status" aria-live="polite">
+        <Mark cls="spin" badge={<Loader2 className="ic" aria-hidden />} />
+        <h1 className="aa-h">בודקים את הקישור…</h1>
+        <p className="aa-p">רגע אחד.</p>
       </div>
     )
   }
 
   // ── Invalid / expired code ──
   if (verifyError) {
-    return (
-      <div className="card-elevated rounded-2xl border-border p-6 md:p-8">
-        <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-destructive">
-          <AlertCircle className="h-4 w-4" />
-          הקישור לא תקין
+    if (verifyError.kind === 'error') {
+      return (
+        <div className="card aa-card">
+          <Mark cls="err" badge={<AlertTriangle className="ic" aria-hidden />} />
+          <h1 className="aa-h">משהו השתבש</h1>
+          <p className="aa-p" role="alert">
+            {verifyError.msg}
+          </p>
+          <div className="aa-btns">
+            {/* Same as refreshing the page: the link is checked again. */}
+            <button type="button" className="btn btn-p btn-block" onClick={() => window.location.reload()}>
+              <RefreshCw className="ic" aria-hidden />
+              ניסיון נוסף
+            </button>
+          </div>
+          <p className="aa-fine">
+            אם זה חוזר, כתבו לנו:{' '}
+            <a className="link" href={`mailto:${HELP}`}>
+              {HELP}
+            </a>
+          </p>
         </div>
-        <p className="mb-6 text-sm leading-relaxed text-fg-secondary">
-          {verifyError}
+      )
+    }
+    const expired = verifyError.kind === 'expired'
+    return (
+      <div className="card aa-card">
+        <Mark cls="err" badge={<Unlink className="ic" aria-hidden />} />
+        <h1 className="aa-h">{expired ? 'הקישור כבר לא בתוקף' : 'הקישור לא תקין'}</h1>
+        <p className="aa-p" role="alert">
+          {verifyError.msg}
         </p>
-        <Link
-          to="/account"
-          className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary-hover"
-        >
-          בקש קישור איפוס חדש
-        </Link>
+        {expired && <p className="aa-fine">כל קישור איפוס עובד פעם אחת, ובמשך שעה אחת.</p>}
+        <div className="aa-btns">
+          <Link className="btn btn-p btn-block" to="/account">
+            בקשת קישור איפוס חדש
+          </Link>
+        </div>
       </div>
     )
   }
@@ -219,99 +256,79 @@ function ResetPasswordHandler({
   // ── Success — password reset applied ──
   if (success) {
     return (
-      <div className="card-elevated rounded-2xl border-border p-6 md:p-8">
-        <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-success">
-          <CheckCircle2 className="h-4 w-4" />
-          הסיסמה עודכנה
-        </div>
-        <p className="mb-6 text-sm leading-relaxed text-fg-secondary">
-          הסיסמה ל-{email ? <strong className="text-fg">{email}</strong> : 'חשבונך'} שונתה
-          בהצלחה. אפשר עכשיו להתחבר עם הסיסמה החדשה.
+      <div className="card aa-card">
+        <Mark cls="ok" badge={<Check className="ic" aria-hidden />} />
+        <h1 className="aa-h">הסיסמה עודכנה</h1>
+        <p className="aa-p">
+          {email ? (
+            <>
+              הסיסמה של <bdi className="aa-mail">{email}</bdi> שונתה. אפשר להתחבר עכשיו עם הסיסמה החדשה.
+            </>
+          ) : (
+            'הסיסמה שונתה. אפשר להתחבר עכשיו עם הסיסמה החדשה.'
+          )}
         </p>
-        <Link
-          to="/account"
-          className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary-hover"
-        >
-          התחבר לחשבון שלי
-        </Link>
+        <div className="aa-btns">
+          <Link className="btn btn-p btn-block" to="/account">
+            התחברות לחשבון שלי
+          </Link>
+        </div>
       </div>
     )
   }
 
   // ── Main form — pick a new password ──
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="card-elevated space-y-4 rounded-2xl border-border p-6 md:p-8"
-    >
-      <div className="flex items-center gap-2 text-sm font-semibold text-fg">
-        <Lock className="h-4 w-4 text-accent" />
-        בחירת סיסמה חדשה
-      </div>
+    <div className="card aa-card">
+      <Mark badge={<KeyRound className="ic" aria-hidden />} />
+      <h1 className="aa-h">בחירת סיסמה חדשה</h1>
       {email && (
-        <p className="text-xs leading-relaxed text-fg-muted">
-          איפוס סיסמה עבור{' '}
-          <strong className="text-fg-secondary">{email}</strong>
+        <p className="aa-p">
+          איפוס סיסמה עבור <bdi className="aa-mail">{email}</bdi>
         </p>
       )}
-      <label className="block">
-        <span className="mb-1 block text-[11px] text-fg-muted">
-          סיסמה חדשה
-        </span>
-        <div className="relative">
-          <input
-            type={showPassword ? 'text' : 'password'}
-            required
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            autoComplete="new-password"
-            disabled={submitting}
-            // No explicit dir — passwords are LTR by content but
-            // we let it inherit dir="rtl" so the placeholder /
-            // typed dots anchor on the right edge to match the
-            // surrounding Hebrew label, same pattern as the
-            // /account login form.
-            className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 pe-12 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
-          />
-          <button
-            type="button"
-            onClick={() => setShowPassword((v) => !v)}
-            tabIndex={-1}
-            aria-label={showPassword ? 'הסתר סיסמה' : 'הצג סיסמה'}
-            className="absolute inset-y-0 end-3 flex items-center text-fg-muted transition-colors hover:text-fg"
-          >
-            {showPassword ? (
-              <EyeOff className="h-4 w-4" />
-            ) : (
-              <Eye className="h-4 w-4" />
-            )}
-          </button>
+      <form className="form aa-form" onSubmit={handleSubmit} noValidate>
+        <div className="field">
+          <label htmlFor="aa-pw">סיסמה חדשה</label>
+          <div className="aa-pw">
+            <input
+              className={`input${submitError ? ' bad' : ''}`}
+              id="aa-pw"
+              type={showPassword ? 'text' : 'password'}
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              autoComplete="new-password"
+              disabled={submitting}
+              aria-invalid={!!submitError || undefined}
+              aria-describedby={submitError ? 'aa-pw-e' : 'aa-pw-h'}
+            />
+            <button
+              type="button"
+              className="aa-eye"
+              onClick={() => setShowPassword((v) => !v)}
+              tabIndex={-1}
+              aria-label={showPassword ? 'הסתרת הסיסמה' : 'הצגת הסיסמה'}
+            >
+              {showPassword ? <EyeOff className="ic" aria-hidden /> : <Eye className="ic" aria-hidden />}
+            </button>
+          </div>
+          {submitError ? (
+            <span className="err-msg" id="aa-pw-e" role="alert">
+              {submitError}
+            </span>
+          ) : (
+            <span className="hint" id="aa-pw-h">
+              לפחות 6 תווים.
+            </span>
+          )}
         </div>
-        <span className="mt-1 block text-[10px] text-fg-muted">
-          לפחות 6 תווים.
-        </span>
-      </label>
-      {submitError && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          {submitError}
-        </div>
-      )}
-      <button
-        type="submit"
-        disabled={submitting}
-        className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {submitting ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : (
-          <Lock className="h-4 w-4" />
-        )}
-        שמירת הסיסמה החדשה
-      </button>
-      <p className="pt-2 text-center text-[11px] text-fg-muted">
-        אחרי השמירה תוכל לחזור לדף ההתחברות ולהיכנס עם הסיסמה החדשה.
-      </p>
-    </form>
+        <button type="submit" className="btn btn-p btn-block aa-go" disabled={submitting}>
+          {submitting ? <Loader2 className="ic aa-spin" aria-hidden /> : <Lock className="ic" aria-hidden />}
+          שמירת הסיסמה החדשה
+        </button>
+      </form>
+      <p className="aa-fine">אחרי השמירה תוכלו להתחבר עם הסיסמה החדשה.</p>
+    </div>
   )
 }
 
@@ -324,51 +341,68 @@ function ResetPasswordHandler({
  * ───────────────────────────────────────────────────────────── */
 function UnsupportedMode({ mode }: { mode: string | null }) {
   return (
-    <div className="card-elevated rounded-2xl border-border p-6 md:p-8">
-      <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-destructive">
-        <AlertCircle className="h-4 w-4" />
-        פעולה לא נתמכת
-      </div>
-      <p className="mb-6 text-sm leading-relaxed text-fg-secondary">
-        הקישור הזה ביקש פעולה שעדיין לא נתמכת באתר
-        {mode ? ` (${mode})` : ''}. אם הגעת לכאן ממייל איפוס סיסמה, בקש
-        קישור חדש מדף ההתחברות.
+    // The raw mode name (e.g. verifyEmail) stays out of the Hebrew text;
+    // it's kept on the card for support.
+    <div className="card aa-card" data-mode={mode ?? undefined}>
+      <Mark cls="err" badge={<AlertCircle className="ic" aria-hidden />} />
+      <h1 className="aa-h">פעולה לא נתמכת</h1>
+      <p className="aa-p">
+        הקישור הזה ביקש פעולה שהאתר עוד לא תומך בה. אם הגעתם ממייל של איפוס סיסמה, בקשו קישור חדש מדף
+        ההתחברות.
       </p>
-      <Link
-        to="/account"
-        className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary-hover"
-      >
-        חזרה לדף החשבון
-      </Link>
+      <div className="aa-btns">
+        <Link className="btn btn-s btn-block" to="/account">
+          חזרה לדף החשבון
+        </Link>
+      </div>
     </div>
   )
 }
 
 /**
  * Firebase Identity Toolkit returns errors as English constants
- * like `EXPIRED_OOB_CODE`. Translate the ones we expect to surface
- * to the user; fall through to the raw message for anything else
- * (better than a generic "something went wrong" that hides the
- * actual cause from forensics).
+ * like `EXPIRED_OOB_CODE`. Every one of them is shown in Hebrew: the
+ * ones we expect get their own sentence, and anything else (an
+ * unmapped code, "Failed to fetch") gets a general message that says
+ * what to do — raw English never reaches the visitor.
  */
-function translateFirebaseError(msg: string): string {
-  const upper = msg.toUpperCase()
+function translateFirebaseError(err: unknown, step: 'verify' | 'save'): LinkProblem {
+  // fetch() itself failed → no connection.
+  if (err instanceof TypeError) {
+    return {
+      kind: 'error',
+      msg:
+        step === 'verify'
+          ? 'לא הצלחנו לבדוק את הקישור. בדקו את החיבור לאינטרנט ונסו שוב.'
+          : 'לא הצלחנו לשמור את הסיסמה. בדקו את החיבור לאינטרנט ונסו שוב.',
+    }
+  }
+  const upper = (err instanceof Error ? err.message : '').toUpperCase()
   if (upper.includes('EXPIRED_OOB_CODE')) {
-    return 'הקישור פג תוקף. בקש איפוס סיסמה חדש.'
+    return { kind: 'expired', msg: 'הקישור פג תוקף. בקשו איפוס סיסמה חדש.' }
   }
   if (upper.includes('INVALID_OOB_CODE')) {
-    return 'הקישור לא תקין או כבר נוצל. בקש איפוס חדש.'
+    return { kind: 'expired', msg: 'הקישור לא תקין או שכבר השתמשו בו. בקשו איפוס חדש.' }
   }
   if (upper.includes('USER_DISABLED')) {
-    return 'החשבון מושבת. פנה לתמיכה.'
+    return { kind: 'link', msg: `החשבון מושבת. כתבו לנו: ${HELP}` }
   }
   if (upper.includes('USER_NOT_FOUND')) {
-    return 'החשבון לא נמצא. בקש איפוס חדש מדף ההתחברות.'
+    return { kind: 'link', msg: 'החשבון לא נמצא. בקשו איפוס חדש מדף ההתחברות.' }
   }
   if (upper.includes('WEAK_PASSWORD')) {
-    return 'הסיסמה חלשה מדי. בחר סיסמה ארוכה יותר.'
+    return { kind: 'error', msg: 'הסיסמה חלשה מדי. בחרו סיסמה ארוכה יותר.' }
   }
-  return msg
+  if (upper.includes('TOO_MANY_ATTEMPTS')) {
+    return { kind: 'error', msg: 'יותר מדי ניסיונות. נסו שוב בעוד כמה דקות.' }
+  }
+  return {
+    kind: 'error',
+    msg:
+      step === 'verify'
+        ? 'לא הצלחנו לבדוק את הקישור. נסו שוב בעוד רגע.'
+        : 'לא הצלחנו לשמור את הסיסמה. נסו שוב.',
+  }
 }
 
 export default AuthActionPage

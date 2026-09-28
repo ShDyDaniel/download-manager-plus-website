@@ -248,9 +248,14 @@
 .fl [data-fade]{animation:segIn .24s ease-out}
 .fl .site-h .dd .menu a,.fl .drawer a,.fl .site-f a,.fl .mainnav>a{text-decoration:none}
 .fl .brand{text-decoration:none}
+.fl .drawer .top .brand{display:flex;padding:0;font-size:1.1875rem}
+.fl .drawer .top .brand:hover{background:none;color:var(--tx)}
 .fl .pg-home .cell>.sketch{display:contents}
 /* dialogs rendered outside a page (portals) carry their own .fl root */
 .fl.fl-overlay{min-height:0;background:transparent}
+/* page heroes paint their glow at z-index:-1; the root is the stacking context so that
+   glow stays above the .fl background while in-page overlays can still cover the header */
+.fl{isolation:isolate}
 html.a11y-stopmotion .fl .mrv .ink{stroke-dashoffset:0}
 html.a11y-stopmotion .fl .fls-pieces{opacity:0}
 html.a11y-contrast .fl{--tx:#fff;--tx2:#fbf7f1;--mu:#e2d8cb;--mu2:#cfc3b4;--ln:#8a7866;--ln2:#6e5f51;--cu:#ffcf99;--cta:#e0a06c;--card:#140f0c;--bg:#000;--bg2:#000}

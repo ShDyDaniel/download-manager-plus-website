@@ -1,12 +1,19 @@
-import { FlPage } from '../components/site/FlPage'
+import '../styles/pages/privacy.css'
+import { LegalDocPage } from '../components/LegalDocPage'
 
-// Placeholder while the page is being built.
+/** /privacy — the live Privacy Policy (edited in the admin panel). */
 export default function PrivacyPage() {
   return (
-    <FlPage name="privacy" title="מדיניות פרטיות">
-      <div className="narrow phero">
-        <h1 className="display">מדיניות פרטיות</h1>
-      </div>
-    </FlPage>
+    <LegalDocPage
+      kind="privacy"
+      pageTitle="מדיניות פרטיות"
+      heading="מדיניות פרטיות"
+      prefix="pr"
+      emptyCopy="המדיניות טרם פורסמה."
+      others={[
+        { to: '/terms', label: 'תנאי שימוש' },
+        { to: '/accessibility', label: 'הצהרת נגישות' },
+      ]}
+    />
   )
 }

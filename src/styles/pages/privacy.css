@@ -1,30 +1,4 @@
-/* generated from the prototype (scratchpad/site/pages/privacy.css) by port/build_css.py */
-.fl .pg-privacy .dhead{padding-bottom:clamp(1.5rem,3vw,2.25rem)}
-.fl .pg-privacy .dhead .display{font-size:clamp(2.125rem,4.4vw,3.25rem)}
-.fl .pg-privacy .dhead .meta{color:var(--mu);font-size:0.875rem;margin:0}
-.fl .pg-privacy .toc{padding:1rem 1.125rem 0.875rem}
-.fl .pg-privacy .toc h2{margin:0 0.25rem 0.625rem;font-size:0.8125rem;font-weight:600;color:var(--mu);letter-spacing:.04em}
-.fl .pg-privacy .toc ol{list-style:none;margin:0;padding:0;columns:2;column-gap:1.125rem}
-.fl .pg-privacy .toc li{break-inside:avoid}
-.fl .pg-privacy .toc a{display:flex;gap:0.5rem;align-items:baseline;padding:0.375rem 0.5rem;border-radius:0.5625rem;text-decoration:none;color:var(--tx2);font-size:0.9062rem;line-height:1.4}
-.fl .pg-privacy .toc a:hover{background:#2a211a;color:var(--tx)}
-.fl .pg-privacy .toc .n{flex:0 0 1.25rem;color:var(--cu);font-weight:600;font-size:0.8438rem}
-.fl .pg-privacy .doc{margin-top:0.5rem}
-.fl .pg-privacy .doc .sec-d+.sec-d{border-top:0.0625rem solid var(--ln2)}
-.fl .pg-privacy .doc h2{display:flex;gap:0.75rem;align-items:baseline;margin:0;padding:2.125rem 0 0.75rem;font-size:1.25rem;line-height:1.35;scroll-margin-top:5.25rem}
-.fl .pg-privacy .doc h2 .n{flex:none;min-width:1.625rem;height:1.625rem;padding:0 0.375rem;border-radius:0.5rem;background:rgba(184,121,79,.15);color:var(--cu);font-size:0.875rem;font-weight:700;display:inline-grid;place-items:center;transform:translateY(-0.125rem)}
-.fl .pg-privacy .doc .sec-d{padding-bottom:0.625rem}
-.fl .pg-privacy .doc b{color:var(--tx);font-weight:600}
-.fl .pg-privacy .doc ul{list-style:none;margin:0.125rem 0 1rem;padding:0;display:grid;gap:0.5625rem;max-width:68ch}
-.fl .pg-privacy .doc li{position:relative;padding-inline-start:1.25rem}
-.fl .pg-privacy .doc li::before{content:"";position:absolute;inset-inline-start:0.1875rem;top:.78em;width:0.375rem;height:0.375rem;border-radius:50%;background:var(--cu)}
-.fl .pg-privacy .doc .link{font-weight:500}
-.fl .pg-privacy .dfoot{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:0.875rem;margin-top:2.25rem;padding-top:1.375rem;border-top:0.0625rem solid var(--ln)}
-.fl .pg-privacy .dfoot .top{display:inline-flex;align-items:center;gap:0.375rem;font-size:0.9062rem}
-.fl .pg-privacy .dfoot .top .ic{width:1rem;height:1rem}
-@media (max-width:620px){.fl .pg-privacy .toc ol{columns:1}
-.fl .pg-privacy .toc a{padding:0.3125rem 0.375rem;font-size:0.875rem}
-.fl .pg-privacy .doc{font-size:0.9688rem}
-.fl .pg-privacy .doc h2{font-size:1.1562rem;padding-top:1.75rem}
-.fl .pg-privacy .dfoot{flex-direction:column;align-items:flex-start}
-}
+/* /privacy — the document layout (head, table of contents, sections, lists,
+ * footer) is shared with the other legal pages and the Terms / Privacy
+ * modals: see src/styles/legal-doc.css (.fl .ldoc). Page-only tweaks go
+ * here, scoped as .fl .pg-privacy. */

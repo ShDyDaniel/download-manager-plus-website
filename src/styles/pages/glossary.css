@@ -1,4 +1,6 @@
-/* generated from the prototype (scratchpad/site/pages/glossary.css) by port/build_css.py */
+/* /glossary — from the prototype (scratchpad/site/pages/glossary.css).
+   The prototype's <details> accordion is a button + state here (one list open at a time). */
+/* own stacking context, so the hero glow (.phero::before, z-index:-1) paints above the .fl background */
 .fl .pg-glossary .phero .display .chip{font-size:0.875rem;letter-spacing:0;vertical-align:middle;position:relative;top:-.35em;margin-inline-start:0.75rem;padding:0.1875rem 0.625rem}
 .fl .pg-glossary .fine{color:var(--mu);font-size:0.8125rem;margin-top:0.875rem}
 .fl .pg-glossary .sec-head .h2{margin-top:0.5rem}
@@ -40,7 +42,6 @@
 }
 .fl .pg-glossary .phero .pill{margin-bottom:0.875rem}
 .fl .pg-glossary .phero .eyebrow{display:block}
-.fl .pg-glossary .phero .states{margin-top:1.75rem}
 .fl .pg-glossary .packs{align-items:start}
 .fl .pg-glossary .pack{display:flex;flex-direction:column;gap:0.875rem}
 .fl .pg-glossary .ph{display:flex;align-items:flex-start;gap:0.75rem}
@@ -52,15 +53,13 @@
 .fl .pg-glossary .term{display:inline-flex;align-items:center;font-size:0.7812rem;color:var(--tx2);background:#2a211a;border:0.0625rem solid #3a2d22;border-radius:0.4375rem;padding:0.1875rem 0.5625rem;line-height:1.4}
 .fl .pg-glossary .prev{display:flex;flex-wrap:wrap;gap:0.375rem}
 .fl .pg-glossary .prev .more{font-size:0.7812rem;color:var(--mu);align-self:center;padding:0 0.25rem}
-.fl .pg-glossary .pack:has(details[open]) .prev{display:none}
-.fl .pg-glossary details summary{list-style:none;display:inline-flex;align-items:center;gap:0.375rem;cursor:pointer;color:var(--cu);font-weight:500;font-size:0.875rem;border-radius:0.375rem}
-.fl .pg-glossary details summary::-webkit-details-marker{display:none}
-.fl .pg-glossary details summary:hover{text-decoration:underline;text-underline-offset:0.25rem}
-.fl .pg-glossary details summary .ic{width:0.9375rem;height:0.9375rem;transition:transform .2s}
-.fl .pg-glossary details[open] summary .ic{transform:rotate(180deg)}
-.fl .pg-glossary details[open] .o,.fl .pg-glossary details:not([open]) .c{display:none}
+.fl .pg-glossary .tg{display:inline-flex;align-items:center;gap:0.375rem;cursor:pointer;color:var(--cu);font-weight:500;font-size:0.875rem;border-radius:0.375rem;background:none;border:0;padding:0}
+.fl .pg-glossary .tg:hover{text-decoration:underline;text-underline-offset:0.25rem}
+.fl .pg-glossary .tg .ic{width:0.9375rem;height:0.9375rem;transition:transform .2s}
+.fl .pg-glossary .pack.open .tg .ic{transform:rotate(180deg)}
 .fl .pg-glossary .all{list-style:none;margin:0.75rem 0 0;padding:0.75rem;display:flex;flex-wrap:wrap;gap:0.375rem;max-height:16rem;overflow-y:auto;background:var(--bg);border:0.0625rem solid var(--ln2);border-radius:0.75rem;scrollbar-width:thin;scrollbar-color:#4a3c30 transparent}
 .fl .pg-glossary .hint{margin:1.125rem 0 0}
+.fl .pg-glossary .hint .link{background:none;border:0;padding:0;cursor:pointer}
 .fl .pg-glossary .loading{display:grid;place-items:center;min-height:13.75rem}
 .fl .pg-glossary .spin{width:1.75rem;height:1.75rem;border-radius:50%;border:0.1875rem solid rgba(212,165,116,.2);border-top-color:#d4a574;animation:glSpin .8s linear infinite}
 @keyframes glSpin{to{transform:rotate(360deg)}}
@@ -100,6 +99,9 @@
 .fl .pg-glossary .ph .add{order:3;width:100%}
 .fl .pg-glossary .din .inp{font-size:0.7188rem}
 }
+/* Reduced motion / the site's "stop animations" setting: show the sketch's end state (pack added). */
 @media (prefers-reduced-motion:reduce){.fl .pg-glossary .ptag,.fl .pg-glossary .dok{animation:none;opacity:1;transform:none}
 .fl .pg-glossary .added{animation:none;max-height:none}
 }
+html.a11y-stopmotion .fl .pg-glossary .ptag,html.a11y-stopmotion .fl .pg-glossary .dok{animation:none;opacity:1;transform:none}
+html.a11y-stopmotion .fl .pg-glossary .added{animation:none;max-height:none}

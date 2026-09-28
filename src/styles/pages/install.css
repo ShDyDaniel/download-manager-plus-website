@@ -1,6 +1,6 @@
-/* generated from the prototype (scratchpad/site/pages/install.css) by port/build_css.py */
+/* generated from the prototype (scratchpad/site/pages/install.css) by port/build_css.py; state wrappers are .in-state */
 .fl .pg-install .in-wrap{max-width:45rem;margin:0 auto;padding:clamp(1.5rem,4vw,2.5rem) clamp(1rem,4vw,2.5rem) 0}
-.fl .pg-install .in-wrap>[data-state]{display:grid;gap:1rem}
+.fl .pg-install .in-wrap>.in-state{display:grid;grid-template-columns:minmax(0,1fr);gap:1rem}
 .fl .pg-install .in-card{padding:clamp(1.375rem,4vw,2.25rem)}
 .fl .pg-install .in-card:not(.in-setup){text-align:center}
 .fl .pg-install .in-small{max-width:32.5rem;width:100%;margin:0 auto}
@@ -19,7 +19,7 @@
 .fl .pg-install .in-name{font-weight:600;color:var(--tx)}
 .fl .pg-install .in-dl{margin-top:1.5rem;background:var(--bg);border:0.0625rem solid var(--ln2);border-radius:1rem;overflow:hidden;text-align:start}
 .fl .pg-install .in-os{display:flex;align-items:center;justify-content:space-between;gap:0.75rem;padding:0.625rem 0.75rem 0.625rem 0.625rem;border-bottom:0.0625rem solid var(--ln2);font-size:0.8438rem;color:var(--mu)}
-.fl .pg-install .in-os span{padding-inline-start:0.375rem}
+.fl .pg-install .in-os>span{padding-inline-start:0.375rem;white-space:nowrap}
 .fl .pg-install .in-os .seg button{padding:0.375rem 1rem;font-size:0.8438rem}
 .fl .pg-install .in-file{display:flex;align-items:center;gap:0.875rem;padding:1rem}
 .fl .pg-install .in-fico{flex:none;width:2.625rem;height:2.625rem;border-radius:0.6875rem;background:#2a211a;color:var(--cu);display:grid;place-items:center}
@@ -27,6 +27,9 @@
 .fl .pg-install .in-fname>bdi{font-weight:600;font-size:0.9375rem;color:var(--tx);overflow-wrap:anywhere;text-align:start}
 .fl .pg-install .in-fname small{font-size:0.7812rem;color:var(--mu)}
 .fl .pg-install .in-dlbtn{flex:none}
+.fl .pg-install .in-wait{opacity:.6;cursor:progress}
+.fl .pg-install .in-spin{animation:pgInstallSpin .9s linear infinite}
+@keyframes pgInstallSpin{to{transform:rotate(360deg)}}
 .fl .pg-install .in-h2{font-size:1.3125rem;font-weight:700;margin:0 0 0.875rem}
 .fl .pg-install .in-setup .note{margin-bottom:1.375rem}
 .fl .pg-install .in-setup .note .ic{margin-top:0.1875rem}
@@ -38,7 +41,7 @@
 .fl .pg-install .in-steps>li>b{font-size:1rem;margin-bottom:0.25rem}
 .fl .pg-install .in-steps p{margin:0 0 0.375rem;color:var(--tx2);font-size:0.9375rem;line-height:1.65}
 .fl .pg-install .ui{font-weight:600;color:var(--tx);white-space:nowrap}
-.fl .pg-install .in-code{font-weight:600;color:var(--tx);white-space:nowrap}
+.fl .pg-install .in-code{font-weight:600;color:var(--tx);overflow-wrap:anywhere}
 .fl .pg-install .nw{white-space:nowrap}
 .fl .pg-install .in-en{font-size:0.8125rem;color:var(--mu)!important}
 .fl .pg-install .in-path{display:inline-block;max-width:100%;color:var(--tx2);font-weight:500}

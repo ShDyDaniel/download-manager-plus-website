@@ -1,4 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { X } from 'lucide-react'
+import { layoutLegalDoc } from './legalText'
+import {
+  LegalArticle,
+  LegalError,
+  LegalLoading,
+  LegalToc,
+} from './LegalDoc'
 
 /* ──────────────────────────────────────────────────────────────
  *  Terms / Privacy modals — fetched on-demand from the database.
@@ -21,7 +29,7 @@ import { useEffect, useState } from 'react'
  *  load for everyone.
  * ────────────────────────────────────────────────────────────── */
 
-interface TermsSection {
+export interface TermsSection {
   title: string
   paragraphs: string[]
 }
@@ -31,7 +39,7 @@ export interface TermsDoc {
   sections: TermsSection[]
 }
 
-type LegalKind = 'terms' | 'privacy'
+export type LegalKind = 'terms' | 'privacy'
 type LegalCacheEntry =
   | { kind: 'loading'; promise: Promise<TermsDoc> }
   | { kind: 'ready'; doc: TermsDoc }
@@ -39,8 +47,10 @@ type LegalCacheEntry =
 const legalDocCache: Partial<Record<LegalKind, LegalCacheEntry>> = {}
 
 /** Kick off a fetch for the given legal doc. Safe to call
- *  repeatedly — concurrent calls share the in-flight promise. */
-function loadLegalDoc(kind: LegalKind): Promise<TermsDoc> {
+ *  repeatedly — concurrent calls share the in-flight promise, a loaded
+ *  doc is reused (one read per visit), and a failed load is retried.
+ *  Also used by the /terms and /privacy pages. */
+export function loadLegalDoc(kind: LegalKind): Promise<TermsDoc> {
   const existing = legalDocCache[kind]
   if (existing && existing.kind === 'ready') return Promise.resolve(existing.doc)
   if (existing && existing.kind === 'loading') return existing.promise
@@ -97,9 +107,62 @@ export function usePrefetchLegalDocs(): void {
   }, [])
 }
 
+
+export type LegalDocState =
+  | { kind: 'loading' }
+  | { kind: 'ready'; doc: TermsDoc }
+  | { kind: 'error'; message: string }
+
+/** Errors are shown to the user in Hebrew only: the server's own
+ *  messages are Hebrew; anything else (a browser "Failed to fetch",
+ *  a JSON parse error…) becomes a generic Hebrew network message. */
+function hebrewErrorMessage(err: unknown): string {
+  const m = err instanceof Error ? err.message : ''
+  return /[֐-׿]/.test(m) ? m : 'בעיית רשת. נסו שוב בעוד רגע.'
+}
+
+/** The legal doc for a page or modal: served from the module cache
+ *  when it's already loaded, otherwise fetched once on mount.
+ *  `retry()` fetches again after an error. */
+export function useLegalDoc(kind: LegalKind): {
+  state: LegalDocState
+  retry: () => void
+} {
+  const [state, setState] = useState<LegalDocState>(() => {
+    const cached = legalDocCache[kind]
+    return cached && cached.kind === 'ready'
+      ? { kind: 'ready', doc: cached.doc }
+      : { kind: 'loading' }
+  })
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    const cached = legalDocCache[kind]
+    if (cached && cached.kind === 'ready') {
+      setState({ kind: 'ready', doc: cached.doc })
+      return
+    }
+    let cancelled = false
+    setState({ kind: 'loading' })
+    void loadLegalDoc(kind)
+      .then((doc) => {
+        if (!cancelled) setState({ kind: 'ready', doc })
+      })
+      .catch((err) => {
+        if (!cancelled) setState({ kind: 'error', message: hebrewErrorMessage(err) })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [kind, attempt])
+
+  return { state, retry: () => setAttempt((a) => a + 1) }
+}
+
 /* Shared chrome for both modals — identical backdrop, close button,
  * Esc/click-outside behaviour and section rendering. Only the title,
- * endpoint and empty-state copy differ. */
+ * endpoint and empty-state copy differ. Rendered in its own `.fl`
+ * root so the redesign's styles apply on any page. */
 function LegalModal({
   kind,
   title,
@@ -111,17 +174,9 @@ function LegalModal({
   emptyCopy: string
   onClose: () => void
 }) {
-  const cached = legalDocCache[kind]
-  const [state, setState] = useState<
-    | { kind: 'loading' }
-    | { kind: 'ready'; doc: TermsDoc }
-    | { kind: 'error'; message: string }
-  >(() => {
-    if (cached && cached.kind === 'ready') return { kind: 'ready', doc: cached.doc }
-    if (cached && cached.kind === 'error')
-      return { kind: 'error', message: cached.message }
-    return { kind: 'loading' }
-  })
+  const { state, retry } = useLegalDoc(kind)
+  const titleId = useId()
+  const bodyRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -131,101 +186,69 @@ function LegalModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  useEffect(() => {
-    if (state.kind === 'ready') return
-    let cancelled = false
-    void loadLegalDoc(kind)
-      .then((doc) => {
-        if (cancelled) return
-        setState({ kind: 'ready', doc })
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setState({
-          kind: 'error',
-          message:
-            err instanceof Error ? err.message : 'בעיית רשת. נסו שוב בעוד רגע.',
-        })
-      })
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // Anchor ids are prefixed "m…" so they never clash with the ids of
+  // a /terms or /privacy page underneath.
+  const sections = useMemo(
+    () =>
+      state.kind === 'ready'
+        ? layoutLegalDoc(state.doc.sections, kind === 'terms' ? 'mt' : 'mpr')
+        : [],
+    [state, kind],
+  )
+
+  const jump = (id: string) => {
+    const el = bodyRef.current?.querySelector<HTMLElement>(`[id="${id}"]`)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   return (
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
-    >
-      <div className="relative w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl border border-border bg-bg-elevated p-6 md:p-8">
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute left-3 top-3 rounded-md p-1.5 text-fg-muted transition-colors hover:bg-bg-card hover:text-fg"
-          aria-label="סגור"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="h-4 w-4"
-          >
-            <path d="M18 6 6 18M6 6l12 12" />
-          </svg>
-        </button>
-
-        <h2 className="mb-1 text-xl font-medium text-fg">{title}</h2>
-        {state.kind === 'ready' && state.doc.lastUpdated && (
-          <div className="mb-5 text-xs text-fg-muted">
-            עודכן: {state.doc.lastUpdated}
+    <div className="fl fl-overlay">
+      <div
+        className="lm-back"
+        dir="rtl"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose()
+        }}
+      >
+        <div className="lm ldoc" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+          <div className="lm-hd">
+            <div>
+              <h2 className="lm-t" id={titleId}>
+                {title}
+              </h2>
+              {state.kind === 'ready' && state.doc.lastUpdated && (
+                <p className="meta">עודכן: {state.doc.lastUpdated}</p>
+              )}
+            </div>
+            <button type="button" className="lm-x" onClick={onClose} aria-label="סגור">
+              <X className="ic" aria-hidden />
+            </button>
           </div>
-        )}
 
-        {state.kind === 'loading' && (
-          <div className="py-8 text-center text-sm text-fg-muted">טוען…</div>
-        )}
+          <div className="lm-bd" ref={bodyRef}>
+            {state.kind === 'loading' && <LegalLoading />}
 
-        {state.kind === 'error' && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-            {state.message}
+            {state.kind === 'error' && <LegalError message={state.message} onRetry={retry} />}
+
+            {state.kind === 'ready' &&
+              (sections.length === 0 ? (
+                <p className="ldoc-empty">{emptyCopy}</p>
+              ) : (
+                <>
+                  {sections.length > 3 && (
+                    <LegalToc sections={sections} onJump={jump} collapsible />
+                  )}
+                  <LegalArticle sections={sections} heading="h3" />
+                </>
+              ))}
           </div>
-        )}
 
-        {state.kind === 'ready' && (
-          <div className="space-y-5">
-            {state.doc.sections.length === 0 ? (
-              <p className="text-sm text-fg-muted">{emptyCopy}</p>
-            ) : (
-              state.doc.sections.map((section, i) => (
-                <section key={i}>
-                  <h3 className="mb-2 text-sm font-semibold text-fg">
-                    {section.title}
-                  </h3>
-                  <div className="space-y-2 text-xs leading-relaxed text-fg-muted">
-                    {section.paragraphs.map((p, j) => (
-                      <p key={j}>{p}</p>
-                    ))}
-                  </div>
-                </section>
-              ))
-            )}
+          <div className="lm-ft">
+            <button type="button" onClick={onClose} className="btn btn-p btn-block">
+              סגירה
+            </button>
           </div>
-        )}
-
-        <button
-          type="button"
-          onClick={onClose}
-          className="mt-6 w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover"
-        >
-          סגירה
-        </button>
+        </div>
       </div>
     </div>
   )

@@ -1,4 +1,5 @@
-/* generated from the prototype (scratchpad/site/pages/collab.css) by port/build_css.py */
+/* /collab — from the prototype (scratchpad/site/pages/collab.css). */
+/* own stacking context, so the hero glow (.phero::before, z-index:-1) paints above the .fl background */
 .fl .pg-collab .phero .display .chip{font-size:0.875rem;letter-spacing:0;vertical-align:middle;position:relative;top:-.35em;margin-inline-start:0.75rem;padding:0.1875rem 0.625rem}
 .fl .pg-collab .fine{color:var(--mu);font-size:0.8125rem;margin-top:0.875rem}
 .fl .pg-collab .sec-head .h2{margin-top:0.5rem}
@@ -38,7 +39,7 @@
 .fl .pg-collab .phero .display .chip{top:-.25em;margin-inline-start:0.5rem}
 .fl .pg-collab .btn-lg{padding:0.8125rem 1.375rem;font-size:0.9688rem}
 }
-.fl @property --rvn{syntax:'<integer>';inherits:false;initial-value:4}
+@property --rvn{syntax:'<integer>';inherits:false;initial-value:4}
 .fl .pg-collab .phero .pill{margin-bottom:0.875rem}
 .fl .pg-collab .phero .eyebrow{display:block}
 .fl .pg-collab .demo-wrap{margin-top:0.5rem}
@@ -141,6 +142,8 @@
 .fl .pg-collab .wm2{font-size:0.4375rem;letter-spacing:.16em}
 .fl .pg-collab .fcard .hd{flex-wrap:wrap}
 }
+/* Reduced motion / the site's "stop animations" setting: pin the demo and the
+   rounds sketch to their settled end state (all notes in, round 2 locked). */
 @media (prefers-reduced-motion:reduce){.fl .pg-collab .sheen{animation:none;display:none}
 .fl .pg-collab .scrub .fill,.fl .pg-collab .scrub .ph,.fl .pg-collab .cnt .n,.fl .pg-collab .mk{animation:none}
 .fl .pg-collab .nr{animation:none;opacity:1;transform:none}
@@ -153,3 +156,14 @@
 .fl .pg-collab .rprev .x1,.fl .pg-collab .rprev .s1{opacity:0}
 .fl .pg-collab .rprev .x2,.fl .pg-collab .rprev .s2{opacity:1}
 }
+html.a11y-stopmotion .fl .pg-collab .sheen{animation:none;display:none}
+html.a11y-stopmotion .fl .pg-collab .scrub .fill,html.a11y-stopmotion .fl .pg-collab .scrub .ph,html.a11y-stopmotion .fl .pg-collab .cnt .n,html.a11y-stopmotion .fl .pg-collab .mk{animation:none}
+html.a11y-stopmotion .fl .pg-collab .nr{animation:none;opacity:1;transform:none}
+html.a11y-stopmotion .fl .pg-collab .bub{animation:none}
+html.a11y-stopmotion .fl .pg-collab .bub.b4{opacity:1}
+html.a11y-stopmotion .fl .pg-collab .up,html.a11y-stopmotion .fl .pg-collab .rprev,html.a11y-stopmotion .fl .pg-collab .rprev *{animation:none}
+html.a11y-stopmotion .fl .pg-collab .slot{animation:none;max-height:none;opacity:1}
+html.a11y-stopmotion .fl .pg-collab .rprev{border-color:#2c241e;background:#1b1511;color:#8f8272}
+html.a11y-stopmotion .fl .pg-collab .rprev .rn{background:#2a211a;color:#a39583}
+html.a11y-stopmotion .fl .pg-collab .rprev .x1,html.a11y-stopmotion .fl .pg-collab .rprev .s1{opacity:0}
+html.a11y-stopmotion .fl .pg-collab .rprev .x2,html.a11y-stopmotion .fl .pg-collab .rprev .s2{opacity:1}

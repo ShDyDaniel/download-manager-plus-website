@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { AlertCircle, CheckCircle2, Loader2, XCircle } from 'lucide-react'
+import { FlPage } from '../components/site/FlPage'
 import { pickVideoFromDrive } from '../lib/drivePicker'
+import '../styles/pages/drive-picker.css'
 
 /**
  * DrivePickerPage — the system-browser surface the DESKTOP app opens
@@ -24,7 +27,7 @@ import { pickVideoFromDrive } from '../lib/drivePicker'
 type Phase =
   | { kind: 'loading' }
   | { kind: 'picking' }
-  | { kind: 'done'; message: string }
+  | { kind: 'done'; message: string; canceled?: boolean }
   | { kind: 'error'; message: string }
 
 async function api<T>(action: string, body: unknown): Promise<T> {
@@ -78,6 +81,7 @@ export default function DrivePickerPage() {
           setPhase({
             kind: 'done',
             message: 'הבחירה בוטלה. אפשר לחזור לתוכנה.',
+            canceled: true,
           })
           return
         }
@@ -95,25 +99,45 @@ export default function DrivePickerPage() {
           }
         }, 1200)
       } catch (err) {
+        // Only Hebrew reaches the user: a raw browser/library error (e.g.
+        // "Failed to fetch") falls back to the generic Hebrew message.
         const message =
-          err instanceof Error ? err.message : 'בחירת הקובץ נכשלה'
+          err instanceof Error && /[\u0590-\u05FF]/.test(err.message)
+            ? err.message
+            : 'בחירת הקובץ נכשלה'
         if (session) void api('picker-result', { session, canceled: true })
         setPhase({ kind: 'error', message })
       }
     })()
   }, [])
 
+  let box: React.ReactNode
+  if (phase.kind === 'loading' || phase.kind === 'picking') {
+    box = (
+      <div className="dp-box" role="status">
+        <Loader2 className="ic spin" aria-hidden />
+        <p>{phase.kind === 'loading' ? 'מתחבר ל-Google Drive…' : 'בחרו סרטון מ-Google Drive…'}</p>
+      </div>
+    )
+  } else if (phase.kind === 'done') {
+    box = (
+      <div className={`dp-box ${phase.canceled ? 'mu' : 'ok'}`} role="status">
+        {phase.canceled ? <XCircle className="ic" aria-hidden /> : <CheckCircle2 className="ic" aria-hidden />}
+        <p>{phase.message}</p>
+      </div>
+    )
+  } else {
+    box = (
+      <div className="dp-box err" role="alert">
+        <AlertCircle className="ic" aria-hidden />
+        <p>{phase.message}</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-bg px-6 text-center">
-      {(phase.kind === 'loading' || phase.kind === 'picking') && (
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-primary" />
-      )}
-      <p className="max-w-sm text-sm text-fg-muted">
-        {phase.kind === 'loading' && 'מתחבר ל-Google Drive…'}
-        {phase.kind === 'picking' && 'בחרו סרטון מ-Google Drive…'}
-        {phase.kind === 'done' && phase.message}
-        {phase.kind === 'error' && phase.message}
-      </p>
-    </div>
+    <FlPage name="drive-picker" chrome="min" title="בחירת סרטון מ-Google Drive">
+      <div className="dp">{box}</div>
+    </FlPage>
   )
 }

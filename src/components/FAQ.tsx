@@ -10,7 +10,9 @@ import { Plus } from 'lucide-react'
  * publication's Q&A column.
  */
 
-const QA: { q: string; a: string }[] = [
+/** The questions and answers — also rendered by the /faq page
+ *  (src/pages/FaqPage.tsx), which groups them by topic. */
+export const FAQ_ITEMS: { q: string; a: string }[] = [
   {
     q: 'התוכנה עובדת על Mac ו-Windows?',
     a: 'כן — על Mac עם שבב M1 ומעלה ועל Windows 10/11 בגרסת 64 ביט. מחשבי Mac עם מעבד Intel אינם נתמכים.',
@@ -81,7 +83,7 @@ export function FAQ() {
         </motion.div>
 
         <div className="border-t border-border">
-          {QA.map((item, idx) => {
+          {FAQ_ITEMS.map((item, idx) => {
             const open = openIdx === idx
             return (
               <motion.div

@@ -9,8 +9,3 @@
 .fl .pg-drive-picker .dp-box.err .ic{color:var(--err)}
 .fl .pg-drive-picker .spin{animation:dpSpin .9s linear infinite}
 @keyframes dpSpin{to{transform:rotate(360deg)}}
-.fl .pg-drive-picker .dp-proto{margin:0.875rem auto 0;padding:0.5rem 0.75rem;border:0.0625rem dashed #4a3c30;border-radius:0.875rem;background:rgba(0,0,0,.2);color:var(--mu);font-size:0.7812rem;text-align:center;max-width:100%}
-.fl .pg-drive-picker .dp-errs{display:grid;gap:0.5rem;justify-items:center}
-.fl .pg-drive-picker .dp-errs .seg{display:flex;flex-wrap:wrap;justify-content:center;gap:0.25rem;border:0;background:none;padding:0}
-.fl .pg-drive-picker .dp-errs .seg button{border:0.0625rem solid var(--ln);border-radius:62.4375rem;padding:0.25rem 0.6875rem;font-size:0.75rem}
-.fl .pg-drive-picker .dp-errs .seg button.on{background:#3a2d22;border-color:var(--cu);color:var(--tx)}
