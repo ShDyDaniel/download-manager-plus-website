@@ -10,6 +10,10 @@ import { HERO_MARK_SVG, SKETCHES, STATIONS } from '../components/site/homeArt'
  * and a closing call to action. Styles: .pg-home in src/styles/fl.css.
  */
 
+// The line under the hero title. Empty = not shown (the buttons move up to the
+// title). Put text here to bring a description back.
+const HERO_SUB = ''
+
 // Card order and widths: three small cards, then transcription + work time
 // stacked beside the tall revisions card, then delivery as a wide strip.
 const LAYOUT: { kind: string; cls: string }[] = [
@@ -45,10 +49,12 @@ export function HomePage() {
       <div className="wrap" ref={root}>
         <div className="hero">
           <div aria-hidden dangerouslySetInnerHTML={{ __html: HERO_MARK_SVG }} />
-          <h1>כל מה שמסביב לעריכה, בתוכנה אחת</h1>
-          <p className="sub">
-            מהצעת המחיר ועד המסירה ללקוח. בעברית, על Mac ועל Windows, ליד תוכנת העריכה שכבר יש לך.
-          </p>
+          <h1 className={HERO_SUB ? undefined : 'solo'}>
+            כל מה שמסביב לעריכה
+            <br />
+            בתוכנה אחת
+          </h1>
+          {HERO_SUB && <p className="sub">{HERO_SUB}</p>}
           <button type="button" className="btn p" onClick={() => requestDownload()}>
             הורדה חינם
           </button>{' '}
