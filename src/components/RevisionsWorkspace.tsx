@@ -9,47 +9,69 @@ const MAX_UPLOAD_BYTES = Number.POSITIVE_INFINITY
  * for the web. Replaces the WorkspacePlaceholder once the user
  * is authenticated AND Pro.
  *
+ * LOOK: this is a markup/class port of the DESKTOP app's revisions tab
+ * (src/pages/RevisionsPage.tsx + src/components/revisions/* in the app
+ * repo). Everything renders inside `.app-ui`, which switches on the
+ * app's own Tailwind build (tailwind.app.config.js + styles/app-ui.css),
+ * so the desktop classes (bg-primary/15, text-muted-foreground,
+ * border-white/5 …) resolve to the app's exact values. Web-only pieces
+ * (browser upload progress, Drive-link import, Drive OAuth in a new tab)
+ * are drawn in the same vocabulary.
+ *
+ * LOGIC: unchanged from the previous web workspace — same API calls and
+ * payloads, uploads, OAuth signals, live listener + fetch fallback,
+ * optimistic note status, keyboard shortcuts.
+ *
  * Three top-level states:
  *
- *   1. Drive not connected → ConnectDriveEmptyState (single CTA
- *      that pops the OAuth flow, polls for return).
- *   2. Connected, no projects → ConnectedEmpty (project list with
- *      one "+ פרויקט חדש" affordance).
- *   3. Connected, with projects → ConnectedWorkspace (full list +
- *      action bar + Drive storage footer).
- *
- * Modals for create / edit / add-round are inline at the bottom
- * to keep the file self-contained — they're tightly coupled to
- * the workspace and don't need to live elsewhere.
- *
- * What this file does NOT do (deferred):
- *   - ProjectDetailView (the 1080-line notes browser from the
- *     desktop). The web "open project" affordance just opens the
- *     public review link in a new tab — the editor can browse
- *     notes there. A first-class notes-browser is a future port.
- *   - ReplaceVideoModal. Same reasoning — less-common flow,
- *     desktop has it for now.
+ *   1. Drive backend, not connected → ConnectDriveEmptyState (single
+ *      CTA that pops the OAuth flow, polls for return).
+ *   2. Connected, no projects → empty state with "צרו את הפרויקט הראשון".
+ *   3. Connected, with projects → project cards + storage footer, and
+ *      the round detail view (notes browser) when a round is opened.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { VoiceNotePlayer } from './VoiceNotePlayer'
+import '../styles/app-ui.css'
+import { VoiceNotePlayer } from './workspace/revisions/VoiceNotePlayer'
 import { renderNoteText } from '../lib/noteFormat'
 import {
+  AlertTriangle,
+  ArrowRight,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  Circle,
+  Cloud,
   Copy,
+  Download,
   ExternalLink,
   Eye,
-  RefreshCw,
-  Link2 as LinkIcon,
+  EyeOff,
+  FileVideo,
+  FolderClosed,
+  FolderOpen,
   HardDrive,
+  Hash,
   History,
+  Link2 as LinkIcon,
+  Loader2,
   Lock,
   LockOpen,
   MessageSquare,
+  Mic,
   Pencil,
+  PlayCircle,
   Plus,
+  RefreshCw,
+  Replace,
+  Shield,
+  Stamp,
   Trash2,
   Upload,
+  X,
 } from 'lucide-react'
 import { pickVideoFromDrive, type PickedDriveFile } from '../lib/drivePicker'
 import {
@@ -236,47 +258,23 @@ async function uploadRoundVideo(
   }
 }
 
-/* ──────────────────────────────────────────────────────────────
- *  Shared action-button styles for the workspace surfaces.
- *
- *  Centralising these keeps every button row consistent in height,
- *  radius, icon spacing and hover treatment across the project
- *  list AND the round-detail view — and makes the whole feature
- *  read as one designed system rather than a pile of ad-hoc
- *  outline buttons. All five share BTN_BASE, which pins:
- *    - a fixed 36px (h-9) height so a wrapped row stays on a tidy
- *      grid instead of a jagged staircase,
- *    - shrink-0 + whitespace-nowrap so a narrow phone wraps the
- *      button to the next line WHOLE instead of squeezing it until
- *      the label truncates ("מחיקה" → "מח"),
- *    - a visible focus ring for keyboard users.
- *  Variants then layer semantic colour on top:
- *    secondary = neutral outline (most actions)
- *    primary   = copper-tinted (the one "go here" action per row)
- *    danger    = destructive red
- *    success   = green (lock OPEN — round is editable)
- *    lockClose = red   (lock CLOSE — round is sealed)
- *  The success/lockClose pair mirrors the desktop app's red/green
- *  lock button so the two surfaces feel identical. */
-const BTN_BASE =
-  'inline-flex h-9 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50'
-const BTN_SECONDARY =
-  BTN_BASE +
-  ' border border-border bg-bg-card/40 text-fg hover:border-border-strong hover:bg-bg-elevated'
-const BTN_PRIMARY =
-  BTN_BASE +
-  ' border border-primary/40 bg-primary/10 text-primary hover:border-primary/60 hover:bg-primary/15'
-const BTN_DANGER =
-  BTN_BASE +
-  ' border border-destructive/30 text-destructive hover:border-destructive/50 hover:bg-destructive/10'
-const BTN_SUCCESS =
-  BTN_BASE +
-  ' border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/15'
-const BTN_LOCK_CLOSE =
-  BTN_BASE +
-  ' border border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/15'
+/* ══════════════════════════════════════════════════════════════
+ *  ROOT
+ * ══════════════════════════════════════════════════════════════ */
 
 export function RevisionsWorkspace() {
+  // `.app-ui` switches on the desktop app's Tailwind build for
+  // everything inside. Utilities placed on this element itself don't
+  // apply (they're emitted as `.app-ui .x`), so all layout lives on
+  // children.
+  return (
+    <div className="app-ui">
+      <RevisionsWorkspaceContent />
+    </div>
+  )
+}
+
+function RevisionsWorkspaceContent() {
   // `undefined` = still loading. `null` = not connected. Object = connected.
   // Three-state split prevents the empty-state from flashing during the
   // initial fetch on a returning user who's already connected.
@@ -306,11 +304,7 @@ export function RevisionsWorkspace() {
   }, [])
 
   if (drive === undefined || backend === undefined) {
-    return (
-      <div className="flex min-h-[40vh] items-center justify-center text-sm text-fg-muted">
-        טוען…
-      </div>
-    )
+    return <LoadingState />
   }
 
   // Only the Google-Drive backend requires a connected Drive account.
@@ -329,8 +323,20 @@ export function RevisionsWorkspace() {
   )
 }
 
+/* Quick spinner while oauth-status resolves (desktop: LoadingState). */
+function LoadingState() {
+  return (
+    <div className="flex h-full min-h-[60vh] items-center justify-center">
+      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-label="טוען" />
+    </div>
+  )
+}
+
 /* ──────────────────────────────────────────────────────────────
- *  ConnectDriveEmptyState — single-CTA hero
+ *  ConnectDriveEmptyState — Drive backend, not connected yet.
+ *  Markup = the desktop's ConnectDriveEmptyState; logic = the web's
+ *  (OAuth in a new tab + BroadcastChannel / storage / focus signals +
+ *  a slow fallback poll).
  * ────────────────────────────────────────────────────────────── */
 
 function ConnectDriveEmptyState({
@@ -340,7 +346,7 @@ function ConnectDriveEmptyState({
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // When true, fires `onRequestRefresh` every 2s for up to 5min
+  // When true, fires `onRequestRefresh` every 8s for up to 5min
   // after we open the OAuth tab. Once the parent sees `connected`
   // it unmounts us, automatically clearing the polling effect.
   const [waitingForOAuth, setWaitingForOAuth] = useState(false)
@@ -454,49 +460,140 @@ function ConnectDriveEmptyState({
   }
 
   return (
-    <div className="mx-auto max-w-2xl py-16 text-center">
-      <div className="mx-auto mb-8 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-        <DriveIcon className="h-8 w-8" />
+    <div className="flex flex-1 flex-col items-center justify-center overflow-hidden px-6 py-8 text-center">
+      <div className="mx-auto flex max-w-2xl flex-col items-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.92 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+          className="mb-8 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary"
+        >
+          <MessageSquare className="h-8 w-8" strokeWidth={1.8} />
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, delay: 0.05 }}
+          className="mb-3 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground"
+        >
+          — סבבי תיקונים
+        </motion.div>
+
+        <motion.h1
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.1 }}
+          className="mb-4 font-display text-3xl font-extrabold tracking-tight text-foreground md:text-4xl"
+          style={{ letterSpacing: '-0.02em' }}
+        >
+          <span className="block">קבלו תיקונים מלקוחות</span>
+          <span className="block text-primary">בלי כאבי ראש</span>
+        </motion.h1>
+
+        <motion.p
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.15 }}
+          className="mb-10 max-w-lg text-base leading-relaxed text-muted-foreground md:text-lg"
+        >
+          שולחים ללקוח קישור אחד. הוא רואה את הסרטון, עוצר
+          איפה שיש בעיה, ומסמן בדיוק מה הוא רוצה לתקן.
+        </motion.p>
+
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.25 }}
+          className="mb-10 w-full max-w-md space-y-4 text-right"
+        >
+          <TrustRow
+            icon={Cloud}
+            title="הכל מאוחסן אצלכם"
+            body="הסרטונים עולים ל-Google Drive שלכם, ואצלנו לא נשמר שום קובץ. החומר תמיד שלכם, מאובטח ומסודר במקום אחד שאתם שולטים בו."
+          />
+          <TrustRow
+            icon={Shield}
+            title="הגנה על הסרטון"
+            body="watermark אוטומטי עם המייל של הלקוח, ואופציה להוסיף סיסמה לקישור. אף אחד לא יוכל להפיץ את הוידאו לפני התשלום."
+          />
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.3 }}
+          className="flex flex-col items-center gap-3"
+        >
+          <button
+            type="button"
+            onClick={handleConnect}
+            disabled={busy}
+            className="group inline-flex min-h-[48px] items-center gap-2.5 rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-background shadow-lg shadow-primary/20 transition-all hover:bg-primary/90 hover:shadow-xl hover:shadow-primary/30 disabled:cursor-not-allowed disabled:bg-primary/50"
+          >
+            {busy ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+              <Upload className="h-4 w-4" aria-hidden />
+            )}
+            {waitingForOAuth
+              ? 'ממתינים לאישור Google…'
+              : busy
+                ? 'פותח חלון…'
+                : 'התחברו עם Google Drive'}
+          </button>
+
+          {waitingForOAuth && (
+            <p className="text-[12px] text-muted-foreground">
+              השלימו את החיבור בחלון שנפתח. החיבור יזוהה כאן אוטומטית.
+            </p>
+          )}
+
+          {error && (
+            <p
+              role="alert"
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            >
+              {error}
+            </p>
+          )}
+
+          <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <Lock className="h-3 w-3" aria-hidden />
+            ההרשאה היחידה שנבקש: גישה לקבצים שהאפליקציה יוצרת.
+          </p>
+        </motion.div>
       </div>
-      <div className="mb-3 text-[11px] font-medium uppercase tracking-[0.16em] text-fg-muted">
-        — סבבי תיקונים
+    </div>
+  )
+}
+
+function TrustRow({
+  icon: Icon,
+  title,
+  body,
+}: {
+  icon: typeof Cloud
+  title: string
+  body: string
+}) {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-white/5 bg-white/[0.02] p-4">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <Icon className="h-4 w-4" strokeWidth={2} />
       </div>
-      <h1 className="mb-4 text-3xl font-medium tracking-tight text-fg">
-        חיבור Google Drive
-      </h1>
-      <p className="mx-auto mb-8 max-w-md text-sm leading-relaxed text-fg-muted">
-        סבבי התיקונים נשמרים בדרייב שלך, ואנחנו לא מאחסנים את
-        הסרטונים אצלנו. כדי להתחיל, חברו חשבון Google.
-      </p>
-      <button
-        type="button"
-        onClick={handleConnect}
-        disabled={busy}
-        className="inline-flex items-center justify-center rounded-md bg-primary px-6 py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
-      >
-        {waitingForOAuth
-          ? 'ממתינים לאישור Google…'
-          : busy
-            ? 'פותח חלון…'
-            : 'חיבור Google Drive'}
-      </button>
-      {error && (
-        <div className="mx-auto mt-4 max-w-md rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {error}
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-foreground">{title}</div>
+        <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+          {body}
         </div>
-      )}
-      {waitingForOAuth && (
-        <p className="mt-6 text-xs text-fg-muted">
-          חזרת מ-Google? אפשר לסגור את החלון השני. הדף הזה
-          יזהה את החיבור תוך שניות.
-        </p>
-      )}
+      </div>
     </div>
   )
 }
 
 /* ──────────────────────────────────────────────────────────────
- *  ConnectedWorkspace — project list + actions
+ *  ConnectedWorkspace — project list + round detail + modals
  * ────────────────────────────────────────────────────────────── */
 
 interface Projects {
@@ -526,8 +623,8 @@ function ConnectedWorkspace({
   const [showNewProject, setShowNewProject] = useState(false)
   const [editingGroup, setEditingGroup] = useState<RevisionGroup | null>(null)
   const [addingRoundTo, setAddingRoundTo] = useState<RevisionGroup | null>(null)
-  // When set, opens the per-round notes-browser modal. The `round`
-  // and `group` give the modal enough context to fetch notes,
+  // When set, the list swaps to the round detail view (notes browser).
+  // The `round` and `group` give it enough context to fetch notes,
   // render the share URL, and toggle the round's lock state.
   const [viewingRound, setViewingRound] = useState<
     | { group: RevisionGroup; round: GroupRoundSummary }
@@ -541,25 +638,6 @@ function ConnectedWorkspace({
     projectId: string
     currentName: string
   } | null>(null)
-  const [confirmDelete, setConfirmDelete] = useState<
-    | { kind: 'group'; group: RevisionGroup; storages?: Array<'r2' | 'drive'> }
-    | {
-        kind: 'round'
-        group: RevisionGroup
-        roundId: string
-        storage?: 'r2' | 'drive'
-      }
-    | { kind: 'legacy'; project: LegacyProjectSummary }
-    | null
-  >(null)
-  // Disconnect-Drive confirm dialog. Boolean rather than an object
-  // because there's only one thing the user can be confirming here.
-  // Previously this used window.confirm() — replaced because the
-  // native dialog is unstyled, breaks the dark theme, and shows the
-  // domain name prefix ("www.dmplus.net says…") which reads as a
-  // bug to non-technical users.
-  const [confirmDisconnectDrive, setConfirmDisconnectDrive] =
-    useState(false)
 
   const reload = useCallback(() => setRefreshTick((n) => n + 1), [])
 
@@ -651,48 +729,74 @@ function ConnectedWorkspace({
     }
   }, [refreshTick, backend])
 
-  function handleDisconnect() {
-    // Just open the modal. The actual disconnect call moves to
-    // the modal's confirm button so the busy state + errors render
-    // inside the dialog rather than vanishing into a void.
-    setConfirmDisconnectDrive(true)
-  }
+  const isEmpty =
+    !!projects && projects.groups.length === 0 && projects.legacy.length === 0
 
+  // Project list body — loading / error / empty / populated.
+  let listBody: React.ReactNode
   if (error) {
-    return (
-      <div className="mx-auto max-w-md py-12 text-center">
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {error}
-        </div>
+    listBody = (
+      <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-5 text-center text-xs text-destructive">
+        <div>{error}</div>
         <button
           type="button"
           onClick={reload}
-          className="mt-4 rounded-md border border-border px-5 py-2 text-sm text-fg hover:bg-bg-elevated"
+          className="mt-4 inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white/[0.06]"
         >
-          נסה שוב
+          <RefreshCw className="h-3.5 w-3.5" />
+          ניסיון נוסף
         </button>
       </div>
     )
-  }
-
-  if (!projects) {
-    return (
-      <div className="flex min-h-[40vh] items-center justify-center text-sm text-fg-muted">
-        טוען פרויקטים…
+  } else if (!projects) {
+    listBody = (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-label="טוען" />
       </div>
+    )
+  } else if (isEmpty) {
+    listBody = (
+      <div className="flex flex-col items-center justify-center rounded-2xl border border-white/5 bg-white/[0.02] px-6 py-14 text-center">
+        <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+          <MessageSquare className="h-6 w-6" strokeWidth={1.8} />
+        </div>
+        <h2 className="mb-2 text-base font-medium text-foreground">
+          אין עדיין פרויקטים
+        </h2>
+        <p className="mb-6 max-w-md text-xs leading-relaxed text-muted-foreground">
+          לחצו על "פרויקט חדש" כדי להעלות סרטון ולקבל קישור
+          לשליחה ללקוח.
+        </p>
+        <button
+          type="button"
+          onClick={() => setShowNewProject(true)}
+          className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2 text-xs font-medium text-foreground transition-colors hover:bg-white/[0.06]"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          צרו את הפרויקט הראשון
+        </button>
+      </div>
+    )
+  } else {
+    listBody = (
+      <ProjectList
+        projects={projects}
+        backend={backend}
+        onEditGroup={(g) => setEditingGroup(g)}
+        onAddRound={(g) => setAddingRoundTo(g)}
+        onOpenRound={(g, round) => setViewingRound({ group: g, round })}
+        onOpenLegacy={(p) => setViewingRound({ legacy: p })}
+        onMutated={reload}
+      />
     )
   }
 
-  const isEmpty =
-    projects.groups.length === 0 && projects.legacy.length === 0
-
   // When the editor opened a round to browse its notes, the
-  // workspace area swaps to a full-page detail view (slides in
-  // from the right, RTL natural direction). AnimatePresence
-  // handles the two-way transition so going BACK to the list
-  // also animates instead of snapping.
+  // workspace area swaps to a full-page detail view. AnimatePresence
+  // handles the two-way transition so going BACK to the list also
+  // animates instead of snapping.
   return (
-    <div className="relative space-y-8">
+    <div className="relative">
       <AnimatePresence mode="wait" initial={false}>
         {viewingRound ? (
           <motion.div
@@ -743,70 +847,45 @@ function ConnectedWorkspace({
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 24 }}
             transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-            className="space-y-8"
           >
-            {/* Editorial header — mirrors the login/desktop voice:
-                tiny uppercase label + display headline, no card. */}
-            <div>
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-fg-muted">
-                — סבבי תיקונים
-              </div>
-              <h1
-                className="font-display text-fg"
-                style={{
-                  fontSize: 'clamp(26px, 4vw, 34px)',
-                  lineHeight: 1.05,
-                  letterSpacing: '-0.025em',
-                  fontWeight: 500,
-                }}
-              >
-                הפרויקטים שלך
-              </h1>
+            <div className="mx-auto w-full max-w-4xl px-6 pb-8 pt-2 md:pb-10 md:pt-4">
+              {/* Header — title on the right (RTL start), primary CTA
+                  on the left. The storage usage sits as one slim line
+                  under the title (part of the page, not a floating bar). */}
+              <header className="mb-8">
+                <div className="flex items-end justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                      — סבבי תיקונים
+                    </div>
+                    <h1
+                      className="font-display text-2xl font-extrabold tracking-tight text-foreground md:text-3xl"
+                      style={{ letterSpacing: '-0.02em' }}
+                    >
+                      הפרויקטים שלכם
+                    </h1>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowNewProject(true)}
+                    className="inline-flex min-h-[40px] shrink-0 items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-background shadow-md shadow-primary/20 transition-all hover:bg-primary/90"
+                  >
+                    <Plus className="h-4 w-4" strokeWidth={2.5} />
+                    פרויקט חדש
+                  </button>
+                </div>
+                <StorageMeter
+                  backend={backend}
+                  drive={drive}
+                  driveStorage={storage}
+                  r2Storage={r2Storage}
+                  onDisconnected={onDisconnected}
+                />
+              </header>
+
+              {listBody}
             </div>
-            <ActionBar
-              onNewProject={() => setShowNewProject(true)}
-              drive={drive}
-              onDisconnect={handleDisconnect}
-            />
-
-            {isEmpty ? (
-              <EmptyProjectList onNew={() => setShowNewProject(true)} />
-            ) : (
-              <ProjectList
-                projects={projects}
-                backend={backend}
-                onEditGroup={(g) => setEditingGroup(g)}
-                onAddRound={(g) => setAddingRoundTo(g)}
-                onOpenRound={(g, round) =>
-                  setViewingRound({ group: g, round })
-                }
-                onOpenLegacy={(p) => setViewingRound({ legacy: p })}
-                onDeleteRound={(g, roundId, storage) =>
-                  setConfirmDelete({
-                    kind: 'round',
-                    group: g,
-                    roundId,
-                    storage,
-                  })
-                }
-                onDeleteGroup={(g, storages) =>
-                  setConfirmDelete({ kind: 'group', group: g, storages })
-                }
-                onDeleteLegacy={(p) =>
-                  setConfirmDelete({ kind: 'legacy', project: p })
-                }
-              />
-            )}
-
-            {backend === 'drive' && drive && storage && (
-              <DriveStorageFooter drive={drive} storage={storage} />
-            )}
-            {backend === 'r2' && r2Storage && (
-              <R2StorageBar
-                usedBytes={r2Storage.usedBytes}
-                limitBytes={r2Storage.limitBytes}
-              />
-            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -851,17 +930,6 @@ function ConnectedWorkspace({
             }}
           />
         )}
-        {confirmDelete && (
-          <ConfirmDeleteModal
-            key="delete"
-            target={confirmDelete}
-            onClose={() => setConfirmDelete(null)}
-            onDeleted={() => {
-              setConfirmDelete(null)
-              reload()
-            }}
-          />
-        )}
         {replacingProject && (
           <ReplaceVideoModal
             key="replace"
@@ -875,90 +943,13 @@ function ConnectedWorkspace({
             }}
           />
         )}
-        {confirmDisconnectDrive && (
-          <ConfirmDisconnectDriveModal
-            key="disconnect-drive"
-            onClose={() => setConfirmDisconnectDrive(false)}
-            onConfirmed={() => {
-              setConfirmDisconnectDrive(false)
-              onDisconnected()
-            }}
-          />
-        )}
       </AnimatePresence>
     </div>
   )
 }
 
 /* ──────────────────────────────────────────────────────────────
- *  ActionBar (top of workspace)
- * ────────────────────────────────────────────────────────────── */
-
-function ActionBar({
-  onNewProject,
-  drive,
-  onDisconnect,
-}: {
-  onNewProject: () => void
-  // null on the R2 backend — no Drive account to show / disconnect.
-  drive: DriveIntegration | null
-  onDisconnect: () => void
-}) {
-  return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <button
-        type="button"
-        onClick={onNewProject}
-        className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-bg shadow-sm transition-colors hover:bg-primary-hover sm:w-auto"
-      >
-        <Plus className="h-4 w-4" />
-        פרויקט חדש
-      </button>
-      {drive && (
-        <div className="flex items-center gap-3 text-xs text-fg-muted">
-          <DriveIcon className="h-3.5 w-3.5 text-primary" />
-          <span dir="ltr" className="truncate">
-            {drive.email}
-          </span>
-          <button
-            type="button"
-            onClick={onDisconnect}
-            className="text-fg-muted underline-offset-2 hover:text-fg hover:underline"
-          >
-            ניתוק
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
-
-/* ──────────────────────────────────────────────────────────────
- *  EmptyProjectList
- * ────────────────────────────────────────────────────────────── */
-
-function EmptyProjectList({ onNew }: { onNew: () => void }) {
-  return (
-    <div className="mx-auto max-w-md rounded-2xl border border-border/60 bg-white/[0.015] p-10 text-center">
-      <h2 className="text-lg font-medium text-fg">אין פרויקטים עדיין</h2>
-      <p className="mt-3 text-sm text-fg-muted">
-        העלו סרטון, צרו קישור לשליחה ללקוח, וקבלו את התיקונים שלו
-        בזמן אמת.
-      </p>
-      <button
-        type="button"
-        onClick={onNew}
-        className="mt-6 inline-flex items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover"
-      >
-        <Plus className="h-4 w-4" />
-        פרויקט חדש
-      </button>
-    </div>
-  )
-}
-
-/* ──────────────────────────────────────────────────────────────
- *  ProjectList — groups + legacy in one chronological grid
+ *  ProjectList — groups + legacy in one chronological list
  * ────────────────────────────────────────────────────────────── */
 
 function ProjectList({
@@ -968,9 +959,7 @@ function ProjectList({
   onAddRound,
   onOpenRound,
   onOpenLegacy,
-  onDeleteRound,
-  onDeleteGroup,
-  onDeleteLegacy,
+  onMutated,
 }: {
   projects: Projects
   backend: 'r2' | 'drive'
@@ -978,13 +967,8 @@ function ProjectList({
   onAddRound: (g: RevisionGroup) => void
   onOpenRound: (g: RevisionGroup, round: GroupRoundSummary) => void
   onOpenLegacy: (p: LegacyProjectSummary) => void
-  onDeleteRound: (
-    g: RevisionGroup,
-    roundId: string,
-    storage?: 'r2' | 'drive',
-  ) => void
-  onDeleteGroup: (g: RevisionGroup, storages: Array<'r2' | 'drive'>) => void
-  onDeleteLegacy: (p: LegacyProjectSummary) => void
+  /** A delete succeeded — the parent reloads the list + storage. */
+  onMutated: () => void
 }) {
   // Merge groups + legacy into a single chronological list. We
   // sort by updatedAt DESC, same as the server-side ordering, but
@@ -1002,38 +986,61 @@ function ProjectList({
   ].sort((a, b) => b.ts - a.ts)
 
   return (
-    <div className="space-y-4">
+    <ul className="space-y-3">
       {items.map((item) =>
         item.kind === 'group' ? (
-          <GroupCard
-            key={`g-${item.group.id}`}
-            group={item.group}
-            backend={backend}
-            onEdit={() => onEditGroup(item.group)}
-            onAddRound={() => onAddRound(item.group)}
-            onOpenRound={(round) => onOpenRound(item.group, round)}
-            onDeleteRound={(roundId, storage) =>
-              onDeleteRound(item.group, roundId, storage)
-            }
-            onDeleteGroup={(storages) =>
-              onDeleteGroup(item.group, storages)
-            }
-          />
+          <li key={`g-${item.group.id}`}>
+            <GroupCard
+              group={item.group}
+              backend={backend}
+              onEdit={() => onEditGroup(item.group)}
+              onAddRound={() => onAddRound(item.group)}
+              onOpenRound={(round) => onOpenRound(item.group, round)}
+              onMutated={onMutated}
+            />
+          </li>
         ) : (
-          <LegacyCard
-            key={`l-${item.project.id}`}
-            project={item.project}
-            onOpen={() => onOpenLegacy(item.project)}
-            onDelete={() => onDeleteLegacy(item.project)}
-          />
+          <li key={`l-${item.project.id}`}>
+            <LegacyCard
+              project={item.project}
+              onOpen={() => onOpenLegacy(item.project)}
+              onMutated={onMutated}
+            />
+          </li>
         ),
       )}
-    </div>
+    </ul>
   )
 }
 
 /* ──────────────────────────────────────────────────────────────
- *  GroupCard — expandable rounds list per project group
+ *  Shared bits — copy-to-clipboard + the app's icon button
+ * ────────────────────────────────────────────────────────────── */
+
+function useCopyLink(url: string) {
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    } catch {
+      // Older browsers or insecure contexts — fall back to
+      // selecting the URL so the user can copy manually.
+      window.prompt('העתיקו את הקישור:', url)
+    }
+  }
+  return { copied, copy }
+}
+
+const ICON_BTN =
+  'inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors '
+const ICON_BTN_IDLE = 'text-muted-foreground hover:bg-white/5 hover:text-foreground '
+const ICON_BTN_OK = 'bg-success/15 text-success '
+
+/* ──────────────────────────────────────────────────────────────
+ *  GroupCard — one project, share link always visible, expandable
+ *  rounds tray (desktop: ProjectGroupCard).
  * ────────────────────────────────────────────────────────────── */
 
 function GroupCard({
@@ -1042,19 +1049,21 @@ function GroupCard({
   onEdit,
   onAddRound,
   onOpenRound,
-  onDeleteRound,
-  onDeleteGroup,
+  onMutated,
 }: {
   group: RevisionGroup
   backend: 'r2' | 'drive'
   onEdit: () => void
   onAddRound: () => void
   onOpenRound: (round: GroupRoundSummary) => void
-  onDeleteRound: (roundId: string, storage?: 'r2' | 'drive') => void
-  onDeleteGroup: (storages: Array<'r2' | 'drive'>) => void
+  onMutated: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const shareUrl = buildShareUrl(group.shareToken)
+  const { copied, copy } = useCopyLink(shareUrl)
+  const [confirmingProjectDelete, setConfirmingProjectDelete] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   // LAZY-LOAD: the list listener delivers groups WITHOUT their rounds
   // (only a denormalised `group.roundCount`). We fetch this project's
@@ -1071,11 +1080,10 @@ function GroupCard({
   const loadedForRef = useRef<number | null>(null)
 
   // Note: re-opening a finalized round (undoing the client's "ready
-  // to fix" marker) is NOT a list-level action anymore. The editor
-  // does it from inside the round itself, via the red/green lock
-  // button in the detail view — unlocking there also clears the
-  // "ready" marker server-side. Keeping a separate list button would
-  // be a redundant second way to do the same thing.
+  // to fix" marker) is NOT a list-level action. The editor does it
+  // from inside the round itself, via the red/green lock button in
+  // the detail view — unlocking there also clears the "ready" marker
+  // server-side.
 
   useEffect(() => {
     if (!expanded) return
@@ -1106,436 +1114,959 @@ function GroupCard({
   // Count for the header: prefer the freshly loaded rounds, fall back
   // to the denormalised count the list already carries.
   const roundCount = rounds?.length ?? group.roundCount
+  // Badges are driven off loaded rounds — hidden until the card has
+  // been expanded at least once (no extra reads to populate them).
+  const totalNotes = (rounds ?? []).reduce((sum, r) => sum + r.notesCount, 0)
+  const anyLocked = (rounds ?? []).some((r) => r.locked)
 
-  // `stopActionPropagation` — wrap the inline action buttons so a
-  // click on them doesn't ALSO toggle the expand state. The whole
-  // header is a button (for keyboard + screen-reader friendliness)
-  // so without this, every action click would race with the
-  // expand handler.
-  const stopActionPropagation = (e: React.MouseEvent) => {
-    e.stopPropagation()
+  // Decide the project-delete UX from what's ACTUALLY being deleted,
+  // not the account's current backend:
+  //   'r2'    → everything is in our storage; one irreversible confirm.
+  //   'drive' → it's on Google Drive; offer the Drive-trash opt-in.
+  //   'mixed' → a project with BOTH kinds of rounds; delete everything
+  //             (including Drive) and just say so.
+  const groupStorages = (rounds ?? [])
+    .map((r) => r.storage)
+    .filter((s): s is 'r2' | 'drive' => Boolean(s))
+  const hasR2 = groupStorages.includes('r2')
+  const hasDrive = groupStorages.includes('drive')
+  const projectDeleteMode: 'r2' | 'drive' | 'mixed' =
+    hasR2 && hasDrive ? 'mixed' : hasR2 ? 'r2' : 'drive'
+
+  async function handleDeleteGroup(deleteDrive: boolean) {
+    if (busy) return
+    setBusy(true)
+    setActionError(null)
+    // Force Drive trash for mixed projects; never for pure-R2; user's
+    // choice for pure-Drive.
+    const effectiveDeleteDrive =
+      projectDeleteMode === 'mixed'
+        ? true
+        : projectDeleteMode === 'r2'
+          ? false
+          : deleteDrive
+    const result = await deleteGroup(group.id, effectiveDeleteDrive)
+    setBusy(false)
+    if (!result.ok) {
+      setActionError(result.error || 'המחיקה נכשלה')
+      return
+    }
+    setConfirmingProjectDelete(false)
+    onMutated()
+  }
+
+  async function handleDeleteRound(
+    round: GroupRoundSummary,
+    deleteDrive: boolean,
+  ): Promise<boolean> {
+    if (busy) return false
+    setBusy(true)
+    setActionError(null)
+    // R2 rounds never touch Drive; Drive rounds follow the user's pick.
+    const effectiveDeleteDrive = round.storage === 'r2' ? false : deleteDrive
+    const result = await deleteRound(round.id, effectiveDeleteDrive)
+    setBusy(false)
+    if (!result.ok) {
+      setActionError(result.error || 'המחיקה נכשלה')
+      return false
+    }
+    onMutated()
+    return true
   }
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-border/60 bg-white/[0.015] transition-colors hover:border-border">
-      {/* Header — entire row is the expand affordance. We use a
-          div with role=button (not a real <button>) because the
-          row contains nested buttons (copy-link, edit, add-round),
-          and nested <button>s are invalid HTML — browsers either
-          flatten them or fire double events. role=button keeps
-          a11y semantics while allowing the nested buttons to
-          stopPropagation cleanly. */}
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={() => setExpanded((e) => !e)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault()
-            setExpanded((s) => !s)
-          }
-        }}
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.2 }}
+      className="overflow-hidden rounded-xl border border-white/5 bg-white/[0.02]"
+    >
+      {/* Header — clickable, toggles expanded state. Whole-row hit
+          area so the editor doesn't have to aim at a tiny chevron. */}
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex w-full cursor-pointer flex-col gap-3 p-5 text-right sm:flex-row sm:items-center sm:justify-between"
+        aria-label={expanded ? 'כיווץ פרויקט' : 'הרחבת פרויקט'}
+        className="block w-full cursor-pointer rounded-t-xl px-4 pb-2 pt-4 text-right transition-colors hover:bg-white/[0.015]"
       >
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <ChevronDownIcon
-            // Rotates 180° when expanded so the user gets a
-            // visual confirmation of state. The icon itself is
-            // an inline SVG — no library needed.
-            className={
-              'h-4 w-4 shrink-0 text-fg-muted transition-transform duration-200 ' +
-              (expanded ? 'rotate-180' : '')
-            }
-          />
-          <div className="min-w-0 flex-1">
+        {/* flex-wrap + a minimum title width only matter on phones: the
+            badges drop under the title instead of squeezing it away. */}
+        <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1.5 sm:flex-nowrap">
+          <div className="min-w-[60%] flex-1 sm:min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="truncate text-base font-medium text-fg">
+              <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                <FolderClosed className="h-3 w-3" strokeWidth={2} />
+              </span>
+              <h3 className="truncate text-sm font-medium text-foreground">
                 {group.title || 'ללא שם'}
               </h3>
-              {group.hasPassword && (
-                <span className="rounded bg-bg-elevated px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-fg-muted">
-                  סיסמה
-                </span>
-              )}
-            </div>
-            <div className="mt-1.5 flex items-center gap-3 text-xs text-fg-muted">
-              {/* `<bdi dir="ltr">` isolates pure-LTR fragments
-                  (numbers + dates) from the surrounding RTL
-                  document direction. Without isolation the
-                  bidi algorithm reorders "25.6 MB · 27.05.2026"
-                  into something like "MB 25.6 27.05.2026 ·"
-                  because punctuation flips direction. */}
-              <span>
-                <bdi dir="ltr">{roundCount}</bdi> סבבים
+              <span className="shrink-0 text-[11px] text-muted-foreground">
+                · {roundCount} {roundCount === 1 ? 'סבב' : 'סבבים'}
               </span>
-              <span>·</span>
-              <bdi dir="ltr">{formatDateShort(group.updatedAt)}</bdi>
+            </div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
+              עודכן {formatRelative(group.updatedAt)}
             </div>
           </div>
-        </div>
-        <div
-          className="flex flex-wrap items-center gap-2"
-          onClick={stopActionPropagation}
-        >
-          <CopyShareLinkButton url={shareUrl} />
-          <span
-            role="button"
-            tabIndex={0}
-            onClick={(e) => {
-              e.stopPropagation()
-              onAddRound()
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                e.stopPropagation()
-                onAddRound()
+          <div className="flex shrink-0 items-center gap-1.5">
+            {anyLocked && (
+              <span
+                title="לפחות סבב אחד נעול לתיקונים"
+                className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-400"
+              >
+                <Lock className="h-2.5 w-2.5" />
+                נעול
+              </span>
+            )}
+            {group.hasPassword && (
+              <span
+                title="הפרויקט מוגן בסיסמה"
+                className="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] text-accent"
+              >
+                <Lock className="h-2.5 w-2.5" />
+                סיסמה
+              </span>
+            )}
+            {totalNotes > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
+                <MessageSquare className="h-2.5 w-2.5" />
+                {totalNotes}
+              </span>
+            )}
+            {!expanded && (
+              <span className="hidden text-[11px] font-medium text-primary/80 sm:inline">
+                לפתיחת הפרויקט לחצו כאן
+              </span>
+            )}
+            <ChevronDown
+              className={
+                'h-3.5 w-3.5 text-muted-foreground/40 transition-transform ' +
+                (expanded ? 'rotate-180' : '')
               }
-            }}
-            className={BTN_PRIMARY + ' cursor-pointer'}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            סבב חדש
-          </span>
-          <span
-            role="button"
-            tabIndex={0}
-            onClick={(e) => {
-              e.stopPropagation()
-              onEdit()
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                e.stopPropagation()
-                onEdit()
-              }
-            }}
-            className={BTN_SECONDARY + ' cursor-pointer'}
-          >
-            <Pencil className="h-3.5 w-3.5" />
-            עריכה
-          </span>
+              aria-hidden
+            />
+          </div>
         </div>
-      </div>
+      </button>
 
-      {/* Rounds list — collapsible. AnimatePresence keeps the
-          exit animation alive long enough to fade out, and the
-          height: auto trick (initial 0, animate auto) gives a
-          natural reveal without a flash of jump. */}
-      <AnimatePresence initial={false}>
-      {expanded && (
-        <motion.div
-          key="rounds"
-          initial={{ height: 0, opacity: 0 }}
-          animate={{ height: 'auto', opacity: 1 }}
-          exit={{ height: 0, opacity: 0 }}
-          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-          className="overflow-hidden"
-        >
-        <div className="border-t border-border bg-bg/40">
-          {loadingRounds && rounds === null ? (
-            <div className="p-4 text-center text-xs text-fg-muted">
-              טוען סבבים…
-            </div>
-          ) : roundsError ? (
-            <div className="p-4 text-center text-xs text-destructive">
-              {roundsError}
-            </div>
-          ) : (rounds ?? []).length === 0 ? (
-            <div className="p-4 text-center text-xs text-fg-muted">
-              עדיין אין סבבים. לחץ "+ סבב חדש" כדי להעלות סרטון.
-            </div>
-          ) : (
-            <ul className="divide-y divide-border">
-              {(rounds ?? []).map((round) => (
-                <li
-                  key={round.id}
-                  className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 text-sm text-fg">
-                      <span className="font-medium">
-                        סבב מס׳ <bdi dir="ltr">{round.roundNumber}</bdi>
-                      </span>
-                      {round.clientFinalized && (
-                        <span
-                          className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400"
-                          title={
-                            round.clientFinalizedBy
-                              ? `סומן כמוכן על ידי ${round.clientFinalizedBy}`
-                              : 'מוכן לתיקונים'
-                          }
-                        >
-                          מוכן לתיקונים
-                        </span>
-                      )}
-                      {round.locked && !round.clientFinalized && (
-                        <span className="rounded bg-bg-elevated px-1.5 py-0.5 text-[10px] uppercase text-fg-muted">
-                          סגור
-                        </span>
-                      )}
-                      {round.storage && round.storage !== backend && (
-                        <span
-                          className="rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-400"
-                          title="הסבב הזה לא אוחסן במערכת שאתה משתמש בה כעת"
-                        >
-                          {round.storage === 'drive' ? 'Google Drive' : 'CL'}
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-0.5 text-xs text-fg-muted">
-                      <bdi dir="ltr">{formatBytes(round.videoSizeBytes)}</bdi>{' '}
-                      ·{' '}
-                      <bdi dir="ltr">{round.notesCount}</bdi> הערות ·{' '}
-                      <bdi dir="ltr">{formatDateShort(round.createdAt)}</bdi>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onOpenRound(round)}
-                      className={BTN_PRIMARY}
-                    >
-                      <MessageSquare className="h-3.5 w-3.5" />
-                      הערות (<bdi dir="ltr">{round.notesCount}</bdi>)
-                    </button>
-                    <a
-                      href={`${shareUrl}?r=${round.id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={BTN_SECONDARY}
-                    >
-                      <ExternalLink className="h-3.5 w-3.5" />
-                      פתיחה
-                    </a>
-                    <button
-                      type="button"
-                      onClick={() => onDeleteRound(round.id, round.storage)}
-                      className={BTN_DANGER}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      מחיקה
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="border-t border-border p-3 text-left">
+      {/* Share URL + copy / open / edit — always visible (the URL is
+          the single most-used affordance, hiding it behind expand is
+          friction). */}
+      <div className="px-4 pb-3">
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <div
+            dir="ltr"
+            className="min-w-0 flex-1 truncate rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-1.5 font-mono text-[11px]"
+            title={shareUrl}
+          >
+            {shareUrl}
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
             <button
               type="button"
-              onClick={() =>
-                onDeleteGroup(
-                  (rounds ?? [])
-                    .map((r) => r.storage)
-                    .filter((s): s is 'r2' | 'drive' => Boolean(s)),
-                )
-              }
-              className="inline-flex items-center gap-1.5 text-xs text-destructive/80 transition-colors hover:text-destructive"
+              onClick={() => void copy()}
+              aria-label={copied ? 'הועתק' : 'העתקת קישור'}
+              title={copied ? 'הועתק' : 'העתקת קישור'}
+              className={ICON_BTN + (copied ? ICON_BTN_OK : ICON_BTN_IDLE)}
             >
-              <Trash2 className="h-3.5 w-3.5" />
-              מחיקת הפרויקט כולו
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
+            <a
+              href={shareUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="פתיחת קישור"
+              title="פתיחת קישור"
+              className={ICON_BTN + ICON_BTN_IDLE}
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+            <button
+              type="button"
+              onClick={onEdit}
+              aria-label="עריכת פרויקט"
+              title="עריכת פרויקט"
+              className={ICON_BTN + ICON_BTN_IDLE}
+            >
+              <Pencil className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
-        </motion.div>
-      )}
+      </div>
+
+      {/* Expanded body — rounds list + add-round / delete-project row.
+          AnimatePresence keeps the exit animation alive long enough to
+          collapse the height smoothly. */}
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            key="expanded"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-white/5 px-4 py-3">
+              <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                סבבי תיקונים
+              </div>
+              {loadingRounds && rounds === null ? (
+                <div className="flex items-center justify-center rounded-lg border border-white/5 bg-white/[0.015] px-3 py-4">
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                </div>
+              ) : roundsError ? (
+                <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-4 text-center text-[11px] text-destructive">
+                  {roundsError}
+                </div>
+              ) : (rounds ?? []).length === 0 ? (
+                <div className="rounded-lg border border-white/5 bg-white/[0.015] px-3 py-4 text-center text-[11px] text-muted-foreground">
+                  אין סבבים בפרויקט. לחצו "סבב חדש" כדי להוסיף אחד.
+                </div>
+              ) : (
+                <ul className="space-y-1.5">
+                  {[...(rounds ?? [])]
+                    .sort((a, b) => b.roundNumber - a.roundNumber)
+                    .map((round) => (
+                      <li key={round.id}>
+                        <RoundRow
+                          round={round}
+                          backend={backend}
+                          onOpen={() => onOpenRound(round)}
+                          onDelete={(includeDrive) =>
+                            handleDeleteRound(round, includeDrive)
+                          }
+                          busy={busy}
+                        />
+                      </li>
+                    ))}
+                </ul>
+              )}
+
+              {actionError && (
+                <div
+                  role="alert"
+                  className="mt-2 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-[11px] text-destructive"
+                >
+                  {actionError}
+                </div>
+              )}
+
+              {/* Action row — add round + delete project. Delete has a
+                  confirm step (inline, like the app). */}
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={onAddRound}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-foreground transition-colors hover:bg-white/[0.08]"
+                >
+                  <Plus className="h-3 w-3" />
+                  סבב חדש
+                </button>
+
+                {confirmingProjectDelete ? (
+                  projectDeleteMode === 'drive' ? (
+                    // All Drive — let the editor opt into Drive trash.
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] text-destructive">למחוק את הפרויקט?</span>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmingProjectDelete(false)}
+                        disabled={busy}
+                        className="rounded-md px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground disabled:opacity-50"
+                      >
+                        ביטול
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteGroup(false)}
+                        disabled={busy}
+                        title="הקבצים נשארים ב-Drive שלכם"
+                        className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] text-foreground transition-colors hover:bg-white/[0.08] disabled:opacity-50"
+                      >
+                        מהמערכת בלבד
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteGroup(true)}
+                        disabled={busy}
+                        title="גם הסרטונים יעברו לפח של Drive (שחזור עד 30 יום)"
+                        className="inline-flex items-center gap-1 rounded-md bg-destructive/90 px-2 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-destructive disabled:opacity-50"
+                      >
+                        {busy ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3 w-3" />
+                        )}
+                        גם מ-Drive
+                      </button>
+                    </div>
+                  ) : (
+                    // R2 or mixed — single irreversible confirm. Mixed
+                    // forces Drive trash too.
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] text-destructive">
+                        {projectDeleteMode === 'mixed'
+                          ? 'יש סבבים גם ב-Drive וגם באחסון. הכל יימחק. לא ניתן לשחזר.'
+                          : 'למחוק את הפרויקט? לא ניתן לשחזר.'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmingProjectDelete(false)}
+                        disabled={busy}
+                        className="rounded-md px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground disabled:opacity-50"
+                      >
+                        ביטול
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteGroup(projectDeleteMode === 'mixed')}
+                        disabled={busy}
+                        className="inline-flex items-center gap-1 rounded-md bg-destructive/90 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-destructive disabled:opacity-50"
+                      >
+                        {busy ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3 w-3" />
+                        )}
+                        כן, מחק
+                      </button>
+                    </div>
+                  )
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionError(null)
+                      setConfirmingProjectDelete(true)
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    מחיקת פרויקט
+                  </button>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
       </AnimatePresence>
+    </motion.div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  Round row — one row inside the expanded group card. Click the
+ *  row → round detail view. Trash icon → inline confirm strip.
+ * ───────────────────────────────────────────────────────────── */
+function RoundRow({
+  round,
+  backend,
+  onOpen,
+  onDelete,
+  busy,
+}: {
+  round: GroupRoundSummary
+  backend: 'r2' | 'drive'
+  onOpen: () => void
+  /** Resolves true when the delete went through. */
+  onDelete: (includeDrive: boolean) => Promise<boolean>
+  busy: boolean
+}) {
+  const [confirming, setConfirming] = useState(false)
+  // Badge a round whose video lives on a backend different from the
+  // user's current one (e.g. a Drive round shown to an R2 user).
+  const offBackend = Boolean(round.storage) && round.storage !== backend
+  // R2 round → single irreversible-delete confirm (no Drive opt-in).
+  // When the round's storage is unknown (older summaries without the
+  // field) treat it as Drive — the safe default that keeps the Drive
+  // opt-in so a real Drive file is never silently left behind.
+  const isR2Round = round.storage === 'r2'
+
+  async function del(includeDrive: boolean) {
+    const ok = await onDelete(includeDrive)
+    if (ok) setConfirming(false)
+  }
+
+  return (
+    <div className="group flex items-center gap-2 rounded-md border border-white/5 bg-white/[0.015] px-2 py-1.5 transition-colors hover:bg-white/[0.04]">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex min-w-0 flex-1 items-center gap-2 text-right"
+        aria-label={`פתיחת סבב ${round.roundNumber}`}
+      >
+        <span
+          title={`סבב ${round.roundNumber}`}
+          className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-primary/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary"
+        >
+          <Hash className="h-2.5 w-2.5" />
+          {round.roundNumber}
+        </span>
+        <span
+          className="truncate text-[12px] text-foreground"
+          dir="ltr"
+          title={round.videoFileName}
+        >
+          {round.videoFileName}
+        </span>
+        <span className="shrink-0 text-[10px] text-muted-foreground">
+          · <bdi dir="ltr">{formatBytes(round.videoSizeBytes)}</bdi> · {formatRelative(round.createdAt)}
+        </span>
+        {/* Affordance hint — fills the empty left side of the row so
+            it's obvious the whole row opens the revision round. */}
+        <span className="ms-auto hidden shrink truncate ps-2 text-[11px] font-medium text-primary/70 sm:inline">
+          לפתיחת סבב התיקונים לחצו כאן
+        </span>
+      </button>
+
+      {offBackend && (
+        <span
+          title="הסבב הזה לא אוחסן במערכת שאתם משתמשים בה כעת"
+          className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[9px] text-amber-400"
+        >
+          {round.storage === 'drive' ? (
+            <HardDrive className="h-2.5 w-2.5" />
+          ) : (
+            <Cloud className="h-2.5 w-2.5" />
+          )}
+          {round.storage === 'drive' ? 'Google Drive' : 'CL'}
+        </span>
+      )}
+      {round.clientFinalized && (
+        <span
+          title={
+            round.clientFinalizedBy
+              ? `סומן כמוכן על ידי ${round.clientFinalizedBy}`
+              : 'הסבב מוכן לתיקונים'
+          }
+          className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-400"
+        >
+          <Check className="h-2.5 w-2.5" />
+          מוכן לתיקונים
+        </span>
+      )}
+      {round.locked && !round.clientFinalized && (
+        <span
+          title="סבב נעול"
+          className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[9px] text-amber-400"
+        >
+          <Lock className="h-2.5 w-2.5" />
+        </span>
+      )}
+      {round.notesCount > 0 && (
+        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+          <MessageSquare className="h-2.5 w-2.5" />
+          {round.notesCount}
+        </span>
+      )}
+
+      {confirming ? (
+        isR2Round ? (
+          // R2 round: the video + all its media always delete and can't
+          // be restored — no Drive opt-in, so a single confirm.
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              disabled={busy}
+              className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground disabled:opacity-50"
+            >
+              ביטול
+            </button>
+            <button
+              type="button"
+              onClick={() => void del(false)}
+              disabled={busy}
+              title="הסרטון וכל מה שקשור אליו יימחקו ולא ניתן לשחזר"
+              className="inline-flex items-center gap-0.5 rounded bg-destructive/90 px-2 py-0.5 text-[10px] font-semibold text-white transition-colors hover:bg-destructive disabled:opacity-50"
+            >
+              {busy ? (
+                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+              ) : (
+                <Trash2 className="h-2.5 w-2.5" />
+              )}
+              כן, מחק
+            </button>
+          </div>
+        ) : (
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              disabled={busy}
+              className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground disabled:opacity-50"
+            >
+              ביטול
+            </button>
+            <button
+              type="button"
+              onClick={() => void del(false)}
+              disabled={busy}
+              title="הקובץ נשאר ב-Drive"
+              className="rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[10px] text-foreground transition-colors hover:bg-white/[0.08] disabled:opacity-50"
+            >
+              מהמערכת
+            </button>
+            <button
+              type="button"
+              onClick={() => void del(true)}
+              disabled={busy}
+              title="גם מ-Drive (לפח, שחזור 30 יום)"
+              className="inline-flex items-center gap-0.5 rounded bg-destructive/90 px-1.5 py-0.5 text-[10px] font-semibold text-white transition-colors hover:bg-destructive disabled:opacity-50"
+            >
+              {busy ? (
+                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+              ) : (
+                <Trash2 className="h-2.5 w-2.5" />
+              )}
+              גם מ-Drive
+            </button>
+          </div>
+        )
+      ) : (
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          aria-label="מחיקת סבב"
+          title="מחיקת סבב"
+          // Hover-revealed like the app; always visible on touch
+          // screens (no hover there) and when focused by keyboard.
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
+      )}
     </div>
   )
 }
 
 /* ──────────────────────────────────────────────────────────────
  *  LegacyCard — pre-group-refactor single-round project
+ *  (desktop: ProjectCard).
  * ────────────────────────────────────────────────────────────── */
 
 function LegacyCard({
   project,
   onOpen,
-  onDelete,
+  onMutated,
 }: {
   project: LegacyProjectSummary
   onOpen: () => void
-  onDelete: () => void
+  onMutated: () => void
 }) {
   const shareUrl = buildShareUrl(project.shareToken)
-  return (
-    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5 transition-colors hover:border-border">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate text-base font-medium text-fg">
-              {project.title || 'ללא שם'}
-            </h3>
-            <span className="rounded bg-bg-elevated px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-fg-muted">
-              פרויקט קלאסי
-            </span>
-            {project.hasPassword && (
-              <span className="rounded bg-bg-elevated px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-fg-muted">
-                סיסמה
-              </span>
-            )}
-          </div>
-          <div className="mt-1.5 text-xs text-fg-muted">
-            <bdi dir="ltr">{formatBytes(project.videoSizeBytes)}</bdi> ·{' '}
-            <bdi dir="ltr">{project.notesCount}</bdi> הערות ·{' '}
-            <bdi dir="ltr">{formatDateShort(project.updatedAt)}</bdi>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <CopyShareLinkButton url={shareUrl} />
-          <button type="button" onClick={onOpen} className={BTN_PRIMARY}>
-            <MessageSquare className="h-3.5 w-3.5" />
-            הערות (<bdi dir="ltr">{project.notesCount}</bdi>)
-          </button>
-          <a
-            href={shareUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={BTN_SECONDARY}
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-            פתיחה
-          </a>
-          <button type="button" onClick={onDelete} className={BTN_DANGER}>
-            <Trash2 className="h-3.5 w-3.5" />
-            מחיקה
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
+  const { copied, copy } = useCopyLink(shareUrl)
+  const [deleteMode, setDeleteMode] = useState<'none' | 'choosing'>('none')
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-/* ──────────────────────────────────────────────────────────────
- *  CopyShareLinkButton
- * ────────────────────────────────────────────────────────────── */
-
-function CopyShareLinkButton({ url }: { url: string }) {
-  const [copied, setCopied] = useState(false)
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(url)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1800)
-    } catch {
-      // Older browsers or insecure contexts — fall back to
-      // selecting the URL so the user can copy manually.
-      window.prompt('העתק את הקישור:', url)
+  // Legacy single-round projects predate R2 — always Drive, so the
+  // Drive-trash choice is always offered.
+  async function handleDelete(includeDriveFile: boolean) {
+    if (deleting) return
+    setDeleting(true)
+    setError(null)
+    const ok = await deleteLegacyProject(project.id, includeDriveFile)
+    setDeleting(false)
+    if (!ok) {
+      setError('המחיקה נכשלה')
+      return
     }
+    setDeleteMode('none')
+    onMutated()
   }
 
   return (
-    <button
-      type="button"
-      onClick={(e) => {
-        // Live inside the GroupCard's role=button container — a
-        // bubble would also toggle the expand state. Stop the
-        // propagation so the copy action stays isolated.
-        e.stopPropagation()
-        void copy()
-      }}
-      className={
-        copied
-          ? BTN_BASE +
-            ' border border-success/40 bg-success/10 text-success'
-          : BTN_SECONDARY
-      }
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.2 }}
+      className="group rounded-xl border border-white/5 bg-white/[0.02] transition-colors hover:bg-white/[0.04]"
     >
-      <Copy className="h-3.5 w-3.5" />
-      {copied ? 'הועתק' : 'העתקת קישור שיתוף'}
-    </button>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="block w-full cursor-pointer rounded-t-xl px-4 pb-2 pt-4 text-right transition-colors hover:bg-white/[0.015]"
+        aria-label="פתיחת הסבב לתיקונים"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span
+                title={`סבב מספר ${project.roundNumber}`}
+                className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-primary/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary"
+              >
+                <Hash className="h-2.5 w-2.5" />
+                {project.roundNumber}
+              </span>
+              <h3 className="truncate text-sm font-medium text-foreground">
+                {project.title || 'ללא שם'}
+              </h3>
+            </div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+              <span className="truncate" dir="ltr" title={project.videoFileName}>
+                {project.videoFileName}
+              </span>
+              <span aria-hidden>·</span>
+              <span dir="ltr">{formatBytes(project.videoSizeBytes)}</span>
+              <span aria-hidden>·</span>
+              <span>{formatRelative(project.createdAt)}</span>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {project.locked && (
+              <span
+                title="הסבב סגור לתיקונים. הלקוח לא יכול להוסיף תיקונים חדשים"
+                className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-400"
+              >
+                <Lock className="h-2.5 w-2.5" />
+                נעול
+              </span>
+            )}
+            {project.hasPassword && (
+              <span
+                title="הסבב מוגן בסיסמה"
+                className="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] text-accent"
+              >
+                <Lock className="h-2.5 w-2.5" />
+                סיסמה
+              </span>
+            )}
+            {project.notesCount > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
+                <MessageSquare className="h-2.5 w-2.5" />
+                {project.notesCount}
+              </span>
+            )}
+            <span className="hidden text-[11px] font-medium text-primary/80 sm:inline">
+              לפתיחת סבב התיקונים לחצו כאן
+            </span>
+            <ChevronLeft
+              className="h-3.5 w-3.5 text-muted-foreground/40 transition-all group-hover:translate-x-[-2px] group-hover:text-muted-foreground"
+              aria-hidden
+            />
+          </div>
+        </div>
+      </button>
+
+      <div className="px-4 pb-4">
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <div
+            dir="ltr"
+            className="min-w-0 flex-1 truncate rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-1.5 font-mono text-[11px]"
+            title={shareUrl}
+          >
+            {shareUrl}
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => void copy()}
+              aria-label={copied ? 'הועתק' : 'העתקת קישור'}
+              title={copied ? 'הועתק' : 'העתקת קישור'}
+              className={ICON_BTN + (copied ? ICON_BTN_OK : ICON_BTN_IDLE)}
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
+            <a
+              href={shareUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="פתיחת קישור"
+              title="פתיחת קישור"
+              className={ICON_BTN + ICON_BTN_IDLE}
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+            <button
+              type="button"
+              onClick={() => {
+                setError(null)
+                setDeleteMode('choosing')
+              }}
+              aria-label="מחיקה"
+              title="מחיקה"
+              className={
+                ICON_BTN +
+                'text-muted-foreground hover:bg-destructive/10 hover:text-destructive'
+              }
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {deleteMode === 'choosing' && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            className="mt-3 overflow-hidden"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2">
+              <div className="text-[11px] leading-relaxed text-destructive">
+                <strong className="font-semibold">למחוק את הסבב?</strong>
+                <span className="ms-1 text-destructive/80">
+                  הקישור יפסיק לעבוד מיד.
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setDeleteMode('none')}
+                  disabled={deleting}
+                  className="rounded-md px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground disabled:opacity-50"
+                >
+                  ביטול
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDelete(false)}
+                  disabled={deleting}
+                  title="הקובץ עצמו נשאר ב-Drive שלכם"
+                  className="rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-foreground transition-colors hover:bg-white/[0.08] disabled:opacity-50"
+                >
+                  מהמערכת בלבד
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDelete(true)}
+                  disabled={deleting}
+                  title="מעביר את הקובץ לפח של Drive, לשחזור עד 30 יום"
+                  className="inline-flex items-center gap-1 rounded-md bg-destructive/90 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-destructive disabled:opacity-50"
+                >
+                  {deleting ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3 w-3" />
+                  )}
+                  גם מ-Drive
+                </button>
+              </div>
+            </div>
+            {error && (
+              <div role="alert" className="mt-2 text-[11px] text-destructive">
+                {error}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </div>
+    </motion.div>
   )
 }
 
 /* ──────────────────────────────────────────────────────────────
- *  DriveStorageFooter
+ *  StorageMeter — one slim line under the page title.
+ *    Drive backend: "Google Drive · <email> · used / total ▬ · ניתוק"
+ *      (desktop: ConnectionFooter + StorageIndicator), with the inline
+ *      disconnect confirm.
+ *    R2 backend:    "שטח אחסון בחשבון · used / total ▬"
+ *      (desktop: R2StorageFooter's data, drawn as the same compact chip).
+ *  Drive details show ONLY for the Drive backend — like the app; an R2
+ *  user with an old saved Drive integration sees just our storage.
  * ────────────────────────────────────────────────────────────── */
 
-function DriveStorageFooter({
+function StorageMeter({
+  backend,
   drive,
-  storage,
+  driveStorage,
+  r2Storage,
+  onDisconnected,
 }: {
-  drive: DriveIntegration
-  storage: DriveStorage
+  backend: 'r2' | 'drive'
+  drive: DriveIntegration | null
+  driveStorage: DriveStorage | null
+  r2Storage: { usedBytes: number; limitBytes: number } | null
+  onDisconnected: () => void
 }) {
-  const usedPct = storage.limitBytes
-    ? Math.min(100, (storage.usageBytes / storage.limitBytes) * 100)
-    : 0
-  return (
-    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-xs text-fg-muted">
-      <div className="mb-2 flex items-center justify-between">
-        <span>
-          Drive של{' '}
-          <span dir="ltr" className="text-fg">
+  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleDisconnect() {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await disconnectDrive()
+    } catch (err) {
+      setBusy(false)
+      setError(err instanceof Error ? err.message : 'הניתוק נכשל')
+      return
+    }
+    // Even if disconnectDrive's internal try/catch swallowed an
+    // error and we got here without throwing, we still flip the UI —
+    // the worst case is the user reconnects and overrides the stale
+    // Firestore doc. The fail-safe is "the user is OUT of this Drive
+    // integration locally", which is what the confirm promised.
+    setBusy(false)
+    setConfirmingDisconnect(false)
+    onDisconnected()
+  }
+
+  if (backend === 'drive' && drive) {
+    return (
+      <div className="mt-2">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+          <HardDrive className="h-3 w-3" aria-hidden />
+          <span>Google Drive</span>
+          <span aria-hidden>·</span>
+          <span dir="ltr" className="font-mono">
             {drive.email}
           </span>
-        </span>
-        {/* Numbers + slash in LTR so 4.3 GB / 15 GB doesn't reverse */}
-        <span dir="ltr" className="font-mono text-fg">
-          {formatStorageSize(storage.usageBytes)} /{' '}
-          {formatStorageSize(storage.limitBytes)}
-        </span>
+          {driveStorage && <StorageIndicator storage={driveStorage} />}
+          <span aria-hidden>·</span>
+          {confirmingDisconnect ? (
+            <span className="inline-flex items-center gap-1.5">
+              <span>לנתק את החיבור?</span>
+              <button
+                type="button"
+                onClick={() => void handleDisconnect()}
+                disabled={busy}
+                className="rounded px-2 py-0.5 text-destructive hover:bg-destructive/10 disabled:opacity-50"
+              >
+                {busy ? 'מנתק…' : 'כן, נתק'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmingDisconnect(false)}
+                disabled={busy}
+                className="rounded px-2 py-0.5 text-muted-foreground hover:bg-white/5"
+              >
+                ביטול
+              </button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmingDisconnect(true)}
+              className="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+            >
+              ניתוק
+            </button>
+          )}
+        </div>
+        {error && (
+          <div role="alert" className="mt-1 text-[11px] text-destructive">
+            {error}
+          </div>
+        )}
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-bg-elevated">
-        <div
-          className="h-full bg-primary transition-all"
-          style={{ width: `${usedPct}%` }}
+    )
+  }
+
+  if (backend === 'r2' && r2Storage) {
+    const { usedBytes, limitBytes } = r2Storage
+    const pct = limitBytes ? Math.min(100, (usedBytes / limitBytes) * 100) : 0
+    const high = pct >= 95
+    const med = pct >= 80
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+        <Cloud className="h-3 w-3" aria-hidden />
+        <span>שטח אחסון בחשבון</span>
+        <span aria-hidden>·</span>
+        <UsageChip
+          usedBytes={usedBytes}
+          limitBytes={limitBytes}
+          pct={pct}
+          tone={high ? 'text-destructive' : med ? 'text-amber-400' : 'text-foreground'}
+          barTone={high ? 'bg-destructive' : med ? 'bg-amber-400' : 'bg-primary'}
         />
+        {high && (
+          <span className="text-destructive">
+            · האחסון כמעט מלא. מחקו סבבים ישנים כדי לפנות מקום.
+          </span>
+        )}
       </div>
-    </div>
-  )
+    )
+  }
+
+  return null
 }
 
-/* R2 storage bar — our own storage usage vs the user's quota
- * (100GB Pro / 1.5GB trial). Turns amber/red as it fills. */
-function R2StorageBar({
+/** "used / total" + a slim bar, LTR as one unit so the slash and the two
+ *  sizes don't get reordered by the surrounding RTL text. */
+function UsageChip({
   usedBytes,
   limitBytes,
+  pct,
+  tone,
+  barTone,
 }: {
   usedBytes: number
   limitBytes: number
+  pct: number
+  tone: string
+  barTone: string
 }) {
-  const pct = limitBytes ? Math.min(100, (usedBytes / limitBytes) * 100) : 0
-  const barColor =
-    pct >= 95 ? 'bg-destructive' : pct >= 80 ? 'bg-amber-400' : 'bg-primary'
   return (
-    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-xs text-fg-muted">
-      <div className="mb-2 flex items-center justify-between">
-        <span>שטח אחסון בחשבון</span>
-        <span dir="ltr" className="font-mono text-fg">
-          {formatStorageSize(usedBytes)} / {formatStorageSize(limitBytes)}
+    <span
+      dir="ltr"
+      className={'inline-flex items-center gap-1.5 ' + tone}
+      title={`${formatStorageSize(usedBytes)} בשימוש מתוך ${formatStorageSize(
+        limitBytes,
+      )} (${pct.toFixed(0)}%)`}
+    >
+      <span className="font-mono">
+        {formatStorageSize(usedBytes)} / {formatStorageSize(limitBytes)}
+      </span>
+      <span className="relative h-1 w-16 overflow-hidden rounded-full bg-white/10">
+        <span className={'absolute inset-y-0 left-0 ' + barTone} style={{ width: `${pct}%` }} />
+      </span>
+    </span>
+  )
+}
+
+/** Drive quota chip (desktop: StorageIndicator). Amber over 80%, red
+ *  over 95%. No limit (unlimited Workspace plan) → just the usage. */
+function StorageIndicator({ storage }: { storage: DriveStorage }) {
+  if (!storage.limitBytes) {
+    return (
+      <>
+        <span aria-hidden>·</span>
+        <span title="חשבון Google Workspace ללא הגבלת אחסון">
+          <span dir="ltr" className="font-mono">
+            {formatStorageSize(storage.usageBytes)}
+          </span>{' '}
+          בשימוש
         </span>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-bg-elevated">
-        <div
-          className={`h-full transition-all ${barColor}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      {pct >= 95 && (
-        <div className="mt-2 text-[11px] text-destructive">
-          האחסון כמעט מלא. מחק סבבים ישנים כדי לפנות מקום.
-        </div>
-      )}
-    </div>
+      </>
+    )
+  }
+  const pct = Math.min(100, (storage.usageBytes / storage.limitBytes) * 100)
+  const high = pct >= 95
+  const med = pct >= 80
+  return (
+    <>
+      <span aria-hidden>·</span>
+      <UsageChip
+        usedBytes={storage.usageBytes}
+        limitBytes={storage.limitBytes}
+        pct={pct}
+        tone={high ? 'text-destructive' : med ? 'text-amber-400' : ''}
+        barTone={high ? 'bg-destructive' : med ? 'bg-amber-400' : 'bg-primary/70'}
+      />
+    </>
   )
 }
 
 /* ══════════════════════════════════════════════════════════════
- *  MODALS
+ *  MODALS — the app's modal chrome (backdrop + panel animation)
  * ══════════════════════════════════════════════════════════════ */
 
-function ModalShell({
-  title,
+function AppModal({
   onClose,
+  size = 'md',
   children,
 }: {
-  title: string
   onClose: () => void
+  size?: 'md' | 'lg'
   children: React.ReactNode
 }) {
   useEffect(() => {
@@ -1545,49 +2076,161 @@ function ModalShell({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+  // The backdrop scrolls (tall modals on short phone screens) while the
+  // inner min-h-full flexbox keeps the panel vertically centred.
+  const closeOnBackdrop = (e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) onClose()
+  }
   return (
-    // Backdrop: fades in. We don't gate the inner panel on
-    // AnimatePresence because it lives inside the parent's
-    // conditional render — the parent only mounts ModalShell
-    // when it should be visible, so a single entrance animation
-    // is enough.
     <motion.div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
+      className="fixed inset-0 z-[100] overflow-y-auto bg-black/60 backdrop-blur-sm"
+      onClick={closeOnBackdrop}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.18, ease: 'easeOut' }}
+      transition={{ duration: 0.18 }}
     >
-      <motion.div
-        className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-border bg-bg-elevated p-6"
-        // Subtle entrance — fade + small upward translate. Same
-        // shape the BuyPage signin modal uses, so all in-place
-        // dialogs across the site feel like one family.
-        initial={{ opacity: 0, y: 12, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 12, scale: 0.98 }}
-        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      <div
+        className="flex min-h-full items-center justify-center py-6"
+        onClick={closeOnBackdrop}
       >
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute left-3 top-3 rounded-md p-1.5 text-fg-muted transition-colors hover:bg-bg-card hover:text-fg"
-          aria-label="סגור"
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96, y: 8 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.96, y: 8 }}
+          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+          className={
+            'relative mx-4 w-full overflow-hidden rounded-2xl border border-white/10 bg-background shadow-2xl ' +
+            (size === 'lg' ? 'max-w-lg' : 'max-w-md')
+          }
         >
-          <CloseIcon />
-        </button>
-        <h2 className="mb-5 text-lg font-medium text-fg">{title}</h2>
-        {children}
-      </motion.div>
+          {children}
+        </motion.div>
+      </div>
     </motion.div>
   )
 }
 
+/** Header of the create / add-round modals (kicker + title + ✕). The ✕
+ *  turns red while an upload runs — clicking it then cancels it. */
+function CreateModalHeader({
+  kicker,
+  title,
+  uploading,
+  onClose,
+}: {
+  kicker: string
+  title: string
+  uploading: boolean
+  onClose: () => void
+}) {
+  return (
+    <div className="flex items-center justify-between border-b border-white/5 px-6 py-4">
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+          {kicker}
+        </div>
+        <div className="mt-1 text-base font-medium text-foreground">{title}</div>
+      </div>
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label={uploading ? 'ביטול' : 'סגירה'}
+        className={
+          'flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors ' +
+          (uploading
+            ? 'hover:bg-destructive/10 hover:text-destructive'
+            : 'hover:bg-white/5 hover:text-foreground')
+        }
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
+  )
+}
+
+/** Inline form error — the app's destructive alert box. */
+function FormError({ message }: { message: string }) {
+  return (
+    <div
+      role="alert"
+      className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+    >
+      {message}
+    </div>
+  )
+}
+
+/** Progress panel shown while a video uploads / imports / swaps
+ *  (desktop: NewRevisionModal's ProgressStep). */
+function ProgressStep({
+  label,
+  fileName,
+  pct,
+  backend,
+  showBar = true,
+}: {
+  label: string
+  fileName: string
+  pct: number
+  backend: 'r2' | 'drive'
+  showBar?: boolean
+}) {
+  const p = Math.max(0, Math.min(100, Math.round(pct)))
+  return (
+    <div className="space-y-5 text-center">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+        <Loader2 className="h-7 w-7 animate-spin" strokeWidth={1.8} />
+      </div>
+      <div>
+        <h3 className="text-base font-medium text-foreground">{label}</h3>
+        {fileName && (
+          <p className="mt-1 truncate text-xs text-muted-foreground" dir="ltr">
+            {fileName}
+          </p>
+        )}
+      </div>
+      {showBar && (
+        <div className="space-y-1.5">
+          <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-primary/15">
+            <motion.div
+              className="absolute inset-y-0 right-0 rounded-full bg-primary"
+              animate={{ width: `${p}%` }}
+              transition={{ duration: 0.3, ease: 'easeOut' }}
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            <span dir="ltr">{p}%</span>
+          </p>
+        </div>
+      )}
+      <p className="text-[11px] text-muted-foreground">
+        {backend === 'drive'
+          ? 'הסרטון מועלה ישירות ל-Drive שלכם. לחיצה על ✕ תבטל את ההעלאה.'
+          : 'הסרטון מועלה ונשמר באחסון שלכם. לחיצה על ✕ תבטל את ההעלאה.'}
+      </p>
+    </div>
+  )
+}
+
+/** The label the progress panel shows, derived from the source being
+ *  uploaded + the progress the upload helper reports. */
+function uploadLabel(
+  source: VideoSource,
+  progress: UploadProgress | null,
+  backend: 'r2' | 'drive',
+): string {
+  if (source.kind === 'link') return 'מייבא מ-Google Drive...'
+  if (source.kind === 'drive') return 'מגדיר הרשאות שיתוף...'
+  if (!progress) return 'מתכונן להעלאה...'
+  if (backend === 'r2' && progress.bytesUploaded === 0) {
+    return progress.fraction > 0 ? 'בודק מקום פנוי...' : 'מתכונן להעלאה...'
+  }
+  return backend === 'drive' ? 'מעלה ל-Google Drive...' : 'מעלה את הוידאו...'
+}
+
 /* ──────────────────────────────────────────────────────────────
- *  NewProjectModal — title + password + toggles + optional video
+ *  NewProjectModal — name + password + optional first video + toggles
  * ────────────────────────────────────────────────────────────── */
 
 function NewProjectModal({
@@ -1601,6 +2244,7 @@ function NewProjectModal({
 }) {
   const [title, setTitle] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [watermark, setWatermark] = useState(true)
   const [allowDownload, setAllowDownload] = useState(false)
   const [openInDrive, setOpenInDrive] = useState(false)
@@ -1618,8 +2262,8 @@ function NewProjectModal({
   const abortRef = useRef<AbortController | null>(null)
 
   /** Handle close / cancel — aborts any in-flight upload first
-   *  so the XHRs in driveUpload.ts stop sending bytes, then
-   *  unmounts the modal via the parent. */
+   *  so the XHRs stop sending bytes, then unmounts the modal via
+   *  the parent. */
   function handleClose() {
     if (abortRef.current) {
       abortRef.current.abort()
@@ -1670,26 +2314,20 @@ function NewProjectModal({
         return
       }
 
-      // Got a video — full flow: access token → ensure folder →
-      // (upload OR reuse a Drive-picked file) → set permissions →
-      // create group with the resulting driveFileId. Each step
-      // checks abort so a click on cancel exits at the next yield.
+      // Got a video — full flow: upload (or reuse a Drive-picked /
+      // link-imported file) → create group with the resulting pointer.
+      // Each step checks abort so a click on cancel exits at the next
+      // yield.
       if (controller.signal.aborted) throw new Error('ההעלאה בוטלה')
 
-      let videoFileName: string
-      let videoSizeBytes: number
-      let videoMime: string
       const loc = await uploadRoundVideo(backend, source, controller.signal, setProgress)
-      videoFileName = loc.videoFileName
-      videoSizeBytes = loc.videoSizeBytes
-      videoMime = loc.videoMime
 
       await createProjectGroup({
         ...loc.pointer,
         title: title.trim(),
-        videoFileName,
-        videoSizeBytes,
-        videoMime,
+        videoFileName: loc.videoFileName,
+        videoSizeBytes: loc.videoSizeBytes,
+        videoMime: loc.videoMime,
         videoWidth: loc.videoWidth,
         videoHeight: loc.videoHeight,
         password: password || undefined,
@@ -1702,12 +2340,8 @@ function NewProjectModal({
     } catch (err) {
       setBusy(false)
       setProgress(null)
-      // Suppress the error toast when the user explicitly aborted
-      // — they triggered the cancel, surfacing an error would be
-      // noise. The modal closes itself via the cancel handler in
-      // that case; we just need to keep the form in a sane state
-      // in case the AbortController was triggered by something
-      // other than the close button.
+      // Suppress the error when the user explicitly aborted — they
+      // triggered the cancel, surfacing an error would be noise.
       if (controller.signal.aborted) {
         return
       }
@@ -1715,97 +2349,154 @@ function NewProjectModal({
     }
   }
 
+  const uploading = busy && source.kind !== 'none'
+
   return (
-    <ModalShell title="פרויקט חדש" onClose={handleClose}>
-      <form onSubmit={submit} className="space-y-4">
-        <LabelledField
-          label="שם הפרויקט"
-          value={title}
-          onChange={setTitle}
-          autoFocus
-        />
-        <LabelledField
-          label="סיסמה (אופציונלי)"
-          value={password}
-          onChange={setPassword}
-          type="text"
-          placeholder="ריק = ללא סיסמה"
-        />
-        <VideoSourceField
-          value={source}
-          onChange={setSource}
-          onError={setError}
-          inputRef={fileInputRef}
-          disabled={busy}
-          backend={backend}
-        />
-        <ToggleRow
-          label="חתימת מים על הסרטון"
-          description="מציג את כתובת המייל של הצופה על גבי הוידאו"
-          value={watermark}
-          onChange={setWatermark}
-        />
-        <ToggleRow
-          label="לאפשר הורדה ללקוח"
-          description="מוסיף כפתור 'הורדה' בדף הצפייה הציבורי"
-          value={allowDownload}
-          onChange={setAllowDownload}
-        />
-        {backend === 'drive' && (
-          <ToggleRow
-            label="לאפשר פתיחה ב-Drive"
-            description="מוסיף קישור לפתיחת הסרטון ב-Google Drive"
-            value={openInDrive}
-            onChange={setOpenInDrive}
-          />
-        )}
-        {(progress || (busy && source.kind === 'link')) && (
-          <UploadProgressBar
-            progress={progress ?? { bytesUploaded: 0, totalBytes: 0, fraction: 0 }}
-            fileName={
-              source.kind === 'upload'
-                ? source.file.name
-                : source.kind === 'link'
-                  ? 'מייבא מ-Google Drive…'
-                  : ''
-            }
-          />
-        )}
-        {error && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {error}
+    <AppModal onClose={handleClose} size="md">
+      <CreateModalHeader
+        kicker="— פרויקט חדש"
+        title="פרויקט חדש"
+        uploading={uploading}
+        onClose={handleClose}
+      />
+      <form onSubmit={submit} className="p-6">
+        {/* The form stays mounted (just hidden) while busy so every
+            field keeps its state if the upload fails. */}
+        <div className={busy ? 'hidden' : 'space-y-5'}>
+          <div>
+            <label htmlFor="proj-title" className="mb-1.5 block text-xs text-muted-foreground">
+              שם הפרויקט
+            </label>
+            <input
+              id="proj-title"
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="לדוגמה: סרטון חתונה משפחת כהן"
+              autoFocus
+              className="block w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
+            />
           </div>
-        )}
-        <div className="flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={handleClose}
-            className="text-sm text-fg-muted transition-colors hover:text-fg"
-          >
-            {busy ? 'ביטול ההעלאה' : 'ביטול'}
-          </button>
+
+          <div>
+            <label htmlFor="proj-pwd" className="mb-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Lock className="h-3 w-3" />
+              סיסמה (אופציונלי)
+            </label>
+            <div className="relative">
+              <input
+                id="proj-pwd"
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+                className="block w-full rounded-lg border border-white/10 bg-white/[0.02] py-2.5 pe-3 ps-10 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                aria-label={showPassword ? 'הסתרת סיסמה' : 'הצגת סיסמה'}
+                className="absolute inset-y-0 start-0 flex items-center px-3 text-muted-foreground hover:text-foreground"
+              >
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              הסיסמה תופעל על כל סבבי התיקונים של הפרויקט.
+            </p>
+          </div>
+
+          {/* Web-only: the first round's video can be attached right
+              here (optional — leave empty to create an empty project). */}
+          <div>
+            <div className="mb-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <FileVideo className="h-3 w-3" />
+              סרטון לסבב הראשון (אופציונלי)
+            </div>
+            <VideoSourceField
+              value={source}
+              onChange={setSource}
+              onError={setError}
+              inputRef={fileInputRef}
+              disabled={busy}
+              backend={backend}
+              compact
+            />
+          </div>
+
+          <div className="space-y-2">
+            <ToggleRow
+              icon={Stamp}
+              title="סימן מים על הסרטון"
+              body="המייל של הלקוח יוצג מעל הוידאו (מומלץ, מרתיע הפצה)."
+              value={watermark}
+              onChange={setWatermark}
+            />
+            <ToggleRow
+              icon={Download}
+              title="לאפשר הורדה של הסרטון"
+              body="הלקוח יראה כפתור הורדה מתחת לנגן."
+              value={allowDownload}
+              onChange={setAllowDownload}
+            />
+            {backend === 'drive' && (
+              <ToggleRow
+                icon={FolderOpen}
+                title="לאפשר פתיחה ב-Google Drive"
+                body="הלקוח יקבל קישור ישיר לקובץ ב-Drive שלכם."
+                value={openInDrive}
+                onChange={setOpenInDrive}
+              />
+            )}
+          </div>
+
+          {error && <FormError message={error} />}
+
           <button
             type="submit"
             disabled={busy || !title.trim()}
-            className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
+            className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-background shadow-md shadow-primary/20 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-primary/40"
           >
-            {busy
-              ? source.kind === 'link'
-                ? 'מייבא…'
-                : progress
-                  ? `מעלה ${Math.round(progress.fraction * 100)}%`
-                  : 'יוצר…'
-              : source.kind === 'upload'
-                ? 'יצירה והעלאה'
-                : source.kind === 'link'
-                  ? 'יצירה וייבוא'
-                  : source.kind === 'drive'
-                    ? 'יצירת פרויקט'
-                    : 'יצירת פרויקט ריק'}
+            {source.kind === 'none' ? (
+              <FolderClosed className="h-4 w-4" />
+            ) : (
+              <Upload className="h-4 w-4" />
+            )}
+            יצירת פרויקט
           </button>
+
+          {source.kind === 'none' && (
+            <p className="text-center text-[11px] text-muted-foreground">
+              אחרי היצירה תוכלו להוסיף סבבי תיקונים מתוך כרטיס הפרויקט.
+            </p>
+          )}
         </div>
+
+        {busy &&
+          (source.kind === 'none' ? (
+            <div className="flex flex-col items-center gap-3 py-6 text-center">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+              <div className="text-sm text-muted-foreground">יוצר פרויקט…</div>
+            </div>
+          ) : (
+            <ProgressStep
+              label={uploadLabel(source, progress, backend)}
+              fileName={
+                source.kind === 'upload'
+                  ? source.file.name
+                  : source.kind === 'drive'
+                    ? source.picked.name
+                    : source.kind === 'link'
+                      ? source.url
+                      : ''
+              }
+              pct={(progress?.fraction ?? 0) * 100}
+              backend={backend}
+              showBar={source.kind !== 'drive'}
+            />
+          ))}
       </form>
-    </ModalShell>
+    </AppModal>
   )
 }
 
@@ -1887,85 +2578,68 @@ function AddRoundModal({
   }
 
   return (
-    <ModalShell
-      // Project name lives in the workspace below (and at the top
-      // of the round-detail view if the editor came from there) —
-      // including it in the modal title produced awkward results
-      // when the project name was a number, e.g. "סבב חדש — 1"
-      // read as a dangling math expression. Keep the title clean
-      // and let the call-site context do the disambiguation work.
-      title="סבב חדש"
-      onClose={handleClose}
-    >
-      <form onSubmit={submit} className="space-y-4">
-        <VideoSourceField
-          value={source}
-          onChange={setSource}
-          onError={setError}
-          inputRef={fileInputRef}
-          disabled={busy}
-          backend={backend}
-        />
-        {(progress || (busy && source.kind === 'link')) && (
-          <UploadProgressBar
-            progress={progress ?? { bytesUploaded: 0, totalBytes: 0, fraction: 0 }}
+    <AppModal onClose={handleClose} size="lg">
+      <CreateModalHeader
+        kicker={`— ${group.title || 'ללא שם'}`}
+        title="סבב חדש"
+        uploading={busy}
+        onClose={handleClose}
+      />
+      <form onSubmit={submit} className="p-6">
+        <div className={busy ? 'hidden' : 'space-y-5'}>
+          <VideoSourceField
+            value={source}
+            onChange={setSource}
+            onError={setError}
+            inputRef={fileInputRef}
+            disabled={busy}
+            backend={backend}
+          />
+          {source.kind !== 'none' && (
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              הסבב יישלח באותו קישור של הפרויקט. הלקוח יראה גרסה חדשה לבחירה.
+            </p>
+          )}
+          {error && <FormError message={error} />}
+          {source.kind !== 'none' && (
+            <button
+              type="submit"
+              disabled={busy}
+              className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-background shadow-md shadow-primary/20 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-primary/40"
+            >
+              <Upload className="h-4 w-4" />
+              הוספת סבב
+            </button>
+          )}
+        </div>
+        {busy && (
+          <ProgressStep
+            label={uploadLabel(source, progress, backend)}
             fileName={
               source.kind === 'upload'
                 ? source.file.name
-                : source.kind === 'link'
-                  ? 'מייבא מ-Google Drive…'
-                  : ''
+                : source.kind === 'drive'
+                  ? source.picked.name
+                  : source.kind === 'link'
+                    ? source.url
+                    : ''
             }
+            pct={(progress?.fraction ?? 0) * 100}
+            backend={backend}
+            showBar={source.kind !== 'drive'}
           />
         )}
-        {error && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {error}
-          </div>
-        )}
-        <div className="flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={handleClose}
-            className="text-sm text-fg-muted transition-colors hover:text-fg"
-          >
-            {busy ? 'ביטול ההעלאה' : 'ביטול'}
-          </button>
-          <button
-            type="submit"
-            disabled={busy || source.kind === 'none'}
-            className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
-          >
-            {busy
-              ? source.kind === 'link'
-                ? 'מייבא…'
-                : progress
-                  ? `מעלה ${Math.round(progress.fraction * 100)}%`
-                  : source.kind === 'drive'
-                    ? 'יוצר…'
-                    : 'מעלה…'
-              : source.kind === 'link'
-                ? 'ייבוא סבב'
-                : source.kind === 'drive'
-                  ? 'הוספת סבב'
-                  : 'העלאת סבב'}
-          </button>
-        </div>
       </form>
-    </ModalShell>
+    </AppModal>
   )
 }
 
 /* ──────────────────────────────────────────────────────────────
  *  ReplaceVideoModal — swap the video on an existing round.
  *
- *  Same upload pipeline as AddRound (drop zone + chunked upload +
- *  permissions), but the final server call is `replace-project-
- *  video` instead of `add-round-to-group`. Notes + share token
- *  + lock state on the round are preserved across the swap; only
- *  the underlying Drive file changes. Most editors hit this when
- *  they uploaded the wrong cut and need to fix it without losing
- *  the round's history.
+ *  Same upload pipeline as AddRound, but the final server call is
+ *  `replace-project-video`. Notes + share token + lock state on the
+ *  round are preserved across the swap; only the video changes.
  * ────────────────────────────────────────────────────────────── */
 
 function ReplaceVideoModal({
@@ -1994,6 +2668,16 @@ function ReplaceVideoModal({
       abortRef.current = null
     }
     onClose()
+  }
+
+  function pick(f: File | null) {
+    if (f && f.size > MAX_UPLOAD_BYTES) {
+      setFile(null)
+      setError(`הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}.`)
+      return
+    }
+    setError(null)
+    setFile(f)
   }
 
   async function submit(e: React.FormEvent) {
@@ -2036,145 +2720,104 @@ function ReplaceVideoModal({
     }
   }
 
+  const replaceLabel =
+    progress && progress.fraction >= 1
+      ? 'מחליף את הסרטון...'
+      : !progress || (backend === 'r2' && progress.bytesUploaded === 0)
+        ? progress && progress.fraction > 0
+          ? 'בודק מקום פנוי...'
+          : 'מתכונן להעלאה...'
+        : backend === 'drive'
+          ? 'מעלה ל-Google Drive...'
+          : 'מעלה את הסרטון החדש...'
+
   return (
-    <ModalShell title="החלפת וידאו" onClose={handleClose}>
-      <form onSubmit={submit} className="space-y-4">
-        <div className="rounded-md border border-border bg-bg-card px-3 py-2.5 text-xs text-fg-muted">
-          הוידאו הקודם יוחלף ב-{currentName}. ההערות, קישור
-          השיתוף, הסיסמה ושאר ההגדרות יישמרו ללא שינוי.
-        </div>
-        <DropZone
-          file={file}
-          onPick={(f) => {
-            if (f && f.size > MAX_UPLOAD_BYTES) {
-              setFile(null)
-              setError(
-                `הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}.`,
-              )
-              return
-            }
-            setError(null)
-            setFile(f)
-          }}
-          inputRef={fileInputRef}
-          disabled={busy}
-        />
-        {progress && (
-          <UploadProgressBar progress={progress} fileName={file?.name || ''} />
-        )}
-        {error && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {error}
+    <AppModal onClose={handleClose} size="lg">
+      <div className="flex items-start justify-between gap-3 border-b border-white/5 px-5 pb-3 pt-4">
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            החלפת סרטון
           </div>
-        )}
-        <div className="flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={handleClose}
-            className="text-sm text-fg-muted transition-colors hover:text-fg"
-          >
-            {busy ? 'ביטול ההעלאה' : 'ביטול'}
-          </button>
-          <button
-            type="submit"
-            disabled={busy || !file}
-            className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
-          >
-            {busy
-              ? progress
-                ? `מעלה ${Math.round(progress.fraction * 100)}%`
-                : 'מעלה…'
-              : 'החלפת הוידאו'}
-          </button>
+          <h2 className="mt-1 truncate text-base font-medium text-foreground" title={currentName}>
+            {currentName}
+          </h2>
         </div>
-      </form>
-    </ModalShell>
-  )
-}
-
-/* ──────────────────────────────────────────────────────────────
- *  ConfirmDisconnectDriveModal — replaces the native window.confirm
- *
- *  The previous flow used `window.confirm(...)`. That breaks the
- *  dark theme, prefixes the text with the domain ("www.dmplus.net
- *  says…") which reads as suspicious to non-technical users, and
- *  blocks the entire renderer thread until dismissed. Switched to
- *  a regular themed modal so the disconnect prompt looks like
- *  every other confirmation in the workspace.
- *
- *  The actual disconnectDrive() call moves into here so we can
- *  surface a loading state ("מנתק…") and an inline error message
- *  if the server rejects the request — the native confirm() had
- *  nowhere to put either of those.
- * ────────────────────────────────────────────────────────────── */
-
-function ConfirmDisconnectDriveModal({
-  onClose,
-  onConfirmed,
-}: {
-  onClose: () => void
-  onConfirmed: () => void
-}) {
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function confirm() {
-    setBusy(true)
-    setError(null)
-    try {
-      await disconnectDrive()
-    } catch (err) {
-      setBusy(false)
-      setError(
-        err instanceof Error ? err.message : 'הניתוק נכשל',
-      )
-      return
-    }
-    // Even if disconnectDrive's internal try/catch swallowed an
-    // error and we got here without throwing, we still want to
-    // flip the UI — the worst case is the user reconnects and
-    // overrides the stale Firestore doc. The fail-safe is "the
-    // user is OUT of this Drive integration locally" which is
-    // what the modal promised.
-    onConfirmed()
-  }
-
-  return (
-    <ModalShell title="ניתוק חשבון Google Drive" onClose={onClose}>
-      <p className="text-sm leading-relaxed text-fg-muted">
-        הפרויקטים הקיימים יישארו, אבל לא יהיה אפשר להעלות סבבים
-        חדשים או לגשת לפרוייקטים הקיימים עד קישור חשבון Google
-        מחדש. הקבצים שהועלו עד עכשיו יישארו ב-Drive שלך.
-      </p>
-      {error && (
-        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          {error}
-        </div>
-      )}
-      <div className="mt-6 flex items-center justify-between gap-3">
         <button
           type="button"
-          onClick={onClose}
-          disabled={busy}
-          className="text-sm text-fg-muted transition-colors hover:text-fg disabled:opacity-40"
+          onClick={handleClose}
+          aria-label={busy ? 'ביטול' : 'סגירה'}
+          className={
+            'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors ' +
+            (busy
+              ? 'hover:bg-destructive/10 hover:text-destructive'
+              : 'hover:bg-white/5 hover:text-foreground')
+          }
         >
-          ביטול
-        </button>
-        <button
-          type="button"
-          onClick={() => void confirm()}
-          disabled={busy}
-          className="rounded-md bg-destructive px-5 py-2 text-sm font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-40"
-        >
-          {busy ? 'מנתק…' : 'ניתוק'}
+          <X className="h-4 w-4" />
         </button>
       </div>
-    </ModalShell>
+
+      <form onSubmit={submit} className="space-y-4 p-5">
+        <div className={busy ? 'hidden' : 'space-y-4'}>
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200">
+            {backend === 'drive'
+              ? 'הסרטון הקיים יוחלף בקובץ החדש. הקישור ללקוח, התיקונים שכבר נשלחו, הסיסמה ומספר הסבב, כולם יישמרו. הקובץ הישן יעבור לפח של Drive.'
+              : 'הסרטון הקיים יוחלף בקובץ החדש. הקישור ללקוח, התיקונים שכבר נשלחו, הסיסמה ומספר הסבב, כולם יישמרו.'}
+          </p>
+          {file ? (
+            <FileChip
+              name={file.name}
+              sub={formatBytes(file.size)}
+              onChange={() => fileInputRef.current?.click()}
+            />
+          ) : (
+            <UploadZone
+              onPick={pick}
+              inputRef={fileInputRef}
+              disabled={busy}
+              title="גררו סרטון חדש לכאן"
+              dragTitle="שחררו כדי להחליף"
+              body="או לחצו לבחירת קובץ מהמחשב."
+              cta="בחירת סרטון חדש"
+            />
+          )}
+          {/* One hidden input for both the zone and the chip's
+              "החלפה" button. */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="video/*"
+            className="sr-only"
+            tabIndex={-1}
+            onChange={(e) => pick(e.target.files?.[0] || null)}
+          />
+          {error && <FormError message={error} />}
+          {file && (
+            <button
+              type="submit"
+              disabled={busy || !file}
+              className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-background shadow-md shadow-primary/20 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-primary/40"
+            >
+              <Upload className="h-4 w-4" />
+              החלפת סרטון
+            </button>
+          )}
+        </div>
+        {busy && (
+          <ProgressStep
+            label={replaceLabel}
+            fileName={file?.name || ''}
+            pct={(progress?.fraction ?? 0) * 100}
+            backend={backend}
+          />
+        )}
+      </form>
+    </AppModal>
   )
 }
 
 /* ──────────────────────────────────────────────────────────────
- *  EditGroupModal — password + 3 toggles
+ *  EditGroupModal — password + toggles (desktop: EditProjectGroupModal)
  * ────────────────────────────────────────────────────────────── */
 
 function EditGroupModal({
@@ -2190,10 +2833,10 @@ function EditGroupModal({
 }) {
   // Password input starts BLANK by design — we never show the
   // existing password (we don't even have it; only the hash lives
-  // on the server). The "סיסמה: מופעלת" hint tells the editor
-  // whether one is currently set. Submitting blank = keep existing;
-  // submitting a value = replace; submitting the explicit "clear"
-  // action = remove.
+  // on the server). The "מוגדרת" pill tells the editor whether one
+  // is currently set. Submitting blank = keep existing; submitting
+  // a value = replace; "הסר סיסמה לחלוטין" marks it for removal on
+  // save.
   const [password, setPassword] = useState('')
   const [clearPw, setClearPw] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
@@ -2230,274 +2873,179 @@ function EditGroupModal({
   }
 
   return (
-    <ModalShell title={`עריכת ${group.title}`} onClose={onClose}>
-      <form onSubmit={submit} className="space-y-4">
-        <div>
-          <label className="mb-1.5 block text-xs text-fg-muted">
-            סיסמה
-            {group.hasPassword && (
-              <span className="ms-2 rounded bg-bg-card px-1.5 py-0.5 text-[10px] uppercase">
-                מופעלת
-              </span>
-            )}
-          </label>
-          <div className="relative">
-            <input
-              type={showPassword ? 'text' : 'password'}
-              value={password}
-              onChange={(e) => {
-                setPassword(e.target.value)
-                if (e.target.value) setClearPw(false)
-              }}
-              disabled={clearPw}
-              placeholder={
-                group.hasPassword
-                  ? 'השאר ריק כדי לא לשנות'
-                  : 'ריק = ללא סיסמה'
-              }
-              className="w-full rounded-md border border-border bg-bg-card px-3 py-2.5 pe-10 text-sm text-fg placeholder:text-fg-faint focus:border-fg/30 focus:outline-none disabled:opacity-50"
-            />
-            {/* Eye toggle — same UX the desktop's EditProjectGroup
-                uses. Disabled when "clear password" is on (no
-                point in showing nothing). The button lives in the
-                input padding (pe-10) so it doesn't visually
-                detach from the field. */}
-            <button
-              type="button"
-              tabIndex={-1}
-              onClick={() => setShowPassword((s) => !s)}
-              disabled={clearPw}
-              aria-label={showPassword ? 'הסתר סיסמה' : 'הצג סיסמה'}
-              className="absolute inset-y-0 end-0 flex w-10 items-center justify-center text-fg-muted transition-colors hover:text-fg disabled:opacity-30"
-            >
-              {showPassword ? (
-                <EyeOffIcon className="h-4 w-4" />
-              ) : (
-                <EyeIcon className="h-4 w-4" />
-              )}
-            </button>
+    <AppModal onClose={onClose} size="md">
+      <div className="flex items-start justify-between gap-3 px-5 pb-3 pt-4">
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            עריכת פרויקט
           </div>
-          {/* Hint mirrors the desktop's wording — important so a
-              user who changes the password understands existing
-              client sessions don't get kicked out immediately. */}
-          <p className="mt-1.5 text-[11px] leading-relaxed text-fg-muted">
-            לקוחות שכבר נכנסו עם הסיסמה הקודמת יישארו בפנים עד 6
-            שעות.
-          </p>
-          {group.hasPassword && (
-            <label className="mt-2 flex items-center gap-2 text-xs text-fg-muted">
-              <input
-                type="checkbox"
-                checked={clearPw}
-                onChange={(e) => {
-                  setClearPw(e.target.checked)
-                  if (e.target.checked) setPassword('')
-                }}
-                className="accent-current"
-              />
-              הסרת הסיסמה הקיימת
-            </label>
-          )}
+          <h2 className="mt-1 truncate text-base font-medium text-foreground" title={group.title}>
+            {group.title || 'ללא שם'}
+          </h2>
         </div>
-        <ToggleRow
-          label="חתימת מים"
-          value={watermark}
-          onChange={setWatermark}
-        />
-        <ToggleRow
-          label="לאפשר הורדה"
-          value={allowDownload}
-          onChange={setAllowDownload}
-        />
-        {backend === 'drive' && (
-          <ToggleRow
-            label="לאפשר פתיחה ב-Drive"
-            value={openInDrive}
-            onChange={setOpenInDrive}
-          />
-        )}
-        {error && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {error}
-          </div>
-        )}
-        <div className="flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-sm text-fg-muted hover:text-fg"
-          >
-            ביטול
-          </button>
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
-          >
-            {busy ? 'שומר…' : 'שמירה'}
-          </button>
-        </div>
-      </form>
-    </ModalShell>
-  )
-}
-
-/* ──────────────────────────────────────────────────────────────
- *  ConfirmDeleteModal — round / group / legacy
- * ────────────────────────────────────────────────────────────── */
-
-function ConfirmDeleteModal({
-  target,
-  onClose,
-  onDeleted,
-}: {
-  target:
-    | { kind: 'group'; group: RevisionGroup; storages?: Array<'r2' | 'drive'> }
-    | {
-        kind: 'round'
-        group: RevisionGroup
-        roundId: string
-        storage?: 'r2' | 'drive'
-      }
-    | { kind: 'legacy'; project: LegacyProjectSummary }
-  onClose: () => void
-  onDeleted: () => void
-}) {
-  const [deleteDrive, setDeleteDrive] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const isRound = target.kind === 'round'
-  // Decide the delete UX from what's ACTUALLY being deleted, not the
-  // account's current backend:
-  //   'r2'    → everything is in our storage; one irreversible confirm.
-  //   'drive' → it's on Google Drive; offer the Drive-trash opt-in.
-  //   'mixed' → a project with BOTH kinds of rounds; delete everything
-  //             (including Drive) and just say so.
-  const groupStorages =
-    target.kind === 'group' ? target.storages ?? [] : []
-  const hasR2 = groupStorages.includes('r2')
-  const hasDrive = groupStorages.includes('drive')
-  const mode: 'r2' | 'drive' | 'mixed' =
-    target.kind === 'round'
-      ? target.storage === 'r2'
-        ? 'r2'
-        : 'drive'
-      : target.kind === 'group'
-        ? hasR2 && hasDrive
-          ? 'mixed'
-          : hasR2
-            ? 'r2'
-            : 'drive'
-        : // Legacy single-round projects predate R2 — always Drive.
-          'drive'
-  const title = isRound
-    ? 'מחיקת סבב תיקונים'
-    : target.kind === 'group'
-      ? `מחיקת הפרויקט "${target.group.title}"`
-      : `מחיקת הפרויקט "${target.project.title}"`
-
-  async function confirm() {
-    setBusy(true)
-    setError(null)
-    // Force Drive trash for mixed projects; never for pure-R2; user's
-    // choice for pure-Drive.
-    const effectiveDeleteDrive =
-      mode === 'mixed' ? true : mode === 'r2' ? false : deleteDrive
-    let result: { ok: boolean; error?: string } = { ok: true }
-    if (target.kind === 'round') {
-      result = await deleteRound(target.roundId, effectiveDeleteDrive)
-    } else if (target.kind === 'group') {
-      result = await deleteGroup(target.group.id, effectiveDeleteDrive)
-    } else {
-      const ok = await deleteLegacyProject(
-        target.project.id,
-        effectiveDeleteDrive,
-      )
-      result = { ok }
-    }
-    setBusy(false)
-    if (!result.ok) {
-      setError(result.error || 'המחיקה נכשלה')
-      return
-    }
-    onDeleted()
-  }
-
-  return (
-    <ModalShell title={title} onClose={onClose}>
-      {mode === 'r2' ? (
-        <p className="text-sm leading-relaxed text-fg-muted">
-          {isRound
-            ? 'למחוק את הסבב תיקונים? הסרטון וכל מה שקשור אליו (התיקונים התמונות וההקלטות של הסבב הזה) יימחקו ולא יהיה ניתן לשחזר אותם.'
-            : 'למחוק את הפרויקט? כל הסבבים, הסרטונים וכל מה שקשור אליהם (התיקונים, התמונות וההקלטות) יימחקו ולא יהיה ניתן לשחזר אותם.'}
-        </p>
-      ) : mode === 'mixed' ? (
-        <p className="text-sm leading-relaxed text-fg-muted">
-          בפרויקט הזה יש סבבים גם ב-Google Drive וגם באחסון שלנו. כל
-          הקבצים יימחקו, גם מ-Google Drive וגם מהאחסון, ולא יהיה ניתן
-          לשחזר אותם.
-        </p>
-      ) : (
-        <>
-          <p className="text-sm leading-relaxed text-fg-muted">
-            הקישור הציבורי יפסיק לעבוד מיד. הפעולה לא ניתנת לביטול.
-          </p>
-          <label className="mt-4 flex items-start gap-2 text-xs text-fg-muted">
-            <input
-              type="checkbox"
-              checked={deleteDrive}
-              onChange={(e) => setDeleteDrive(e.target.checked)}
-              className="mt-0.5 accent-current"
-            />
-            <span>
-              למחוק גם את קבצי הוידאו מ-Google Drive (הם יישלחו לסל
-              המחזור של Drive ל-30 ימים, ניתן לשחזר ידנית)
-            </span>
-          </label>
-        </>
-      )}
-      {error && (
-        <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          {error}
-        </div>
-      )}
-      <div className="mt-6 flex items-center justify-between gap-3">
         <button
           type="button"
           onClick={onClose}
           disabled={busy}
-          className="text-sm text-fg-muted hover:text-fg disabled:opacity-40"
+          aria-label="סגירה"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground disabled:opacity-40"
         >
-          ביטול
-        </button>
-        <button
-          type="button"
-          onClick={() => void confirm()}
-          disabled={busy}
-          className="rounded-md bg-destructive px-5 py-2 text-sm font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-40"
-        >
-          {busy ? 'מוחק…' : mode === 'drive' ? 'מחיקה' : 'כן, מחק'}
+          <X className="h-4 w-4" />
         </button>
       </div>
-    </ModalShell>
+
+      <form onSubmit={submit}>
+        <div className="space-y-5 border-t border-white/5 px-5 py-5">
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <label
+                htmlFor="grp-pwd"
+                className="flex items-center gap-1.5 text-xs font-medium text-foreground"
+              >
+                <Lock className="h-3 w-3 text-muted-foreground" />
+                סיסמה לפרויקט
+              </label>
+              <span
+                className={
+                  'rounded-full px-2 py-0.5 text-[10px] ' +
+                  (group.hasPassword
+                    ? 'bg-accent/15 text-accent'
+                    : 'bg-muted-foreground/10 text-muted-foreground')
+                }
+              >
+                {group.hasPassword ? 'מוגדרת' : 'ללא סיסמה'}
+              </span>
+            </div>
+            <div className="relative">
+              <input
+                id="grp-pwd"
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value)
+                  if (e.target.value) setClearPw(false)
+                }}
+                autoComplete="new-password"
+                placeholder={
+                  clearPw
+                    ? 'הסיסמה תוסר בשמירה'
+                    : group.hasPassword
+                      ? 'סיסמה חדשה (השאר ריק אם לא משנים)'
+                      : 'סיסמה חדשה (4 תווים מינימום)'
+                }
+                className="block w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5 pe-10 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
+                disabled={busy || clearPw}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                disabled={clearPw}
+                aria-label={showPassword ? 'הסתרת סיסמה' : 'הצגת סיסמה'}
+                className="absolute inset-y-0 end-0 flex w-10 items-center justify-center text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
+                tabIndex={-1}
+              >
+                {showPassword ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+              </button>
+            </div>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+              לקוחות שכבר נכנסו עם הסיסמה הקודמת יישארו בפנים עד 6 שעות.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <ToggleRow
+              icon={Stamp}
+              title="סימן מים על הסרטון"
+              body="המייל של הלקוח יוצג מעל הוידאו (מומלץ, מרתיע הפצה)."
+              value={watermark}
+              onChange={setWatermark}
+              disabled={busy}
+            />
+            <ToggleRow
+              icon={Download}
+              title="לאפשר הורדה של הסרטון"
+              body="הלקוח יראה כפתור הורדה רגיל בנגן הוידאו."
+              value={allowDownload}
+              onChange={setAllowDownload}
+              disabled={busy}
+            />
+            {backend === 'drive' && (
+              <ToggleRow
+                icon={FolderOpen}
+                title="לאפשר פתיחה ב-Google Drive"
+                body="הלקוח יקבל קישור ישיר לקובץ ב-Drive שלכם (עוקף את ה-watermark)."
+                value={openInDrive}
+                onChange={setOpenInDrive}
+                disabled={busy}
+              />
+            )}
+          </div>
+
+          {error && (
+            <p className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{error}</span>
+            </p>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/5 bg-white/[0.015] px-5 py-3">
+          {group.hasPassword ? (
+            <button
+              type="button"
+              onClick={() => {
+                const next = !clearPw
+                setClearPw(next)
+                if (next) setPassword('')
+              }}
+              disabled={busy}
+              aria-pressed={clearPw}
+              className={
+                'text-xs transition-colors hover:text-destructive disabled:opacity-50 ' +
+                (clearPw ? 'text-destructive' : 'text-muted-foreground')
+              }
+            >
+              {clearPw ? 'ביטול הסרת הסיסמה' : 'הסר סיסמה לחלוטין'}
+            </button>
+          ) : (
+            <span />
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={busy}
+              className="rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground disabled:opacity-50"
+            >
+              ביטול
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-background transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-primary/40"
+            >
+              {busy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCircle2 className="h-4 w-4" />
+              )}
+              שמירה
+            </button>
+          </div>
+        </div>
+      </form>
+    </AppModal>
   )
 }
 
-/* ──────────────────────────────────────────────────────────────
- *  RoundDetailModal — notes browser for a single round
- *
- *  Mirrors the desktop's ProjectDetailView but trimmed to fit a
- *  modal. Shows every note the client(s) left, lets the editor
- *  flip statuses (new / resolved / question / not-possible), and
- *  toggles the round's lock state. Screenshots + audio attached
- *  to notes are fetched on-demand from the owner-auth media
- *  proxy.
+/* ══════════════════════════════════════════════════════════════
+ *  ROUND DETAIL — notes browser for a single round
+ *  (desktop: ProjectDetailView)
  *
  *  Takes either a {group, round} pair (new-style) or a legacy
  *  standalone project. Both resolve to the same notes endpoint —
  *  the only API difference is which `projectId` we send.
- * ────────────────────────────────────────────────────────────── */
+ * ══════════════════════════════════════════════════════════════ */
 
 function RoundDetailView({
   target,
@@ -2516,27 +3064,28 @@ function RoundDetailView({
   onBack: () => void
   onLockChanged: () => void
   /** Pop the Replace-Video modal for the round currently being
-   *  viewed. The parent handles the actual modal mount so it can
-   *  coexist with other modals (delete confirm etc.) without
-   *  fighting for the same z-stack. */
+   *  viewed. The parent handles the actual modal mount. */
   onRequestReplaceVideo: (projectId: string, currentName: string) => void
 }) {
-  // Resolve the common fields once so the rest of the modal body
-  // doesn't have to switch over `target` on every read.
+  // Resolve the common fields once so the rest of the view doesn't
+  // have to switch over `target` on every read.
   const isLegacy = 'legacy' in target
   const projectId = isLegacy ? target.legacy.id : target.round.id
-  const title = isLegacy
-    ? target.legacy.title || 'ללא שם'
-    : `${target.group.title || 'ללא שם'} · סבב מס׳ ${target.round.roundNumber}`
+  const title = (isLegacy ? target.legacy.title : target.group.title) || 'ללא שם'
+  const roundNumber = isLegacy ? target.legacy.roundNumber : target.round.roundNumber
+  const videoFileName = isLegacy ? target.legacy.videoFileName : target.round.videoFileName
+  const videoSizeBytes = isLegacy ? target.legacy.videoSizeBytes : target.round.videoSizeBytes
   const shareUrl = isLegacy
     ? buildShareUrl(target.legacy.shareToken)
     : `${buildShareUrl(target.group.shareToken)}?r=${target.round.id}`
   const locked = isLegacy ? target.legacy.locked : target.round.locked
+  const { copied, copy } = useCopyLink(shareUrl)
 
   const [notes, setNotes] = useState<OwnerNote[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [busyLock, setBusyLock] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [lightbox, setLightbox] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -2577,10 +3126,14 @@ function RoundDetailView({
   }, [liveNotesCount])
 
   // Esc → back to project list. Same shortcut the editor expects
-  // from any "drill-into" surface across the app.
+  // from any "drill-into" surface across the app. Skipped while one
+  // of this view's own overlays (image lightbox / response dialog)
+  // is open — Esc closes that overlay instead.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onBack()
+      if (e.key !== 'Escape') return
+      if (document.querySelector('[data-rev-overlay]')) return
+      onBack()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -2593,8 +3146,6 @@ function RoundDetailView({
     setBusyLock(false)
     if (r.ok) {
       // Parent reloads the project list with the new lock state.
-      // No auto-navigate-back — the editor stays in the detail
-      // view to continue reviewing notes.
       onLockChanged()
     } else {
       alert(r.error)
@@ -2631,152 +3182,255 @@ function RoundDetailView({
     }
   }
 
-  return (
-    <div className="space-y-6">
-      {/* Back link — first thing the eye lands on, top-right in RTL.
-          Editorial style matches the rest of the page chrome. */}
-      <button
-        type="button"
-        onClick={onBack}
-        className="group inline-flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-fg-muted transition-colors hover:text-fg"
-      >
-        <ChevronRightIcon className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
-        <span>חזרה לפרויקטים</span>
-      </button>
+  const refreshing = notes === null && !loadError
+  const resolvedCount = notes?.filter((n) => n.status === 'resolved').length ?? 0
+  // "לא אפשרי" is a final decision — count it as closed, not open.
+  const notPossibleCount =
+    notes?.filter((n) => n.status === 'not-possible').length ?? 0
+  const totalCount = notes?.length ?? 0
+  const openCount = totalCount - resolvedCount - notPossibleCount
 
-      {/* Title block + action bar */}
-      <div className="flex flex-col gap-4 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate text-2xl font-medium text-fg">{title}</h2>
-          <div className="mt-2 flex items-center gap-2 text-xs">
-            <span className="text-fg-muted">
-              {notes ? `${notes.length} הערות` : 'טוען…'}
-            </span>
-            {locked && (
-              <span className="rounded bg-bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-fg-muted">
-                סגור
+  return (
+    <div className="mx-auto w-full max-w-4xl px-6 pb-8 pt-2 md:pb-10 md:pt-4">
+      {/* Top bar — back button on the right (RTL), refresh on left */}
+      <div className="mb-6 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground"
+        >
+          <ArrowRight className="h-3.5 w-3.5" />
+          חזרה לרשימה
+        </button>
+        <button
+          type="button"
+          onClick={() => setRefreshKey((n) => n + 1)}
+          disabled={refreshing}
+          title="רענון התיקונים"
+          aria-label="רענון"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground disabled:opacity-50"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+
+      {/* Project header — title + round + meta + share link strip */}
+      <div className="mb-6 rounded-2xl border border-white/5 bg-white/[0.02] p-5">
+        {/* On phones the lock button wraps under the title instead of
+            squeezing it (flex-wrap + minimum title width). */}
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3 sm:flex-nowrap">
+          <div className="min-w-[60%] flex-1 sm:min-w-0">
+            <div className="mb-1 flex items-center gap-2">
+              <span
+                title={`סבב מספר ${roundNumber}`}
+                className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-primary/15 px-2 py-0.5 font-mono text-[11px] font-semibold text-primary"
+              >
+                <Hash className="h-3 w-3" />
+                {roundNumber}
               </span>
-            )}
+              <h1
+                className="truncate text-xl font-medium tracking-tight text-foreground"
+                style={{ letterSpacing: '-0.01em' }}
+                title={title}
+              >
+                {title}
+              </h1>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+              <span dir="ltr" className="truncate" title={videoFileName}>
+                {videoFileName}
+              </span>
+              <span aria-hidden>·</span>
+              <span dir="ltr">{formatBytes(videoSizeBytes)}</span>
+            </div>
           </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <CopyShareLinkButton url={shareUrl} />
-          <a
-            href={shareUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={BTN_SECONDARY}
-          >
-            <Eye className="h-3.5 w-3.5" />
-            צפייה בדף הציבורי
-          </a>
-          <button
-            type="button"
-            onClick={() =>
-              onRequestReplaceVideo(
-                projectId,
-                isLegacy ? target.legacy.title : `סבב מס׳ ${target.round.roundNumber}`,
-              )
-            }
-            className={BTN_SECONDARY}
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            החלפת וידאו
-          </button>
-          {/* Lock toggle — red when the round is open (the button
-              CLOSES it) / green when closed (the button RE-OPENS it).
-              Mirrors the desktop app's red/green lock button so the
-              two surfaces feel identical. */}
+          {/* Lock toggle — red "סגירת סבב התיקונים" when open, green
+              "פתיחת סבב התיקונים" when closed. */}
           <button
             type="button"
             onClick={() => void toggleLock()}
             disabled={busyLock}
-            className={locked ? BTN_SUCCESS : BTN_LOCK_CLOSE}
+            className={
+              'inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60 ' +
+              (locked
+                ? 'border-success/40 bg-success/10 text-success hover:bg-success/20'
+                : 'border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/20')
+            }
           >
-            {locked ? (
+            {busyLock ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : locked ? (
               <LockOpen className="h-3.5 w-3.5" />
             ) : (
               <Lock className="h-3.5 w-3.5" />
             )}
-            {busyLock ? '…' : locked ? 'פתיחת הסבב' : 'סגירת הסבב'}
+            {locked ? 'פתיחת סבב התיקונים' : 'סגירת סבב התיקונים'}
           </button>
+        </div>
+
+        {/* Primary action — plays the round on its public review page
+            in a new tab (the page the client sees). Secondary — replace
+            the round's video. */}
+        <div className="mb-3 flex gap-2">
+          <a
+            href={shareUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-background shadow-sm transition-all hover:bg-primary/90"
+          >
+            <PlayCircle className="h-4 w-4" strokeWidth={2.2} />
+            הפעלת הסרטון
+            <span className="hidden text-[11px] font-normal opacity-70 sm:inline">· בחלון חדש</span>
+          </a>
+          <button
+            type="button"
+            onClick={() => onRequestReplaceVideo(projectId, title)}
+            title="העלאת קובץ חדש במקום הסרטון הקיים"
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-white/[0.06]"
+          >
+            <Replace className="h-4 w-4" />
+            החלפת סרטון
+          </button>
+        </div>
+
+        {/* Share URL strip with copy + open icons. */}
+        <div className="flex items-center gap-2">
+          <div
+            dir="ltr"
+            className="min-w-0 flex-1 truncate rounded-md border border-white/5 bg-white/[0.015] px-3 py-2 font-mono text-[11px]"
+            title={shareUrl}
+          >
+            {shareUrl}
+          </div>
+          <button
+            type="button"
+            onClick={() => void copy()}
+            title={copied ? 'הועתק' : 'העתקת קישור'}
+            aria-label="העתקת קישור"
+            className={
+              'inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors ' +
+              (copied
+                ? 'bg-success/15 text-success'
+                : 'text-muted-foreground hover:bg-white/5 hover:text-foreground')
+            }
+          >
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+          <a
+            href={shareUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="פתיחת קישור"
+            aria-label="פתיחת קישור"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
         </div>
       </div>
 
-      {/* Notes list — flows down the page, no inner scroll container.
-          The whole /revisions page scrolls naturally when there are
-          many notes (better than a fixed-height inner scroll the
-          user can lose). */}
-      <div>
-        {loadError ? (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-            {loadError}
-            <button
-              type="button"
-              onClick={() => setRefreshKey((n) => n + 1)}
-              className="ms-3 underline underline-offset-2"
-            >
-              נסה שוב
-            </button>
-          </div>
-        ) : !notes ? (
-          <div className="py-12 text-center text-sm text-fg-muted">
-            טוען הערות…
-          </div>
-        ) : notes.length === 0 ? (
-          <div className="rounded-2xl border border-border bg-bg-card p-12 text-center">
-            <h3 className="text-base font-medium text-fg">
-              עדיין אין הערות
-            </h3>
-            <p className="mx-auto mt-3 max-w-md text-sm text-fg-muted">
-              הערות שלקוחות מוסיפים דרך הקישור הציבורי יופיעו כאן.
-              שלח את הקישור כדי להתחיל.
-            </p>
-            <div className="mt-5">
-              <CopyShareLinkButton url={shareUrl} />
-            </div>
-          </div>
-        ) : (
-          <ul className="space-y-3">
-            {notes.map((note) => (
-              <NoteCard
-                key={note.id}
-                note={note}
-                projectId={projectId}
-                onApplyStatus={(status, payload) =>
-                  void applyStatus(note.id, status, payload)
-                }
-              />
-            ))}
-          </ul>
-        )}
+      {/* Notes section header */}
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <MessageSquare className="h-4 w-4 text-muted-foreground" />
+          תיקונים
+          {totalCount > 0 && (
+            <span className="text-[11px] font-normal text-muted-foreground">
+              ·{' '}
+              <span className="font-mono text-primary">{openCount}</span> פתוחים
+              {resolvedCount > 0 && (
+                <>
+                  {' · '}
+                  <span className="font-mono text-success">{resolvedCount}</span>{' '}
+                  טופלו
+                </>
+              )}
+            </span>
+          )}
+        </h2>
       </div>
+
+      {/* Body — error / loading / empty / list. The whole page
+          scrolls naturally when there are many notes. */}
+      {loadError ? (
+        <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-5 text-center text-xs text-destructive">
+          {loadError}
+          <button
+            type="button"
+            onClick={() => setRefreshKey((n) => n + 1)}
+            className="ms-3 underline underline-offset-2"
+          >
+            ניסיון נוסף
+          </button>
+        </div>
+      ) : !notes ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-label="טוען" />
+        </div>
+      ) : notes.length === 0 ? (
+        <div className="flex flex-col items-center rounded-2xl border border-dashed border-white/10 bg-white/[0.01] px-6 py-14 text-center">
+          <MessageSquare className="mb-3 h-6 w-6 text-muted-foreground/60" />
+          <p className="text-xs text-muted-foreground">
+            עדיין אין תיקונים. כשהלקוח יוסיף תיקון בעמוד ה-review הוא יופיע
+            כאן.
+          </p>
+        </div>
+      ) : (
+        <ul className="space-y-2.5">
+          {notes.map((note) => (
+            <NoteRow
+              key={note.id}
+              note={note}
+              projectId={projectId}
+              onApplyStatus={(status, payload) =>
+                void applyStatus(note.id, status, payload)
+              }
+              onExpandImage={(url) => setLightbox(url)}
+            />
+          ))}
+        </ul>
+      )}
+
+      <AnimatePresence>
+        {lightbox && (
+          <ImageLightbox key="lightbox" url={lightbox} onClose={() => setLightbox(null)} />
+        )}
+      </AnimatePresence>
     </div>
   )
 }
 
-/** Single note card — viewer info, timestamp link, body, optional
- *  screenshot + audio, status pill. Lazy-loads the media via the
- *  owner-auth proxy when the card mounts. */
-function NoteCard({
+/** Single note row — screenshot thumbnail / voice / text, timestamp,
+ *  viewer, status menu. Lazy-loads the media via the owner-auth proxy
+ *  when the row mounts. */
+function NoteRow({
   note,
   projectId,
   onApplyStatus,
+  onExpandImage,
 }: {
   note: OwnerNote
   projectId: string
   onApplyStatus: (status: NoteStatus, editorResponse?: string) => void
+  onExpandImage: (url: string) => void
 }) {
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null)
+  const [screenshotFailed, setScreenshotFailed] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
-  const [responseDraft, setResponseDraft] = useState(
-    note.editorResponse || '',
-  )
-  const [editingResponse, setEditingResponse] = useState<
-    null | 'question' | 'not-possible'
+  const [menuOpen, setMenuOpen] = useState(false)
+  // Open the popover UPWARD when the pill sits low in the viewport, so
+  // the menu isn't clipped off the bottom of the window.
+  const [menuUp, setMenuUp] = useState(false)
+  // Anchor the popover to the pill's left edge (the app's placement —
+  // the pill sits at the row's left end) unless that would run off the
+  // right of a narrow screen, where the pill wraps to the right side.
+  const [menuFromLeft, setMenuFromLeft] = useState(true)
+  const [responseModal, setResponseModal] = useState<
+    null | { kind: 'question' | 'not-possible' }
   >(null)
   // Disclosure for the note's edit history (what the client wrote before).
   const [showHistory, setShowHistory] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   // Fetch screenshot once on mount (or when the file id changes).
   useEffect(() => {
@@ -2798,6 +3452,7 @@ function NoteCard({
         setScreenshotUrl(u)
       } catch {
         // Don't error-toast — just don't render the screenshot.
+        if (!cancelled) setScreenshotFailed(true)
       }
     })()
     return () => {
@@ -2834,68 +3489,196 @@ function NoteCard({
     }
   }, [projectId, note.id, note.audioDriveFileId, note.audioR2Key])
 
-  const ts = formatTimestamp(note.timeSeconds)
-  const dateStr = formatDateLong(note.createdAt)
-
-  function submitResponse(kind: 'question' | 'not-possible') {
-    if (!responseDraft.trim()) {
-      alert(
-        kind === 'question'
-          ? 'יש לכתוב את השאלה'
-          : 'יש לכתוב מדוע אי אפשר',
-      )
-      return
+  // Close the menu when the user clicks anywhere else.
+  useEffect(() => {
+    if (!menuOpen) return
+    function onDown(e: MouseEvent) {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false)
     }
-    onApplyStatus(kind, responseDraft.trim())
-    setEditingResponse(null)
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [menuOpen])
+
+  function toggleMenu() {
+    if (!menuOpen) {
+      // ~180px tall menu (4 items). Flip it up when there's less room
+      // than that below the trigger.
+      const rect = menuRef.current?.getBoundingClientRect()
+      const spaceBelow = rect ? window.innerHeight - rect.bottom : 999
+      setMenuUp(spaceBelow < 200)
+      setMenuFromLeft(!rect || rect.left + 184 <= window.innerWidth)
+    }
+    setMenuOpen((v) => !v)
   }
 
-  // Whole-card color reflects the note's status, matching the
-  // convention used on the public /review page so editors and
-  // clients see the same palette across both surfaces:
-  //   • טופל (resolved)    = yellow
-  //   • שאלה (question)    = sky / blue
-  //   • לא אפשרי (not-possible) = red
-  //   • חדש (new)          = neutral (default border + faint bg)
-  // (Picked over the muted green for "resolved" specifically per
-  // operator's call — yellow feels more celebratory than green
-  // which was reading as a hospital checkmark.)
-  const statusStyles: Record<NoteStatus, string> = {
-    new: 'border-border bg-bg-card',
-    resolved: 'border-yellow-500/30 bg-yellow-500/[0.07]',
-    question: 'border-sky-500/30 bg-sky-500/[0.06]',
-    'not-possible': 'border-red-500/30 bg-red-500/[0.07]',
+  function pickStatus(s: NoteStatus) {
+    setMenuOpen(false)
+    if (s === 'question' || s === 'not-possible') {
+      // These statuses need editor text — open the dialog first.
+      setResponseModal({ kind: s })
+    } else {
+      onApplyStatus(s)
+    }
   }
+
+  const imageSrc = screenshotUrl || note.screenshotDataUrl || null
+  const imagePending =
+    !imageSrc &&
+    !screenshotFailed &&
+    Boolean(note.screenshotDriveFileId || note.screenshotR2Key)
+  const hasAudio = Boolean(note.audioDriveFileId || note.audioR2Key)
+  const ts = formatTimestamp(note.timeSeconds)
+  const isGeneral = !ts
+  const resolved = note.status === 'resolved'
+  const isQuestion = note.status === 'question'
+  const isNotPossible = note.status === 'not-possible'
+
+  // Whole-card color reflects the note's status (same palette as the
+  // public /review page): resolved = yellow, question = sky,
+  // not-possible = red, new = neutral.
+  const containerClass = resolved
+    ? 'border-yellow-500/30 bg-yellow-500/[0.07]'
+    : isQuestion
+      ? 'border-sky-500/20 bg-sky-500/[0.04]'
+      : isNotPossible
+        ? 'border-red-500/30 bg-red-500/[0.06]'
+        : 'border-white/5 bg-white/[0.02] hover:bg-white/[0.035]'
+
   return (
-    <li
-      className={
-        // Full-bleed status color: card border + bg both pick up
-        // the status tint so a note's state reads instantly even
-        // when the editor is scrolling fast through a long list.
-        'rounded-xl border p-4 transition-colors ' +
-        statusStyles[note.status]
-      }
-    >
-      <div className="flex items-start justify-between gap-3">
+    <li className={'rounded-xl border p-3 transition-colors ' + containerClass}>
+      <div className="flex gap-3">
+        {imageSrc ? (
+          <button
+            type="button"
+            onClick={() => onExpandImage(imageSrc)}
+            title="הגדלת התמונה"
+            className="group/thumb relative h-16 w-16 shrink-0 overflow-hidden rounded-md border border-white/10 transition-transform hover:scale-[1.03]"
+          >
+            <img
+              src={imageSrc}
+              alt=""
+              className={'h-full w-full object-cover ' + (resolved ? 'opacity-60' : '')}
+            />
+            <div className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover/thumb:bg-black/20" />
+          </button>
+        ) : imagePending ? (
+          <div
+            aria-hidden
+            className="flex h-16 w-16 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/[0.03] text-muted-foreground/60"
+          >
+            <Loader2 className="h-4 w-4 animate-spin" />
+          </div>
+        ) : hasAudio ? (
+          <div
+            aria-hidden
+            className="flex h-16 w-16 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-primary/[0.04] text-primary/70"
+          >
+            <Mic className="h-5 w-5" />
+          </div>
+        ) : (
+          <div
+            aria-hidden
+            className="flex h-16 w-16 shrink-0 items-center justify-center rounded-md border border-dashed border-white/10 bg-white/[0.02] text-muted-foreground/50"
+          >
+            <MessageSquare className="h-4 w-4" />
+          </div>
+        )}
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
-            <span dir="ltr" className="text-fg">
-              {note.viewerEmail}
-            </span>
-            <span>·</span>
-            {ts && (
-              <>
-                <span dir="ltr" className="font-mono text-fg">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+              {isGeneral ? (
+                <span
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground/80"
+                  title="הערה כללית, לא מקושרת לזמן ספציפי בסרטון"
+                >
+                  <MessageSquare className="h-2.5 w-2.5" />
+                  כללי
+                </span>
+              ) : (
+                <span
+                  className={
+                    'inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold ' +
+                    (resolved
+                      ? 'text-yellow-400'
+                      : isQuestion
+                        ? 'text-sky-400'
+                        : isNotPossible
+                          ? 'text-red-400'
+                          : 'text-primary')
+                  }
+                >
+                  <PlayCircle className="h-3 w-3 opacity-70" />
                   {ts}
                 </span>
-                <span>·</span>
-              </>
-            )}
-            <span>{dateStr}</span>
+              )}
+              <span
+                dir="ltr"
+                className="truncate text-[10px] text-muted-foreground/80"
+                title={note.viewerEmail}
+              >
+                {note.viewerEmail}
+              </span>
+              <span dir="ltr" className="text-[10px] text-muted-foreground/60">
+                {formatShortDateTime(note.createdAt)}
+              </span>
+            </div>
+
+            {/* Status menu — popover with the four states. The trigger
+                pill shows the current state. Question / not-possible
+                open the response dialog first so the editor can type
+                the message the reviewer will see. */}
+            <div className="relative" ref={menuRef}>
+              <StatusPill status={note.status} onClick={toggleMenu} />
+              {menuOpen && (
+                <div
+                  className={
+                    'absolute z-20 w-44 overflow-hidden rounded-lg border border-white/10 bg-background shadow-2xl ' +
+                    (menuFromLeft ? 'left-0 ' : 'right-0 ') +
+                    (menuUp ? 'bottom-full mb-1' : 'top-full mt-1')
+                  }
+                >
+                  <StatusMenuItem
+                    label="חדש"
+                    icon={Circle}
+                    onClick={() => pickStatus('new')}
+                    active={note.status === 'new'}
+                    tone="muted"
+                  />
+                  <StatusMenuItem
+                    label="טופל"
+                    icon={CheckCircle2}
+                    onClick={() => pickStatus('resolved')}
+                    active={resolved}
+                    tone="yellow"
+                  />
+                  <StatusMenuItem
+                    label="שאלה ללקוח"
+                    icon={MessageSquare}
+                    onClick={() => pickStatus('question')}
+                    active={isQuestion}
+                    tone="sky"
+                  />
+                  <StatusMenuItem
+                    label="לא אפשרי"
+                    icon={AlertTriangle}
+                    onClick={() => pickStatus('not-possible')}
+                    active={isNotPossible}
+                    tone="red"
+                  />
+                </div>
+              )}
+            </div>
           </div>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-fg">
-            {renderNoteText(note.text)}
-          </p>
+          {note.text && (
+            <p
+              className={
+                'whitespace-pre-wrap break-words text-xs leading-relaxed ' +
+                (resolved ? 'text-foreground/75' : 'text-foreground')
+              }
+            >
+              {renderNoteText(note.text)}
+            </p>
+          )}
           {/* Edit history — the client can revise a note; here the editor
               sees that it was edited and can expand every prior version so
               nothing the client originally wrote is lost. */}
@@ -2905,7 +3688,7 @@ function NoteCard({
                 <button
                   type="button"
                   onClick={() => setShowHistory((v) => !v)}
-                  className="inline-flex items-center gap-1 text-[11px] text-fg-muted transition-colors hover:text-fg"
+                  className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
                 >
                   <History className="h-3 w-3" />
                   נערך ·{' '}
@@ -2915,20 +3698,20 @@ function NoteCard({
                   {showHistory ? ' — הסתרה' : ' — הצגה'}
                 </button>
               ) : (
-                <span className="inline-flex items-center gap-1 text-[11px] text-fg-muted">
+                <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                   <History className="h-3 w-3" />
                   נערך
                 </span>
               )}
               {showHistory && Array.isArray(note.history) && (
-                <ol className="mt-1.5 space-y-1.5 border-r-2 border-border pr-3">
+                <ol className="mt-1.5 space-y-1.5 border-r-2 border-white/10 pr-3">
                   {note.history.map((h, i) => (
-                    <li key={i} className="text-xs leading-relaxed text-fg-muted">
+                    <li key={i} className="text-[11px] leading-relaxed text-muted-foreground">
                       <span className="whitespace-pre-wrap break-words">
                         {h.text ? renderNoteText(h.text) : '(ריק)'}
                       </span>
-                      <span className="mr-1.5 text-fg-faint" dir="ltr">
-                        {formatDateLong(h.at)}
+                      <span className="ms-1.5 text-muted-foreground/60" dir="ltr">
+                        {formatShortDateTime(h.at)}
                       </span>
                     </li>
                   ))}
@@ -2936,211 +3719,290 @@ function NoteCard({
               )}
             </div>
           )}
+          {audioUrl && <VoiceNotePlayer src={audioUrl} dimmed={resolved} />}
+          {/* Editor's response — visible on the reviewer side too. */}
+          {note.editorResponse && (isQuestion || isNotPossible) && (
+            <div
+              className={
+                'mt-2 rounded-md border-r-2 px-2.5 py-1.5 text-[11px] leading-relaxed ' +
+                (isQuestion
+                  ? 'border-sky-500/60 bg-sky-500/[0.06] text-sky-100/90'
+                  : 'border-red-500/60 bg-red-500/[0.06] text-red-100/90')
+              }
+            >
+              <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-wide opacity-70">
+                {isQuestion ? 'השאלה שתישלח ללקוח' : 'ההסבר שיישלח ללקוח'}
+              </div>
+              <div className="whitespace-pre-wrap break-words">
+                {note.editorResponse}
+              </div>
+            </div>
+          )}
         </div>
-        <StatusBadge status={note.status} />
       </div>
 
-      {/* Screenshot */}
-      {(screenshotUrl || note.screenshotDataUrl) && (
-        <div className="mt-3 overflow-hidden rounded-lg border border-border">
-          <img
-            src={screenshotUrl || note.screenshotDataUrl || ''}
-            alt=""
-            className="block max-h-72 w-full object-contain"
+      {/* Response dialog — appears when picking question / not-possible.
+          Captures the message and forwards it to applyStatus. */}
+      <AnimatePresence>
+        {responseModal && (
+          <ResponseModal
+            key="response"
+            kind={responseModal.kind}
+            initial={note.editorResponse || ''}
+            onCancel={() => setResponseModal(null)}
+            onSave={(text) => {
+              const kind = responseModal.kind
+              setResponseModal(null)
+              onApplyStatus(kind, text)
+            }}
           />
-        </div>
-      )}
-
-      {/* Audio */}
-      {audioUrl && <VoiceNotePlayer src={audioUrl} className="mt-3" />}
-
-      {/* Existing editor response (status = question / not-possible) */}
-      {note.editorResponse && !editingResponse && (
-        <div className="mt-3 rounded-md border border-border bg-bg-elevated px-3 py-2 text-xs text-fg-muted">
-          <div className="mb-0.5 text-[10px] uppercase tracking-wider text-fg-faint">
-            תגובת העורך
-          </div>
-          <div className="whitespace-pre-wrap text-fg">
-            {note.editorResponse}
-          </div>
-        </div>
-      )}
-
-      {/* Inline response editor */}
-      {editingResponse && (
-        <div className="mt-3 space-y-2">
-          <textarea
-            value={responseDraft}
-            onChange={(e) => setResponseDraft(e.target.value)}
-            rows={2}
-            placeholder={
-              editingResponse === 'question'
-                ? 'איזו שאלה מבהירה ללקוח?'
-                : 'מדוע אי אפשר ליישם?'
-            }
-            className="w-full rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-fg placeholder:text-fg-faint focus:border-fg/30 focus:outline-none"
-            autoFocus
-          />
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setEditingResponse(null)
-                setResponseDraft(note.editorResponse || '')
-              }}
-              className="text-xs text-fg-muted hover:text-fg"
-            >
-              ביטול
-            </button>
-            <button
-              type="button"
-              onClick={() => submitResponse(editingResponse)}
-              className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-bg transition-colors hover:bg-primary-hover"
-            >
-              שליחת תגובה
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Status action buttons */}
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <StatusActionButton
-          label="חדש"
-          active={note.status === 'new'}
-          color="neutral"
-          onClick={() => onApplyStatus('new')}
-        />
-        <StatusActionButton
-          label="טופל"
-          active={note.status === 'resolved'}
-          color="resolved"
-          onClick={() => onApplyStatus('resolved')}
-        />
-        <StatusActionButton
-          label="שאלה"
-          active={note.status === 'question'}
-          color="question"
-          onClick={() => setEditingResponse('question')}
-        />
-        <StatusActionButton
-          label="לא אפשרי"
-          active={note.status === 'not-possible'}
-          color="not-possible"
-          onClick={() => setEditingResponse('not-possible')}
-        />
-      </div>
+        )}
+      </AnimatePresence>
     </li>
   )
 }
 
-function StatusBadge({ status }: { status: NoteStatus }) {
-  // Mirrors the public /review page's badge palette so editor +
-  // client both see the same colors per status. yellow/sky/red
-  // — see NoteCard comment for the rationale.
-  const styles: Record<NoteStatus, { label: string; cls: string }> = {
-    new: {
-      label: 'חדש',
-      cls: 'bg-bg-elevated text-fg-muted',
-    },
-    resolved: {
-      label: 'טופל',
-      cls: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/40',
-    },
-    question: {
-      label: 'שאלה',
-      cls: 'bg-sky-500/15 text-sky-400 border-sky-500/40',
-    },
-    'not-possible': {
-      label: 'לא אפשרי',
-      cls: 'bg-red-500/15 text-red-400 border-red-500/40',
-    },
-  }
-  const s = styles[status]
+/** Current-state badge that doubles as the status-menu trigger. */
+function StatusPill({
+  status,
+  onClick,
+}: {
+  status: NoteStatus
+  onClick: () => void
+}) {
+  const tone =
+    status === 'resolved'
+      ? 'border-yellow-500/40 bg-yellow-500/15 text-yellow-400 hover:bg-yellow-500/20'
+      : status === 'question'
+        ? 'border-sky-500/40 bg-sky-500/10 text-sky-400 hover:bg-sky-500/15'
+        : status === 'not-possible'
+          ? 'border-red-500/40 bg-red-500/15 text-red-400 hover:bg-red-500/20'
+          : 'border-white/10 bg-white/[0.02] text-muted-foreground hover:border-white/20 hover:text-foreground'
+  const label =
+    status === 'resolved'
+      ? 'טופל'
+      : status === 'question'
+        ? 'שאלה'
+        : status === 'not-possible'
+          ? 'לא אפשרי'
+          : 'חדש'
+  const Icon =
+    status === 'resolved'
+      ? CheckCircle2
+      : status === 'question'
+        ? MessageSquare
+        : status === 'not-possible'
+          ? AlertTriangle
+          : Circle
   return (
-    <span
+    <button
+      type="button"
+      onClick={onClick}
+      title="שינוי סטטוס תיקון"
+      aria-haspopup="menu"
       className={
-        'rounded-full border border-transparent px-2.5 py-0.5 text-[10px] uppercase tracking-wider ' +
-        s.cls
+        'inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ' +
+        tone
       }
     >
-      {s.label}
-    </span>
+      <Icon className="h-3 w-3" />
+      {label}
+      <ChevronDown className="h-2.5 w-2.5 opacity-60" />
+    </button>
   )
 }
 
-function StatusActionButton({
+function StatusMenuItem({
   label,
-  active,
-  color,
+  icon: Icon,
   onClick,
+  active,
+  tone,
 }: {
   label: string
-  active: boolean
-  // Names map to the four note statuses, not abstract semantic
-  // colors, so the call-site stays readable: a "resolved" button
-  // uses the yellow palette (per the public-review convention),
-  // a "question" button uses sky, etc.
-  color: 'neutral' | 'resolved' | 'question' | 'not-possible'
+  icon: typeof CheckCircle2
   onClick: () => void
+  active: boolean
+  tone: 'muted' | 'yellow' | 'sky' | 'red'
 }) {
-  const colorOn: Record<typeof color, string> = {
-    neutral: 'border-fg/30 bg-bg-elevated text-fg',
-    resolved: 'border-yellow-500/40 bg-yellow-500/10 text-yellow-400',
-    question: 'border-sky-500/40 bg-sky-500/10 text-sky-400',
-    'not-possible': 'border-red-500/40 bg-red-500/10 text-red-400',
-  }
+  const toneClass =
+    tone === 'yellow'
+      ? 'text-yellow-400'
+      : tone === 'sky'
+        ? 'text-sky-400'
+        : tone === 'red'
+          ? 'text-red-400'
+          : 'text-muted-foreground'
   return (
     <button
       type="button"
       onClick={onClick}
       className={
-        'inline-flex h-9 shrink-0 items-center justify-center whitespace-nowrap rounded-lg border px-3.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ' +
-        (active
-          ? colorOn[color]
-          : 'border-border text-fg-muted hover:border-border-strong hover:bg-bg-elevated hover:text-fg')
+        'flex w-full items-center gap-2 px-3 py-2 text-right text-[11px] transition-colors ' +
+        (active ? 'bg-white/[0.04] ' : '') +
+        'hover:bg-white/[0.05]'
       }
     >
-      {label}
+      <Icon className={'h-3.5 w-3.5 shrink-0 ' + toneClass} />
+      <span className="flex-1 text-foreground">{label}</span>
+      {active && <Check className="h-3 w-3 text-muted-foreground/70" />}
     </button>
+  )
+}
+
+/** Response dialog — opened when the editor picks "שאלה ללקוח" or
+ *  "לא אפשרי". The text is shown to the reviewer on the public review
+ *  page; it's required for these statuses, so save stays disabled
+ *  until something is typed. */
+function ResponseModal({
+  kind,
+  initial,
+  onCancel,
+  onSave,
+}: {
+  kind: 'question' | 'not-possible'
+  initial: string
+  onCancel: () => void
+  onSave: (text: string) => void
+}) {
+  const [text, setText] = useState(initial)
+  const isQuestion = kind === 'question'
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  return (
+    <motion.div
+      data-rev-overlay=""
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 px-4 py-6 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 8 }}
+        transition={{ duration: 0.18 }}
+        className="w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-background shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-white/5 px-5 py-4">
+          <div className="min-w-0 flex-1">
+            <div
+              className={
+                'text-[10px] font-medium uppercase tracking-[0.16em] ' +
+                (isQuestion ? 'text-sky-400' : 'text-amber-400')
+              }
+            >
+              {isQuestion ? 'שאלה ללקוח' : 'תיקון לא אפשרי'}
+            </div>
+            <div className="mt-1 text-sm font-medium text-foreground">
+              {isQuestion ? 'מה תרצו לשאול את הלקוח?' : 'הסבירו למה לא ניתן לבצע'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label="סגירה"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-white/5 hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="space-y-3 p-5">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            autoFocus
+            rows={4}
+            placeholder={
+              isQuestion
+                ? 'לדוגמה: באיזה גוון בדיוק להחליף את הצבע? יש לכם דוגמה?'
+                : 'לדוגמה: הפריים המבוקש לא קיים בחומר הגולמי. צריך לצלם מחדש.'
+            }
+            className="block w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"
+          />
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            הטקסט הזה יופיע ללקוח ב-/review מתחת לתיקון.
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-white/5 bg-white/[0.015] px-5 py-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+          >
+            ביטול
+          </button>
+          <button
+            type="button"
+            onClick={() => onSave(text.trim())}
+            disabled={!text.trim()}
+            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-background transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:bg-primary/40"
+          >
+            <Check className="h-4 w-4" />
+            שמירה ושליחה
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}
+
+/** Screenshot lightbox — click outside or Esc closes. */
+function ImageLightbox({ url, onClose }: { url: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <motion.div
+      data-rev-overlay=""
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[110] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onClose()
+        }}
+        aria-label="סגירה"
+        className="absolute right-4 top-12 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+      >
+        <X className="h-5 w-5" />
+      </button>
+      <motion.img
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.96 }}
+        transition={{ duration: 0.18 }}
+        src={url}
+        alt="צילום פריים מוגדל"
+        className="max-h-[88vh] max-w-[92vw] rounded-lg border border-white/10 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </motion.div>
   )
 }
 
 /* ══════════════════════════════════════════════════════════════
  *  SHARED PRIMITIVES
  * ══════════════════════════════════════════════════════════════ */
-
-function LabelledField({
-  label,
-  value,
-  onChange,
-  type = 'text',
-  placeholder,
-  autoFocus,
-}: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  type?: string
-  placeholder?: string
-  autoFocus?: boolean
-}) {
-  return (
-    <div>
-      <label className="mb-2 block text-[10px] font-medium uppercase tracking-[0.18em] text-fg-muted">
-        {label}
-      </label>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        autoFocus={autoFocus}
-        className="block w-full border-b border-border bg-transparent px-0 py-2 text-base text-fg placeholder:text-fg-faint/50 transition-colors focus:border-accent focus:outline-none"
-      />
-    </div>
-  )
-}
 
 /**
  * VideoSource — the unified result of the video chooser. The editor
@@ -3159,15 +4021,15 @@ export type VideoSource =
 
 /**
  * VideoSourceField — two-way video chooser used by the new-project and
- * add-round modals. A segmented toggle switches between:
- *   - "העלאת קובץ": the existing drag-and-drop uploader (DropZone).
- *   - "בחירה מ-Google Drive": opens the Google Picker so the editor
- *     can select a video that's ALREADY in their Drive — no re-upload,
- *     no 2 GB cap (the cap only protects browser memory during an
- *     upload, which the Drive path skips entirely).
+ * add-round modals (desktop: NewRevisionModal's IdleStep). A segmented
+ * toggle switches between:
+ *   - "העלאת קובץ": drag-and-drop / click uploader.
+ *   - Drive backend: "בחירה מ-Google Drive" (Google Picker, no re-upload).
+ *   - R2 backend:    "ייבוא מקישור" (public Drive link → our storage).
  *
  * Switching tabs clears the current selection so the submit button
- * never acts on a stale value from the other source.
+ * never acts on a stale value from the other source. `compact` is the
+ * smaller variant used inside the new-project form.
  */
 function VideoSourceField({
   value,
@@ -3176,6 +4038,7 @@ function VideoSourceField({
   disabled = false,
   inputRef,
   backend,
+  compact = false,
 }: {
   value: VideoSource
   onChange: (v: VideoSource) => void
@@ -3183,6 +4046,7 @@ function VideoSourceField({
   disabled?: boolean
   inputRef: React.RefObject<HTMLInputElement>
   backend: 'r2' | 'drive'
+  compact?: boolean
 }) {
   // The second tab differs by backend: Drive users pick an existing
   // Drive file (Picker); R2 users paste a public Drive link that
@@ -3209,9 +4073,9 @@ function VideoSourceField({
       const picked = await pickVideoFromDrive(at.accessToken)
       // null = user cancelled the picker; leave the current state.
       if (!picked) return
-      // Enforce the same 2 GB cap as the upload path. The Picker
-      // reports the file's real size, so we can reject oversize
-      // files before they're ever wired into a project.
+      // Enforce the same cap as the upload path. The Picker reports
+      // the file's real size, so we can reject oversize files before
+      // they're ever wired into a project.
       if (picked.sizeBytes > 0 && picked.sizeBytes > MAX_UPLOAD_BYTES) {
         onError(
           `הקובץ גדול מהמותר (מקסימום ${formatBytes(MAX_UPLOAD_BYTES)}). בחרו קובץ קטן יותר.`,
@@ -3230,12 +4094,35 @@ function VideoSourceField({
     }
   }
 
+  function pickFile(f: File | null) {
+    if (!f) {
+      onChange({ kind: 'none' })
+      return
+    }
+    if (f.size > MAX_UPLOAD_BYTES) {
+      onChange({ kind: 'none' })
+      onError(
+        `הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}. ` +
+          'לקבצים גדולים יותר בחרו אותם ישירות מ-Google Drive.',
+      )
+      return
+    }
+    onError(null)
+    onChange({ kind: 'upload', file: f })
+  }
+
   const driveFile = value.kind === 'drive' ? value.picked : null
+  const uploadFile = value.kind === 'upload' ? value.file : null
 
   return (
     <div>
       {/* Segmented source toggle with a sliding copper indicator */}
-      <div className="relative mb-3 grid grid-cols-2 rounded-md border border-border bg-bg-card p-1">
+      <div
+        className={
+          'relative grid grid-cols-2 rounded-lg border border-white/10 bg-white/[0.02] p-1 ' +
+          (compact ? 'mb-3' : 'mb-5')
+        }
+      >
         {(['upload', secondMode] as const).map((m) => {
           const active = mode === m
           return (
@@ -3244,19 +4131,19 @@ function VideoSourceField({
               type="button"
               disabled={disabled}
               onClick={() => switchMode(m)}
-              className="relative flex items-center justify-center gap-2 rounded px-3 py-2 text-xs font-medium disabled:cursor-not-allowed"
+              className="relative flex items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-medium disabled:cursor-not-allowed"
             >
               {active && (
                 <motion.span
-                  layoutId="vs-tab-indicator"
+                  layoutId={compact ? 'vs-tab-indicator-compact' : 'vs-tab-indicator'}
                   transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-                  className="absolute inset-0 rounded bg-primary"
+                  className="absolute inset-0 rounded-md bg-primary"
                 />
               )}
               <span
                 className={
                   'relative z-10 flex items-center gap-2 transition-colors ' +
-                  (active ? 'text-bg' : 'text-fg-muted hover:text-fg')
+                  (active ? 'text-background' : 'text-muted-foreground hover:text-foreground')
                 }
               >
                 {m === 'upload' ? (
@@ -3284,104 +4171,140 @@ function VideoSourceField({
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, x: mode === 'upload' ? 10 : -10 }}
           transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+          className={compact ? '' : 'text-center'}
         >
           {mode === 'link' ? (
-            <div className="rounded-xl border-2 border-border bg-bg-card px-5 py-6">
-              <label className="mb-2 block text-xs font-medium text-fg">
-                קישור Google Drive ציבורי
-              </label>
-              <input
-                type="url"
-                dir="ltr"
-                inputMode="url"
-                placeholder="https://drive.google.com/file/d/..."
-                disabled={disabled}
-                value={value.kind === 'link' ? value.url : ''}
-                onChange={(e) => {
-                  const url = e.target.value.trim()
-                  onError(null)
-                  onChange(url ? { kind: 'link', url } : { kind: 'none' })
-                }}
-                className="w-full rounded-md border border-border bg-bg px-3 py-2 text-left text-sm text-fg outline-none focus:border-primary"
-              />
-              <p className="mt-2 text-xs leading-relaxed text-fg-muted">
-                הסרטון חייב להיות משותף ל"כל מי שיש לו את הקישור". המערכת
-                תבדוק את גודל הקובץ ואת המקום הפנוי, ואז תעביר אותו
-                לאחסון שלנו, בלי להוריד ולהעלות מחדש.
-              </p>
-            </div>
+            compact ? (
+              <div>
+                <input
+                  type="url"
+                  dir="ltr"
+                  inputMode="url"
+                  placeholder="https://drive.google.com/file/d/..."
+                  disabled={disabled}
+                  value={value.kind === 'link' ? value.url : ''}
+                  onChange={(e) => {
+                    const url = e.target.value.trim()
+                    onError(null)
+                    onChange(url ? { kind: 'link', url } : { kind: 'none' })
+                  }}
+                  className="w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-left text-sm text-foreground outline-none focus:border-primary"
+                />
+                <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                  קישור לסרטון המשותף ל"כל מי שיש לו את הקישור". המערכת תבדוק
+                  את הגודל ואת המקום הפנוי ותעביר אותו לאחסון שלנו.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                  <LinkIcon className="h-7 w-7" strokeWidth={1.8} />
+                </div>
+                <h3 className="text-base font-medium text-foreground">
+                  ייבוא מקישור Google Drive
+                </h3>
+                <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-muted-foreground">
+                  הדביקו קישור לסרטון המשותף ל"כל מי שיש לו את הקישור".
+                  המערכת תבדוק את הגודל ואת המקום הפנוי ותעביר אותו לאחסון
+                  שלנו, בלי להוריד ולהעלות מחדש. כל גודל שנכנס במכסה.
+                </p>
+                <input
+                  type="url"
+                  dir="ltr"
+                  inputMode="url"
+                  placeholder="https://drive.google.com/file/d/..."
+                  disabled={disabled}
+                  value={value.kind === 'link' ? value.url : ''}
+                  onChange={(e) => {
+                    const url = e.target.value.trim()
+                    onError(null)
+                    onChange(url ? { kind: 'link', url } : { kind: 'none' })
+                  }}
+                  className="mt-5 w-full rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 text-left text-sm text-foreground outline-none focus:border-primary"
+                />
+              </>
+            )
           ) : mode === 'upload' ? (
-            <DropZone
-              file={value.kind === 'upload' ? value.file : null}
-              onPick={(f) => {
-                if (!f) {
-                  onChange({ kind: 'none' })
-                  return
-                }
-                if (f.size > MAX_UPLOAD_BYTES) {
-                  onChange({ kind: 'none' })
-                  onError(
-                    `הקובץ גדול מהמותר. המקסימום הוא ${formatBytes(MAX_UPLOAD_BYTES)}. ` +
-                      'לקבצים גדולים יותר בחרו אותם ישירות מ-Google Drive.',
-                  )
-                  return
-                }
-                onError(null)
-                onChange({ kind: 'upload', file: f })
-              }}
-              inputRef={inputRef}
+            <>
+              {uploadFile ? (
+                <FileChip
+                  name={uploadFile.name}
+                  sub={formatBytes(uploadFile.size)}
+                  onChange={() => inputRef.current?.click()}
+                  disabled={disabled}
+                />
+              ) : (
+                <UploadZone
+                  onPick={pickFile}
+                  inputRef={inputRef}
+                  disabled={disabled}
+                  compact={compact}
+                  title="גררו סרטון לכאן"
+                  dragTitle="שחררו כדי להעלות"
+                  body="או לחצו לבחירת קובץ מהמחשב. הסרטון יעלה לאחסון, כל גודל שנכנס במכסה."
+                  cta="בחירת קובץ"
+                />
+              )}
+              <input
+                ref={inputRef}
+                type="file"
+                accept="video/*"
+                className="sr-only"
+                tabIndex={-1}
+                onChange={(e) => pickFile(e.target.files?.[0] || null)}
+              />
+            </>
+          ) : driveFile ? (
+            <FileChip
+              name={driveFile.name}
+              sub={driveFile.sizeBytes > 0 ? formatBytes(driveFile.sizeBytes) : 'מ-Google Drive'}
+              onChange={() => void openPicker()}
               disabled={disabled}
             />
-          ) : driveFile ? (
-            // Picked-from-Drive state — mirrors DropZone's picked layout.
-            <div className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-border bg-bg-card px-6 py-10 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                <VideoFileIcon className="h-6 w-6" />
-              </div>
-              <div className="min-w-0 max-w-full">
-                <div className="truncate text-sm font-medium text-fg">
-                  {driveFile.name}
-                </div>
-                <div className="mt-1 text-xs text-fg-muted">
-                  {driveFile.sizeBytes > 0 ? (
-                    <bdi dir="ltr">{formatBytes(driveFile.sizeBytes)}</bdi>
-                  ) : (
-                    'מ-Google Drive'
-                  )}
-                </div>
-              </div>
-              {!disabled && (
-                <button
-                  type="button"
-                  onClick={openPicker}
-                  className="text-xs text-fg-muted underline-offset-2 transition-colors hover:text-fg hover:underline"
-                >
-                  החלפת בחירה
-                </button>
-              )}
-            </div>
-          ) : (
-            // Empty Drive state — single CTA that opens the Picker.
+          ) : compact ? (
             <button
               type="button"
               disabled={disabled || picking}
-              onClick={openPicker}
-              className="group flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-border bg-bg-card px-6 py-10 text-center transition-all hover:border-fg/30 hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => void openPicker()}
+              className="group flex w-full items-center gap-3 rounded-xl border border-dashed border-white/15 bg-white/[0.02] px-4 py-3.5 text-right transition-colors hover:border-primary/50 hover:bg-white/[0.03] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-bg-elevated text-fg-muted transition-colors group-hover:bg-primary/10 group-hover:text-primary">
-                <HardDrive className="h-7 w-7" />
-              </div>
-              <div>
-                <div className="text-sm font-medium text-fg">
-                  {picking
-                    ? 'פותח את Google Drive…'
-                    : 'בחירת סרטון מ-Google Drive'}
-                </div>
-                <div className="mt-1 text-xs text-fg-muted">
-                  בוחרים קובץ קיים, בלי להעלות מחדש
-                </div>
-              </div>
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                {picking ? <Loader2 className="h-4 w-4 animate-spin" /> : <HardDrive className="h-4 w-4" />}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium text-foreground">
+                  {picking ? 'פותח את Google Drive…' : 'בחירה מ-Google Drive'}
+                </span>
+                <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                  בחרו סרטון שכבר נמצא ב-Drive שלכם, בלי להעלות מחדש.
+                </span>
+              </span>
             </button>
+          ) : (
+            <>
+              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                <HardDrive className="h-7 w-7" strokeWidth={1.8} />
+              </div>
+              <h3 className="text-base font-medium text-foreground">
+                בחירה מ-Google Drive
+              </h3>
+              <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-muted-foreground">
+                בחרו סרטון שכבר נמצא ב-Drive שלכם, בלי להעלות מחדש.
+              </p>
+              <button
+                type="button"
+                disabled={disabled || picking}
+                onClick={() => void openPicker()}
+                className="mt-6 inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-background shadow-md shadow-primary/20 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {picking ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <HardDrive className="h-4 w-4" />
+                )}
+                {picking ? 'פותח את Google Drive…' : 'בחירה מ-Drive'}
+              </button>
+            </>
           )}
         </motion.div>
       </AnimatePresence>
@@ -3389,31 +4312,29 @@ function VideoSourceField({
   )
 }
 
-/** Large drag-and-drop file picker. Bigger visual presence than
- *  FileFieldPicker — meant for modals where uploading is the
- *  primary action (add-round, replace-video) rather than one
- *  field among many (new-project).
- *
- *  States:
- *    - empty / idle: dashed border + upload icon + prompt
- *    - dragging-over: solid primary border + tinted bg
- *    - file picked: filename + size badge + "replace" link
- *    - disabled (during upload): muted, no interactions
- *
- *  Accepts the file from either drop event OR the hidden
- *  <input type=file>, so users who prefer the click flow get the
- *  same experience.
- */
-function DropZone({
-  file,
+/** Drag-and-drop / click video picker (desktop: the IdleStep drop
+ *  zone). The whole zone is the affordance — click anywhere opens the
+ *  file picker, drop anywhere accepts the file. The CTA is a <span> so
+ *  a click on it bubbles to the zone (one picker, not two). The
+ *  hidden <input type=file> lives with the caller (`inputRef`). */
+function UploadZone({
   onPick,
   inputRef,
   disabled = false,
+  compact = false,
+  title,
+  dragTitle,
+  body,
+  cta,
 }: {
-  file: File | null
   onPick: (f: File | null) => void
   inputRef: React.RefObject<HTMLInputElement>
   disabled?: boolean
+  compact?: boolean
+  title: string
+  dragTitle: string
+  body: string
+  cta: string
 }) {
   const [dragOver, setDragOver] = useState(false)
 
@@ -3426,419 +4347,230 @@ function DropZone({
     if (dropped) onPick(dropped)
   }
 
-  return (
-    <div>
-      <label className="mb-2 flex items-center justify-between text-xs text-fg-muted">
-        <span>קובץ וידאו</span>
-        <span className="text-fg-faint">כל גודל שנכנס במכסה</span>
-      </label>
-      {/* The whole zone is the affordance — click anywhere opens
-          the file picker, drop anywhere accepts the file. We use
-          a div + role=button (not a real <button>) because a
-          button can't legally contain the "replace" button shown
-          when a file is already picked. */}
+  const zoneProps = {
+    role: 'button' as const,
+    tabIndex: disabled ? -1 : 0,
+    'aria-disabled': disabled || undefined,
+    onClick: () => {
+      if (!disabled) inputRef.current?.click()
+    },
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (disabled) return
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        inputRef.current?.click()
+      }
+    },
+    onDragEnter: (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (!disabled) setDragOver(true)
+    },
+    onDragOver: (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (!disabled) setDragOver(true)
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.currentTarget === e.target) setDragOver(false)
+    },
+    onDrop: handleDrop,
+  }
+
+  if (compact) {
+    return (
       <div
-        role="button"
-        tabIndex={disabled ? -1 : 0}
-        onClick={() => {
-          if (!disabled) inputRef.current?.click()
-        }}
-        onKeyDown={(e) => {
-          if (disabled) return
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault()
-            inputRef.current?.click()
-          }
-        }}
-        onDragEnter={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          if (!disabled) setDragOver(true)
-        }}
-        onDragOver={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          if (!disabled) setDragOver(true)
-        }}
-        onDragLeave={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          setDragOver(false)
-        }}
-        onDrop={handleDrop}
+        {...zoneProps}
         className={
-          'group relative flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-10 text-center transition-all ' +
-          (disabled
-            ? 'cursor-not-allowed border-border bg-bg-card/40 opacity-60'
-            : dragOver
-              ? 'border-primary bg-primary/10 scale-[1.01]'
-              : file
-                ? 'border-border bg-bg-card hover:border-fg/20'
-                : 'cursor-pointer border-border bg-bg-card hover:border-fg/30 hover:bg-bg-elevated')
+          'group flex cursor-pointer items-center gap-3 rounded-xl border border-dashed px-4 py-3.5 text-right transition-colors ' +
+          (dragOver
+            ? 'border-primary bg-primary/[0.06]'
+            : 'border-white/15 bg-white/[0.02] hover:border-primary/50 hover:bg-white/[0.03]')
         }
       >
-        {file ? (
-          <>
-            {/* File picked — show filename + size in a clean
-                row, with a "replace" action to swap it out. */}
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <VideoFileIcon className="h-6 w-6" />
-            </div>
-            <div className="min-w-0 max-w-full">
-              <div className="truncate text-sm font-medium text-fg">
-                {file.name}
-              </div>
-              <div className="mt-1 text-xs text-fg-muted">
-                <bdi dir="ltr">{formatBytes(file.size)}</bdi>
-              </div>
-            </div>
-            {!disabled && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  inputRef.current?.click()
-                }}
-                className="text-xs text-fg-muted underline-offset-2 transition-colors hover:text-fg hover:underline"
-              >
-                החלפת קובץ
-              </button>
-            )}
-          </>
-        ) : (
-          <>
-            <div
-              className={
-                'flex h-14 w-14 items-center justify-center rounded-2xl transition-colors ' +
-                (dragOver
-                  ? 'bg-primary/20 text-primary'
-                  : 'bg-bg-elevated text-fg-muted group-hover:bg-primary/10 group-hover:text-primary')
-              }
-            >
-              <UploadIcon className="h-7 w-7" />
-            </div>
-            <div>
-              <div className="text-sm font-medium text-fg">
-                {dragOver ? 'שחרר כאן' : 'גרור קובץ וידאו לכאן'}
-              </div>
-              <div className="mt-1 text-xs text-fg-muted">
-                או <span className="text-primary">לחץ כדי לבחור</span> מהמחשב
-              </div>
-            </div>
-          </>
-        )}
+        <span
+          className={
+            'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-primary transition-colors ' +
+            (dragOver ? 'bg-primary/20' : 'bg-primary/10')
+          }
+        >
+          <FileVideo className="h-4 w-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium text-foreground">
+            {dragOver ? dragTitle : title}
+          </span>
+          <span className="mt-0.5 block text-[11px] text-muted-foreground">
+            או לחצו לבחירת קובץ מהמחשב
+          </span>
+        </span>
       </div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="video/*"
-        className="sr-only"
-        onChange={(e) => onPick(e.target.files?.[0] || null)}
+    )
+  }
+
+  return (
+    <div
+      {...zoneProps}
+      className={
+        'group flex cursor-pointer flex-col items-center rounded-2xl border border-dashed px-6 py-8 text-center transition-colors ' +
+        (dragOver
+          ? 'border-primary bg-primary/[0.06]'
+          : 'border-white/15 bg-white/[0.02] hover:border-primary/50 hover:bg-white/[0.03]')
+      }
+    >
+      <div
+        className={
+          'mb-4 flex h-14 w-14 items-center justify-center rounded-2xl text-primary transition-colors ' +
+          (dragOver ? 'bg-primary/20' : 'bg-primary/10')
+        }
+      >
+        <FileVideo className="h-7 w-7" strokeWidth={1.8} />
+      </div>
+      <h3 className="text-base font-medium text-foreground">
+        {dragOver ? dragTitle : title}
+      </h3>
+      <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-muted-foreground">
+        {body}
+      </p>
+      <span className="mt-6 inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-background shadow-md shadow-primary/20 transition-all group-hover:bg-primary/90">
+        <Upload className="h-4 w-4" />
+        {cta}
+      </span>
+    </div>
+  )
+}
+
+/** Picked-file chip with a "החלפה" action (desktop: ReadyStep chip). */
+function FileChip({
+  name,
+  sub,
+  onChange,
+  disabled,
+}: {
+  name: string
+  sub: string
+  onChange: () => void
+  disabled?: boolean
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] p-3 text-right">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <FileVideo className="h-4 w-4" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium text-foreground" dir="ltr">
+          {name}
+        </div>
+        <div className="text-[11px] text-muted-foreground">
+          <bdi dir="ltr">{sub}</bdi>
+        </div>
+      </div>
+      {!disabled && (
+        <button
+          type="button"
+          onClick={onChange}
+          className="shrink-0 rounded-md px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+        >
+          החלפה
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** Icon + title/body + the app's Switch. The whole row flips the
+ *  switch; the switch itself stays a real control for keyboard /
+ *  screen-reader users. */
+function ToggleRow({
+  icon: Icon,
+  title,
+  body,
+  value,
+  onChange,
+  disabled,
+}: {
+  icon: typeof Lock
+  title: string
+  body: string
+  value: boolean
+  onChange: (next: boolean) => void
+  disabled?: boolean
+}) {
+  return (
+    <div
+      onClick={() => !disabled && onChange(!value)}
+      className={
+        'flex w-full items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] p-3 transition-colors ' +
+        (disabled
+          ? 'cursor-not-allowed opacity-50'
+          : 'cursor-pointer hover:border-white/10 hover:bg-white/[0.04]')
+      }
+    >
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <Icon className="h-4 w-4" strokeWidth={2} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-foreground">{title}</div>
+        <div className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+          {body}
+        </div>
+      </div>
+      <Switch
+        checked={value}
+        onChange={onChange}
+        disabled={disabled}
+        label={title}
       />
     </div>
   )
 }
 
-function ToggleRow({
-  label,
-  description,
-  value,
-  onChange,
-}: {
-  label: string
-  description?: string
-  value: boolean
-  onChange: (v: boolean) => void
-}) {
-  return (
-    <label className="flex cursor-pointer items-start justify-between gap-3 rounded-md border border-border bg-bg-card px-3 py-2.5 hover:border-fg/20">
-      <div>
-        <div className="text-sm text-fg">{label}</div>
-        {description && (
-          <div className="mt-0.5 text-xs text-fg-muted">{description}</div>
-        )}
-      </div>
-      <Switch checked={value} onChange={onChange} />
-    </label>
-  )
-}
-
-/** Custom squared switch — mirrors the desktop Switch (built on
- *  Radix), but without the dependency. Same visual: square track
- *  with rounded corners, tile-shaped thumb, copper "on" state
- *  with a soft halo glow. The whole component is a real <button>
- *  so it's keyboard-operable + screen-reader-friendly (role and
- *  aria-checked attributes get the right state).
- *
- *  RTL note: thumb starts on the right of the track (RTL inline
- *  direction) and slides LEFT to the "on" position. Physical
- *  translate so the animation feels identical in any language. */
+/** The app's squared switch (desktop: components/ui/Switch.tsx, a Radix
+ *  Switch) redrawn as a plain <button role="switch"> with the same
+ *  classes. RTL: the thumb starts on the right and slides left. */
 function Switch({
   checked,
   onChange,
   disabled,
+  label,
 }: {
   checked: boolean
   onChange: (next: boolean) => void
   disabled?: boolean
+  label?: string
 }) {
-  // Use framer-motion so the toggle's thumb animation is
-  // declarative + interruptible. Plain CSS `transition-transform`
-  // works in most cases, but it occasionally snaps on the very
-  // first interaction (some browsers skip the transition when
-  // the className is replaced rather than mutated). Framer's
-  // animate prop reliably triggers on every state change.
   return (
-    <motion.button
+    <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       disabled={disabled}
       onClick={(e) => {
-        e.preventDefault()
+        // The row's onClick already flips on a wrapper click; stop the
+        // bubble so a click exactly on the switch doesn't double-toggle.
+        e.stopPropagation()
         if (!disabled) onChange(!checked)
       }}
-      // Tap-down feedback — track contracts by 2% for a moment.
-      // Mirrors the "press" feel users expect from a physical
-      // toggle. whileTap is interruptible: if the user releases
-      // mid-press the animation snaps right back.
-      whileTap={disabled ? undefined : { scale: 0.95 }}
-      // Track color transition handled by framer too. CSS
-      // transition-colors works fine here but we want the same
-      // spring physics as the thumb so the whole switch feels
-      // unified.
-      animate={{
-        backgroundColor: checked
-          ? 'var(--primary)'
-          : 'rgba(255,255,255,0.04)',
-        borderColor: checked ? 'var(--primary)' : 'var(--border)',
-      }}
-      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
       className={
-        'relative mt-0.5 inline-flex h-5 w-10 shrink-0 items-center rounded-md border ' +
-        (disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer')
+        'peer relative inline-flex h-5 w-10 shrink-0 cursor-pointer items-center rounded-md border transition-colors duration-300 ' +
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ' +
+        'disabled:cursor-not-allowed disabled:opacity-50 ' +
+        'before:absolute before:inset-0 before:rounded-md before:bg-primary/40 before:blur-md before:transition-opacity before:duration-300 ' +
+        (checked
+          ? 'border-primary bg-primary before:opacity-100'
+          : 'border-border bg-white/[0.04] before:opacity-0')
       }
     >
-      {/* Soft halo glow when "on" — absolutely positioned so it
-          doesn't shift the track's box. */}
-      <motion.span
-        aria-hidden="true"
-        animate={{ opacity: checked ? 1 : 0 }}
-        transition={{ duration: 0.22 }}
-        className="pointer-events-none absolute inset-0 rounded-md bg-primary/40 blur-md"
+      <span
+        className={
+          'pointer-events-none relative z-10 block h-3.5 w-3.5 rounded-sm shadow-lg ring-0 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] ' +
+          (checked ? '-translate-x-5 bg-background' : 'translate-x-0 bg-foreground/95')
+        }
       />
-      {/* Thumb — tile-shaped, ~18 px travel from right to left.
-          x is a transform so it animates smoothly on the GPU;
-          the spring curve gives a small overshoot for a snappy
-          physical feel (matches the desktop's Radix switch). */}
-      <motion.span
-        aria-hidden="true"
-        animate={{
-          x: checked ? -18 : -3,
-          backgroundColor: checked
-            ? 'var(--bg)'
-            : 'rgba(245,239,230,0.95)',
-        }}
-        transition={{
-          x: {
-            type: 'spring',
-            stiffness: 500,
-            damping: 32,
-            mass: 0.8,
-          },
-          backgroundColor: { duration: 0.22 },
-        }}
-        className="pointer-events-none relative z-10 block h-3.5 w-3.5 rounded-sm shadow-lg"
-      />
-    </motion.button>
-  )
-}
-
-function UploadProgressBar({
-  progress,
-  fileName,
-}: {
-  progress: UploadProgress
-  fileName: string
-}) {
-  const pct = Math.round(progress.fraction * 100)
-  return (
-    <div className="rounded-md border border-border bg-bg-card p-3">
-      <div className="mb-1.5 flex items-center justify-between text-xs">
-        <span className="truncate text-fg-muted">{fileName}</span>
-        <span dir="ltr" className="font-mono text-fg">
-          {pct}%
-        </span>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-bg-elevated">
-        <div
-          className="h-full bg-primary transition-all"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-    </div>
-  )
-}
-
-/* ══════════════════════════════════════════════════════════════
- *  ICONS (inline SVG to skip icon-library dependency)
- * ══════════════════════════════════════════════════════════════ */
-
-function DriveIcon({ className }: { className?: string }) {
-  // Stylized Drive triangle — recognisable silhouette without
-  // shipping the brand-colored asset. Stroke matches text size.
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="m12 3 7 12-3.5 6h-7L5 15 12 3Z" />
-      <path d="M12 3 5 15h7" />
-    </svg>
-  )
-}
-
-function CloseIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-4 w-4"
-    >
-      <path d="M18 6 6 18M6 6l12 12" />
-    </svg>
-  )
-}
-
-function ChevronDownIcon({ className }: { className?: string }) {
-  // Used by GroupCard as the expand affordance. Rotates 180° via
-  // a Tailwind transform when the card is open — single glyph,
-  // two visual states, no PNG asset needed.
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="m6 9 6 6 6-6" />
-    </svg>
-  )
-}
-
-function EyeIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
-      <circle cx="12" cy="12" r="3" />
-    </svg>
-  )
-}
-
-function EyeOffIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
-      <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
-      <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
-      <line x1="2" y1="2" x2="22" y2="22" />
-    </svg>
-  )
-}
-
-function UploadIcon({ className }: { className?: string }) {
-  // Tray-with-up-arrow — universally read as "upload" across
-  // OS icon sets. Used in the drag-and-drop zone's empty state.
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-      <polyline points="17 8 12 3 7 8" />
-      <line x1="12" y1="3" x2="12" y2="15" />
-    </svg>
-  )
-}
-
-function VideoFileIcon({ className }: { className?: string }) {
-  // File-with-play-triangle — for the drop zone's "file picked"
-  // state. Reads as "this is a video file" at a glance.
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-      <polyline points="14 2 14 8 20 8" />
-      <polygon points="10 11 16 14.5 10 18" />
-    </svg>
-  )
-}
-
-function ChevronRightIcon({ className }: { className?: string }) {
-  // Used by the round-detail view's back link. Points RIGHT
-  // because in an RTL document, "back" navigates rightward (to
-  // the start of the reading direction). Mirrors what the desktop
-  // app's back-button arrow does.
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="m9 18 6-6-6-6" />
-    </svg>
+    </button>
   )
 }
 
@@ -3846,26 +4578,35 @@ function ChevronRightIcon({ className }: { className?: string }) {
  *  Misc utilities
  * ══════════════════════════════════════════════════════════════ */
 
-function formatDateShort(ts: number): string {
+/** "ממש עכשיו" / "לפני 5 דק׳" / "לפני 3 ימים" / "12 בספט׳" — the
+ *  app's relative time format for cards and round rows. */
+function formatRelative(ts: number): string {
   if (!ts) return ''
+  const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+  if (diffSec < 60) return 'ממש עכשיו'
+  const diffMin = Math.floor(diffSec / 60)
+  if (diffMin < 60) return `לפני ${diffMin} דק׳`
+  const diffH = Math.floor(diffMin / 60)
+  if (diffH < 24) return `לפני ${diffH} שע׳`
+  const diffD = Math.floor(diffH / 24)
+  if (diffD < 7) return `לפני ${diffD} ימים`
   try {
     return new Date(ts).toLocaleDateString('he-IL', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
+      day: 'numeric',
+      month: 'short',
     })
   } catch {
     return ''
   }
 }
 
-function formatDateLong(ts: number): string {
+/** "28.09, 14:05" — note + note-history timestamps (app format). */
+function formatShortDateTime(ts: number): string {
   if (!ts) return ''
   try {
     return new Date(ts).toLocaleString('he-IL', {
       day: '2-digit',
       month: '2-digit',
-      year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
     })
