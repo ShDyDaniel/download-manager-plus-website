@@ -4,6 +4,8 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App.tsx'
 import './fonts.css'
 import './index.css'
+// The redesign (scoped under .fl — pages that keep the old look are untouched).
+import './styles/fl.css'
 import { captureRefFromUrl } from './lib/referral'
 
 // Capture a partner referral (?ref=<code>) as early as possible so it

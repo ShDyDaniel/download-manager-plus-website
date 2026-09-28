@@ -1,0 +1,35 @@
+/* generated from the prototype (scratchpad/site/pages/trial.css) by port/build_css.py */
+.fl .pg-trial .tr-wrap{max-width:32.5rem;margin:0 auto;padding:clamp(1.75rem,5vw,3.5rem) clamp(1rem,4vw,1.5rem) 0}
+.fl .pg-trial .tr-card{text-align:center;padding:clamp(1.625rem,4vw,2.375rem) clamp(1.25rem,4vw,2.25rem)}
+.fl .pg-trial .tr-mark{position:relative;width:4.25rem;height:4.25rem;margin:0 auto 1rem}
+.fl .pg-trial .tr-mark img{width:4.25rem;height:4.25rem}
+.fl .pg-trial .tr-badge{position:absolute;bottom:0;inset-inline-end:-0.75rem;width:2rem;height:2rem;border-radius:50%;background:#2a211a;border:0.1875rem solid var(--card);color:var(--cu);display:grid;place-items:center}
+.fl .pg-trial .tr-badge .ic{width:1rem;height:1rem}
+.fl .pg-trial .tr-badge.ok{background:#1d2a22;color:var(--ok)}
+.fl .pg-trial .tr-badge.warn{background:#2e2716;color:var(--warn)}
+.fl .pg-trial .tr-badge.err{background:#321d1a;color:var(--err)}
+.fl .pg-trial .tr-badge.spin .ic{animation:pgTrialSpin .9s linear infinite}
+@keyframes pgTrialSpin{to{transform:rotate(360deg)}}
+.fl .pg-trial .tr-h{font-weight:800;font-size:clamp(1.625rem,3.6vw,2rem);line-height:1.15;letter-spacing:-.01em;margin:0 0 0.625rem;text-wrap:balance}
+.fl .pg-trial .tr-p{color:var(--tx2);font-size:1.0312rem;line-height:1.65;margin:0 auto;max-width:40ch}
+.fl .pg-trial .tr-date{font-weight:700;color:var(--tx)}
+.fl .pg-trial .tr-fine{margin:0.5rem 0 0;font-size:0.8438rem;color:var(--mu)}
+.fl .pg-trial .tr-btns{margin-top:1.375rem}
+.fl .pg-trial .tr-note{margin-top:1.375rem;text-align:start}
+.fl .pg-trial .tr-note .ic{margin-top:0.125rem;color:var(--mu)}
+.fl .pg-trial .tr-note.ok .ic{color:var(--ok)}
+.fl .pg-trial .ui{font-weight:600;color:var(--tx)}
+.fl .pg-trial .tr-where{list-style:none;margin:1.125rem 0 0;padding:0.875rem 1rem;display:grid;gap:0.625rem;text-align:start;background:var(--bg);border:0.0625rem solid var(--ln2);border-radius:0.875rem}
+.fl .pg-trial .tr-where li{display:flex;gap:0.625rem;align-items:flex-start;color:var(--tx2);font-size:0.9375rem;line-height:1.55}
+.fl .pg-trial .tr-where .ic{color:var(--cu);margin-top:0.1875rem;width:1rem;height:1rem}
+.fl .pg-trial .tr-word{margin:0.875rem 0 0;text-align:center;font-size:0.7812rem;letter-spacing:.08em;color:var(--mu2)}
+.fl .pg-trial .tr-ref{margin:clamp(2.25rem,6vw,3.5rem) auto 0;border:0.0625rem dashed #4a3c30;border-radius:0.875rem;background:rgba(0,0,0,.2)}
+.fl .pg-trial .tr-ref summary{cursor:pointer;padding:0.75rem 1rem;font-size:0.8438rem;color:var(--tx2);list-style:none;display:flex;align-items:center;gap:0.5rem}
+.fl .pg-trial .tr-ref summary::-webkit-details-marker{display:none}
+.fl .pg-trial .tr-ref summary::before{content:"+";color:var(--cu);font-weight:700;width:0.875rem;text-align:center}
+.fl .pg-trial .tr-ref[open] summary::before{content:"–"}
+.fl .pg-trial .tr-ref-body{padding:0 1rem 1rem;display:grid;gap:0.75rem}
+.fl .pg-trial .tr-ref-body p{margin:0}
+.fl .pg-trial .tr-ref .tbl{font-size:0.8438rem}
+.fl .pg-trial .tr-ref .tbl td:first-child,.fl .pg-trial .tr-ref .tbl td:nth-child(2){color:var(--mu)}
+.fl .pg-trial .tr-ref .tbl td:nth-child(2){white-space:nowrap}

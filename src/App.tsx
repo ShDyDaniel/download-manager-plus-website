@@ -9,13 +9,8 @@ import {
 } from 'react-router-dom'
 import { captureRefFromUrl, getStoredRef } from './lib/referral'
 import { trackPageview } from './lib/pageview'
-import { Hero } from './components/Hero'
-import { RevisionsHighlight } from './components/RevisionsHighlight'
-import { Features } from './components/Features'
-import { QuickStart } from './components/QuickStart'
-import { FAQ } from './components/FAQ'
-import { Footer } from './components/Footer'
-import { SiteHeader } from './components/SiteHeader'
+import { HomePage } from './pages/HomePage'
+import { DownloadGateProvider } from './components/site/DownloadGate'
 import { SitePopup } from './components/SitePopup'
 import {
   AccessibilityWidget,
@@ -63,6 +58,10 @@ const CollabLandingPage = lazy(() =>
   })),
 )
 const DrivePickerPage = lazy(() => import('./pages/DrivePickerPage'))
+const FaqPage = lazy(() => import('./pages/FaqPage'))
+const TermsPage = lazy(() => import('./pages/TermsPage'))
+const PrivacyPage = lazy(() => import('./pages/PrivacyPage'))
+const AccessibilityPage = lazy(() => import('./pages/AccessibilityPage'))
 const PartnerPage = lazy(() => import('./pages/PartnerPage'))
 const DeviceCheckPage = lazy(() => import('./pages/DeviceCheckPage'))
 const SystemCheckPage = lazy(() => import('./pages/SystemCheckPage'))
@@ -119,17 +118,18 @@ function App() {
     // of the page content. MotionConfig lets the accessibility menu's
     // "stop animations" toggle reduce framer-motion animation globally.
     <MotionConfig reducedMotion={reduceMotion ? 'always' : 'never'}>
+      <DownloadGateProvider>
       <div className="relative">
-        {/* The header belongs to the marketing/app shell only.
-            Standalone surfaces (partner dashboard, client review,
-            picker) render their own chrome. */}
-        {!isChromelessRoute(location.pathname) && <SiteHeader />}
+        {/* Redesigned pages render their own header/footer through
+            <FlPage> (src/components/site). The announcement popup
+            belongs to the marketing shell only. */}
         {!isChromelessRoute(location.pathname) && <SitePopup />}
         <AnimatedRoutes />
         {/* Accessibility menu — required for Israeli sites (IS 5568).
             Rendered globally so it's reachable from every page. */}
         <AccessibilityWidget />
       </div>
+      </DownloadGateProvider>
     </MotionConfig>
   )
 }
@@ -257,19 +257,11 @@ function AnimatedRoutes() {
       >
         <Suspense fallback={null}>
         <Routes location={location}>
-          <Route
-            path="/"
-            element={
-              <div className="relative">
-                <Hero />
-                <RevisionsHighlight />
-                <Features />
-                <QuickStart />
-                <FAQ />
-                <Footer />
-              </div>
-            }
-          />
+          <Route path="/" element={<HomePage />} />
+          <Route path="/faq" element={<FaqPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/accessibility" element={<AccessibilityPage />} />
           <Route path="/buy" element={<BuyPage />} />
           <Route path="/contact" element={<ContactPage />} />
           {/* Marketing landing for the desktop "סנכרון אוטומטי" tab —

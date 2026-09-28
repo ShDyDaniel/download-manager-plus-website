@@ -1,0 +1,16 @@
+/* generated from the prototype (scratchpad/site/pages/drive-picker.css) by port/build_css.py */
+.fl .pg-drive-picker .dp{max-width:27.5rem;margin:0 auto;padding:clamp(1rem,4vw,2.5rem) 1rem 0}
+.fl .pg-drive-picker .dp-box{min-height:clamp(13.75rem,40vh,21.25rem);display:grid;place-items:center;align-content:center;gap:0.875rem;text-align:center;padding:1.75rem 1.375rem;background:var(--card);border:0.0625rem solid var(--ln);border-radius:var(--r)}
+.fl .pg-drive-picker .dp-box .ic{width:1.875rem;height:1.875rem;color:var(--cu)}
+.fl .pg-drive-picker .dp-box p{margin:0;font-size:1rem;line-height:1.6;color:var(--tx2);max-width:32ch}
+.fl .pg-drive-picker .dp-box.ok .ic{color:var(--ok)}
+.fl .pg-drive-picker .dp-box.ok p{color:var(--tx)}
+.fl .pg-drive-picker .dp-box.mu .ic{color:var(--mu)}
+.fl .pg-drive-picker .dp-box.err .ic{color:var(--err)}
+.fl .pg-drive-picker .spin{animation:dpSpin .9s linear infinite}
+@keyframes dpSpin{to{transform:rotate(360deg)}}
+.fl .pg-drive-picker .dp-proto{margin:0.875rem auto 0;padding:0.5rem 0.75rem;border:0.0625rem dashed #4a3c30;border-radius:0.875rem;background:rgba(0,0,0,.2);color:var(--mu);font-size:0.7812rem;text-align:center;max-width:100%}
+.fl .pg-drive-picker .dp-errs{display:grid;gap:0.5rem;justify-items:center}
+.fl .pg-drive-picker .dp-errs .seg{display:flex;flex-wrap:wrap;justify-content:center;gap:0.25rem;border:0;background:none;padding:0}
+.fl .pg-drive-picker .dp-errs .seg button{border:0.0625rem solid var(--ln);border-radius:62.4375rem;padding:0.25rem 0.6875rem;font-size:0.75rem}
+.fl .pg-drive-picker .dp-errs .seg button.on{background:#3a2d22;border-color:var(--cu);color:var(--tx)}

@@ -1,0 +1,61 @@
+/* generated from the prototype (scratchpad/site/pages/support.css) by port/build_css.py */
+.fl .pg-support .sl,.fl .pg-device-check .sl,.fl .pg-system-check .sl{max-width:62.5rem;padding-top:clamp(1rem,2.5vw,1.75rem)}
+.fl .pg-support .sl-card,.fl .pg-device-check .sl-card,.fl .pg-system-check .sl-card{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);padding:0;overflow:hidden;text-align:start}
+.fl .pg-support .sl-main,.fl .pg-device-check .sl-main,.fl .pg-system-check .sl-main{padding:clamp(1.5rem,3vw,2.125rem)}
+.fl .pg-support .sl-mark,.fl .pg-device-check .sl-mark,.fl .pg-system-check .sl-mark{position:relative;width:3.5rem;height:3.5rem;margin:0 0 0.875rem}
+.fl .pg-support .sl-mark img,.fl .pg-device-check .sl-mark img,.fl .pg-system-check .sl-mark img{width:3.5rem;height:3.5rem}
+.fl .pg-support .sl-badge,.fl .pg-device-check .sl-badge,.fl .pg-system-check .sl-badge{position:absolute;bottom:-0.25rem;inset-inline-end:-0.875rem;width:1.875rem;height:1.875rem;border-radius:50%;background:#2a211a;border:0.1875rem solid var(--card);box-shadow:0 0 0 0.0625rem var(--ln);color:var(--cu);display:grid;place-items:center}
+.fl .pg-support .sl-badge .ic,.fl .pg-device-check .sl-badge .ic,.fl .pg-system-check .sl-badge .ic{width:0.875rem;height:0.875rem}
+.fl .pg-support .sl-h,.fl .pg-device-check .sl-h,.fl .pg-system-check .sl-h{font-weight:800;font-size:clamp(1.625rem,3vw,2.125rem);line-height:1.15;letter-spacing:-.01em;margin:0 0 0.625rem;text-wrap:balance}
+.fl .pg-support .sl-body,.fl .pg-device-check .sl-body,.fl .pg-system-check .sl-body{color:var(--tx2);font-size:1rem;line-height:1.7;margin:0 0 1.375rem}
+.fl .pg-support .sl-hint,.fl .pg-device-check .sl-hint,.fl .pg-system-check .sl-hint{margin:0.875rem 0 0;text-align:start}
+.fl .pg-support .sl-hint .ic,.fl .pg-support .more summary .ic,.fl .pg-device-check .sl-hint .ic,.fl .pg-device-check .more summary .ic,.fl .pg-system-check .sl-hint .ic,.fl .pg-system-check .more summary .ic{margin-top:0.125rem;color:var(--cu)}
+.fl .pg-support .sl-fb,.fl .pg-device-check .sl-fb,.fl .pg-system-check .sl-fb{padding:clamp(1.5rem,3vw,2.125rem);border-inline-start:0.0625rem solid var(--ln);background:rgba(0,0,0,.14);display:flex;flex-direction:column;justify-content:center}
+.fl .pg-support .sl-fb h2,.fl .pg-device-check .sl-fb h2,.fl .pg-system-check .sl-fb h2{font-size:1.0625rem;font-weight:700;margin:0 0 0.375rem}
+.fl .pg-support .sl-fb>p,.fl .pg-device-check .sl-fb>p,.fl .pg-system-check .sl-fb>p{margin:0 0 0.875rem;color:var(--tx2);font-size:0.9375rem;line-height:1.7}
+.fl .pg-support .sl-fb>p b,.fl .pg-device-check .sl-fb>p b,.fl .pg-system-check .sl-fb>p b{color:var(--tx);font-weight:600;white-space:nowrap}
+.fl .pg-support .sl-code,.fl .pg-device-check .sl-code,.fl .pg-system-check .sl-code{display:flex;gap:0.5rem;direction:ltr;margin-bottom:1.125rem}
+.fl .pg-support .sl-code .code,.fl .pg-device-check .sl-code .code,.fl .pg-system-check .sl-code .code{flex:1;min-width:0;display:grid;place-items:center;background:var(--bg);border:0.0625rem solid var(--ln);border-radius:0.75rem;padding:0.75rem 0.75rem 0.75rem calc(0.75rem + .2em);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:clamp(1.375rem,6vw,1.75rem);font-weight:600;letter-spacing:.2em;color:var(--tx);user-select:all;-webkit-user-select:all;white-space:nowrap}
+.fl .pg-support .sl-copy,.fl .pg-device-check .sl-copy,.fl .pg-system-check .sl-copy{flex:none;width:3.625rem;border:0.0625rem solid var(--ln);background:#2a211a;border-radius:0.75rem;color:var(--tx2);display:grid;place-items:center;cursor:pointer;transition:border-color .15s,color .15s}
+.fl .pg-support .sl-copy:hover,.fl .pg-device-check .sl-copy:hover,.fl .pg-system-check .sl-copy:hover{color:var(--tx);border-color:var(--mu2)}
+.fl .pg-support .sl-copy .ok,.fl .pg-device-check .sl-copy .ok,.fl .pg-system-check .sl-copy .ok{display:none;color:var(--ok)}
+.fl .pg-support .sl-copy.copied,.fl .pg-device-check .sl-copy.copied,.fl .pg-system-check .sl-copy.copied{border-color:rgba(127,207,159,.45)}
+.fl .pg-support .sl-copy.copied .cp,.fl .pg-device-check .sl-copy.copied .cp,.fl .pg-system-check .sl-copy.copied .cp{display:none}
+.fl .pg-support .sl-copy.copied .ok,.fl .pg-device-check .sl-copy.copied .ok,.fl .pg-system-check .sl-copy.copied .ok{display:block}
+.fl .pg-support .sl-foot,.fl .pg-device-check .sl-foot,.fl .pg-system-check .sl-foot{text-align:center;color:var(--mu);font-size:0.8125rem;margin:0.875rem 0 0}
+@media (max-width:820px){.fl .pg-support .sl,.fl .pg-device-check .sl,.fl .pg-system-check .sl{max-width:37.5rem}
+.fl .pg-support .sl-card,.fl .pg-device-check .sl-card,.fl .pg-system-check .sl-card{grid-template-columns:minmax(0,1fr)}
+.fl .pg-support .sl-fb,.fl .pg-device-check .sl-fb,.fl .pg-system-check .sl-fb{border-inline-start:0;border-top:0.0625rem solid var(--ln)}
+}
+.fl .pg-support .more,.fl .pg-device-check .more,.fl .pg-system-check .more{margin-top:0.875rem;text-align:start;border:0.0625rem solid var(--ln);border-radius:0.75rem;background:var(--bg2)}
+.fl .pg-support .more summary,.fl .pg-device-check .more summary,.fl .pg-system-check .more summary{list-style:none;cursor:pointer;display:flex;align-items:flex-start;gap:0.625rem;padding:0.8125rem 0.875rem;font-size:0.9062rem;font-weight:500;color:var(--tx2);border-radius:0.75rem}
+.fl .pg-support .more summary::-webkit-details-marker,.fl .pg-device-check .more summary::-webkit-details-marker,.fl .pg-system-check .more summary::-webkit-details-marker{display:none}
+.fl .pg-support .more summary::after,.fl .pg-device-check .more summary::after,.fl .pg-system-check .more summary::after{content:"";flex:none;margin-inline-start:auto;width:1rem;height:1rem;margin-top:0.1875rem;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23d4a574' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center/1rem no-repeat;transition:transform .2s}
+.fl .pg-support .more[open] summary::after,.fl .pg-device-check .more[open] summary::after,.fl .pg-system-check .more[open] summary::after{transform:rotate(180deg)}
+.fl .pg-support .more summary:hover,.fl .pg-device-check .more summary:hover,.fl .pg-system-check .more summary:hover{color:var(--tx)}
+.fl .pg-support .more .in,.fl .pg-device-check .more .in,.fl .pg-system-check .more .in{display:grid;gap:0.75rem;padding:0 0.875rem 0.875rem}
+.fl .pg-support .more .lead-in,.fl .pg-device-check .more .lead-in,.fl .pg-system-check .more .lead-in{margin:0.25rem 0 0;font-size:0.8438rem;color:var(--mu)}
+.fl .pg-support .cw,.fl .pg-device-check .cw,.fl .pg-system-check .cw{background:var(--card);border:0.0625rem solid var(--ln);border-radius:0.75rem;overflow:hidden;box-shadow:0 0.875rem 1.875rem rgba(0,0,0,.3)}
+.fl .pg-support .cw .top,.fl .pg-device-check .cw .top,.fl .pg-system-check .cw .top{display:flex;gap:0.375rem;align-items:center;height:1.625rem;padding:0 0.75rem;background:#1d1713}
+.fl .pg-support .cw .top i,.fl .pg-device-check .cw .top i,.fl .pg-system-check .cw .top i{width:0.5625rem;height:0.5625rem;border-radius:50%;background:#3a2d22}
+.fl .pg-support .cw .bd,.fl .pg-device-check .cw .bd,.fl .pg-system-check .cw .bd{padding:0.875rem 1rem 1rem;font-size:0.8438rem;line-height:1.7;color:var(--tx2)}
+.fl .pg-support .cw h3,.fl .pg-device-check .cw h3,.fl .pg-system-check .cw h3{margin:0 0 0.5rem;font-size:0.9688rem;color:var(--tx)}
+.fl .pg-support .cw p,.fl .pg-device-check .cw p,.fl .pg-system-check .cw p{margin:0 0 0.5rem}
+.fl .pg-support .cw .btns,.fl .pg-device-check .cw .btns,.fl .pg-system-check .cw .btns{display:flex;flex-wrap:wrap;gap:0.5rem;margin-top:0.75rem}
+.fl .pg-support .cw .fb,.fl .pg-device-check .cw .fb,.fl .pg-system-check .cw .fb{border-radius:62.4375rem;padding:0.375rem 0.875rem;font-size:0.7812rem;font-weight:600}
+.fl .pg-support .cw .fb.p,.fl .pg-device-check .cw .fb.p,.fl .pg-system-check .cw .fb.p{background:var(--cta);color:var(--bg)}
+.fl .pg-support .cw .fb.s,.fl .pg-device-check .cw .fb.s,.fl .pg-system-check .cw .fb.s{background:#2a211a;color:var(--tx)}
+.fl .pg-support .smini,.fl .pg-device-check .smini,.fl .pg-system-check .smini{margin:0}
+.fl .pg-support .smini figcaption,.fl .pg-device-check .smini figcaption,.fl .pg-system-check .smini figcaption{font-size:0.75rem;color:var(--mu);margin:0 0 0.5rem}
+.fl .pg-support .smini .win,.fl .pg-device-check .smini .win,.fl .pg-system-check .smini .win{background:var(--bg);border:0.0625rem solid var(--ln2);border-radius:0.75rem;overflow:hidden;text-align:start}
+.fl .pg-support .smini .bar,.fl .pg-device-check .smini .bar,.fl .pg-system-check .smini .bar{display:flex;align-items:center;gap:0.375rem;height:1.875rem;padding:0 0.75rem;background:#1b1511;border-bottom:0.0625rem solid var(--ln2)}
+.fl .pg-support .smini .bar i,.fl .pg-device-check .smini .bar i,.fl .pg-system-check .smini .bar i{width:0.5625rem;height:0.5625rem;border-radius:50%;background:#3a2d22}
+.fl .pg-support .smini .bar span,.fl .pg-device-check .smini .bar span,.fl .pg-system-check .smini .bar span{display:flex;align-items:center;gap:0.375rem;margin-inline-start:0.5rem;font-size:0.75rem;color:var(--mu)}
+.fl .pg-support .smini .bar .ic,.fl .pg-device-check .smini .bar .ic,.fl .pg-system-check .smini .bar .ic{width:0.8125rem;height:0.8125rem}
+.fl .pg-support .smini .sec,.fl .pg-device-check .smini .sec,.fl .pg-system-check .smini .sec{display:flex;align-items:center;gap:0.875rem;padding:0.875rem}
+.fl .pg-support .smini .txt,.fl .pg-device-check .smini .txt,.fl .pg-system-check .smini .txt{flex:1;min-width:0}
+.fl .pg-support .smini .txt b,.fl .pg-device-check .smini .txt b,.fl .pg-system-check .smini .txt b{display:block;font-size:0.8438rem;color:var(--tx);margin-bottom:0.125rem}
+.fl .pg-support .smini .txt small,.fl .pg-device-check .smini .txt small,.fl .pg-system-check .smini .txt small{display:block;font-size:0.75rem;line-height:1.5;color:var(--mu)}
+.fl .pg-support .smini .fbtn,.fl .pg-device-check .smini .fbtn,.fl .pg-system-check .smini .fbtn{flex:none;background:var(--cta);color:var(--bg);font-size:0.75rem;font-weight:600;border-radius:62.4375rem;padding:0.4375rem 0.8125rem;box-shadow:0 0 0 0.25rem rgba(212,165,116,.2)}
+@media (max-width:480px){.fl .pg-support .smini .sec,.fl .pg-device-check .smini .sec,.fl .pg-system-check .smini .sec{flex-direction:column;align-items:flex-start;gap:0.625rem}
+}

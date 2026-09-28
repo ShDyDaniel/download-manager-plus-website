@@ -1,0 +1,105 @@
+/* generated from the prototype (scratchpad/site/pages/glossary.css) by port/build_css.py */
+.fl .pg-glossary .phero .display .chip{font-size:0.875rem;letter-spacing:0;vertical-align:middle;position:relative;top:-.35em;margin-inline-start:0.75rem;padding:0.1875rem 0.625rem}
+.fl .pg-glossary .fine{color:var(--mu);font-size:0.8125rem;margin-top:0.875rem}
+.fl .pg-glossary .sec-head .h2{margin-top:0.5rem}
+.fl .pg-glossary .win{max-width:66.25rem;margin:0 auto;border-radius:1rem;border:0.0625rem solid var(--ln);background:#140f0c;box-shadow:0 2.5rem 5.625rem rgba(0,0,0,.55),0 0 0 0.0625rem rgba(212,165,116,.05);overflow:hidden}
+.fl .pg-glossary .win .top{position:relative;height:2.375rem;background:#1d1713;display:flex;gap:0.4375rem;align-items:center;padding:0 0.875rem;direction:ltr}
+.fl .pg-glossary .win .top>i{width:0.6875rem;height:0.6875rem;border-radius:50%;background:#3a2d22}
+.fl .pg-glossary .win .ttl{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:0.5rem;font-size:0.8125rem;color:var(--mu);direction:rtl;pointer-events:none}
+.fl .pg-glossary .win .ttl .ic{width:0.9375rem;height:0.9375rem;color:var(--cu)}
+.fl .pg-glossary .win .ttl .tag{font-size:0.6875rem;background:#2a2019;color:#e4bc8e;border-radius:0.375rem;padding:0.0625rem 0.4375rem}
+.fl .pg-glossary .mini{background:var(--bg);border:0.0625rem solid #2c241e;border-radius:0.75rem;padding:0.75rem;color:#d8ccbd;font-size:0.7812rem}
+.fl .pg-glossary .fcard{display:flex;flex-direction:column;gap:0.75rem}
+.fl .pg-glossary .fcard .hd{display:flex;align-items:center;gap:0.75rem}
+.fl .pg-glossary .fcard .hd .h3{margin:0;font-size:1.3125rem}
+.fl .pg-glossary .fcard .hd .chip{margin-inline-start:auto}
+.fl .pg-glossary .fcard>p{margin:0;color:#cfc2b2;font-size:0.9375rem;line-height:1.65}
+.fl .pg-glossary .fcard .mini{margin-top:auto}
+.fl .pg-glossary .tile{flex:none;width:2.5rem;height:2.5rem;border-radius:0.6875rem;background:rgba(212,165,116,.12);color:var(--cu);display:grid;place-items:center}
+.fl .pg-glossary .tile.g{background:rgba(127,207,159,.12);color:var(--ok)}
+.fl .pg-glossary .stepgrid{list-style:none;margin:0;padding:0}
+.fl .pg-glossary .step{display:flex;flex-direction:column;gap:0.5rem}
+.fl .pg-glossary .step .no{width:2rem;height:2rem;border-radius:50%;background:#2a211a;border:0.0625rem solid var(--ln);color:var(--cu);font-weight:700;font-size:0.875rem;display:grid;place-items:center}
+.fl .pg-glossary .step h3{margin:0.375rem 0 0;font-size:1.1875rem}
+.fl .pg-glossary .step>p{margin:0;color:#cfc2b2;font-size:0.9375rem;line-height:1.6}
+.fl .pg-glossary .step .mini{margin-top:auto}
+.fl .pg-glossary .caps .checks{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:2.5rem;row-gap:0.875rem}
+.fl .pg-glossary .caps .checks li{line-height:1.55}
+.fl .pg-glossary .cta{margin-top:clamp(4rem,9vw,6.25rem);text-align:center;padding:clamp(2.5rem,6vw,3.5rem) 1.25rem;border-radius:1.5rem;background:radial-gradient(ellipse at center,rgba(184,121,79,.25),transparent 65%),var(--card);border:0.0625rem solid var(--ln)}
+.fl .pg-glossary .cta .h2{margin-bottom:0.75rem}
+.fl .pg-glossary .cta .lead{margin:0 auto 1.5rem}
+.fl .pg-glossary .cta .actions{justify-content:center}
+.fl .pg-glossary .fbtn{display:inline-flex;align-items:center;justify-content:center;gap:0.375rem;border-radius:62.4375rem;padding:0.4375rem 0.8125rem;font-size:0.7812rem;font-weight:600;white-space:nowrap}
+.fl .pg-glossary .fbtn .ic{width:0.875rem;height:0.875rem}
+.fl .pg-glossary .fbtn.p{background:var(--cta);color:var(--bg)}
+.fl .pg-glossary .fbtn.g{border:0.0625rem solid var(--ln);color:var(--tx2)}
+.fl .pg-glossary .fbtn.t{color:var(--mu);font-weight:500;padding-inline:0.375rem}
+@media (max-width:620px){.fl .pg-glossary .caps .checks{grid-template-columns:1fr}
+.fl .pg-glossary .phero .display .chip{top:-.25em;margin-inline-start:0.5rem}
+.fl .pg-glossary .btn-lg{padding:0.8125rem 1.375rem;font-size:0.9688rem}
+}
+.fl .pg-glossary .phero .pill{margin-bottom:0.875rem}
+.fl .pg-glossary .phero .eyebrow{display:block}
+.fl .pg-glossary .phero .states{margin-top:1.75rem}
+.fl .pg-glossary .packs{align-items:start}
+.fl .pg-glossary .pack{display:flex;flex-direction:column;gap:0.875rem}
+.fl .pg-glossary .ph{display:flex;align-items:flex-start;gap:0.75rem}
+.fl .pg-glossary .ph .nm{flex:1;min-width:0}
+.fl .pg-glossary .ph .h3{margin:0 0 0.125rem;font-size:1.3125rem;overflow-wrap:anywhere}
+.fl .pg-glossary .ph .nm p{margin:0;font-size:0.8438rem;color:var(--mu);line-height:1.5}
+.fl .pg-glossary .ph .add{flex:none}
+.fl .pg-glossary .stats{display:flex;gap:0.375rem;flex-wrap:wrap}
+.fl .pg-glossary .term{display:inline-flex;align-items:center;font-size:0.7812rem;color:var(--tx2);background:#2a211a;border:0.0625rem solid #3a2d22;border-radius:0.4375rem;padding:0.1875rem 0.5625rem;line-height:1.4}
+.fl .pg-glossary .prev{display:flex;flex-wrap:wrap;gap:0.375rem}
+.fl .pg-glossary .prev .more{font-size:0.7812rem;color:var(--mu);align-self:center;padding:0 0.25rem}
+.fl .pg-glossary .pack:has(details[open]) .prev{display:none}
+.fl .pg-glossary details summary{list-style:none;display:inline-flex;align-items:center;gap:0.375rem;cursor:pointer;color:var(--cu);font-weight:500;font-size:0.875rem;border-radius:0.375rem}
+.fl .pg-glossary details summary::-webkit-details-marker{display:none}
+.fl .pg-glossary details summary:hover{text-decoration:underline;text-underline-offset:0.25rem}
+.fl .pg-glossary details summary .ic{width:0.9375rem;height:0.9375rem;transition:transform .2s}
+.fl .pg-glossary details[open] summary .ic{transform:rotate(180deg)}
+.fl .pg-glossary details[open] .o,.fl .pg-glossary details:not([open]) .c{display:none}
+.fl .pg-glossary .all{list-style:none;margin:0.75rem 0 0;padding:0.75rem;display:flex;flex-wrap:wrap;gap:0.375rem;max-height:16rem;overflow-y:auto;background:var(--bg);border:0.0625rem solid var(--ln2);border-radius:0.75rem;scrollbar-width:thin;scrollbar-color:#4a3c30 transparent}
+.fl .pg-glossary .hint{margin:1.125rem 0 0}
+.fl .pg-glossary .loading{display:grid;place-items:center;min-height:13.75rem}
+.fl .pg-glossary .spin{width:1.75rem;height:1.75rem;border-radius:50%;border:0.1875rem solid rgba(212,165,116,.2);border-top-color:#d4a574;animation:glSpin .8s linear infinite}
+@keyframes glSpin{to{transform:rotate(360deg)}}
+.fl .pg-glossary .empty{min-height:13.75rem;display:grid;place-items:center;margin:0;font-size:1rem}
+.fl .pg-glossary .how{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:clamp(1.25rem,4vw,3rem);align-items:center}
+.fl .pg-glossary .how .h3{font-size:1.5rem;margin:0 0 0.25rem}
+.fl .pg-glossary .how .alias{margin:0 0 1.125rem}
+.fl .pg-glossary .how .steps li{color:var(--tx2);line-height:1.6;padding-top:0.25rem}
+.fl .pg-glossary .fineok{display:flex;gap:0.625rem;align-items:flex-start;margin:1.25rem 0 0;padding-top:1rem;border-top:0.0625rem solid var(--ln2);font-size:0.875rem;color:var(--mu);line-height:1.6}
+.fl .pg-glossary .fineok .ic{color:var(--ok);margin-top:0.1875rem}
+.fl .pg-glossary .dict{padding:0.875rem;font-size:0.8125rem}
+.fl .pg-glossary .dh{display:flex;align-items:center;gap:0.625rem}
+.fl .pg-glossary .dh .dt{flex:none;width:2rem;height:2rem;border-radius:0.5625rem;background:#2a211a;color:var(--mu);display:grid;place-items:center}
+.fl .pg-glossary .dh .dt .ic{width:1rem;height:1rem}
+.fl .pg-glossary .dh b{display:block;font-weight:500;color:#f5efe6;font-size:0.8438rem}
+.fl .pg-glossary .dh small{display:block;font-size:0.7188rem;color:#8b8170;line-height:1.45}
+.fl .pg-glossary .dh em{flex:none;align-self:flex-start;font-style:normal;font-size:0.6875rem;color:#8b8170}
+.fl .pg-glossary .din{display:flex;align-items:center;gap:0.375rem;margin-top:0.75rem}
+.fl .pg-glossary .din .inp{flex:1;min-width:0;border:0.0625rem solid var(--ln);border-radius:0.625rem;padding:0.4375rem 0.625rem;color:#6f6558;font-size:0.7812rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#120e0b}
+.fl .pg-glossary .din .kb{flex:none;display:inline-flex;align-items:center;gap:0.3125rem;border:0.0625rem solid var(--ln);border-radius:0.625rem;padding:0.4375rem 0.625rem;color:#a39583;font-size:0.7812rem;font-weight:500}
+.fl .pg-glossary .din .kb .ic{width:0.8125rem;height:0.8125rem}
+.fl .pg-glossary .din .ad{flex:none;border-radius:0.625rem;padding:0.4375rem 0.75rem;background:#2a211a;color:#8b8170;font-size:0.7812rem;opacity:.7}
+.fl .pg-glossary .added{overflow:hidden;max-height:0;animation:glAdd 7s infinite}
+@keyframes glAdd{0%,14%{max-height:0;animation-timing-function:cubic-bezier(.3,1.2,.5,1)}22%,92%{max-height:5.625rem}98%,100%{max-height:0}}
+.fl .pg-glossary .dtags{display:flex;flex-wrap:wrap;gap:0.375rem;margin-top:0.75rem}
+.fl .pg-glossary .ptag{display:inline-flex;align-items:center;gap:0.375rem;border:0.0625rem solid rgba(212,165,116,.45);background:rgba(212,165,116,.1);border-radius:0.5rem;padding:0.25rem 0.5625rem 0.25rem 0.4375rem;font-size:0.75rem;color:#f5efe6;animation:glTag 7s infinite}
+.fl .pg-glossary .ptag .ic{width:0.75rem;height:0.75rem;opacity:.7}
+.fl .pg-glossary .ptag i{font-style:normal;opacity:.6}
+@keyframes glTag{0%,18%{opacity:0;transform:scale(.88);animation-timing-function:cubic-bezier(.3,1.5,.5,1)}26%,92%{opacity:1;transform:none}98%,100%{opacity:0;transform:scale(.96)}}
+.fl .pg-glossary .dok{margin-top:0.625rem;border-radius:0.5rem;padding:0.4375rem 0.625rem;font-size:0.75rem;color:var(--ok);background:var(--okbg);animation:glOk 7s infinite}
+@keyframes glOk{0%,24%{opacity:0;transform:translateY(0.25rem)}31%,90%{opacity:1;transform:none}96%,100%{opacity:0}}
+.fl .pg-glossary .dterms{display:flex;flex-wrap:wrap;gap:0.375rem;margin-top:0.625rem}
+.fl .pg-glossary .dterms span{font-size:0.75rem;color:var(--tx2);background:#2a211a;border-radius:0.4375rem;padding:0.1875rem 0.5625rem}
+@media (max-width:900px){.fl .pg-glossary .how{grid-template-columns:1fr}
+}
+@media (max-width:620px){.fl .pg-glossary .ph{flex-wrap:wrap}
+.fl .pg-glossary .ph .add{order:3;width:100%}
+.fl .pg-glossary .din .inp{font-size:0.7188rem}
+}
+@media (prefers-reduced-motion:reduce){.fl .pg-glossary .ptag,.fl .pg-glossary .dok{animation:none;opacity:1;transform:none}
+.fl .pg-glossary .added{animation:none;max-height:none}
+}
