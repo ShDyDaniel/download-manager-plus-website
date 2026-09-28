@@ -229,7 +229,7 @@
 .fl h4{font-size:1em;margin:1.33em 0}
 .fl h5{font-size:.83em;margin:1.67em 0}
 .fl h6{font-size:.67em;margin:2.33em 0}
-.fl h1,.fl h2,.fl h3,.fl h4,.fl h5,.fl h6{font-weight:700;line-height:normal;letter-spacing:normal;font-family:var(--f)}
+.fl h1,.fl h2,.fl h3,.fl h4,.fl h5,.fl h6{font-weight:700;line-height:inherit;letter-spacing:normal;font-family:var(--f)}
 .fl p{margin:1em 0}
 .fl ul,.fl ol{margin:1em 0;padding-inline-start:2.5rem}
 .fl ul{list-style:disc}.fl ol{list-style:decimal}
@@ -467,7 +467,7 @@ html.a11y-contrast .fl{--tx:#fff;--tx2:#fbf7f1;--mu:#e2d8cb;--mu2:#cfc3b4;--ln:#
 .fl .pg-home .cell.w6{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);grid-template-areas:"h m" "p m";column-gap:2rem;row-gap:0.5rem}
 .fl .pg-home .w6>h3{grid-area:h;align-self:end}
 .fl .pg-home .w6>p{grid-area:p;align-self:start}
-.fl .pg-home .w6>.mini{grid-area:m;margin:0}
+.fl .pg-home .w6>.sketch>.mini{grid-area:m;margin:0}
 .fl .pg-home .w6 .md{display:grid;grid-template-columns:1fr 1fr;grid-template-areas:"f l" "f r";column-gap:1rem;align-items:center}
 .fl .pg-home .w6 .md .files{grid-area:f;margin:0}
 .fl .pg-home .w6 .md .link{grid-area:l}
