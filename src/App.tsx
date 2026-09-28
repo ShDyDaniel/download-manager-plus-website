@@ -52,6 +52,9 @@ const GlossaryPacksPage = lazy(() =>
     default: m.GlossaryPacksPage,
   })),
 )
+const MusicLandingPage = lazy(() =>
+  import('./pages/MusicLandingPage').then((m) => ({ default: m.MusicLandingPage })),
+)
 const CollabLandingPage = lazy(() =>
   import('./pages/CollabLandingPage').then((m) => ({
     default: m.CollabLandingPage,
@@ -276,6 +279,8 @@ function AnimatedRoutes() {
               (revision rounds + client delivery): animated review-player
               demo + editorial sections. See pages/CollabLandingPage.tsx. */}
           <Route path="/collab" element={<CollabLandingPage />} />
+          {/* "עריכת מוזיקה" — stem separation feature page. */}
+          <Route path="/music" element={<MusicLandingPage />} />
           <Route path="/account" element={<AccountPage />} />
           {/* Web /revisions workspace — full editor-side of the
               Revisions feature ported from the desktop app. Lets

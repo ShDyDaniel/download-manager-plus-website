@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getSession } from '../../lib/webSession'
 import { DownloadAuthModal } from '../DownloadAuthModal'
+import { detectPlatform } from '../../lib/detectPlatform'
 
 /**
  * One "הורדה חינם" flow for the whole site (header, home, pricing, feature pages).
@@ -31,7 +32,10 @@ export function DownloadGateProvider({ children }: { children: React.ReactNode }
   )
 
   const requestDownload = useCallback(
-    (platform?: Platform) => {
+    (asked?: Platform) => {
+      // The right build for this computer, detected automatically (a phone or
+      // an unknown OS passes none, and /install explains / offers the switch).
+      const platform = asked ?? detectPlatform() ?? undefined
       if (getSession()) {
         goToInstall(platform)
       } else {

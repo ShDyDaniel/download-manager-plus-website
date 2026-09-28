@@ -16,6 +16,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { getSession } from '../lib/webSession'
 import { FlPage } from '../components/site/FlPage'
 import { Seg } from '../components/site/Seg'
+import { detectPlatform, isPhoneOrTablet } from '../lib/detectPlatform'
 import { useDownload } from '../components/site/DownloadGate'
 import '../styles/pages/install.css'
 
@@ -70,15 +71,6 @@ function versionOf(url: string): string {
   return m ? decodeURIComponent(m[1]) : ''
 }
 
-/** Phones and tablets can't run the app. iPadOS Safari reports a Mac UA, so
- *  a "Macintosh" with a touch screen is an iPad. */
-function isPhoneOrTablet(): boolean {
-  const ua = navigator.userAgent
-  return (
-    /iPhone|iPad|iPod|Android/i.test(ua) ||
-    (/Macintosh/i.test(ua) && (navigator.maxTouchPoints || 0) > 1)
-  )
-}
 
 export default function InstallPage() {
   const location = useLocation()
@@ -95,16 +87,15 @@ export default function InstallPage() {
   // version — the reported "sometimes downloads an old version" bug. Now the
   // button passes only the platform and THIS page resolves the URL fresh, so
   // the newest published version is served every time. Fall back to a UA
-  // sniff for a direct /install visit with no state.
+  // detection for a direct /install visit with no state (see detectPlatform:
+  // the browser's own platform report first, then the user-agent string).
+  // An unrecognised desktop OS (Linux, ChromeOS) falls back to Windows, as
+  // before; the Mac / Windows switch is right there.
   const state = location.state as { platform?: Platform } | null
   const detected: Platform =
-    state?.platform === 'mac'
-      ? 'mac'
-      : state?.platform === 'win'
-        ? 'win'
-        : /Mac/i.test(navigator.userAgent)
-          ? 'mac'
-          : 'win'
+    state?.platform === 'mac' || state?.platform === 'win'
+      ? state.platform
+      : detectPlatform() ?? 'win'
   // The Mac / Windows switch. Until the visitor uses it, follow `detected`.
   const [chosen, setChosen] = useState<Platform | null>(null)
   const platform = chosen ?? detected

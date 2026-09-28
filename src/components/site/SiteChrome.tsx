@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Download,
   Menu,
+  Music2,
   PanelsTopLeft,
   PenLine,
   User,
@@ -22,6 +23,7 @@ const FEATURES = [
   { to: '/#features', icon: PanelsTopLeft, title: 'כל הכלים', text: 'הצעת מחיר, הורדות, תמלול, זמן עבודה ועוד' },
   { to: '/sync', icon: AudioLines, title: 'סנכרון אוטומטי', text: 'מצלמות ומיקרופונים מסונכרנים לפי הסאונד' },
   { to: '/collab', icon: PenLine, title: 'סבבי תיקונים ומסירה', text: 'הלקוח מעיר בדפדפן ומקבל את הסרטון הסופי' },
+  { to: '/music', icon: Music2, title: 'עריכת מוזיקה', text: 'מפרקים שיר לשירה, תופים, בס ושאר הכלים' },
   { to: '/glossary', icon: BookOpen, title: 'חבילות מונחים לתמלול', text: 'מילים מקצועיות שהתמלול מכיר מראש' },
 ]
 const ACCOUNT = [
@@ -239,6 +241,7 @@ export function SiteFooter() {
               { to: '/#features', label: 'כל הכלים' },
               { to: '/sync', label: 'סנכרון אוטומטי' },
               { to: '/collab', label: 'סבבי תיקונים ומסירה' },
+              { to: '/music', label: 'עריכת מוזיקה' },
               { to: '/glossary', label: 'חבילות מונחים' },
               { to: '/buy', label: 'מחירים' },
             ],

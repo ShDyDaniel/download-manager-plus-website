@@ -21,6 +21,11 @@
     <priority>0.7</priority>
   </url>
   <url>
+    <loc>https://www.framelineapp.com/music</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
     <loc>https://www.framelineapp.com/glossary</loc>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
