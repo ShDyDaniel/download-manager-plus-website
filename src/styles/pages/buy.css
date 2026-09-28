@@ -1,0 +1,167 @@
+/* generated from the prototype (scratchpad/site/pages/buy.css) by port/build_css.py */
+.fl .pg-buy [data-seg-show][hidden]{display:none!important}
+.fl .pg-buy .sr{position:absolute;width:0.0625rem;height:0.0625rem;padding:0;margin:-0.0625rem;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.fl .pg-buy .phero{padding-bottom:clamp(1.5rem,3.4vw,2.375rem)}
+.fl .pg-buy .result{max-width:37.5rem;margin:0 auto}
+.fl .pg-buy .result>.card{margin:0.25rem 0 clamp(2.25rem,5vw,3.5rem)}
+.fl .pg-buy .ret{display:grid;gap:0.875rem;justify-items:center;text-align:center;padding:clamp(1.5rem,3.4vw,2.125rem)}
+.fl .pg-buy .ret>p{margin:0;color:var(--tx2);max-width:46ch}
+.fl .pg-buy .ret .h3{font-size:1.375rem;margin:0}
+.fl .pg-buy .ret-ic{width:3.25rem;height:3.25rem;border-radius:50%;display:grid;place-items:center;background:var(--okbg);color:var(--ok)}
+.fl .pg-buy .ret-ic .ic{width:1.625rem;height:1.625rem}
+.fl .pg-buy .ret-ic.mu{background:#2a211a;color:var(--mu)}
+.fl .pg-buy .ret-ic.warn{background:var(--warnbg);color:var(--warn)}
+.fl .pg-buy .ret .steps{text-align:start;justify-self:stretch;max-width:22.5rem;margin:0.25rem auto;width:100%}
+.fl .pg-buy .ret .steps>li{display:flex;align-items:center;min-height:2rem;color:var(--tx2);flex-wrap:wrap;gap:0.25rem}
+.fl .pg-buy .ui{display:inline-block;border:0.0625rem solid var(--ln);background:#2a211a;color:var(--tx);border-radius:0.4375rem;padding:0.0625rem 0.5rem;font-size:0.875rem;font-weight:500}
+.fl .pg-buy .ret .note{text-align:start;justify-self:stretch}
+.fl .pg-buy .ret .note .ic{color:var(--cu);margin-top:0.125rem}
+.fl .pg-buy .ret .kv{justify-self:stretch;display:grid;gap:0.5rem;font-size:0.9062rem;color:var(--mu)}
+.fl .pg-buy .ret .kv b{color:var(--tx);font-weight:600}
+.fl .pg-buy .renew-l{margin:0}
+.fl .pg-buy .cyc{display:flex;justify-content:center;margin:0 0 1.625rem}
+.fl .pg-buy .cyc .seg{grid-auto-columns:auto}
+.fl .pg-buy .cyc .seg button{display:inline-flex;align-items:center;justify-content:center;gap:0.5rem;padding:0.5625rem 1.25rem;font-size:0.9375rem}
+.fl .pg-buy .save{font-size:0.7188rem;font-weight:600;border-radius:0.375rem;padding:0.125rem 0.5rem;background:rgba(212,165,116,.16);color:var(--cu);transition:background .2s,color .2s}
+.fl .pg-buy .seg button.on .save{background:rgba(22,17,13,.22);color:var(--bg)}
+.fl .pg-buy .tiers{align-items:stretch}
+.fl .pg-buy .tier{display:flex;flex-direction:column;padding:1.5rem 1.375rem}
+.fl .pg-buy .tier-h{display:flex;justify-content:space-between;align-items:center;gap:0.5rem;min-height:1.625rem}
+.fl .pg-buy .tier-h h3{margin:0;font-size:1.25rem;font-weight:700}
+.fl .pg-buy .save-c{white-space:nowrap}
+.fl .pg-buy .tag{color:var(--mu);font-size:0.875rem;margin:0.25rem 0 0}
+.fl .pg-buy .price{margin-top:1.125rem;min-height:4.875rem}
+.fl .pg-buy .amt{display:flex;align-items:baseline;gap:0.375rem}
+.fl .pg-buy .amt bdi{font-size:2.5rem;font-weight:700;line-height:1.1;letter-spacing:-.01em;color:var(--tx)}
+.fl .pg-buy .amt small{color:var(--mu);font-size:0.875rem}
+.fl .pg-buy .bill{color:var(--mu);font-size:0.8125rem;margin:0.375rem 0 0}
+.fl .pg-buy .cum{font-size:0.8125rem;color:var(--cu);font-weight:500;margin:1.125rem 0 0.75rem;padding-top:1rem;border-top:0.0625rem solid var(--ln);min-height:1.55em;box-sizing:content-box}
+.fl .pg-buy .tier .checks{font-size:0.9062rem;gap:0.5625rem}
+.fl .pg-buy .tier .go{margin-top:auto;padding-top:1.5rem}
+.fl .pg-buy #compare .sec-head{margin-bottom:1.5rem}
+.fl .pg-buy .tbl{table-layout:fixed}
+.fl .pg-buy .tbl th,.fl .pg-buy .tbl td{vertical-align:middle}
+.fl .pg-buy .tbl thead th:first-child{width:32%}
+.fl .pg-buy .tbl thead th{font-size:0.9375rem}
+.fl .pg-buy .tbl thead th small{display:block;font-weight:400;color:var(--mu);font-size:0.7812rem;margin-top:0.125rem}
+.fl .pg-buy .tbl th:not(:first-child),.fl .pg-buy .tbl td:not(:first-child){text-align:center}
+.fl .pg-buy .tbl tbody th{font-weight:400;color:var(--tx);text-align:start}
+.fl .pg-buy .tbl .pro{background:rgba(212,165,116,.05)}
+.fl .pg-buy .tbl thead th.pro{background:#2a211a;color:var(--cu);box-shadow:inset 0 0.125rem 0 var(--cu)}
+.fl .pg-buy .tbl .grp td{padding-top:0.625rem;padding-bottom:0.625rem}
+.fl .pg-buy .tbl .gl{position:sticky;inset-inline-start:1rem}
+.fl .pg-buy .yes{display:inline-grid;place-items:center;width:1.375rem;height:1.375rem;border-radius:50%;background:rgba(212,165,116,.14);color:var(--cu)}
+.fl .pg-buy .yes .ic{width:0.8125rem;height:0.8125rem;stroke-width:3}
+.fl .pg-buy .no{color:var(--mu2)}
+.fl .pg-buy .foot{color:var(--mu);font-size:0.8125rem;margin:0.875rem 0.25rem 0}
+.fl .pg-buy #checkout .sec-head{margin-bottom:1.375rem}
+.fl .pg-buy .co{max-width:35rem;margin:0 auto}
+.fl .pg-buy .co-st{display:grid;gap:1.125rem;padding:clamp(1.125rem,3vw,1.75rem)}
+.fl .pg-buy .sum{background:var(--bg);border:0.0625rem solid var(--ln2);border-radius:0.875rem;padding:1rem 1.125rem}
+.fl .pg-buy .sum-h{display:flex;justify-content:space-between;align-items:flex-start;gap:0.875rem}
+.fl .pg-buy .lbl2{display:block;font-size:0.7812rem;color:var(--mu)}
+.fl .pg-buy .sum-h h3{font-size:1.3125rem;margin:0.125rem 0 0.125rem;font-weight:700}
+.fl .pg-buy .sum-h .sub{font-size:0.8438rem;color:var(--tx2)}
+.fl .pg-buy .big{display:grid;justify-items:end;text-align:end;flex:none}
+.fl .pg-buy .bn{display:flex;align-items:baseline;gap:0.375rem}
+.fl .pg-buy .big bdi{font-size:1.875rem;font-weight:700;line-height:1.1}
+.fl .pg-buy .big small{font-size:0.8125rem;color:var(--mu)}
+.fl .pg-buy .x12{margin-top:0.875rem;border:0.0625rem dashed var(--ln);border-radius:0.625rem;padding:0.625rem 0.75rem;display:grid;gap:0.1875rem;font-size:0.8438rem;color:var(--tx2)}
+.fl .pg-buy .x12 .times{color:var(--mu)}
+.fl .pg-buy .x12 .tot{font-weight:600;color:var(--tx);padding-top:0.25rem;margin-top:0.1875rem;border-top:0.0625rem solid var(--ln2)}
+.fl .pg-buy .x12 .tot bdi{color:var(--cu);font-weight:700}
+.fl .pg-buy .rows{margin-top:0.875rem;border-top:0.0625rem solid var(--ln2);padding-top:0.75rem;display:grid;gap:0.5rem;font-size:0.9062rem;color:var(--tx2)}
+.fl .pg-buy .rows span:last-child bdi{color:var(--tx);font-weight:600}
+.fl .pg-buy .fine{font-size:0.7812rem;color:var(--mu);line-height:1.65;margin:-0.375rem 0.125rem 0}
+.fl .pg-buy .input[dir=ltr]{text-align:right}
+.fl .pg-buy .locked{position:relative}
+.fl .pg-buy .locked .input{padding-left:2.625rem;opacity:.75;cursor:not-allowed}
+.fl .pg-buy .locked .ic{position:absolute;left:0.875rem;top:50%;margin-top:-0.5625rem;color:var(--mu)}
+.fl .pg-buy .consent{font-size:0.9062rem;line-height:1.6}
+.fl .pg-buy .tlink{background:none;border:0;padding:0;font:inherit;color:var(--cu);font-weight:500;cursor:pointer;text-decoration:underline;text-underline-offset:0.1875rem}
+.fl .pg-buy .ban{border:0.0625rem solid rgba(212,165,116,.35);background:rgba(212,165,116,.06);border-radius:0.875rem;padding:1rem 1.125rem;display:grid;gap:0.5rem;font-size:0.9062rem;color:var(--tx2)}
+.fl .pg-buy .ban p{margin:0}
+.fl .pg-buy .ban-h{display:flex;align-items:center;gap:0.625rem;font-weight:700;font-size:1.0312rem;color:var(--tx)}
+.fl .pg-buy .ban-h .ic{color:var(--cu)}
+.fl .pg-buy .ban-t{font-size:1.375rem;font-weight:700;color:var(--tx)}
+.fl .pg-buy .ban .checks{font-size:0.9062rem;gap:0.4375rem}
+.fl .pg-buy .ban .checks b{color:var(--tx)}
+.fl .pg-buy .keyl{font-size:0.8438rem;color:var(--mu)}
+.fl .pg-buy .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.7812rem;color:var(--tx2)}
+.fl .pg-buy .until{display:flex;justify-content:space-between;align-items:center;gap:0.625rem;background:var(--bg);border-radius:0.625rem;padding:0.625rem 0.75rem}
+.fl .pg-buy .until b{color:var(--cu);font-size:1rem}
+.fl .pg-buy .pay{display:grid;gap:0.75rem}
+.fl .pg-buy .plat{display:flex;gap:0.625rem;align-items:flex-start;font-size:0.8438rem;line-height:1.6;color:var(--tx2);background:var(--bg);border:0.0625rem solid var(--ln2);border-radius:0.75rem;padding:0.6875rem 0.8125rem}
+.fl .pg-buy .plat .ic{color:var(--cu);margin-top:0.125rem}
+.fl .pg-buy .gate{margin:0;font-size:0.8438rem;color:var(--cu);background:rgba(212,165,116,.08);border:0.0625rem dashed rgba(212,165,116,.45);border-radius:0.625rem;padding:0.5625rem 0.75rem;text-align:center}
+.fl .pg-buy .pp-btn{width:100%;height:3rem;border-radius:0.25rem;background:#000;color:#fff;display:flex;align-items:center;justify-content:center;gap:0.625rem;font-size:0.9688rem;font-weight:600;opacity:.35;user-select:none}
+.fl .pg-buy .trust{display:grid;gap:0.125rem;justify-items:center;text-align:center;font-size:0.8125rem;color:var(--tx2)}
+.fl .pg-buy .trust .l1{display:flex;align-items:center;gap:0.375rem}
+.fl .pg-buy .trust .l1 .ic{width:0.9375rem;height:0.9375rem;color:var(--mu)}
+.fl .pg-buy .trust .pp{color:#009cde;font-weight:700}
+.fl .pg-buy .trust .l2{color:var(--mu);font-size:0.7812rem}
+.fl .pg-buy .fline{margin:0;text-align:center;font-size:0.7812rem;color:var(--mu)}
+.fl .pg-buy dialog.terms{padding:0;border:0;background:transparent;color:var(--tx);width:min(33.75rem,calc(100vw - 2rem));max-width:none;max-height:calc(100dvh - 2rem);overflow:visible}
+.fl .pg-buy dialog.terms::backdrop{background:rgba(10,7,5,.72);backdrop-filter:blur(0.25rem);-webkit-backdrop-filter:blur(0.25rem)}
+.fl .pg-buy dialog.terms .dialog{max-width:none;max-height:calc(100dvh - 2rem);overflow-y:auto;display:grid;gap:1rem;padding:clamp(1.25rem,3vw,1.75rem)}
+.fl .pg-buy .dlg-h{display:flex;align-items:center;gap:0.625rem}
+.fl .pg-buy .dlg-h h2{flex:1;margin:0;font-size:1.1875rem;font-weight:700}
+.fl .pg-buy .crown{width:2.25rem;height:2.25rem;border-radius:0.625rem;background:rgba(212,165,116,.14);color:var(--cu);display:grid;place-items:center;flex:none}
+.fl .pg-buy .dlg-x{width:2.25rem;height:2.25rem;border:0;border-radius:0.625rem;background:none;color:var(--mu);display:grid;place-items:center;cursor:pointer}
+.fl .pg-buy .dlg-x:hover{background:#2a211a;color:var(--tx)}
+.fl .pg-buy .tl{list-style:none;margin:0;padding:0;display:grid;gap:0.625rem;font-size:0.9062rem;line-height:1.65;color:var(--tx2)}
+.fl .pg-buy .tl li{padding-inline-start:0.875rem;position:relative}
+.fl .pg-buy .tl li::before{content:"";position:absolute;inset-inline-start:0;top:.7em;width:0.3125rem;height:0.3125rem;border-radius:50%;background:var(--cu)}
+.fl .pg-buy .tl b{color:var(--tx)}
+.fl .pg-buy .gate-st{justify-items:center;text-align:center;padding:2.5rem 1.75rem}
+.fl .pg-buy .gate-st p{margin:0;color:var(--tx2);max-width:44ch}
+.fl .pg-buy .gate-st .h3{margin:0}
+.fl .pg-buy .spin{width:1.875rem;height:1.875rem;border-radius:50%;border:0.1875rem solid var(--ln);border-top-color:var(--cu);animation:buySpin .8s linear infinite}
+.fl .pg-buy .spin.lg{width:2.5rem;height:2.5rem}
+@keyframes buySpin{to{transform:rotate(360deg)}}
+.fl .pg-buy .app-ov{position:fixed;inset:0;z-index:95;background:var(--bg);display:grid;place-items:center;padding:1.5rem}
+.fl .pg-buy .app-in{display:grid;gap:0.625rem;justify-items:center;text-align:center}
+.fl .pg-buy .app-in p{margin:0}
+.fl .pg-buy .app-in .h3{margin-top:0.625rem;font-size:1.25rem}
+@media (max-width:620px){.fl .pg-buy .cyc .seg button{padding:0.5625rem 0.875rem}
+.fl .pg-buy .price{min-height:0}
+.fl .pg-buy .sum-h{flex-direction:column;gap:0.625rem}
+.fl .pg-buy .big{justify-items:start;text-align:start;display:flex;align-items:baseline;gap:0.625rem;flex-wrap:wrap}
+.fl .pg-buy .ban-t{font-size:1.25rem}
+.fl .pg-buy .tbl thead th:first-child,.fl .pg-buy .tbl tbody th{position:sticky;inset-inline-start:0;z-index:1}
+.fl .pg-buy .tbl tbody th{background:var(--bg);box-shadow:inset -0.0625rem 0 0 var(--ln2)}
+.fl .pg-buy .tbl thead th:first-child{z-index:2}
+}
+.fl .pg-buy bdi.num{white-space:nowrap}
+.fl .pg-buy .table-wrap{position:relative}
+/* ── real-page additions (states the prototype only faked) ── */
+.fl .pg-buy .ppwrap{min-height:3rem}
+.fl .pg-buy .pp-load{display:flex;align-items:center;justify-content:center;gap:0.625rem;min-height:3rem;border:0.0625rem solid var(--ln2);border-radius:0.75rem;background:var(--bg);padding:0.625rem 0.875rem;font-size:0.8438rem;color:var(--mu);text-align:center}
+.fl .pg-buy .spin.sm{width:1.125rem;height:1.125rem;border-width:0.125rem;flex:none}
+.fl .pg-buy .price .spin{display:block;margin-top:0.75rem}
+.fl .pg-buy .note.err .ic{color:var(--err);margin-top:0.125rem}
+.fl .pg-buy .note.ok .ic{color:var(--ok)}
+.fl .pg-buy .co>.note{margin-bottom:1rem}
+.fl .pg-buy .chip.exp{margin-inline-start:0.5rem;vertical-align:middle}
+.fl .pg-buy .amt .was{color:var(--mu2);font-size:1rem;text-decoration:line-through}
+.fl .pg-buy .amt .was bdi{font-size:inherit;font-weight:500;color:inherit;letter-spacing:0}
+.fl .pg-buy .tier .go .chip{display:flex;justify-content:center;padding:0.625rem 0.875rem;border-radius:62.4375rem}
+.fl .pg-buy .ret .cases{justify-self:stretch;display:grid;gap:0.625rem;text-align:start}
+.fl .pg-buy .ret .cases p{margin:0;color:var(--tx2);font-size:0.9062rem;background:var(--bg);border:0.0625rem solid var(--ln2);border-radius:var(--r2);padding:0.75rem 0.875rem}
+.fl .pg-buy .ret .cases b{color:var(--tx)}
+.fl .pg-buy .si-forgot{font-weight:500}
+.fl .pg-buy .linkbtn{background:none;border:0;padding:0;font:inherit;font-weight:500;cursor:pointer}
+.fl .pg-buy .done{display:grid;gap:0.75rem;justify-items:center;text-align:center;padding:0.5rem 0}
+.fl .pg-buy .done p{margin:0;color:var(--tx2)}
+.fl .pg-buy .done .h3{margin:0}
+.fl .pg-buy .coupon[hidden]{display:none}
+.fl .pg-buy .coupon-in{max-width:10rem;text-transform:uppercase}
+.fl .pg-buy .coupon .note{align-items:center;justify-content:space-between}
+.fl .pg-buy .coupon-err{margin:0;font-size:0.8125rem;color:var(--err)}
+.fl .pg-buy .si-ov{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:2rem 1rem;background:rgba(10,7,5,.72);backdrop-filter:blur(0.25rem);-webkit-backdrop-filter:blur(0.25rem)}
+.fl .pg-buy .si-card{width:100%;max-width:28rem;display:grid;gap:1rem;max-height:calc(100dvh - 2rem);overflow-y:auto}
+.fl .pg-buy .si-key{display:flex;align-items:center;justify-content:space-between;gap:0.75rem;width:100%;text-align:start;background:var(--bg);border:0.0625rem solid var(--ln);border-radius:0.75rem;padding:0.75rem 0.875rem;color:var(--tx);cursor:pointer;font:inherit}
+.fl .pg-buy .si-key:hover{border-color:var(--cu)}
+.fl .pg-buy .si-key .ic{color:var(--cu)}
+.fl .pg-buy .si-key-t{display:grid;gap:0.125rem}
+.fl .pg-buy .si-forgot{justify-self:center;font-size:0.8125rem}

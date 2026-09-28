@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { Accessibility, Loader2 } from 'lucide-react'
 
 /**
@@ -13,26 +13,114 @@ import { Accessibility, Loader2 } from 'lucide-react'
  * built-in legally-complete statement below so there's ALWAYS a correct
  * statement visible — even before any customization.
  *
- * Opened from the footer link and the accessibility widget. No
- * standalone route — consistent with the Terms / Privacy modals.
+ * The same statement is the /accessibility page (src/pages/
+ * AccessibilityPage.tsx): the built-in text and the fetch below are
+ * shared with it. This modal keeps its original look — it is still
+ * opened from the old footer and from the accessibility widget on the
+ * admin routes.
  */
-interface A11ySection {
+export interface A11ySection {
   title: string
   paragraphs: string[]
 }
 
-export function AccessibilityModal({ onClose }: { onClose: () => void }) {
+/* ── The built-in statement (shown when the admin hasn't published one).
+ *  Kept as data so the modal and the /accessibility page render the very
+ *  same words. A text run is a string, a bold run { b } (`ltr` = a Latin
+ *  term kept left-to-right), or the contact address { email }. */
+export type A11yRich = string | { b: string; ltr?: boolean } | { email: string }
+export interface BuiltinA11ySection {
+  id: string
+  title: string
+  text?: A11yRich[]
+  list?: string[]
+}
+
+export const A11Y_CONTACT_EMAIL = 'help.frameline@gmail.com'
+/** "הצהרת הנגישות עודכנה לאחרונה <this>." */
+export const BUILTIN_A11Y_UPDATED = 'ביוני 2026'
+
+export const BUILTIN_A11Y_SECTIONS: BuiltinA11ySection[] = [
+  {
+    id: 'a-commit',
+    title: 'המחויבות שלנו',
+    text: [
+      'אתר פריימליין רואה חשיבות רבה במתן שירות שוויוני לכלל המשתמשים, ופועל להנגיש את האתר כך שיהיה נגיש גם לאנשים עם מוגבלות. אנו משקיעים מאמצים ומשאבים על מנת לאפשר גלישה נוחה ושוויונית ככל הניתן.',
+    ],
+  },
+  {
+    id: 'a-level',
+    title: 'רמת הנגישות באתר',
+    text: [
+      'האתר הונגש בהתאם להוראות תקנות שוויון זכויות לאנשים עם מוגבלות (התאמות נגישות לשירות), התשע"ג–2013, ובכפוף לתקן הישראלי ',
+      { b: 'ת"י 5568' },
+      ' המבוסס על הנחיות ',
+      { b: 'WCAG 2.0', ltr: true },
+      ' ברמה ',
+      { b: 'AA' },
+      ', ככל שניתן.',
+    ],
+  },
+  {
+    id: 'a-done',
+    title: 'מה הונגש באתר',
+    list: [
+      'תפריט נגישות צף הזמין מכל עמוד באתר.',
+      'התאמות הניתנות להפעלה: הגדלת/הקטנת טקסט, ניגודיות גבוהה, היפוך צבעים, גווני אפור, הדגשת קישורים, גופן קריא, ריווח טקסט מוגדל, עצירת אנימציות, סמן עכבר גדול והדגשת מיקוד מקלדת.',
+      'ניווט מלא באמצעות מקלדת וסדר טאבים הגיוני.',
+      'מבנה כותרות סמנטי ותוויות לרכיבי הטופס.',
+      'תאימות לקוראי מסך נפוצים.',
+      'שמירת ההעדפות של המשתמש בין עמודים וביקורים.',
+    ],
+  },
+  {
+    id: 'a-limits',
+    title: 'הסתייגות ומגבלות ידועות',
+    text: [
+      'למרות מאמצינו להנגיש את כלל הדפים והרכיבים, ייתכן שיימצאו חלקים שטרם הונגשו במלואם או שאינם נתמכים באופן מיטבי בכל הדפדפנים והטכנולוגיות המסייעות. אנו ממשיכים לפעול לשיפור הנגישות באופן שוטף.',
+    ],
+  },
+  {
+    id: 'a-contact',
+    title: 'פנייה בנושא נגישות',
+    text: [
+      'נתקלתם בבעיית נגישות, או שיש לכם הצעה לשיפור? נשמח לקבל פנייה בכתובת ',
+      { email: A11Y_CONTACT_EMAIL },
+      ' ונטפל בה בהקדם.',
+    ],
+  },
+]
+
+/** Render a built-in text with the caller's markup for bold runs and the
+ *  e-mail link (the modal and the page each keep their own look). */
+export function renderA11yRich(
+  text: A11yRich[],
+  marks: {
+    bold: (s: string, ltr: boolean) => ReactNode
+    email: (address: string) => ReactNode
+  },
+): ReactNode {
+  return text.map((r, i) => (
+    <Fragment key={i}>
+      {typeof r === 'string'
+        ? r
+        : 'email' in r
+          ? marks.email(r.email)
+          : marks.bold(r.b, !!r.ltr)}
+    </Fragment>
+  ))
+}
+
+/** The admin-published statement (appConfig/accessibility, action
+ *  get-accessibility). `sections` is null while loading and [] when there
+ *  is none (or the request failed) → use the built-in text. */
+export function useAccessibilityStatement(): {
+  sections: A11ySection[] | null
+  lastUpdated: string
+} {
   // null = still loading; [] = loaded-but-empty (→ use the fallback).
   const [sections, setSections] = useState<A11ySection[] | null>(null)
   const [lastUpdated, setLastUpdated] = useState('')
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
 
   useEffect(() => {
     let alive = true
@@ -58,6 +146,20 @@ export function AccessibilityModal({ onClose }: { onClose: () => void }) {
       alive = false
     }
   }, [])
+
+  return { sections, lastUpdated }
+}
+
+export function AccessibilityModal({ onClose }: { onClose: () => void }) {
+  const { sections, lastUpdated } = useAccessibilityStatement()
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
 
   const hasDbContent = sections !== null && sections.length > 0
 
@@ -173,58 +275,29 @@ function AccessibilityStatementBody() {
       </div>
 
       <div className="space-y-7 text-sm leading-relaxed text-fg-secondary">
-        <Section title="המחויבות שלנו">
-          אתר פריימליין רואה חשיבות רבה במתן שירות
-          שוויוני לכלל המשתמשים, ופועל להנגיש את האתר כך שיהיה נגיש גם
-          לאנשים עם מוגבלות. אנו משקיעים מאמצים ומשאבים על מנת לאפשר
-          גלישה נוחה ושוויונית ככל הניתן.
-        </Section>
-
-        <Section title="רמת הנגישות באתר">
-          האתר הונגש בהתאם להוראות תקנות שוויון זכויות לאנשים עם מוגבלות
-          (התאמות נגישות לשירות), התשע"ג–2013, ובכפוף לתקן הישראלי{' '}
-          <strong className="text-fg">ת"י 5568</strong> המבוסס על הנחיות{' '}
-          <strong className="text-fg">WCAG 2.0</strong> ברמה{' '}
-          <strong className="text-fg">AA</strong>, ככל שניתן.
-        </Section>
-
-        <Section title="מה הונגש באתר">
-          <ul className="list-disc space-y-1.5 pr-5">
-            <li>תפריט נגישות צף הזמין מכל עמוד באתר.</li>
-            <li>
-              התאמות הניתנות להפעלה: הגדלת/הקטנת טקסט, ניגודיות גבוהה,
-              היפוך צבעים, גווני אפור, הדגשת קישורים, גופן קריא, ריווח
-              טקסט מוגדל, עצירת אנימציות, סמן עכבר גדול והדגשת מיקוד
-              מקלדת.
-            </li>
-            <li>ניווט מלא באמצעות מקלדת וסדר טאבים הגיוני.</li>
-            <li>מבנה כותרות סמנטי ותוויות לרכיבי הטופס.</li>
-            <li>תאימות לקוראי מסך נפוצים.</li>
-            <li>שמירת ההעדפות של המשתמש בין עמודים וביקורים.</li>
-          </ul>
-        </Section>
-
-        <Section title="הסתייגות ומגבלות ידועות">
-          למרות מאמצינו להנגיש את כלל הדפים והרכיבים, ייתכן שיימצאו חלקים
-          שטרם הונגשו במלואם או שאינם נתמכים באופן מיטבי בכל הדפדפנים
-          והטכנולוגיות המסייעות. אנו ממשיכים לפעול לשיפור הנגישות באופן
-          שוטף.
-        </Section>
-
-        <Section title="פנייה בנושא נגישות">
-          נתקלתם בבעיית נגישות, או שיש לכם הצעה לשיפור? נשמח לקבל פנייה בכתובת{' '}
-          <a
-            href="mailto:help.frameline@gmail.com"
-            className="text-primary hover:underline"
-            dir="ltr"
-          >
-            help.frameline@gmail.com
-          </a>{' '}
-          ונטפל בה בהקדם.
-        </Section>
+        {BUILTIN_A11Y_SECTIONS.map((sec) => (
+          <Section key={sec.id} title={sec.title}>
+            {sec.list ? (
+              <ul className="list-disc space-y-1.5 pr-5">
+                {sec.list.map((li, i) => (
+                  <li key={i}>{li}</li>
+                ))}
+              </ul>
+            ) : (
+              renderA11yRich(sec.text ?? [], {
+                bold: (b) => <strong className="text-fg">{b}</strong>,
+                email: (a) => (
+                  <a href={`mailto:${a}`} className="text-primary hover:underline" dir="ltr">
+                    {a}
+                  </a>
+                ),
+              })
+            )}
+          </Section>
+        ))}
 
         <p className="border-t border-border/60 pt-6 text-xs text-fg-muted">
-          הצהרת הנגישות עודכנה לאחרונה ביוני 2026.
+          הצהרת הנגישות עודכנה לאחרונה {BUILTIN_A11Y_UPDATED}.
         </p>
       </div>
     </>

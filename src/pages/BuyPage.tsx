@@ -1,25 +1,40 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import {
   ArrowRight,
+  CircleCheck,
   Crown,
-  Loader2,
-  RefreshCw,
-  CheckCircle2,
-  LogIn,
   KeyRound,
   Lock,
+  LogIn,
+  RefreshCw,
+  Repeat,
+  TrendingDown,
+  TrendingUp,
+  TriangleAlert,
   X,
 } from 'lucide-react'
 import {
   currencySymbol,
   fetchLivePricingStrict,
-  formatPrice,
   writePricingCache,
   type LivePricing,
 } from '../lib/pricing'
 import TierComparison from '../components/TierComparison'
+import { FlPage } from '../components/site/FlPage'
+import { useDownload } from '../components/site/DownloadGate'
+import {
+  Amt,
+  DateText,
+  GateCard,
+  OrderSummary,
+  PayArea,
+  PurchaseBlocked,
+  RenewConsent,
+  ReturnScreen,
+  TermsDialog,
+  type ReturnFlow,
+} from '../components/buy/CheckoutParts'
 import {
   DEFAULT_TIER_CONFIG,
   TIER_LABEL,
@@ -29,6 +44,7 @@ import {
   type Tier,
   type TierConfig,
 } from '@/lib/tiers'
+import '../styles/pages/buy.css'
 
 /**
  * Dedicated purchase page at `/buy`. The buyer picks a plan
@@ -180,44 +196,9 @@ declare global {
   }
 }
 
-/**
- *  Trust strip rendered directly under each card-payment button.
- *
- *  The old vertical-stack layout included PayPal's own yellow
- *  branded button, which doubled as the "this is a PayPal flow"
- *  trust signal — buyers visually understood who's handling their
- *  card. After moving to fundingSource:'card' the dark button no
- *  longer carries that branding, so without an explicit strip the
- *  page looks like an un-attributed card form (which is exactly
- *  the kind of UI that makes buyers nervous about typing their
- *  card details into).
- *
- *  Two lines:
- *    1. "תשלום מאובטח, מעובד על־ידי PayPal" — names the processor
- *       + adds a lock icon for the universal "secure" affordance.
- *    2. "פרטי הכרטיס מועברים ישירות ל-PayPal ולא נשמרים אצלנו"
- *       — addresses the specific worry a security-aware buyer has
- *       on a small Israeli site: "am I trusting a homemade
- *       payment form?". Answer: no, you're trusting PayPal.
- *
- *  The PayPal wordmark uses #0070ba (PayPal's accessible
- *  medium-blue). The darker brand blue (#003087) doesn't pass
- *  contrast on the espresso background.
- */
-function PaymentTrustStrip() {
-  return (
-    <div className="flex flex-col items-center gap-0.5 pt-2">
-      <p className="flex items-center justify-center gap-1.5 text-[11px] text-fg-muted">
-        <Lock className="h-3 w-3" aria-hidden />
-        <span>תשלום מאובטח, מעובד על־ידי</span>
-        <span className="font-semibold text-[#0070ba]">PayPal</span>
-      </p>
-      <p className="text-center text-[10px] text-fg-muted/70">
-        פרטי הכרטיס מועברים ישירות ל-PayPal ולא נשמרים אצלנו
-      </p>
-    </div>
-  )
-}
+// (The trust strip under the card button — "תשלום מאובטח, מעובד על־ידי
+// PayPal" — lives in components/buy/CheckoutParts.tsx with the other
+// presentational checkout pieces.)
 
 /**
  *  Pick a user-facing error message for a PayPal flow failure.
@@ -256,6 +237,48 @@ interface PurchaseContext {
   sessionToken: string
   email: string
   hasExpiredKey: boolean
+}
+
+/** sessionStorage note written in PayPal's onApprove, right before the
+ *  redirect to /buy?subscribed=1, saying which flow just finished (guest
+ *  purchase, signed-in purchase, renewal / plan change). It only picks the
+ *  wording of the success screen — nothing is sent anywhere. Read once and
+ *  removed; without it the success screen uses wording that fits every case. */
+const RETURN_FLOW_KEY = 'dmplus.buyReturn.v1'
+
+function rememberReturnFlow(flow: NonNullable<ReturnFlow>) {
+  try {
+    window.sessionStorage.setItem(RETURN_FLOW_KEY, JSON.stringify({ ...flow, at: Date.now() }))
+  } catch {
+    // storage off — the success screen falls back to the generic wording.
+  }
+}
+
+function takeReturnFlow(): ReturnFlow {
+  try {
+    const raw = window.sessionStorage.getItem(RETURN_FLOW_KEY)
+    if (!raw) return null
+    window.sessionStorage.removeItem(RETURN_FLOW_KEY)
+    const v = JSON.parse(raw) as { flow?: string; plan?: unknown; startsAt?: unknown; at?: unknown }
+    // A note older than an hour belongs to some other visit.
+    if (typeof v.at !== 'number' || Date.now() - v.at > 60 * 60 * 1000) return null
+    if (v.flow === 'new' || v.flow === 'new-in') return { flow: v.flow }
+    if (v.flow === 'renew' && typeof v.plan === 'string') {
+      return {
+        flow: 'renew',
+        plan: v.plan,
+        startsAt: typeof v.startsAt === 'string' ? v.startsAt : undefined,
+      }
+    }
+  } catch {
+    // ignore — generic wording
+  }
+  return null
+}
+
+/** Scroll a section of this page into view. */
+function scrollToId(id: string) {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 export function BuyPage() {
@@ -433,6 +456,31 @@ export function BuyPage() {
     'subscribed' | 'cancelled' | null
   >(null)
   const [subError, setSubError] = useState<string | null>(null)
+  // Existing-subscriber flows (renewal / monthly↔yearly switch / tier change)
+  // get the same separate, never pre-ticked auto-renew consent as a new
+  // purchase; their PayPal button only appears once it's ticked. UI gating
+  // only — the request to the server is unchanged.
+  const [renewConsent, setRenewConsent] = useState(false)
+  const [renewTermsOpen, setRenewTermsOpen] = useState(false)
+  // Consent is given to one amount and one cycle. When the buyer changes the
+  // tier or the cycle after ticking, the box clears so they confirm the new
+  // amount.
+  useEffect(() => {
+    setAutoRenewAccepted(false)
+    setRenewConsent(false)
+  }, [tier, plan])
+  // Which flow the ?subscribed=1 return belongs to (see RETURN_FLOW_KEY).
+  const [returnFlow, setReturnFlow] = useState<ReturnFlow>(null)
+  const returnFlowTaken = useRef<ReturnFlow | undefined>(undefined)
+  // After ?subscribed=1 the checkout is hidden; picking a plan again shows it.
+  const [checkoutAfterSuccess, setCheckoutAfterSuccess] = useState(false)
+  // Bumped to scroll to the checkout after it (re)renders.
+  const [checkoutScroll, setCheckoutScroll] = useState(0)
+  const siId = useId()
+  useEffect(() => {
+    if (checkoutScroll) scrollToId('checkout')
+  }, [checkoutScroll])
+  const { requestDownload } = useDownload()
 
   const planRef = useRef(plan)
   planRef.current = plan
@@ -442,6 +490,9 @@ export function BuyPage() {
   renewTokenRef.current = renewToken
   const tierRef = useRef(tier)
   tierRef.current = tier
+  // Read by the renewal onApprove to word the success screen.
+  const tierChangeRef = useRef(tierChange)
+  tierChangeRef.current = tierChange
   const buttonContainer = useRef<HTMLDivElement>(null)
 
   // Detect ?subscribed=1 / ?cancelled=1 returned by PayPal after
@@ -450,8 +501,12 @@ export function BuyPage() {
   useEffect(() => {
     if (typeof window === 'undefined') return
     const params = new URLSearchParams(window.location.search)
-    if (params.get('subscribed') === '1') setPostReturn('subscribed')
-    else if (params.get('cancelled') === '1') setPostReturn('cancelled')
+    if (params.get('subscribed') === '1') {
+      setPostReturn('subscribed')
+      // Read-once note; the ref keeps it across StrictMode's second run.
+      if (returnFlowTaken.current === undefined) returnFlowTaken.current = takeReturnFlow()
+      setReturnFlow(returnFlowTaken.current)
+    } else if (params.get('cancelled') === '1') setPostReturn('cancelled')
   }, [])
 
   // (Previously: submitSubscription redirect-to-PayPal handler.
@@ -707,7 +762,7 @@ export function BuyPage() {
         }
       })
       .catch(() => {
-        setRenewError('לא הצלחנו לטעון את פרטי החידוש. רענן ונסה שוב.')
+        setRenewError('לא הצלחנו לטעון את פרטי החידוש. רעננו את העמוד ונסו שוב.')
         setRenewToken(null)
         setEmailLocked(false)
       })
@@ -757,7 +812,7 @@ export function BuyPage() {
           'error',
           () =>
             setSdkError(
-              'טעינת PayPal נכשלה. בדוק את החיבור לאינטרנט ונסה שוב.',
+              'טעינת PayPal נכשלה. בדקו את החיבור לאינטרנט ונסו שוב.',
             ),
           { once: true },
         )
@@ -793,7 +848,7 @@ export function BuyPage() {
       'error',
       () =>
         setSdkError(
-          'טעינת PayPal נכשלה. בדוק את החיבור לאינטרנט ונסה שוב.',
+          'טעינת PayPal נכשלה. בדקו את החיבור לאינטרנט ונסו שוב.',
         ),
       { once: true },
     )
@@ -862,6 +917,15 @@ export function BuyPage() {
           return json.subscriptionId
         },
         onApprove: () => {
+          // Word the success screen for a renewal / plan change (the key
+          // stays the same). A downgrade starts at the current expiry.
+          const tc = tierChangeRef.current
+          rememberReturnFlow({
+            flow: 'renew',
+            plan: `${TIER_LABEL[tierRef.current]} · ${planRef.current === 'yearly' ? 'שנתי' : 'חודשי'}`,
+            startsAt:
+              tc?.kind === 'downgrade' ? formatExpiry(tc.effectiveDate) : undefined,
+          })
           window.location.href = '/buy?subscribed=1'
         },
         onError: (err) => {
@@ -870,7 +934,7 @@ export function BuyPage() {
             kind: 'error',
             message: pickPayPalErrorMessage(
               err,
-              'התרחשה שגיאה בתהליך התשלום. נסה שוב.',
+              'התרחשה שגיאה בתהליך התשלום. נסו שוב.',
             ),
           })
         },
@@ -885,13 +949,15 @@ export function BuyPage() {
     // we need to re-run this effect so it can find
     // buttonContainer.current and render the button. Without this
     // dep the button never appears on /buy?renew=... pages.
+    // `renewConsent` likewise: the container only mounts once the
+    // auto-renew consent is ticked, so the button renders then.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emailLocked, sdkReady, renewLoading])
+  }, [emailLocked, sdkReady, renewLoading, renewConsent])
 
   function confirmEmail(e: React.FormEvent) {
     e.preventDefault()
     if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setStatus({ kind: 'error', message: 'הזן כתובת מייל תקינה' })
+      setStatus({ kind: 'error', message: 'הזינו כתובת מייל תקינה' })
       return
     }
     setStatus({ kind: 'idle' })
@@ -1063,7 +1129,9 @@ export function BuyPage() {
       }
       setResetSent(true)
     } catch (err) {
-      setResetError(err instanceof Error ? err.message : 'שגיאת רשת')
+      setResetError(
+        err instanceof Error && /[֐-׿]/.test(err.message) ? err.message : 'שגיאת רשת',
+      )
     } finally {
       setResetSending(false)
     }
@@ -1095,466 +1163,449 @@ export function BuyPage() {
   // all of that.
   if (ssoBootstrapping) {
     return (
-      <div
-        dir="rtl"
-        className="flex min-h-screen items-center justify-center px-6"
-      >
-        <div className="flex flex-col items-center gap-3 text-center">
-          <Loader2 className="h-6 w-6 animate-spin text-primary" />
-          <div className="text-sm font-medium text-fg">
-            מתחבר לחשבון שלך…
-          </div>
-          <div className="text-xs text-fg-muted">
-            שניה אחת.
+      <FlPage name="buy" title="מחירים">
+        <div className="app-ov" role="status">
+          <div className="app-in">
+            <span className="spin lg" aria-hidden />
+            <p className="h3">מתחבר לחשבון שלכם…</p>
+            <p className="muted">שנייה אחת.</p>
           </div>
         </div>
-      </div>
+      </FlPage>
     )
   }
 
-  // Tier-change summary block, rendered inside the renewal panel so the buyer
-  // sees exactly what they pay now vs. recurring before committing. Upgrade =
-  // prorated difference now; downgrade = ₪0 now, new price from period end.
   const curSym = currencySymbol(pricing?.currency ?? 'ILS')
-  const tierChangeSummary = tierChange ? (
-    <div className="space-y-2.5 rounded-xl border border-primary/30 bg-primary/[0.06] p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[11px] text-fg-muted">
-            {tierChange.kind === 'upgrade' ? 'שדרוג מסלול' : 'הורדת מסלול'}
-          </div>
-          <div className="text-base font-bold text-fg">
-            {TIER_LABEL[tierChange.currentTier]} ← {TIER_LABEL[tierChange.targetTier]}
-          </div>
+  const cycleWord = plan === 'yearly' ? 'שנה' : 'חודש'
+  const cycleAdj = plan === 'yearly' ? 'שנתי' : 'חודשי'
+
+  // Key + owner line shared by the existing-subscriber banners.
+  const keyLine = renewInfo ? (
+    <p className="keyl">
+      מפתח{' '}
+      <bdi dir="ltr" className="mono">
+        {renewInfo.keyMasked}
+      </bdi>{' '}
+      · משויך ל-
+      <bdi dir="ltr" className="mono">
+        {renewInfo.emailMasked}
+      </bdi>
+    </p>
+  ) : null
+
+  // Plan-switch banner — shown when ?switchTo=... is on the URL (user
+  // came in via /account "שינוי תוכנית"), or auto-enabled for a key whose
+  // subscription is still active. A full explanation of what's about to
+  // happen: payment, auto-cancellation of the old sub, carried-forward
+  // days, new expiry. Heavy on detail by design — the buyer needs to
+  // understand they won't be double-charged before they hit pay.
+  const switchBanner =
+    renewInfo && switchTo
+      ? (() => {
+          const oldExpMs = Math.max(new Date(renewInfo.expiresAt).getTime(), Date.now())
+          const newExpMs = oldExpMs + PLAN_META[switchTo].days * 86_400_000
+          const carriedDays = renewInfo.isExpired
+            ? 0
+            : Math.max(
+                0,
+                Math.ceil(
+                  (new Date(renewInfo.expiresAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000),
+                ),
+              )
+          const toYearly = switchTo === 'yearly'
+          const fromLabel = toYearly ? 'חודשי' : 'שנתי'
+          const toLabel = toYearly ? 'שנתי' : 'חודשי'
+          return (
+            <div className="ban">
+              <div className="ban-h">
+                <Repeat className="ic" aria-hidden />
+                <span>
+                  מעבר ממסלול {fromLabel} למסלול {toLabel}
+                </span>
+              </div>
+              {keyLine}
+              <ul className="checks">
+                <li>
+                  תחויבו היום עבור{' '}
+                  <b>
+                    {toYearly ? 'השנה הבאה' : 'החודש הבא'} (לפי המסלול ה{toLabel})
+                  </b>
+                </li>
+                <li>
+                  המנוי ה{fromLabel} הקיים <b>יבוטל אוטומטית</b>, לא תחויבו עליו שוב
+                </li>
+                {carriedDays > 0 && (
+                  <li>
+                    <b>{carriedDays} הימים</b> שנותרו לכם מהמסלול ה{fromLabel} <b>יישמרו</b>{' '}
+                    ויתווספו על גבי {toYearly ? 'השנה החדשה' : 'החודש החדש'}
+                  </li>
+                )}
+              </ul>
+              <div className="until">
+                <span>הגישה תהיה בתוקף עד</span>
+                <b>
+                  <DateText>{formatExpiry(new Date(newExpMs).toISOString())}</DateText>
+                </b>
+              </div>
+              <p>המפתח עצמו לא משתנה, אין צורך להזין שום דבר חדש בתוכנה.</p>
+            </div>
+          )
+        })()
+      : null
+
+  // Renewal banner — renewal mode (?renew=<token>) without a plan switch or
+  // a tier change. The actual extension math (adds plan days to whichever
+  // is later: current expiry or now) happens server-side.
+  const renewalBanner =
+    renewInfo && !switchTo && !tierChange ? (
+      <div className="ban">
+        <div className="ban-h">
+          <RefreshCw className="ic" aria-hidden />
+          <span>חידוש מנוי קיים</span>
         </div>
+        {keyLine}
+        <p>
+          תוקף נוכחי: <DateText>{formatExpiry(renewInfo.expiresAt)}</DateText>
+          {renewInfo.isExpired && <span className="chip err exp">פג</span>}
+        </p>
+        <p>
+          אחרי החידוש המנוי יהיה בתוקף עד{' '}
+          <DateText>
+            {formatExpiry(
+              new Date(
+                Math.max(new Date(renewInfo.expiresAt).getTime(), Date.now()) +
+                  PLAN_META[plan].days * 86_400_000,
+              ).toISOString(),
+            )}
+          </DateText>
+          . המפתח עצמו לא משתנה.
+        </p>
       </div>
-      <div className="space-y-1 border-t border-border/60 pt-2.5 text-xs">
-        <div className="flex items-center justify-between">
-          <span className="text-fg-secondary">לתשלום עכשיו</span>
-          <span className="font-semibold text-fg" dir="ltr">
-            {formatPrice(tierChange.payNow)} {curSym}
-          </span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-fg-secondary">
-            {tierChange.kind === 'upgrade' ? 'מתחדש אוטומטית' : `מתחדש מ-${formatExpiry(tierChange.effectiveDate)}`}
-          </span>
-          <span className="font-semibold text-fg" dir="ltr">
-            {formatPrice(tierChange.recurring)} {curSym} / {plan === 'yearly' ? 'שנה' : 'חודש'}
-          </span>
-        </div>
+    ) : null
+
+  // Tier change (upgrade/downgrade) on the same key. Upgrade = the price
+  // difference now; downgrade = nothing now, the new price from period end.
+  const tierChangeBanner = tierChange ? (
+    <div className="ban">
+      <div className="ban-h">
+        {tierChange.kind === 'upgrade' ? (
+          <TrendingUp className="ic" aria-hidden />
+        ) : (
+          <TrendingDown className="ic" aria-hidden />
+        )}
+        <span>{tierChange.kind === 'upgrade' ? 'שדרוג מסלול' : 'הורדת מסלול'}</span>
       </div>
-      <p className="text-[11px] leading-relaxed text-fg-muted">
-        {tierChange.kind === 'upgrade'
-          ? `השדרוג נכנס לתוקף מיד. משלמים עכשיו את ההפרש בין המסלולים (${formatPrice(tierChange.payNow)} ${curSym}) — כאילו קניתם את המסלול הגבוה מלכתחילה. המפתח נשאר אותו מפתח, והתוספת (טוקנים, נפח, דקות) נזקפת מיד. מהחיוב הבא ואילך תחויבו ${formatPrice(tierChange.recurring)} ${curSym} כל ${plan === 'yearly' ? 'שנה' : 'חודש'}.`
-          : `אין תשלום עכשיו. עד ${formatExpiry(tierChange.effectiveDate)} תישארו במסלול ${TIER_LABEL[tierChange.currentTier]} ששילמתם עליו במלואו. מ-${formatExpiry(tierChange.effectiveDate)} תעברו אוטומטית למסלול ${TIER_LABEL[tierChange.targetTier]} ותחויבו ${formatPrice(tierChange.recurring)} ${curSym} כל ${plan === 'yearly' ? 'שנה' : 'חודש'}.`}
+      <p className="ban-t">
+        <bdi>{TIER_LABEL[tierChange.currentTier]}</bdi> ←{' '}
+        <bdi>{TIER_LABEL[tierChange.targetTier]}</bdi>
+      </p>
+      {!switchTo && keyLine}
+      <p>
+        {tierChange.kind === 'upgrade' ? (
+          <>
+            השדרוג נכנס לתוקף מיד. משלמים עכשיו את ההפרש בין המסלולים (
+            <Amt n={tierChange.payNow} sym={curSym} />) — כאילו קניתם את המסלול הגבוה
+            מלכתחילה. המפתח נשאר אותו מפתח, והתוספת (נפח אחסון, דקות תמלול ועוד) נזקפת
+            מיד. מהחיוב הבא ואילך תחויבו <Amt n={tierChange.recurring} sym={curSym} /> כל{' '}
+            {cycleWord}.
+          </>
+        ) : (
+          <>
+            אין תשלום עכשיו. עד <DateText>{formatExpiry(tierChange.effectiveDate)}</DateText>{' '}
+            תישארו במסלול {TIER_LABEL[tierChange.currentTier]} ששילמתם עליו במלואו. מ-
+            <DateText>{formatExpiry(tierChange.effectiveDate)}</DateText> תעברו אוטומטית
+            למסלול {TIER_LABEL[tierChange.targetTier]} ותחויבו{' '}
+            <Amt n={tierChange.recurring} sym={curSym} /> כל {cycleWord}.
+          </>
+        )}
       </p>
     </div>
   ) : null
 
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.35 }}
-      className="min-h-screen px-6 py-12 md:py-20"
-    >
-      <div className="mx-auto max-w-5xl">
-        <Link
-          to="/"
-          className="mb-8 inline-flex items-center gap-2 text-sm text-fg-muted transition-colors hover:text-fg"
-        >
-          <ArrowRight className="h-4 w-4" />
-          חזרה לדף הבית
-        </Link>
+  // Existing subscriber (renewal / switch / tier change): what recurs is the
+  // selected tier's price for the selected cycle (== tierChange.recurring).
+  const recurring = selectedTierPrice
+  const payNow = tierChange ? tierChange.payNow : selectedTierPrice
+  const downgradeFrom =
+    tierChange?.kind === 'downgrade' ? formatExpiry(tierChange.effectiveDate) : null
 
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.05 }}
-          className="mb-10 text-center"
-        >
-          {/* App logo — soft amber glow behind so it pops against the
-              dark page background without needing a hard frame. */}
-          <div className="relative mx-auto mb-5 h-20 w-20">
-            <div className="absolute inset-0 rounded-2xl blur-2xl" />
-            <img
-              src="/icon.png?v=3"
-              alt="פריימליין"
-              className="relative h-20 w-20 rounded-2xl shadow-2xl shadow-lg"
+  const existingCheckout = (
+    <div className="card co-st">
+      {status.kind === 'success' ? (
+        <div className="done" role="status">
+          <span className="ret-ic">
+            <CircleCheck className="ic" aria-hidden />
+          </span>
+          <h3 className="h3">התשלום הושלם בהצלחה</h3>
+          <p>
+            שלחנו לכם מייל ל-
+            <bdi dir="ltr" className="mono">
+              {status.email}
+            </bdi>{' '}
+            עם מפתח המוצר.
+          </p>
+        </div>
+      ) : (
+        <>
+          {switchBanner}
+          {renewalBanner}
+          {tierChangeBanner}
+          {status.kind === 'processing' ? (
+            <div className="pp-load" role="status">
+              <span className="spin sm" aria-hidden />
+              מאריכים את המפתח שלכם…
+            </div>
+          ) : selectedTierPrice <= 0 ? (
+            // No confirmed price for this tier + cycle → no amount to consent
+            // to, so no way to pay.
+            <div className="pp-load" role="status">
+              {tiersState === 'loading' ? (
+                <>
+                  <span className="spin sm" aria-hidden />
+                  טוען את המחיר…
+                </>
+              ) : (
+                'המחיר למסלול הזה אינו זמין כרגע. נסו שוב בעוד כמה דקות.'
+              )}
+            </div>
+          ) : !emailLocked ? (
+            <form onSubmit={confirmEmail}>
+              <button type="submit" className="btn btn-p btn-lg btn-block">
+                <Crown className="ic" aria-hidden />
+                {tierChange ? (
+                  tierChange.kind === 'upgrade' ? (
+                    <>
+                      המשך לשדרוג: <Amt n={tierChange.payNow} sym={curSym} />
+                    </>
+                  ) : (
+                    'אישור הורדת המסלול'
+                  )
+                ) : (
+                  <>
+                    המשך לחידוש: <Amt n={selectedTierPrice} sym={curSym} />
+                  </>
+                )}
+              </button>
+            </form>
+          ) : (
+            <>
+              <OrderSummary
+                label={tierChange ? 'המסלול החדש' : 'המסלול'}
+                title={`מסלול ${TIER_LABEL[tier]}`}
+                sub={cycleAdj}
+                amount={recurring}
+                sym={curSym}
+                cycleWord={cycleWord}
+                yearly={plan === 'yearly'}
+                rows={[
+                  ['לתשלום עכשיו', <Amt n={payNow} sym={curSym} />],
+                  [
+                    downgradeFrom ? (
+                      <>
+                        מתחדש מ-<DateText>{downgradeFrom}</DateText>
+                      </>
+                    ) : (
+                      'מתחדש אוטומטית'
+                    ),
+                    <>
+                      <Amt n={recurring} sym={curSym} /> / {cycleWord}
+                    </>,
+                  ],
+                ]}
+              />
+              <RenewConsent
+                checked={renewConsent}
+                onChange={setRenewConsent}
+                amount={<Amt n={recurring} sym={curSym} />}
+                cycleWord={cycleWord}
+                extra={
+                  tierChange?.kind === 'upgrade' ? (
+                    <>
+                      {' '}
+                      (<Amt n={tierChange.payNow} sym={curSym} /> עכשיו, ההפרש בין המסלולים)
+                    </>
+                  ) : downgradeFrom ? (
+                    <>
+                      {' '}
+                      החל מ-<DateText>{downgradeFrom}</DateText>, בלי תשלום עכשיו
+                    </>
+                  ) : null
+                }
+                onOpenTerms={() => setRenewTermsOpen(true)}
+              />
+              <PayArea
+                gate={renewConsent ? null : '↑ אשרו את החיוב המתחדש כדי להמשיך לתשלום'}
+                error={status.kind === 'error' ? status.message : null}
+                sdkError={sdkError}
+                sdkReady={sdkReady}
+                containerRef={buttonContainer}
+                containerId="paypal-button-container"
+                amount={recurring}
+                sym={curSym}
+                cycleWord={cycleWord}
+              />
+              <TermsDialog
+                open={renewTermsOpen}
+                onClose={() => setRenewTermsOpen(false)}
+                planLine={`מנוי ${TIER_LABEL[tier]} ${cycleAdj}.`}
+                amountLine={
+                  tierChange?.kind === 'upgrade' ? (
+                    <>
+                      <Amt n={recurring} sym={curSym} /> לכל {cycleWord}, ועכשיו{' '}
+                      <Amt n={tierChange.payNow} sym={curSym} /> עבור ההפרש בין המסלולים
+                    </>
+                  ) : downgradeFrom ? (
+                    <>
+                      <Amt n={recurring} sym={curSym} /> לכל {cycleWord}, החל מ-
+                      <DateText>{downgradeFrom}</DateText>
+                    </>
+                  ) : (
+                    <>
+                      <Amt n={recurring} sym={curSym} /> לכל {cycleWord}
+                    </>
+                  )
+                }
+                cycleWord={cycleWord}
+              />
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
+
+  // After a completed payment the checkout stays hidden (the success screen
+  // is at the top) until the buyer picks a plan again.
+  const showCheckout = postReturn !== 'subscribed' || checkoutAfterSuccess
+
+  return (
+    <FlPage name="buy" title="מחירים">
+      <div className="wrap">
+        <header className="phero">
+          <span className="eyebrow">מחירים</span>
+          <h1 className="display">בחירת התוכנית שמתאימה לך</h1>
+          <p className="lead">בחרו את המסלול שמתאים לכם — כל מסלול פותח עוד.</p>
+        </header>
+
+        {/* Back from PayPal: ?subscribed=1 / ?cancelled=1. */}
+        {postReturn && (
+          <div id="result" className="result">
+            <ReturnScreen
+              kind={postReturn}
+              flow={returnFlow}
+              onBackToCheckout={() => scrollToId('checkout')}
+              onDownload={() => requestDownload()}
             />
           </div>
-          <h1 className="mt-3 text-3xl font-bold font-display text-fg md:text-4xl">
-            בחירת התוכנית שמתאימה לך
-          </h1>
-          <p className="mx-auto mt-3 max-w-2xl text-sm text-fg-muted md:text-base">
-            בחרו את המסלול שמתאים לכם — כל מסלול פותח עוד.
-          </p>
-        </motion.div>
+        )}
 
-        {/* New tier comparison (Free/Basic/Pro/Ultra) — live admin-configured
-            prices + the feature matrix. Only Pro has a live checkout today
-            (BUYABLE_NOW); the others show "בקרוב" until the per-tier PayPal
-            plans land. Choosing Pro selects the cycle + scrolls to checkout. */}
+        {/* Tier comparison (Free/Basic/Pro/Ultra) — live admin-configured
+            prices + the feature matrix. The cycle toggle drives the
+            checkout's cycle; "בחירת המסלול" selects the tier (with the
+            cycle shown) and scrolls to the checkout. The one selector for
+            every flow, renewals included. */}
         <TierComparison
+          cycle={plan}
+          onCycleChange={setPlan}
           onChoose={(chosenTier, cycle) => {
             setTier(chosenTier)
             setPlan(cycle)
-            document
-              .getElementById('tier-checkout')
-              ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            setCheckoutAfterSuccess(true)
+            setCheckoutScroll((n) => n + 1)
           }}
         />
 
-        {/* Pricing-unavailable HARD BLOCK. When the strict pricing
-            fetch failed (server / Firestore down) we refuse to show
-            ANY checkout UI below — a purchase right now would charge
-            real money (PayPal LIVE) but the post-payment webhook
-            couldn't mint a product key, leaving the buyer paid-but-
-            keyless. Showing this notice INSTEAD of the plan cards +
-            flow closes that window. See fetchLivePricingStrict(). */}
-        {pricingUnavailable ? (
-          <div className="mx-auto mb-6 max-w-2xl rounded-2xl border border-destructive/30 bg-destructive/10 px-6 py-8 text-center">
-            <h2 className="text-lg font-semibold text-fg">
-              הרכישה אינה זמינה כרגע
-            </h2>
-            <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-fg-muted">
-              לא הצלחנו לטעון את פרטי המנוי מהשרת כרגע, כנראה עקב
-              עומס זמני. כדי לא לחייב אתכם לפני שהכול מוכן, חסמנו
-              את הרכישה לרגע. אנא נסו שוב בעוד מספר דקות.
-            </p>
-            <button
-              type="button"
-              onClick={() => window.location.reload()}
-              className="mt-6 inline-flex items-center justify-center rounded-md border border-border px-5 py-2.5 text-sm text-fg transition-colors hover:bg-bg-elevated"
-            >
-              נסו שוב
-            </button>
-          </div>
-        ) : pricing === null ? (
-          /* Loading — the strict DB price fetch hasn't resolved yet.
-             We show NO price (not even a skeleton number) until the
-             real database price arrives. */
-          <div className="mx-auto mb-6 flex max-w-2xl flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-card px-6 py-16 text-center">
-            <Loader2 className="h-6 w-6 animate-spin text-fg-muted" />
-            <p className="text-sm text-fg-muted">טוען את פרטי המנוי…</p>
-          </div>
-        ) : (
-        <>
-        {/* No separate monthly/yearly picker here. The renewal flow used to
-            show the old single-product cards, priced from the pre-tier table
-            (₪45 / ₪290) while the server charged the tier price — a buyer saw
-            one number and paid another. The tier comparison above is the one
-            selector for every flow, renewals included. */}
-
-        <motion.div
-          id="tier-checkout"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.1 }}
-          className="card-elevated mx-auto w-full max-w-2xl rounded-lg border-border p-6 md:p-8"
-        >
-          {/* (The old "כל מה שתקבלו עם מנוי Pro" recap was removed — the tier
-              cards + the full comparison table above already show, clearly,
-              what every tier includes.) */}
-
-          {/* Plan-switch banner — shown when ?switchTo=... is on
-              the URL (user came in via /account "שינוי תוכנית").
-              Replaces the generic renewal banner with a full
-              explanation of what's about to happen: payment amount,
-              auto-cancellation of the old sub, carried-forward
-              days, new expiry. Heavy on detail by design — the
-              buyer needs to understand they won't be double-charged
-              before they hit pay. */}
-          {renewInfo &&
-            switchTo &&
-            status.kind !== 'success' &&
-            status.kind !== 'renewed' &&
-            (() => {
-              const oldExpMs = Math.max(
-                new Date(renewInfo.expiresAt).getTime(),
-                Date.now(),
-              )
-              const newExpMs = oldExpMs + PLAN_META[switchTo].days * 86_400_000
-              const carriedDays = renewInfo.isExpired
-                ? 0
-                : Math.max(
-                    0,
-                    Math.ceil(
-                      (new Date(renewInfo.expiresAt).getTime() - Date.now()) /
-                        (24 * 60 * 60 * 1000),
-                    ),
-                  )
-              const fromLabel = switchTo === 'yearly' ? 'חודשי' : 'שנתי'
-              const toLabel = switchTo === 'yearly' ? 'שנתי' : 'חודשי'
-              const newCycleWord = switchTo === 'yearly' ? 'שנה' : 'חודש'
-              return (
-                <div className="mb-4 rounded-2xl border border-primary/40 bg-primary/[0.06] p-4">
-                  <div className="flex items-start gap-3">
-                    <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                    <div className="flex-1 text-right text-sm">
-                      <div className="text-base font-semibold text-primary">
-                        מעבר ממסלול {fromLabel} למסלול {toLabel}
-                      </div>
-                      <div className="mt-2 text-xs text-fg-secondary">
-                        מפתח{' '}
-                        <span className="font-mono text-fg" dir="ltr">
-                          {renewInfo.keyMasked}
-                        </span>{' '}
-                        · משויך ל-
-                        <span className="font-mono text-fg" dir="ltr">
-                          {renewInfo.emailMasked}
+        {showCheckout && (
+          <section id="checkout" className="sec" aria-labelledby="checkout-title">
+            <div className="sec-head">
+              <h2 className="h2" id="checkout-title">
+                השלמת הרכישה
+              </h2>
+            </div>
+            <div className="co">
+              {/* Pricing-unavailable HARD BLOCK. When the strict pricing
+                  fetch failed (server / Firestore down) we refuse to show
+                  ANY checkout UI — a purchase right now would charge real
+                  money (PayPal LIVE) but the post-payment webhook couldn't
+                  mint a product key, leaving the buyer paid-but-keyless.
+                  See fetchLivePricingStrict(). */}
+              {pricingUnavailable ? (
+                <PurchaseBlocked />
+              ) : pricing === null ? (
+                /* Loading — the strict DB price fetch hasn't resolved yet.
+                   We show NO price until the real database price arrives. */
+                <GateCard loading>טוען את פרטי המנוי…</GateCard>
+              ) : (
+                <>
+                  {renewError && (
+                    <div className="note err" role="alert">
+                      <TriangleAlert className="ic" aria-hidden />
+                      <span>{renewError}</span>
+                    </div>
+                  )}
+                  {/* Two flows live here:
+                      - Renewal mode (?renew=<token> in URL): renewal /
+                        plan switch / tier change on the existing key.
+                      - Subscription mode (no renew token): a new
+                        auto-renewing subscription.
+                      The discriminator is `renewToken`. */}
+                  {renewLoading ? (
+                    <GateCard loading>טוען את פרטי החידוש…</GateCard>
+                  ) : status.kind === 'renewed' ? (
+                    <div className="card co-st">
+                      <div className="done" role="status">
+                        <span className="ret-ic">
+                          <CircleCheck className="ic" aria-hidden />
                         </span>
-                      </div>
-
-                      <div className="mt-3 space-y-1.5 text-xs text-fg-secondary">
-                        <div className="flex items-start gap-2">
-                          <span className="text-primary">✓</span>
-                          <span>
-                            תחויב היום עבור ה{newCycleWord} הבא{' '}
-                            <strong className="text-fg">
-                              (לפי המסלול ה{toLabel})
-                            </strong>
-                          </span>
-                        </div>
-                        <div className="flex items-start gap-2">
-                          <span className="text-primary">✓</span>
-                          <span>
-                            המנוי ה{fromLabel} הקיים{' '}
-                            <strong className="text-fg">יבוטל אוטומטית</strong>{' '}
-                            , לא תחויב עליו שוב
-                          </span>
-                        </div>
-                        {carriedDays > 0 && (
-                          <div className="flex items-start gap-2">
-                            <span className="text-primary">✓</span>
-                            <span>
-                              <strong className="text-fg">
-                                {carriedDays} הימים
-                              </strong>{' '}
-                              שנותרו לך מהמסלול ה{fromLabel}{' '}
-                              <strong className="text-fg">יישמרו</strong>{' '}
-                              ויתווספו על גבי ה{newCycleWord} החדש
-                            </span>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="mt-3 rounded-lg border border-accent/30 bg-accent/[0.05] px-3 py-2.5">
-                        <div className="text-[11px] text-fg-muted">
-                          הגישה תהיה בתוקף עד
-                        </div>
-                        <div className="text-base font-semibold text-accent">
-                          {formatExpiry(new Date(newExpMs).toISOString())}
-                        </div>
-                      </div>
-
-                      <div className="mt-2 text-[11px] text-fg-muted">
-                        המפתח עצמו לא משתנה, אין צורך להזין שום דבר חדש בתוכנה.
+                        <h3 className="h3">המנוי הוארך בהצלחה</h3>
+                        <p>
+                          התוקף החדש שלכם:{' '}
+                          <b>
+                            <DateText>{formatExpiry(status.newExpiresAt)}</DateText>
+                          </b>
+                        </p>
+                        <p className="small muted">
+                          המפתח נשאר אותו מפתח, אין צורך לעדכן שום דבר בתוכנה. שלחנו לכם
+                          גם מייל אישור.
+                        </p>
                       </div>
                     </div>
-                  </div>
-                </div>
-              )
-            })()}
-
-          {/* Renewal banner — shown whenever we're in renewal mode
-              (URL had ?renew=<token>) but NOT in plan-switch mode
-              (?switchTo=...). The two banners are mutually exclusive:
-              switch has its own explainer above, regular renewal
-              keeps the simpler banner below. Sits above the
-              email/PayPal area so the user sees what they're
-              extending before they hit pay. The actual extension
-              math (adds plan days to whichever is later: current
-              expiry or now) happens server-side in the renewal
-              branch. */}
-          {renewInfo && !switchTo && status.kind !== 'success' && status.kind !== 'renewed' && (
-            <div className="mb-4 rounded-2xl border border-accent/30 bg-accent/[0.05] p-4">
-              <div className="flex items-start gap-3">
-                <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
-                <div className="flex-1 text-right text-sm">
-                  <div className="font-semibold text-accent">
-                    חידוש מנוי קיים
-                  </div>
-                  <div className="mt-1 text-xs text-fg-secondary">
-                    מפתח <span className="font-mono text-fg" dir="ltr">{renewInfo.keyMasked}</span>
-                    {' '}· משויך ל-
-                    <span className="font-mono text-fg" dir="ltr">{renewInfo.emailMasked}</span>
-                  </div>
-                  <div className="mt-2 text-xs text-fg-secondary">
-                    תוקף נוכחי: <strong>{formatExpiry(renewInfo.expiresAt)}</strong>
-                    {renewInfo.isExpired && (
-                      <span className="ms-2 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive">
-                        פג
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-[11px] text-fg-muted">
-                    אחרי החידוש המנוי יהיה בתוקף עד{' '}
-                    <strong className="text-fg-secondary">
-                      {formatExpiry(
-                        new Date(
-                          Math.max(
-                            new Date(renewInfo.expiresAt).getTime(),
-                            Date.now(),
-                          ) +
-                            PLAN_META[plan].days * 86_400_000,
-                        ).toISOString(),
-                      )}
-                    </strong>{' '}
-                    . המפתח עצמו לא משתנה.
-                  </div>
-                </div>
-              </div>
+                  ) : renewToken ? (
+                    existingCheckout
+                  ) : selectedTierPrice <= 0 ? (
+                    tiersState === 'loading' ? (
+                      <GateCard loading>טוען את המחיר…</GateCard>
+                    ) : (
+                      <GateCard>המחיר למסלול הזה אינו זמין כרגע. נסו שוב בעוד כמה דקות.</GateCard>
+                    )
+                  ) : (
+                    <SubscriptionFlow
+                      email={email}
+                      setEmail={setEmail}
+                      plan={plan}
+                      tier={tier}
+                      tierPrice={selectedTierPrice}
+                      tierLabel={TIER_LABEL[tier]}
+                      pricing={pricing}
+                      autoRenewAccepted={autoRenewAccepted}
+                      setAutoRenewAccepted={setAutoRenewAccepted}
+                      error={subError}
+                      setError={setSubError}
+                      sdkReady={sdkReady}
+                      sdkError={sdkError}
+                      purchaseContext={purchaseContext}
+                    />
+                  )}
+                </>
+              )}
             </div>
-          )}
-
-          {renewError && (
-            <div className="mb-4 rounded-2xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
-              {renewError}
-            </div>
-          )}
-
-          {/* Two flows live in this card:
-              - Renewal mode (?renew=<token> in URL): existing flow
-                that uses the embedded PayPal Smart Buttons + capture
-                endpoint to extend a one-shot key. Untouched.
-              - Subscription mode (no renew token): NEW auto-renewing
-                subscription flow that POSTs the buyer to PayPal's
-                full-page approval URL. Returns here with
-                ?subscribed=1 (success) or ?cancelled=1 (backed out).
-
-              The discriminator is `renewToken`. When it's null, we're
-              in subscription mode. */}
-          {renewLoading ? (
-            <div className="flex items-center justify-center gap-2 rounded-2xl border border-border bg-bg-elevated p-5 text-primary">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              טוען את פרטי החידוש...
-            </div>
-          ) : status.kind === 'renewed' ? (
-            <div className="rounded-2xl border border-success/40 bg-success/10 p-5 text-center">
-              <CheckCircle2 className="mx-auto mb-2 h-6 w-6 text-success" />
-              <div className="mb-2 text-base font-semibold text-success">
-                המנוי הוארך בהצלחה ✓
-              </div>
-              <p className="text-sm text-fg-secondary">
-                התוקף החדש שלך:{' '}
-                <strong className="text-fg">
-                  {formatExpiry(status.newExpiresAt)}
-                </strong>
-              </p>
-              <p className="mt-2 text-xs text-fg-muted">
-                המפתח שלך נשאר אותו דבר, אין צורך לעדכן באפליקציה. שלחנו לך גם
-                מייל אישור.
-              </p>
-            </div>
-          ) : renewToken ? (
-            /* ─── RENEWAL MODE (existing one-shot extension flow) ─── */
-            status.kind === 'success' ? (
-              <div className="rounded-2xl border border-success/40 bg-success/10 p-5 text-center">
-                <div className="mb-2 text-base font-semibold text-success">
-                  התשלום הושלם בהצלחה ✓
-                </div>
-                <p className="text-sm text-fg-secondary">
-                  שלחנו לך מייל ל-
-                  <span dir="ltr" className="font-mono text-fg">
-                    {' '}
-                    {status.email}{' '}
-                  </span>
-                  עם מפתח המוצר.
-                </p>
-              </div>
-            ) : status.kind === 'processing' ? (
-              <div className="flex items-center justify-center gap-2 rounded-2xl border border-primary/30 bg-primary/10 p-5 text-primary">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                מאריך את המפתח שלך...
-              </div>
-            ) : !emailLocked ? (
-              <form onSubmit={confirmEmail} className="space-y-4">
-                {/* Renewal mode uses the email field as a confirmation
-                    step — the buyer's email is already known from the
-                    renew token; this is just to acknowledge it before
-                    PayPal renders. On a tier change we show the
-                    upgrade/downgrade summary above the button. */}
-                {tierChangeSummary}
-                <button
-                  type="submit"
-                  className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl bg-primary px-6 py-4 text-base font-bold text-bg shadow-lg shadow-primary/30 transition-all hover:bg-primary-hover hover:shadow-xl hover:shadow-primary/40 active:scale-[0.98]"
-                >
-                  <Crown className="h-5 w-5" />
-                  {tierChange
-                    ? tierChange.kind === 'upgrade'
-                      ? `המשך לשדרוג: ${formatPrice(tierChange.payNow)} ${curSym}`
-                      : 'אישור הורדת המסלול'
-                    : `המשך לחידוש: ${formatPrice(selectedTierPrice)} ${currencySymbol(pricing.currency)}`}
-                </button>
-              </form>
-            ) : (
-              <>
-                {tierChangeSummary}
-                {status.kind === 'error' && (
-                  <div className="mb-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-xs text-destructive">
-                    {status.message}
-                  </div>
-                )}
-                {sdkError ? (
-                  <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-                    {sdkError}
-                  </div>
-                ) : !sdkReady ? (
-                  <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-elevated px-4 py-4 text-xs text-fg-muted">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    טוען את PayPal...
-                  </div>
-                ) : null}
-                <div id="paypal-button-container" ref={buttonContainer} />
-                <PaymentTrustStrip />
-              </>
-            )
-          ) : (
-            /* ─── SUBSCRIPTION MODE (new auto-renewing flow) ─── */
-            selectedTierPrice <= 0 ? (
-              <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-elevated px-4 py-6 text-sm text-fg-muted">
-                {tiersState === 'loading' ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    טוען את המחיר…
-                  </>
-                ) : (
-                  'המחיר למסלול הזה אינו זמין כרגע. נסו שוב בעוד כמה דקות.'
-                )}
-              </div>
-            ) : (
-            <SubscriptionFlow
-              postReturn={postReturn}
-              email={email}
-              setEmail={setEmail}
-              plan={plan}
-              tier={tier}
-              tierPrice={selectedTierPrice}
-              tierLabel={TIER_LABEL[tier]}
-              pricing={pricing}
-              autoRenewAccepted={autoRenewAccepted}
-              setAutoRenewAccepted={setAutoRenewAccepted}
-              error={subError}
-              setError={setSubError}
-              sdkReady={sdkReady}
-              sdkError={sdkError}
-              purchaseContext={purchaseContext}
-            />
-            )
-          )}
-        </motion.div>
-        </>
+          </section>
         )}
       </div>
 
-      {/* Renewal sign-in modal — full-screen overlay with backdrop
-          blur, dialog centred via flex. Lives at the root of the
-          page (not inside the max-w-3xl wrapper) so the backdrop
-          covers the whole viewport regardless of where the page
-          has scrolled to. AnimatePresence handles the fade/scale
-          on enter+exit. */}
+      {/* Renewal sign-in modal (nothing opens it today — kept working).
+          Fixed overlay with backdrop blur; AnimatePresence handles the
+          fade/scale on enter+exit. */}
       <AnimatePresence>
         {signinOpen && (
           <motion.div
@@ -1566,7 +1617,7 @@ export function BuyPage() {
             onClick={() => {
               if (!signinSubmitting) closeSigninPanel()
             }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-8 backdrop-blur-md"
+            className="si-ov"
             role="dialog"
             aria-modal="true"
             aria-labelledby="renew-modal-title"
@@ -1578,246 +1629,214 @@ export function BuyPage() {
               exit={{ opacity: 0, scale: 0.96, y: 4 }}
               transition={{ duration: 0.22, ease: 'easeOut' }}
               onClick={(e) => e.stopPropagation()}
-              className="relative w-full max-w-md rounded-lg border border-border bg-bg-card p-6 shadow-lg"
+              className="dialog si-card"
             >
-              <button
-                type="button"
-                onClick={closeSigninPanel}
-                disabled={signinSubmitting}
-                className="absolute left-3 top-3 rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-bg-elevated hover:text-fg disabled:opacity-40"
-                aria-label="סגירה"
-              >
-                <X className="h-4 w-4" />
-              </button>
-
-              <div className="mb-4 flex items-center gap-2 pe-8 text-base font-semibold text-accent">
-                <LogIn className="h-4 w-4 text-accent" />
-                <span id="renew-modal-title">חידוש מנוי קיים</span>
+              <div className="dlg-h">
+                <span className="crown">
+                  <LogIn className="ic" aria-hidden />
+                </span>
+                <h2 id="renew-modal-title">חידוש מנוי קיים</h2>
+                <button
+                  type="button"
+                  className="dlg-x"
+                  onClick={closeSigninPanel}
+                  disabled={signinSubmitting}
+                  aria-label="סגירה"
+                >
+                  <X className="ic" aria-hidden />
+                </button>
               </div>
 
               {/* Picker mode: API returned >1 key for this account.
                   Each row is a button — click to drop into the
                   renewal flow with that key. */}
               {renewableKeys ? (
-                <div className="space-y-2">
-                  <p className="mb-1 text-xs text-fg-muted">
-                    בחרו את המפתח לחידוש:
-                  </p>
+                <div className="stack">
+                  <p className="small muted">בחרו את המפתח לחידוש:</p>
                   {renewableKeys.map((k) => (
                     <button
                       key={k.key}
                       type="button"
                       onClick={() => pickRenewableKey(k)}
-                      className="flex w-full items-center justify-between gap-3 rounded-md border border-border bg-bg-elevated px-4 py-3 text-right transition-colors hover:border-accent/40 hover:bg-accent/[0.05]"
+                      className="si-key"
                     >
-                      <div className="min-w-0 flex-1">
-                        <div
-                          className="font-mono text-sm text-fg"
-                          dir="ltr"
-                        >
+                      <span className="si-key-t">
+                        <bdi dir="ltr" className="mono">
                           {k.keyMasked}
-                        </div>
-                        <div className="mt-0.5 text-[11px] text-fg-muted">
-                          תוקף נוכחי: {formatExpiry(k.expiresAt)}
-                          {k.isExpired && (
-                            <span className="ms-2 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive">
-                              פג
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <KeyRound className="h-4 w-4 shrink-0 text-accent" />
+                        </bdi>
+                        <span className="small muted">
+                          תוקף נוכחי: <DateText>{formatExpiry(k.expiresAt)}</DateText>
+                          {k.isExpired && <span className="chip err exp">פג</span>}
+                        </span>
+                      </span>
+                      <KeyRound className="ic" aria-hidden />
                     </button>
                   ))}
                 </div>
               ) : forgotPasswordMode ? (
-                /* ── Forgot-password sub-mode ──
-                 *
-                 * Replaces the signin form when the user clicks
-                 * "שכחתי סיסמה" below. Shares the same signinEmail
-                 * state so an address typed in the signin form is
-                 * pre-filled here on toggle. Mirrors the /account
-                 * forgot-password block so users get the same
-                 * experience whether they recover from /account or
-                 * from inside this renewal modal. */
+                /* Forgot-password sub-mode — replaces the sign-in form;
+                   shares signinEmail so a typed address carries over. */
                 <form
                   onSubmit={(e) => {
                     e.preventDefault()
                     void handleResetPasswordFromModal()
                   }}
-                  className="space-y-3"
+                  className="stack"
                 >
                   {resetSent ? (
                     <>
-                      <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2.5 text-xs text-success">
-                        ✓ אם החשבון קיים, נשלח אליו מייל איפוס סיסמה
-                        {signinEmail.trim() && (
-                          <>
-                            {' '}לכתובת <strong>{signinEmail.trim()}</strong>
-                          </>
-                        )}
-                        . בדקו את תיבת הדואר (כולל ספאם).
+                      <div className="note ok" role="status">
+                        <span>
+                          ✓ אם החשבון קיים, נשלח אליו מייל איפוס סיסמה
+                          {signinEmail.trim() && (
+                            <>
+                              {' '}
+                              לכתובת <b>{signinEmail.trim()}</b>
+                            </>
+                          )}
+                          . בדקו את תיבת הדואר (כולל ספאם).
+                        </span>
                       </div>
                       <button
                         type="button"
+                        className="btn btn-s btn-block"
                         onClick={() => {
                           setForgotPasswordMode(false)
                           setResetSent(false)
                           setResetError(null)
                         }}
-                        className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-bg-faint"
                       >
-                        <ArrowRight className="h-4 w-4" />
+                        <ArrowRight className="ic" aria-hidden />
                         חזרה להתחברות
                       </button>
                     </>
                   ) : (
                     <>
-                      <p className="text-xs text-fg-muted">
-                        הזינו את האימייל שאיתו נרשמתם, ונשלח אליו קישור
-                        לאיפוס הסיסמה.
+                      <p className="small muted">
+                        הזינו את האימייל שאיתו נרשמתם, ונשלח אליו קישור לאיפוס הסיסמה.
                       </p>
-                      <label className="block">
-                        <span className="mb-1 block text-[11px] text-fg-muted">
-                          אימייל
-                        </span>
+                      <div className="field">
+                        <label htmlFor={`${siId}-reset`}>אימייל</label>
                         <input
+                          id={`${siId}-reset`}
+                          className="input"
                           type="email"
                           required
                           autoComplete="email"
                           value={signinEmail}
                           onChange={(e) => setSigninEmail(e.target.value)}
                           placeholder="you@example.com"
+                          dir="ltr"
                           disabled={resetSending}
                           autoFocus
-                          className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
                         />
-                      </label>
+                      </div>
                       {resetError && (
-                        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                          {resetError}
+                        <div className="note err" role="alert">
+                          <span>{resetError}</span>
                         </div>
                       )}
-                      <button
-                        type="submit"
-                        disabled={resetSending}
-                        className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-60"
-                      >
+                      <button type="submit" className="btn btn-p btn-block" disabled={resetSending}>
                         {resetSending ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span className="spin sm" aria-hidden />
                         ) : (
-                          <Lock className="h-4 w-4" />
+                          <Lock className="ic" aria-hidden />
                         )}
-                        שלח לי קישור איפוס
+                        שליחת קישור איפוס
                       </button>
                       <button
                         type="button"
+                        className="btn btn-g btn-sm btn-block"
                         onClick={() => {
                           setForgotPasswordMode(false)
                           setResetError(null)
                         }}
-                        className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-transparent px-4 py-2 text-xs text-fg-muted transition-colors hover:bg-bg-elevated hover:text-fg"
                       >
-                        <ArrowRight className="h-3.5 w-3.5" />
+                        <ArrowRight className="ic" aria-hidden />
                         חזרה להתחברות
                       </button>
                     </>
                   )}
                 </form>
               ) : (
-                <form onSubmit={submitSignin} className="space-y-3">
-                  <p className="text-xs text-fg-muted">
+                <form onSubmit={submitSignin} className="stack">
+                  <p className="small muted">
                     התחברו עם החשבון שאיתו מימשתם את המפתח כדי לחדש את התוקף.
                   </p>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] text-fg-muted">
-                      אימייל
-                    </span>
+                  <div className="field">
+                    <label htmlFor={`${siId}-email`}>אימייל</label>
                     <input
+                      id={`${siId}-email`}
+                      className="input"
                       type="email"
                       required
                       autoComplete="email"
                       value={signinEmail}
                       onChange={(e) => setSigninEmail(e.target.value)}
                       placeholder="you@example.com"
+                      dir="ltr"
                       disabled={signinSubmitting}
                       autoFocus
-                      // No explicit dir — inherits dir="rtl" from
-                      // <html lang="he"> so the placeholder and
-                      // typed content align right under the
-                      // right-aligned "אימייל" label, matching the
-                      // /account login form. The latin email
-                      // characters still render LTR via Unicode
-                      // bidi.
-                      className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
                     />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[11px] text-fg-muted">
-                      סיסמה
-                    </span>
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`${siId}-pass`}>סיסמה</label>
                     <input
+                      id={`${siId}-pass`}
+                      className="input"
                       type="password"
                       required
                       autoComplete="current-password"
                       value={signinPassword}
                       onChange={(e) => setSigninPassword(e.target.value)}
+                      dir="ltr"
                       disabled={signinSubmitting}
-                      className="w-full rounded-md border border-border bg-bg-elevated px-4 py-2.5 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none disabled:opacity-60"
                     />
-                  </label>
+                  </div>
                   {signinError && (
-                    <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                      {signinError}
+                    <div className="note err" role="alert">
+                      <span>{signinError}</span>
                     </div>
                   )}
-                  <button
-                    type="submit"
-                    disabled={signinSubmitting}
-                    className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-60"
-                  >
+                  <button type="submit" className="btn btn-p btn-block" disabled={signinSubmitting}>
                     {signinSubmitting ? (
                       <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        מתחבר...
+                        <span className="spin sm" aria-hidden />
+                        מתחבר…
                       </>
                     ) : (
                       <>
-                        <LogIn className="h-4 w-4" />
+                        <LogIn className="ic" aria-hidden />
                         התחברות וחידוש
                       </>
                     )}
                   </button>
-                  {/* "שכחתי סיסמה" — toggle to the inline reset form
-                      above. Stays inside the same modal so the user
-                      never has to leave /buy to recover access. */}
-                  <div className="pt-1 text-center">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSigninError(null)
-                        setResetError(null)
-                        setResetSent(false)
-                        setForgotPasswordMode(true)
-                      }}
-                      disabled={signinSubmitting}
-                      className="text-[11px] text-fg-muted underline-offset-4 transition-colors hover:text-accent hover:underline disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      שכחתי סיסמה
-                    </button>
-                  </div>
+                  {/* "שכחתי סיסמה" — toggles to the reset form above, inside
+                      the same modal. */}
+                  <button
+                    type="button"
+                    className="tlink si-forgot"
+                    onClick={() => {
+                      setSigninError(null)
+                      setResetError(null)
+                      setResetSent(false)
+                      setForgotPasswordMode(true)
+                    }}
+                    disabled={signinSubmitting}
+                  >
+                    שכחתי סיסמה
+                  </button>
                 </form>
               )}
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
-    </motion.div>
+    </FlPage>
   )
 }
 
 function SubscriptionFlow({
-  postReturn,
   email,
   setEmail,
   plan,
@@ -1833,7 +1852,6 @@ function SubscriptionFlow({
   sdkError,
   purchaseContext,
 }: {
-  postReturn: 'subscribed' | 'cancelled' | null
   email: string
   setEmail: (s: string) => void
   plan: Plan
@@ -1851,52 +1869,9 @@ function SubscriptionFlow({
   sdkError: string | null
   purchaseContext: PurchaseContext | null
 }) {
-  if (postReturn === 'subscribed') {
-    return (
-      <div className="rounded-2xl border border-success/40 bg-success/10 p-5 text-center">
-        <CheckCircle2 className="mx-auto mb-2 h-6 w-6 text-success" />
-        <div className="mb-2 text-base font-semibold text-success">
-          המנוי נוצר בהצלחה ✓
-        </div>
-        <p className="text-sm text-fg-secondary">
-          שלחנו לך מייל עם מפתח המוצר. פתח את התוכנה, לחץ "מימוש מפתח מוצר"
-          והדבק.
-        </p>
-        <p className="mt-3 rounded-lg border border-primary/30 bg-primary/[0.06] px-3 py-2 text-xs text-primary">
-          💡 <strong>לא רואה את המייל?</strong> ייקח לפעמים עד דקה. בדוק גם
-          בספאם / קידום מכירות.
-        </p>
-        <p className="mt-3 text-xs text-fg-muted">
-          המנוי מתחדש אוטומטית. לביטול בכל עת:{' '}
-          <a
-            href="/account"
-            className="text-accent underline underline-offset-2"
-          >
-            החשבון שלי
-          </a>
-        </p>
-      </div>
-    )
-  }
-
-  if (postReturn === 'cancelled') {
-    return (
-      <div className="rounded-2xl border border-border bg-bg-elevated p-5 text-center">
-        <div className="mb-2 text-base font-semibold text-fg">
-          הרישום בוטל
-        </div>
-        <p className="text-sm text-fg-secondary">
-          לא נוצר מנוי ולא חויבת. אם זה היה בטעות, פשוט נסה שוב למטה.
-        </p>
-        <a
-          href="/buy"
-          className="mt-3 inline-block text-xs text-accent underline underline-offset-2"
-        >
-          חזרה לטופס הרישום
-        </a>
-      </div>
-    )
-  }
+  // (The ?subscribed=1 / ?cancelled=1 return screens used to live here; they
+  // now render at the top of the page — see ReturnScreen.)
+  const fieldId = useId()
 
   // Per-tier price (Basic/Ultra, or Pro once its per-tier price is set) —
   // when present it drives the whole display, and the legacy sale/coupon UI
@@ -2064,7 +2039,9 @@ function SubscriptionFlow({
             }
             return json.subscriptionId
           } catch (err) {
-            setError(err instanceof Error ? err.message : 'שגיאת רשת')
+            // Hebrew server reasons are shown as-is; anything else
+            // (browser / network errors in English) gets the Hebrew line.
+            setError(pickPayPalErrorMessage(err, 'שגיאת רשת'))
             throw err
           }
         },
@@ -2083,6 +2060,9 @@ function SubscriptionFlow({
               // ignore
             }
           }
+          // Word the success screen: signed-in buyers get the key attached
+          // to their account; guests redeem it from the email.
+          rememberReturnFlow({ flow: purchaseContext ? 'new-in' : 'new' })
           window.location.href = '/buy?subscribed=1'
         },
         onError: (err) => {
@@ -2090,7 +2070,7 @@ function SubscriptionFlow({
           setError(
             pickPayPalErrorMessage(
               err,
-              'התרחשה שגיאה בתהליך התשלום. נסה שוב.',
+              'התרחשה שגיאה בתהליך התשלום. נסו שוב.',
             ),
           )
         },
@@ -2111,359 +2091,257 @@ function SubscriptionFlow({
     // in practice, but cheap to handle correctly).
   }, [sdkReady, canPay, plan, setError, purchaseContext])
 
+  // What the consent states: the recurring amount, plus the first-period
+  // price when a first-period coupon applies.
+  const consentAmount =
+    couponOk && !couponOk.saleCheaper
+      ? couponOk.duration === 'first'
+        ? couponOk.recurringPrice ?? eff
+        : couponOk.finalPrice
+      : eff
+
   return (
-    <form onSubmit={(e) => e.preventDefault()} className="space-y-4">
+    <form onSubmit={(e) => e.preventDefault()} className="card co-st">
       {/* Order summary — ties the payment box to the tier the buyer picked,
           and spells out exactly what's charged NOW vs every cycle, plus how
-          upgrades/downgrades are timed, so there's zero billing surprise. */}
-      <div className="space-y-2.5 rounded-xl border border-primary/30 bg-primary/[0.06] p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-[11px] text-fg-muted">המסלול שנבחר</div>
-            <div className="text-base font-bold text-fg">מסלול {planLabelText}</div>
-          </div>
-          <div className="text-left" dir="ltr">
-            <div className="text-lg font-extrabold text-primary">
-              {formatPrice(eff)} {sym}
+          upgrades/downgrades are timed, so there's zero billing surprise.
+          The ×12 breakdown explains the yearly figure (the cards quote a
+          monthly price for both cycles). */}
+      <OrderSummary
+        label="המסלול שנבחר"
+        title={`מסלול ${planLabelText}`}
+        sub={
+          <>
+            {plan === 'monthly' ? 'חודשי' : 'שנתי'} ·{' '}
+            <a
+              className="link"
+              href="#plans"
+              onClick={(e) => {
+                e.preventDefault()
+                scrollToId('plans')
+              }}
+            >
+              שינוי המסלול
+            </a>
+          </>
+        }
+        amount={eff}
+        sym={sym}
+        cycleWord={cycleLabel}
+        yearly={plan === 'yearly'}
+        rows={[
+          ['לתשלום עכשיו', <Amt n={eff} sym={sym} />],
+          [
+            'מתחדש אוטומטית',
+            <>
+              <Amt n={eff} sym={sym} /> / {cycleLabel}
+            </>,
+          ],
+        ]}
+      />
+      <p className="fine">
+        החיוב הראשון עכשיו, ואז <Amt n={eff} sym={sym} /> כל {cycleLabel} עד לביטול.
+        <span className="vat"> המחירים כוללים מע״מ.</span> שדרוג מסלול נכנס לתוקף מיד
+        (משלמים רק את ההפרש); הורדת מסלול נכנסת לתוקף בסוף התקופה ששולמה — עד אז נשארים
+        במסלול הנוכחי.
+      </p>
+
+      {/* Email locked when the buyer is upgrading from their account —
+          typing a different address would orphan the subscription off
+          their account. */}
+      <div className="field">
+        <label htmlFor={`${fieldId}-mail`}>כתובת מייל לקבלת מפתח המנוי</label>
+        {purchaseContext ? (
+          <>
+            <div className="locked">
+              <input
+                id={`${fieldId}-mail`}
+                className="input"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                dir="ltr"
+                disabled
+                aria-describedby={`${fieldId}-mail-h`}
+              />
+              <Lock className="ic" aria-hidden />
             </div>
-            <div className="text-[11px] text-fg-muted">/ {cycleLabel}</div>
-          </div>
-        </div>
-        <div className="space-y-1 border-t border-border/60 pt-2.5 text-xs">
-          {/* How the yearly figure is built. The comparison cards quote a
-              monthly price for both cycles so they can be compared at all —
-              which leaves the buyer arriving here at a number twelve times
-              bigger with no explanation. Showing the multiplication is the
-              explanation. */}
-          {plan === 'yearly' && (
-            <div className="mb-1.5 rounded-lg bg-bg-elevated/60 px-2.5 py-2">
-              <div className="flex items-center justify-between">
-                <span className="text-fg-secondary">מחיר לחודש</span>
-                <span className="tabular-nums text-fg" dir="ltr">
-                  {formatPrice(Math.round((eff / 12) * 100) / 100)} {sym}
-                </span>
-              </div>
-              <div className="text-fg-secondary">× 12 חודשים</div>
-              <div className="mt-1 flex items-center justify-between border-t border-border/60 pt-1">
-                <span className="font-semibold text-fg">סה״כ לשנה, בתשלום אחד</span>
-                <span className="font-bold tabular-nums text-primary" dir="ltr">
-                  {formatPrice(eff)} {sym}
-                </span>
-              </div>
-            </div>
-          )}
-          <div className="flex items-center justify-between">
-            <span className="text-fg-secondary">לתשלום עכשיו</span>
-            <span className="font-semibold text-fg" dir="ltr">
-              {formatPrice(eff)} {sym}
+            <span className="hint" id={`${fieldId}-mail-h`}>
+              זה המייל של החשבון שאיתו התחברתם. המנוי יירשם עליו, והמפתח ישויך לחשבון
+              אוטומטית, בלי להזין אותו בתוכנה.
             </span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-fg-secondary">מתחדש אוטומטית</span>
-            <span className="font-semibold text-fg" dir="ltr">
-              {formatPrice(eff)} {sym} / {cycleLabel}
-            </span>
-          </div>
-        </div>
-        <p className="text-[11px] leading-relaxed text-fg-muted">
-          החיוב הראשון עכשיו, ואז {formatPrice(eff)} {sym} כל {cycleLabel} עד לביטול.
-          המחירים כוללים מע״מ. שדרוג מסלול נכנס לתוקף מיד (משלמים רק את ההפרש);
-          הורדת מסלול נכנסת לתוקף בסוף התקופה ששולמה — עד אז נשארים במסלול הנוכחי.
-        </p>
-        {/* Said before the pay button, not after: an Intel-Mac owner must
-            not be able to pay for an app that won't run on their machine. */}
-        <p className="text-[11px] leading-relaxed text-fg-muted">
-          התוכנה פועלת על Mac עם שבב M1 ומעלה ועל Windows 10/11 בגרסת 64 ביט.
-          מחשבי Mac עם מעבד Intel אינם נתמכים.
-        </p>
+          </>
+        ) : (
+          <input
+            id={`${fieldId}-mail`}
+            className="input"
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@example.com"
+            dir="ltr"
+            autoComplete="email"
+          />
+        )}
       </div>
-      <label className="block">
-        <span className="mb-1.5 block text-xs text-fg-secondary">
-          כתובת מייל לקבלת מפתח המנוי
-        </span>
-        <input
-          type="email"
-          required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@example.com"
-          dir="ltr"
-          className="w-full rounded-xl border border-border bg-bg-elevated px-4 py-3 text-right text-base text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none disabled:opacity-60"
-          // Email locked when the buyer is upgrading from their
-          // account — typing a different address would orphan the
-          // subscription off their account.
-          disabled={Boolean(purchaseContext)}
-        />
-      </label>
 
       {/* Coupon — only the CODE travels to the server; price + validity
-          are decided there. This flow is fresh-purchase-only (renewals
-          use a separate container), so the field is always in scope.
-          Hidden on the per-tier path (coupon price preview is Pro-single-
-          product only for now). */}
-      <div style={isPerTier ? { display: 'none' } : undefined}>
-          {!couponOpen && !couponOk ? (
-            <button
-              type="button"
-              onClick={() => setCouponOpen(true)}
-              className="text-xs text-accent underline underline-offset-2 hover:text-accent/80"
-            >
-              יש לי קוד קופון
-            </button>
-          ) : (
-            <div className="space-y-1.5">
-              {!couponOk && (
-                <div className="flex items-center gap-2">
-                  <input
-                    value={couponInput}
-                    onChange={(e) => setCouponInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        void applyCoupon(couponInput, plan)
-                      }
-                    }}
-                    placeholder="קוד קופון"
-                    dir="ltr"
-                    className="w-40 rounded-xl border border-border bg-bg-elevated px-3 py-2 text-sm uppercase text-fg placeholder:text-fg-faint focus:border-primary focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    disabled={couponBusy || !couponInput.trim()}
-                    onClick={() => void applyCoupon(couponInput, plan)}
-                    className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-50"
-                  >
-                    {couponBusy ? 'בודק…' : 'החלה'}
-                  </button>
-                </div>
-              )}
-              {couponOk && !couponOk.saleCheaper && (
-                <div className="flex items-center gap-2 rounded-xl border border-success/40 bg-success/10 px-3 py-2 text-xs text-success">
-                  <span>
-                    קופון {couponOk.pct}% הופעל:{' '}
-                    {couponOk.duration === 'first'
-                      ? `${formatPrice(couponOk.finalPrice)} ${sym} ל${cycleLabel} הראשון, אחר כך ${formatPrice(couponOk.recurringPrice ?? eff)} ${sym} ל${cycleLabel}`
-                      : `${formatPrice(couponOk.finalPrice)} ${sym} ל${cycleLabel}`}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCouponOk(null)
-                      setCouponInput('')
-                      setCouponOpen(false)
-                    }}
-                    className="mr-auto text-success/80 hover:text-success"
-                    title="הסרת הקופון"
-                  >
-                    ×
-                  </button>
-                </div>
-              )}
-              {couponOk && couponOk.saleCheaper && (
-                <div className="rounded-xl border border-border bg-bg-elevated px-3 py-2 text-xs text-fg-secondary">
-                  המבצע הנוכחי זול יותר מהקופון. המחיר נשאר{' '}
-                  {formatPrice(eff)} {sym}. הקופון לא ינוצל.
-                </div>
-              )}
-              {couponErr && (
-                <div className="text-xs text-destructive">{couponErr}</div>
-              )}
-            </div>
-          )}
-        </div>
-
-      {/* Single explicit consent checkbox. Israeli consumer-
-          protection law (sec. 13ג) requires the auto-renew terms
-          to be disclosed up-front; we satisfy that with the
-          checkbox text + a click-to-expand "תנאי המנוי" link that
-          opens the full terms modal below. The checkbox is NOT
-          pre-ticked (also a legal requirement). */}
-      <label className="flex items-start gap-2.5 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={autoRenewAccepted}
-          onChange={(e) => setAutoRenewAccepted(e.target.checked)}
-          className="mt-[3px] h-4 w-4 shrink-0 cursor-pointer accent-primary"
-          disabled={false}
-        />
-        <span className="text-xs text-fg-secondary leading-relaxed">
-          אני מאשר/ת חיוב אוטומטי מתחדש בסך{' '}
-          {formatPrice(
-            couponOk && !couponOk.saleCheaper
-              ? couponOk.duration === 'first'
-                ? couponOk.recurringPrice ?? eff
-                : couponOk.finalPrice
-              : eff,
-          )}{' '}
-          {sym} כל{' '}
-          {cycleLabel}
-          {couponOk && !couponOk.saleCheaper && couponOk.duration === 'first'
-            ? ` (${formatPrice(couponOk.finalPrice)} ${sym} ל${cycleLabel} הראשון)`
-            : ''}
-          , ושקראתי ואני מסכים{' '}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              setTermsOpen(true)
-            }}
-            className="text-accent underline underline-offset-2 hover:text-accent/80"
-          >
-            לתנאי המנוי
+          are decided there. Hidden on the per-tier path (coupon price
+          preview is Pro-single-product only for now), which today is
+          always. */}
+      <div className="coupon" hidden={isPerTier}>
+        {!couponOpen && !couponOk ? (
+          <button type="button" className="tlink" onClick={() => setCouponOpen(true)}>
+            יש לי קוד קופון
           </button>
-          .
-        </span>
-      </label>
-
-      {/* Terms modal — full disclosure of every term required by
-          law (sec. 13ג). Opens on demand from the consent checkbox
-          link above. */}
-      {termsOpen && (
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setTermsOpen(false)
-          }}
-        >
-          <div className="card-elevated relative w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-2xl border-primary/30 bg-bg-elevated p-6 md:p-7">
-            <button
-              type="button"
-              onClick={() => setTermsOpen(false)}
-              className="absolute left-3 top-3 rounded-md p-1 text-fg-muted hover:text-fg"
-              aria-label="סגור"
-            >
-              <X className="h-4 w-4" />
-            </button>
-            <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-primary">
-              <Crown className="h-4 w-4" />
-              תנאי המנוי · סיכום העסקה
-            </div>
-            <ul className="space-y-2.5 text-xs leading-relaxed text-fg-secondary">
-              <li>
-                • <strong>תוכנית:</strong> מנוי {planLabelText} {cycleLabel === 'חודש' ? 'חודשי' : 'שנתי'}.
-              </li>
-              <li>
-                • <strong>סכום החיוב:</strong>{' '}
-                {onSale ? (
-                  <>
-                    <span className="line-through text-fg-faint">
-                      {formatPrice(pricing[plan].regular)} {sym}
-                    </span>{' '}
-                    <strong className="text-success">
-                      {formatPrice(eff)} {sym}
-                    </strong>{' '}
-                    לכל {cycleLabel}
-                    {pricing.saleLabel && (
-                      <span className="ms-1 text-success">
-                        ({pricing.saleLabel})
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  <strong className="text-fg">
-                    {formatPrice(eff)} {sym} לכל {cycleLabel}
-                  </strong>
-                )}
-              </li>
-              <li>
-                • <strong>חידוש אוטומטי:</strong> החיוב יתחדש אוטומטית כל{' '}
-                {cycleLabel} עד לביטול.
-                {onSale && (
-                  <>
-                    {' '}
-                    המחיר ה<strong>מוזל</strong> שלך נשמר לכל אורך תקופת המנוי
-                    . גם אם המבצע יסתיים, אתה תמשיך לשלם {formatPrice(eff)}{' '}
-                    {sym} עד שתבטל.
-                  </>
-                )}
-              </li>
-              <li>
-                • <strong>ביטול:</strong> ניתן לבטל בכל עת בדף{' '}
-                <a
-                  href="/account"
-                  className="text-accent underline underline-offset-2"
+        ) : (
+          <div className="stack">
+            {!couponOk && (
+              <div className="row">
+                <input
+                  value={couponInput}
+                  onChange={(e) => setCouponInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      void applyCoupon(couponInput, plan)
+                    }
+                  }}
+                  placeholder="קוד קופון"
+                  aria-label="קוד קופון"
+                  dir="ltr"
+                  className="input coupon-in"
+                />
+                <button
+                  type="button"
+                  className="btn btn-s btn-sm"
+                  disabled={couponBusy || !couponInput.trim()}
+                  onClick={() => void applyCoupon(couponInput, plan)}
                 >
-                  החשבון שלי
-                </a>
-                . המנוי הוא לתקופה בלתי מוגבלת ומתחדש בכל מחזור חיוב עד
-                שתבטל. אחרי הביטול לא תחויב יותר.
-              </li>
-              <li>
-                • <strong>החזרים:</strong> ביטול בתוך ארבעה עשר יום מהרכישה
-                הראשונה — כל הסכום חוזר, פחות דמי ביטול קטנים. במנוי שנתי, גם
-                אחר כך: מקבלים בחזרה את מה ששולם, פחות המחיר החודשי הרגיל על כל
-                חודש שהתחיל, ופחות דמי ביטול. במנוי חודשי, אחרי ארבעה עשר הימים
-                הראשונים, הגישה נשארת עד סוף החודש ששולם, בלי החזר. לפני הביטול
-                מוצג בדיוק כמה יחזור.
-              </li>
-              <li>
-                • <strong>אבטחה:</strong> התשלום מתבצע ישירות אצל PayPal.
-                אנחנו לא מאחסנים פרטי כרטיס.
-              </li>
-            </ul>
-            <button
-              type="button"
-              onClick={() => setTermsOpen(false)}
-              className="mt-5 w-full rounded-md bg-primary px-4 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-primary-hover"
-            >
-              הבנתי
-            </button>
+                  {couponBusy ? 'בודק…' : 'החלה'}
+                </button>
+              </div>
+            )}
+            {couponOk && !couponOk.saleCheaper && (
+              <div className="note ok">
+                <span>
+                  קופון {couponOk.pct}% הופעל:{' '}
+                  {couponOk.duration === 'first' ? (
+                    <>
+                      <Amt n={couponOk.finalPrice} sym={sym} /> ל{cycleLabel} הראשון, אחר
+                      כך <Amt n={couponOk.recurringPrice ?? eff} sym={sym} /> ל{cycleLabel}
+                    </>
+                  ) : (
+                    <>
+                      <Amt n={couponOk.finalPrice} sym={sym} /> ל{cycleLabel}
+                    </>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  className="dlg-x"
+                  onClick={() => {
+                    setCouponOk(null)
+                    setCouponInput('')
+                    setCouponOpen(false)
+                  }}
+                  title="הסרת הקופון"
+                  aria-label="הסרת הקופון"
+                >
+                  ×
+                </button>
+              </div>
+            )}
+            {couponOk && couponOk.saleCheaper && (
+              <div className="note">
+                <span>
+                  המבצע הנוכחי זול יותר מהקופון. המחיר נשאר <Amt n={eff} sym={sym} />.
+                  הקופון לא ינוצל.
+                </span>
+              </div>
+            )}
+            {couponErr && <p className="coupon-err">{couponErr}</p>}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {error && (
-        <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          {error}
-        </div>
-      )}
+      {/* Separate explicit auto-renew consent. Israeli consumer-protection
+          law (sec. 13ג) requires the auto-renew terms disclosed up-front:
+          the checkbox text states amount + cycle, and "לתנאי המנוי" opens
+          the full terms. NOT pre-ticked (also a legal requirement). */}
+      <RenewConsent
+        checked={autoRenewAccepted}
+        onChange={setAutoRenewAccepted}
+        amount={<Amt n={consentAmount} sym={sym} />}
+        cycleWord={cycleLabel}
+        extra={
+          couponOk && !couponOk.saleCheaper && couponOk.duration === 'first' ? (
+            <>
+              {' '}
+              (<Amt n={couponOk.finalPrice} sym={sym} /> ל{cycleLabel} הראשון)
+            </>
+          ) : null
+        }
+        onOpenTerms={() => setTermsOpen(true)}
+      />
 
-      {/* Embedded PayPal Smart Buttons. The default rendering
-          surfaces THREE payment options stacked vertically:
-            1. PayPal button (opens PayPal popup; user logs in &
-               approves the subscription).
-            2. Pay-later button (if eligible for the user's locale).
-            3. "Debit or Credit Card" button → expands an inline
-               card-fields iframe ON THIS PAGE — user types card
-               number / exp / CVV without leaving our site.
-          That third option is the embedded-card experience the
-          user explicitly asked for: "let them enter credit card
-          details right inside the website" (as in the previous
-          one-shot purchase flow before the subscription migration).
+      {/* Embedded PayPal card button. It only renders once the form is
+          valid (`canPay`) — PayPal buttons have no disabled state — so
+          until then a hint says what's missing. The render itself is
+          wired in the useEffect above. */}
+      <PayArea
+        gate={
+          !emailValid
+            ? '↑ הזינו כתובת מייל תקינה כדי להמשיך לתשלום'
+            : !autoRenewAccepted
+              ? '↑ אשרו את החיוב המתחדש כדי להמשיך לתשלום'
+              : null
+        }
+        error={error}
+        sdkError={sdkError}
+        sdkReady={sdkReady}
+        containerRef={paypalContainerRef}
+        amount={eff}
+        sym={sym}
+        cycleWord={cycleLabel}
+      />
 
-          The container only renders once the form is valid
-          (`canPay`) so we don't show empty/disabled buttons. The
-          actual render is wired in the useEffect above. */}
-      {!canPay ? (
-        <div className="rounded-xl border border-border bg-bg-elevated/40 px-4 py-3 text-center text-xs text-fg-secondary">
-          {!emailValid
-            ? '↑ הזן כתובת מייל תקינה כדי להמשיך לתשלום'
-            : '↑ אשר את החיוב המתחדש כדי להמשיך לתשלום'}
-        </div>
-      ) : sdkError ? (
-        <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          {sdkError}
-        </div>
-      ) : !sdkReady ? (
-        <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-elevated/40 px-4 py-4 text-xs text-fg-muted">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          טוען את PayPal…
-        </div>
-      ) : (
-        <>
-          <div
-            ref={paypalContainerRef}
-            className="min-h-[48px]"
-            aria-label="אפשרויות תשלום של PayPal"
-          />
-          <PaymentTrustStrip />
-          <p className="text-center text-[11px] text-fg-muted">
-            {formatPrice(eff)} {sym} / {cycleLabel} · כולל מע״מ · מתחדש אוטומטית ·
-            ביטול בכל עת
-          </p>
-        </>
-      )}
+      {/* Terms dialog — full disclosure of every term required by law
+          (sec. 13ג). Opens from the consent's "לתנאי המנוי" link. */}
+      <TermsDialog
+        open={termsOpen}
+        onClose={() => setTermsOpen(false)}
+        planLine={`מנוי ${planLabelText} ${cycleLabel === 'חודש' ? 'חודשי' : 'שנתי'}.`}
+        amountLine={
+          onSale ? (
+            <>
+              <s>
+                <Amt n={pricing[plan].regular} sym={sym} />
+              </s>{' '}
+              <b>
+                <Amt n={eff} sym={sym} />
+              </b>{' '}
+              לכל {cycleLabel}
+              {pricing.saleLabel && <> ({pricing.saleLabel})</>}
+            </>
+          ) : (
+            <>
+              <Amt n={eff} sym={sym} /> לכל {cycleLabel}
+            </>
+          )
+        }
+        cycleWord={cycleLabel}
+        saleNote={
+          onSale ? (
+            <>
+              {' '}
+              המחיר ה<b>מוזל</b> שלכם נשמר לכל אורך תקופת המנוי. גם אם המבצע יסתיים,
+              תמשיכו לשלם <Amt n={eff} sym={sym} /> עד שתבטלו.
+            </>
+          ) : undefined
+        }
+      />
     </form>
   )
 }

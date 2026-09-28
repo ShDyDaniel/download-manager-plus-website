@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Check, CheckCircle2 } from 'lucide-react'
 import { getSession, subscribeSession } from '../lib/webSession'
 import { RevisionsWorkspace as WebRevisionsWorkspace } from '../components/RevisionsWorkspace'
 import { ProWorkspaceShell } from '../components/ProWorkspaceShell'
+import { FlPage } from '../components/site/FlPage'
+import { ShellMark, ShellStage } from '../components/workspace/shell/ShellUi'
+import '../styles/pages/workspace.css'
 
 /**
  * Public /revisions workspace — the editor side of the Revisions
@@ -88,29 +92,18 @@ export function RevisionsPage() {
  *  them they can close it. */
 function SignedOutOauthSuccess() {
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-bg p-8 text-center">
-      <div className="max-w-md">
-        <div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-success/10 text-success">
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="h-7 w-7"
-          >
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
+    <FlPage name="workspace" chrome="min" title="סבבי תיקונים">
+      <ShellStage>
+        <div className="card ws-card center">
+          <ShellMark tone="ok" badge={<Check className="ic" aria-hidden />} />
+          <h1 className="ws-h">ה-Drive מחובר</h1>
+          <p className="ws-p">
+            אפשר לסגור את החלון הזה ולחזור לחלון של סבבי התיקונים. הוא
+            יזהה את החיבור תוך שניות.
+          </p>
         </div>
-        <h1 className="mb-3 text-xl font-medium text-fg">ה-Drive מחובר</h1>
-        <p className="text-sm leading-relaxed text-fg-muted">
-          אפשר לסגור את החלון הזה ולחזור לחלון של סבבי התיקונים. הוא
-          יזהה את החיבור תוך שניות.
-        </p>
-      </div>
-    </div>
+      </ShellStage>
+    </FlPage>
   )
 }
 
@@ -137,13 +130,16 @@ function RevisionsWorkspace() {
   }, [justConnected, navigate])
 
   return (
-    <div className="space-y-10">
+    <>
       {justConnected && (
-        <div className="mx-auto max-w-2xl rounded-lg border border-success/40 bg-success/10 px-4 py-3 text-center text-sm text-success">
-          החיבור ל-Google Drive הושלם בהצלחה.
+        <div className="ws-chip">
+          <div className="note ok" role="status">
+            <CheckCircle2 className="ic" aria-hidden />
+            <span>החיבור ל-Google Drive הושלם בהצלחה.</span>
+          </div>
         </div>
       )}
       <WebRevisionsWorkspace />
-    </div>
+    </>
   )
 }

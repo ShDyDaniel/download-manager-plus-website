@@ -1,0 +1,50 @@
+/* The desktop app's look, for the web workspaces (/revisions, /deliveries).
+ * Utilities come from tailwind.app.config.js (scoped to `.app-ui …`); the
+ * variables below are the app's index.css tokens under their own names, so
+ * the site's variables are untouched. */
+@config "../../tailwind.app.config.js";
+
+.app-ui {
+  --app-background: 28 24% 6%;
+  --app-foreground: 36 50% 93%;
+  --app-card: 26 19% 10%;
+  --app-card-foreground: 36 50% 93%;
+  --app-popover: 25 22% 13%;
+  --app-popover-foreground: 36 50% 93%;
+  --app-primary: 23 41% 51%;
+  --app-primary-foreground: 28 24% 6%;
+  --app-secondary: 25 22% 13%;
+  --app-secondary-foreground: 36 50% 93%;
+  --app-muted: 26 19% 10%;
+  --app-muted-foreground: 33 11% 49%;
+  --app-accent: 32 51% 64%;
+  --app-accent-foreground: 28 24% 6%;
+  --app-destructive: 9 50% 56%;
+  --app-destructive-foreground: 36 50% 93%;
+  --app-success: 100 24% 54%;
+  --app-success-foreground: 28 24% 6%;
+  --app-border: 28 15% 18%;
+  --app-input: 26 19% 10%;
+  --app-ring: 32 51% 64%;
+  --app-radius: 0.625rem;
+  color: hsl(var(--app-foreground));
+  font-family: 'Rubik', 'Heebo', system-ui, -apple-system, sans-serif;
+  font-weight: 400;
+  line-height: 1.5;
+}
+/* the app's base rule: every border defaults to the app's divider colour */
+.app-ui *,
+.app-ui *::before,
+.app-ui *::after {
+  border-color: hsl(var(--app-border));
+}
+/* the site's global h1–h3 rule (weight 500, tight tracking) must not leak in */
+.app-ui h1,
+.app-ui h2,
+.app-ui h3 {
+  letter-spacing: normal;
+  line-height: inherit;
+  font-weight: inherit;
+}
+
+@tailwind utilities;

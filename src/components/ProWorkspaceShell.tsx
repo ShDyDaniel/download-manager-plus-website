@@ -1,6 +1,15 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
+  AlertTriangle,
+  ArrowRight,
+  KeyRound,
+  Loader2,
+  Lock,
+  Mail,
+  RefreshCw,
+} from 'lucide-react'
+import {
   fetchAccountStatus,
   getSession,
   offerCredentialSave,
@@ -8,7 +17,6 @@ import {
   requestPasswordReset,
   requestSignupCode,
   signIn,
-  signOut,
   subscribeSession,
   verifySignupCode,
   type DecodedSession,
@@ -18,6 +26,15 @@ import {
   PrivacyModal,
   usePrefetchLegalDocs,
 } from './LegalModals'
+import { FlPage } from './site/FlPage'
+import {
+  CodeBoxes,
+  ErrorNote,
+  LOGO_MARK,
+  ShellMark,
+  ShellStage,
+} from './workspace/shell/ShellUi'
+import '../styles/pages/workspace.css'
 
 /**
  * ProWorkspaceShell — the shared auth + Pro-entitlement ladder used
@@ -26,7 +43,7 @@ import {
  *
  * Layered structure:
  *
- *   <ProWorkspaceShell featureLabel="…">  chrome + route guard
+ *   <ProWorkspaceShell featureLabel="…">  site frame + route guard
  *     <AuthShell>                         not-signed-in / unverified
  *       <ProGate>                         no-Pro / loading / error
  *         {children}                      the actual workspace
@@ -37,9 +54,15 @@ import {
  * instead of Firebase Auth state we read our HMAC-signed session
  * JWT from sessionStorage (see src/lib/webSession.ts).
  *
+ * Look: the page sits in the redesigned site frame (<FlPage>: site
+ * header + footer), and the shell's own screens (sign-in, sign-up,
+ * forgot password, plan gate, loading, errors) use the site look. The
+ * workspace itself (children) keeps the desktop app's look — each
+ * workspace wraps itself in `.app-ui` (src/styles/app-ui.css).
+ *
  * `featureLabel` is the human name of the feature being gated
- * ("סבבי תיקונים", "מסירה ללקוח") — it's woven into the header,
- * the auth chip, and the no-Pro panel so the same ladder reads
+ * ("סבבי תיקונים", "מסירה ללקוח") — it's the page title, the
+ * sign-in eyebrow and the plan-gate eyebrow, so the same ladder reads
  * correctly for any workspace that wraps it.
  *
  * Pages that need extra pre-gate handling (e.g. /revisions' Drive
@@ -65,76 +88,21 @@ export function ProWorkspaceShell({
   useEffect(() => subscribeSession(() => setSession(getSession())), [])
 
   return (
-    <div className="min-h-dvh bg-bg text-fg">
-      <WorkspaceHeader featureLabel={featureLabel} />
-      <main className="mx-auto w-full max-w-6xl px-5 pb-24 pt-8 md:px-8 md:pt-12">
-        {session ? (
+    <FlPage name="workspace" chrome="full" title={featureLabel} hideDownload>
+      {session ? (
+        <>
           <ProGate session={session.claims} featureLabel={featureLabel}>
-            {children}
+            {/* Centred column, like the app's main area (no sidebar). */}
+            <div className="ws-app">{children}</div>
           </ProGate>
-        ) : (
-          <AuthShell
-            featureLabel={featureLabel}
-            onSignedIn={() => setSession(getSession())}
-          />
-        )}
-      </main>
-    </div>
-  )
-}
-
-/* ──────────────────────────────────────────────────────────────
- *  Header — text-only, matches /account chrome
- * ────────────────────────────────────────────────────────────── */
-
-function WorkspaceHeader({ featureLabel }: { featureLabel: string }) {
-  const session = getSession()
-  return (
-    <header className="sticky top-0 z-20 border-b border-border bg-bg/85 backdrop-blur">
-      {/* 3-column grid so the centre title is TRULY centered
-          regardless of how wide the side groups are (justify-between
-          pushed it off-centre because the left group is wider). */}
-      <div className="mx-auto grid w-full max-w-6xl grid-cols-3 items-center px-5 py-4 md:px-8">
-        <div className="flex justify-start">
-          <Link
-            to="/"
-            className="text-xs uppercase tracking-[0.18em] text-fg-muted transition-colors hover:text-fg"
-          >
-            ← דף הבית
-          </Link>
-        </div>
-        <div className="flex items-center justify-center text-xs">
-          <span className="font-medium tracking-tight text-fg">
-            {featureLabel}
-          </span>
-        </div>
-        <div className="flex items-center justify-end gap-4 text-xs text-fg-muted">
-          {session ? (
-            <>
-              <span dir="ltr" className="hidden truncate sm:inline">
-                {session.claims.email}
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  signOut()
-                }}
-                className="transition-colors hover:text-fg"
-              >
-                התנתקות
-              </button>
-            </>
-          ) : (
-            <Link
-              to="/account"
-              className="transition-colors hover:text-fg"
-            >
-              החשבון שלי
-            </Link>
-          )}
-        </div>
-      </div>
-    </header>
+        </>
+      ) : (
+        <AuthShell
+          featureLabel={featureLabel}
+          onSignedIn={() => setSession(getSession())}
+        />
+      )}
+    </FlPage>
   )
 }
 
@@ -166,7 +134,7 @@ function ProGate({
       setState({
         kind: 'error',
         message:
-          'לא הצלחנו לבדוק את סטטוס המנוי כרגע. נסה שוב בעוד רגע.',
+          'לא הצלחנו לבדוק את סטטוס המנוי כרגע. נסו שוב בעוד רגע.',
       })
       return
     }
@@ -182,27 +150,32 @@ function ProGate({
 
   if (state.kind === 'loading') {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <div className="text-sm text-fg-muted">בודק מנוי…</div>
+      <div className="ws-loading" role="status" aria-live="polite">
+        <Loader2 className="ic ws-spin" aria-hidden />
+        <span>בודקים את המנוי…</span>
       </div>
     )
   }
 
   if (state.kind === 'error') {
     return (
-      <FeedbackCard
-        title="שגיאה זמנית"
-        message={state.message}
-        action={
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="rounded-md border border-border px-5 py-2 text-sm text-fg transition-colors hover:bg-bg-card"
-          >
-            נסה שוב
-          </button>
-        }
-      />
+      <ShellStage>
+        <FeedbackCard
+          mark={<ShellMark tone="err" badge={<AlertTriangle className="ic" aria-hidden />} />}
+          title="שגיאה זמנית"
+          message={state.message}
+          action={
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              className="btn btn-p btn-block"
+            >
+              <RefreshCw className="ic" aria-hidden />
+              נסו שוב
+            </button>
+          }
+        />
+      </ShellStage>
     )
   }
 
@@ -231,17 +204,22 @@ function NoProAccessPanel({
 }) {
   const [showRedeem, setShowRedeem] = useState(false)
   return (
-    <div className="mx-auto max-w-xl py-12">
-      <div className="rounded-2xl border border-border bg-bg-card p-8 text-center">
-        <div className="text-xs uppercase tracking-[0.18em] text-fg-muted">
-          {featureLabel}
-        </div>
-        <h1 className="mt-3 text-2xl font-medium text-fg">
-          נדרש מנוי Pro פעיל
-        </h1>
-        <p className="mt-3 text-sm leading-relaxed text-fg-muted">
-          הפיצ'ר הזה פתוח רק למשתמשי Pro. אם כבר רכשת מפתח, אפשר
-          להפעיל אותו כאן. אחרת אפשר להירשם למנוי.
+    <ShellStage wide>
+      <div className="card ws-card center">
+        <ShellMark
+          badge={
+            showRedeem ? (
+              <KeyRound className="ic" aria-hidden />
+            ) : (
+              <Lock className="ic" aria-hidden />
+            )
+          }
+        />
+        <span className="eyebrow">{featureLabel}</span>
+        <h1 className="ws-h">נדרש מנוי Pro פעיל</h1>
+        <p className="ws-p">
+          הכלי הזה פתוח למנויי Pro. אם כבר רכשתם מפתח מוצר, אפשר
+          להפעיל אותו כאן. אחרת, אפשר לבחור מנוי.
         </p>
         {showRedeem ? (
           <RedeemKeyForm
@@ -252,24 +230,22 @@ function NoProAccessPanel({
             }}
           />
         ) : (
-          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center">
-            <Link
-              to="/buy"
-              className="inline-flex items-center justify-center rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover"
-            >
+          <div className="ws-btns two">
+            <Link to="/buy" className="btn btn-p">
               לרכישת מנוי
             </Link>
             <button
               type="button"
               onClick={() => setShowRedeem(true)}
-              className="inline-flex items-center justify-center rounded-md border border-border px-5 py-2.5 text-sm text-fg transition-colors hover:bg-bg-card"
+              className="btn btn-g"
             >
+              <KeyRound className="ic" aria-hidden />
               יש לי מפתח מוצר
             </button>
           </div>
         )}
       </div>
-    </div>
+    </ShellStage>
   )
 }
 
@@ -299,40 +275,34 @@ function RedeemKeyForm({
   }
 
   return (
-    <form onSubmit={submit} className="mt-6 space-y-4 text-right">
-      <div>
-        <label className="mb-2 block text-xs text-fg-muted">
-          מפתח מוצר
-        </label>
+    <form onSubmit={submit} className="form ws-form gap-top">
+      <div className="field">
+        <label htmlFor="ws-redeem-key">מפתח מוצר</label>
         <input
+          id="ws-redeem-key"
+          className={`input ws-key${error ? ' bad' : ''}`}
           dir="ltr"
           autoFocus
           value={key}
           onChange={(e) => setKey(e.target.value.toUpperCase())}
           placeholder="XXXX-XXXX-XXXX-XXXX"
           maxLength={19}
-          className="w-full rounded-md border border-border bg-bg-elevated px-3 py-2.5 text-center font-mono text-sm tracking-widest text-fg placeholder:text-fg-faint focus:border-white/30 focus:outline-none"
+          autoComplete="off"
+          spellCheck={false}
         />
       </div>
-      {error && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          {error}
-        </div>
-      )}
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="text-sm text-fg-muted transition-colors hover:text-fg"
-        >
-          ביטול
-        </button>
+      {error && <ErrorNote>{error}</ErrorNote>}
+      <div className="ws-redeem-row">
         <button
           type="submit"
           disabled={busy || key.length < 19}
-          className="rounded-md bg-primary px-5 py-2 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover disabled:opacity-40"
+          className="btn btn-p"
         >
-          {busy ? 'מפעיל…' : 'הפעלת מפתח'}
+          {busy && <Loader2 className="ic ws-spin" aria-hidden />}
+          {busy ? 'מפעילים…' : 'הפעלת מפתח'}
+        </button>
+        <button type="button" onClick={onCancel} className="link ws-muted">
+          ביטול
         </button>
       </div>
     </form>
@@ -394,38 +364,55 @@ function AuthShell({
   // `?mode=signup` is set ONLY when the user arrived via the
   // "יצירת חשבון חדש" link on /account. In that flow the user
   // didn't actively choose this feature — they just wanted an
-  // account — so labelling the form with the feature chip feels
-  // misleading. Hide the chip on that entry path; users who came
-  // to the workspace directly still see it (it explains what
-  // they're signing into).
+  // account — so labelling the form with the feature name feels
+  // misleading. Hide it on that entry path; users who came to the
+  // workspace directly still see it (it explains what they're
+  // signing into).
   const cameFromAccountSignup = searchParams.get('mode') === 'signup'
 
-  return (
-    <div className="mx-auto mt-20 max-w-md md:mt-28">
-      <div className="mb-8">
-        {!cameFromAccountSignup && (
-          <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-fg-muted">
-            — {featureLabel}
-          </div>
-        )}
-        <h1
-          className="font-display text-fg"
-          style={{
-            fontSize: 'clamp(26px, 4vw, 34px)',
-            lineHeight: 1.05,
-            letterSpacing: '-0.025em',
-            fontWeight: 500,
-          }}
-        >
-          {mode === 'signin'
-            ? 'התחברות לחשבון שלך'
-            : mode === 'signup-details' || mode === 'signup-verify'
-              ? 'יצירת חשבון'
-              : 'איפוס סיסמה'}
-        </h1>
-      </div>
+  const eyebrow = [
+    !cameFromAccountSignup ? featureLabel : '',
+    mode === 'signup-verify' ? 'שלב 2 מתוך 2' : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
-      <div>
+  const title =
+    mode === 'signin'
+      ? 'התחברות לחשבון'
+      : mode === 'signup-details' || mode === 'signup-verify'
+        ? 'יצירת חשבון'
+        : 'איפוס סיסמה'
+
+  return (
+    <ShellStage>
+      <div className="card ws-card">
+        <img className="ws-logo" src={LOGO_MARK} alt="" width={44} height={44} />
+        <div className="ws-head">
+          {eyebrow && <span className="eyebrow">{eyebrow}</span>}
+          <h1 className="ws-h">{title}</h1>
+          {mode === 'signin' && (
+            <p className="ws-sub">התחברו עם החשבון שלכם בפריימליין.</p>
+          )}
+          {mode === 'signup-details' && (
+            <p className="ws-sub">
+              כבר יש לכם חשבון?{' '}
+              <button
+                type="button"
+                className="link"
+                onClick={() => setMode('signin')}
+              >
+                התחברות
+              </button>
+            </p>
+          )}
+          {mode === 'forgot' && (
+            <p className="ws-sub">
+              הזינו את המייל של החשבון, ונשלח אליו קישור לאיפוס הסיסמה.
+            </p>
+          )}
+        </div>
+
         {mode === 'signin' && (
           <SignInForm
             onSignedIn={onSignedIn}
@@ -440,7 +427,6 @@ function AuthShell({
               setSignupDraft(draft)
               setMode('signup-verify')
             }}
-            onBack={() => setMode('signin')}
           />
         )}
         {mode === 'signup-verify' && (
@@ -457,22 +443,29 @@ function AuthShell({
           />
         )}
         {mode === 'forgot-sent' && (
-          <FeedbackCard
-            title="המייל נשלח"
-            message="שלחנו אליך קישור לאיפוס סיסמה. בדוק את תיבת הדואר וגם את תיקיית הספאם."
-            action={
-              <button
-                type="button"
-                onClick={() => setMode('signin')}
-                className="text-sm text-fg-muted transition-colors hover:text-fg"
-              >
-                חזרה להתחברות
-              </button>
-            }
-          />
+          <div className="form">
+            {/* Neutral on purpose: never reveal whether the email is
+                registered. */}
+            <div className="note" role="status">
+              <Mail className="ic" aria-hidden />
+              <span>אם המייל קיים במערכת, נשלח אליו קישור לאיפוס סיסמה.</span>
+            </div>
+            <p className="ws-help">
+              הקישור תקף לשעה אחת. לא מצאתם את המייל? בדקו בתיקיית הספאם
+              או בקידומי מכירות.
+            </p>
+            <button
+              type="button"
+              onClick={() => setMode('signin')}
+              className="btn btn-s btn-block"
+            >
+              <ArrowRight className="ic" aria-hidden />
+              חזרה להתחברות
+            </button>
+          </div>
         )}
       </div>
-    </div>
+    </ShellStage>
   )
 }
 
@@ -522,7 +515,7 @@ function SignInForm({
       onSubmit={submit}
       method="post"
       action="/api/paypal?action=session"
-      className="space-y-4"
+      className="form ws-form"
     >
       <Field
         label="אימייל"
@@ -532,6 +525,7 @@ function SignInForm({
         value={email}
         onChange={setEmail}
         autoFocus
+        dir="ltr"
       />
       <Field
         label="סיסמה"
@@ -540,30 +534,32 @@ function SignInForm({
         name="password"
         value={password}
         onChange={setPassword}
+        labelAside={
+          <button
+            type="button"
+            onClick={onSwitchForgot}
+            className="link ws-small"
+          >
+            שכחתי סיסמה
+          </button>
+        }
       />
-      {error && <FieldError>{error}</FieldError>}
+      {error && <ErrorNote>{error}</ErrorNote>}
       <button
         type="submit"
         disabled={busy || !email || !password}
-        className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover disabled:opacity-40"
+        className="btn btn-p btn-block ws-go"
       >
-        {busy ? 'מתחבר…' : 'התחברות'}
+        {busy && <Loader2 className="ic ws-spin" aria-hidden />}
+        {busy ? 'מתחברים…' : 'התחברות'}
       </button>
-      <div className="flex items-center justify-between text-xs text-fg-muted">
-        <button
-          type="button"
-          onClick={onSwitchSignup}
-          className="transition-colors hover:text-fg"
-        >
-          יצירת חשבון
-        </button>
-        <button
-          type="button"
-          onClick={onSwitchForgot}
-          className="transition-colors hover:text-fg"
-        >
-          שכחתי סיסמה
-        </button>
+      <div className="ws-foot">
+        <span>
+          אין לכם חשבון?{' '}
+          <button type="button" onClick={onSwitchSignup} className="link">
+            יצירת חשבון
+          </button>
+        </span>
       </div>
     </form>
   )
@@ -573,11 +569,9 @@ function SignInForm({
 function SignupDetailsForm({
   initial,
   onCodeSent,
-  onBack,
 }: {
   initial: SignupDraft
   onCodeSent: (draft: SignupDraft) => void
-  onBack: () => void
 }) {
   usePrefetchLegalDocs()
   const [name, setName] = useState(initial.name)
@@ -633,7 +627,7 @@ function SignupDetailsForm({
       {privacyModalOpen && (
         <PrivacyModal onClose={() => setPrivacyModalOpen(false)} />
       )}
-      <form onSubmit={submit} method="post" action="#" className="space-y-4">
+      <form onSubmit={submit} method="post" action="#" className="form ws-form">
         <Field
           label="שם תצוגה"
           type="text"
@@ -650,68 +644,65 @@ function SignupDetailsForm({
           name="email"
           value={email}
           onChange={setEmail}
+          dir="ltr"
         />
         <Field
-          label="סיסמה (לפחות 6 תווים)"
+          label="סיסמה"
+          hint="לפחות 6 תווים"
           type="password"
           autoComplete="new-password"
           name="new-password"
           value={password}
           onChange={setPassword}
         />
-        <label className="flex items-start gap-2 text-xs leading-relaxed text-fg-muted">
-          <input
-            type="checkbox"
-            checked={terms}
-            onChange={(e) => setTerms(e.target.checked)}
-            className="mt-0.5 accent-current"
-          />
-          <span>
-            אני מאשר/ת את{' '}
-            <button
-              type="button"
-              onClick={() => setTermsModalOpen(true)}
-              className="text-accent underline underline-offset-2 transition-colors hover:text-fg"
-            >
-              תנאי השימוש
-            </button>{' '}
-            ואת{' '}
-            <button
-              type="button"
-              onClick={() => setPrivacyModalOpen(true)}
-              className="text-accent underline underline-offset-2 transition-colors hover:text-fg"
-            >
-              מדיניות הפרטיות
-            </button>{' '}
-            של פריימליין.
-          </span>
-        </label>
-        <label className="flex items-start gap-2 text-xs leading-relaxed text-fg-muted">
-          <input
-            type="checkbox"
-            checked={marketing}
-            onChange={(e) => setMarketing(e.target.checked)}
-            className="mt-0.5 accent-current"
-          />
-          <span>
-            אני רוצה לקבל עדכונים על תוספות, הטבות וטיפים. ניתן
-            להסיר את ההסכמה תמיד.
-          </span>
-        </label>
-        {error && <FieldError>{error}</FieldError>}
+        <div className="ws-checks">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={terms}
+              onChange={(e) => setTerms(e.target.checked)}
+              aria-required="true"
+            />
+            <span>
+              אני מאשר/ת את{' '}
+              <button
+                type="button"
+                onClick={() => setTermsModalOpen(true)}
+                className="link"
+              >
+                תנאי השימוש
+              </button>{' '}
+              ואת{' '}
+              <button
+                type="button"
+                onClick={() => setPrivacyModalOpen(true)}
+                className="link"
+              >
+                מדיניות הפרטיות
+              </button>{' '}
+              של פריימליין.
+            </span>
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={marketing}
+              onChange={(e) => setMarketing(e.target.checked)}
+            />
+            <span>
+              אני רוצה לקבל עדכונים על תוספות, הטבות וטיפים. ניתן
+              להסיר את ההסכמה תמיד.
+            </span>
+          </label>
+        </div>
+        {error && <ErrorNote>{error}</ErrorNote>}
         <button
           type="submit"
           disabled={busy}
-          className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
+          className="btn btn-p btn-block ws-go"
         >
-          {busy ? 'שולח קוד אימות…' : 'המשך · שליחת קוד אימות'}
-        </button>
-        <button
-          type="button"
-          onClick={onBack}
-          className="block w-full text-xs text-fg-muted transition-colors hover:text-fg"
-        >
-          חזרה להתחברות
+          {busy && <Loader2 className="ic ws-spin" aria-hidden />}
+          {busy ? 'שולחים קוד אימות…' : 'שליחת קוד אימות'}
         </button>
       </form>
     </>
@@ -758,7 +749,7 @@ function SignupVerifyForm({
     setBusy(false)
     if (!r.ok) {
       setError(
-        `החשבון נוצר, אך ההתחברות נכשלה: ${r.error}. נסה להתחבר מהמסך הראשי.`,
+        `החשבון נוצר, אך ההתחברות נכשלה: ${r.error}. נסו להתחבר מהמסך הראשי.`,
       )
       return
     }
@@ -779,51 +770,55 @@ function SignupVerifyForm({
   }
 
   return (
-    <form onSubmit={submit} className="space-y-4">
-      <p className="text-xs leading-relaxed text-fg-muted">
-        שלחנו קוד 6 ספרות ל-
-        <span dir="ltr" className="mx-1 text-fg">
-          {draft.email}
+    <form onSubmit={submit} className="form ws-form">
+      <div className="note info" role="status">
+        <Mail className="ic" aria-hidden />
+        <span>
+          שלחנו קוד אימות אל <bdi className="ws-mailtxt">{draft.email}</bdi>.
+          הזינו אותו כדי להשלים את יצירת החשבון.
         </span>
-        . הזן אותו כדי להשלים את יצירת החשבון.
+      </div>
+      <div className="field ws-code">
+        <label className="lbl" htmlFor="ws-code-in">
+          קוד אימות
+        </label>
+        <CodeBoxes
+          id="ws-code-in"
+          value={code}
+          onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
+          bad={!!error}
+          describedBy="ws-code-h"
+        />
+        <span className="hint" id="ws-code-h">
+          6 ספרות מהמייל.
+        </span>
+      </div>
+      <p className="ws-help">
+        לא מצאתם את המייל? בדקו בתיקיית הספאם או בקידומי מכירות.
       </p>
-      <Field
-        label="קוד אימות (6 ספרות)"
-        type="text"
-        value={code}
-        onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
-        autoFocus
-        inputMode="numeric"
-        dir="ltr"
-        className="text-center font-mono text-lg tracking-[0.4em]"
-      />
       {resentChip && (
-        <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-xs text-success">
-          {resentChip}
+        <div className="note ok" role="status">
+          <Mail className="ic" aria-hidden />
+          <span>{resentChip}</span>
         </div>
       )}
-      {error && <FieldError>{error}</FieldError>}
+      {error && <ErrorNote>{error}</ErrorNote>}
       <button
         type="submit"
         disabled={busy || code.length !== 6}
-        className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-colors hover:bg-primary-hover disabled:opacity-40"
+        className="btn btn-p btn-block ws-go"
       >
-        {busy ? 'יוצר חשבון…' : 'אימות ויצירת החשבון'}
+        {busy && <Loader2 className="ic ws-spin" aria-hidden />}
+        {busy ? 'יוצרים את החשבון…' : 'אימות ויצירת החשבון'}
       </button>
-      <div className="flex items-center justify-between text-xs text-fg-muted">
-        <button
-          type="button"
-          onClick={onBack}
-          className="transition-colors hover:text-fg"
-        >
-          חזרה לעריכת פרטים
-        </button>
-        <button
-          type="button"
-          onClick={() => void resend()}
-          className="transition-colors hover:text-fg"
-        >
+      <div className="ws-foot">
+        <button type="button" onClick={() => void resend()} className="link">
+          <RefreshCw className="ic" aria-hidden />
           שליחת קוד מחדש
+        </button>
+        <button type="button" onClick={onBack} className="link ws-muted">
+          <ArrowRight className="ic" aria-hidden />
+          חזרה לעריכת פרטים
         </button>
       </div>
     </form>
@@ -856,10 +851,7 @@ function ForgotForm({
   }
 
   return (
-    <form onSubmit={submit} className="space-y-4">
-      <p className="text-xs leading-relaxed text-fg-muted">
-        נשלח אליך מייל עם קישור לאיפוס סיסמה.
-      </p>
+    <form onSubmit={submit} className="form ws-form">
       <Field
         label="אימייל"
         type="email"
@@ -867,28 +859,29 @@ function ForgotForm({
         value={email}
         onChange={setEmail}
         autoFocus
+        dir="ltr"
       />
-      {error && <FieldError>{error}</FieldError>}
+      {error && <ErrorNote>{error}</ErrorNote>}
       <button
         type="submit"
         disabled={busy || !email}
-        className="w-full rounded-md bg-primary py-2.5 text-sm font-medium text-bg transition-opacity hover:bg-primary-hover disabled:opacity-40"
+        className="btn btn-p btn-block ws-go"
       >
-        {busy ? 'שולח…' : 'שליחת קישור'}
+        {busy && <Loader2 className="ic ws-spin" aria-hidden />}
+        {busy ? 'שולחים…' : 'שליחת קישור לאיפוס'}
       </button>
-      <button
-        type="button"
-        onClick={onBack}
-        className="block w-full text-xs text-fg-muted transition-colors hover:text-fg"
-      >
-        חזרה להתחברות
-      </button>
+      <div className="ws-foot">
+        <button type="button" onClick={onBack} className="link">
+          <ArrowRight className="ic" aria-hidden />
+          חזרה להתחברות
+        </button>
+      </div>
     </form>
   )
 }
 
 /* ──────────────────────────────────────────────────────────────
- *  Small primitives (Field, FieldError, FeedbackCard)
+ *  Small primitives (Field, FeedbackCard)
  * ────────────────────────────────────────────────────────────── */
 
 function Field(props: {
@@ -902,16 +895,23 @@ function Field(props: {
   dir?: 'rtl' | 'ltr'
   className?: string
   name?: string
+  /** Small text under the input. */
+  hint?: string
+  /** Something at the end of the label row (e.g. "שכחתי סיסמה"). */
+  labelAside?: React.ReactNode
 }) {
   const id = useMemo(() => `f${Math.random().toString(36).slice(2, 9)}`, [])
+  const label = <label htmlFor={id}>{props.label}</label>
   return (
-    <div>
-      <label
-        htmlFor={id}
-        className="mb-2 block text-[10px] font-medium uppercase tracking-[0.18em] text-fg-muted"
-      >
-        {props.label}
-      </label>
+    <div className="field">
+      {props.labelAside ? (
+        <div className="ws-lblrow">
+          {label}
+          {props.labelAside}
+        </div>
+      ) : (
+        label
+      )}
       <input
         id={id}
         name={props.name}
@@ -922,22 +922,14 @@ function Field(props: {
         dir={props.dir}
         value={props.value}
         onChange={(e) => props.onChange(e.target.value)}
-        className={
-          'block w-full border-b border-border bg-transparent px-0 py-2 text-base text-fg placeholder:text-fg-faint/50 transition-colors focus:border-accent focus:outline-none ' +
-          (props.className || '')
-        }
+        aria-describedby={props.hint ? `${id}-h` : undefined}
+        className={'input ' + (props.className || '')}
       />
-    </div>
-  )
-}
-
-function FieldError({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      role="alert"
-      className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs leading-relaxed text-destructive"
-    >
-      {children}
+      {props.hint && (
+        <span className="hint" id={`${id}-h`}>
+          {props.hint}
+        </span>
+      )}
     </div>
   )
 }
@@ -946,16 +938,20 @@ export function FeedbackCard({
   title,
   message,
   action,
+  mark,
 }: {
   title: string
   message: string
   action?: React.ReactNode
+  /** Optional logo mark with a status badge above the title. */
+  mark?: React.ReactNode
 }) {
   return (
-    <div className="mx-auto max-w-md rounded-2xl border border-border bg-bg-card p-8 text-center">
-      <h2 className="text-lg font-medium text-fg">{title}</h2>
-      <p className="mt-3 text-sm leading-relaxed text-fg-muted">{message}</p>
-      {action && <div className="mt-6 flex justify-center">{action}</div>}
+    <div className="card ws-card center">
+      {mark}
+      <h2 className="ws-h">{title}</h2>
+      <p className="ws-p">{message}</p>
+      {action && <div className="ws-btns">{action}</div>}
     </div>
   )
 }

@@ -14,6 +14,12 @@ import { fileURLToPath, URL } from 'node:url'
 export default defineConfig({
   plugins: [react()],
   base: '/',
+  // Local development only: `API_PROXY=https://www.framelineapp.com npm run dev`
+  // forwards /api calls to that deployment, so pages that read live data
+  // (prices, terms, glossary packs) render on localhost. Off unless set.
+  server: process.env.API_PROXY
+    ? { proxy: { '/api': { target: process.env.API_PROXY, changeOrigin: true } } }
+    : undefined,
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

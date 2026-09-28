@@ -1,0 +1,4 @@
+/* /privacy — the document layout (head, table of contents, sections, lists,
+ * footer) is shared with the other legal pages and the Terms / Privacy
+ * modals: see src/styles/legal-doc.css (.fl .ldoc). Page-only tweaks go
+ * here, scoped as .fl .pg-privacy. */

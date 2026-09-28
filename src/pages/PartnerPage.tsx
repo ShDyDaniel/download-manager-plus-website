@@ -1,6 +1,9 @@
-import { useEffect, useState } from 'react'
-import { Copy, Check, LogOut, X } from 'lucide-react'
-import { AuthButton, AuthError, AuthHeader, AuthInput } from '../components/authUi'
+import { Fragment, useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import { AlertCircle, Check, Copy, Loader2, LogOut, RotateCw, X } from 'lucide-react'
+import { FlPage } from '../components/site/FlPage'
+import '../styles/pages/partner.css'
 
 /**
  * Partner dashboard (/partner) — a self-serve login where a referral
@@ -51,22 +54,72 @@ interface PartnerStats {
   revenueByMonth: Record<string, Record<string, number>> | null
 }
 
+/** Shown when the server can't be reached at all (fetch threw / no JSON). */
+const NETWORK_MSG = 'לא הצלחנו להתחבר לשרת. בדקו את החיבור לאינטרנט ונסו שוב.'
+
+/** Only Hebrew reaches the partner — an unexpected server message (which
+ *  may be English) falls back to the screen's generic Hebrew one. */
+function hebrewOr(msg: string | undefined, fallback: string): string {
+  return msg && /[\u0590-\u05FF]/.test(msg) ? msg : fallback
+}
+
 const CUR_SYMBOL: Record<string, string> = { ILS: '₪', USD: '$', EUR: '€' }
 function curSym(c: string): string {
   return CUR_SYMBOL[c] || c
 }
-function fmtMoney(m: Record<string, number>): string {
-  const parts = Object.entries(m || {})
-    .filter(([, v]) => v > 0)
-    .map(([c, v]) => `${v.toFixed(2)} ${curSym(c)}`)
-  return parts.length ? parts.join(' · ') : '—'
+
+/** Money as the site shows it: "₪ 468.30" (symbol first), several
+ *  currencies joined with " · ", nothing (or only zeros) → "—". */
+function Money({
+  m,
+  sign = '',
+  cls = '',
+}: {
+  m: Record<string, number> | null | undefined
+  /** Prefix for every amount (the fee lines show "−"). */
+  sign?: string
+  cls?: string
+}) {
+  const parts = Object.entries(m || {}).filter(([, v]) => v > 0)
+  const bdiCls = `num${cls ? ` ${cls}` : ''}`
+  return (
+    <span className="amt">
+      {parts.length === 0 ? (
+        <bdi className={bdiCls}>—</bdi>
+      ) : (
+        parts.map(([c, v], i) => (
+          <Fragment key={c}>
+            {i > 0 && ' · '}
+            <bdi className={bdiCls} dir="ltr">
+              {curSym(c)}
+              {'\u00a0'}
+              {sign}
+              {v.toFixed(2)}
+            </bdi>
+          </Fragment>
+        ))
+      )}
+    </span>
+  )
 }
-function commissionLabel(c: PartnerStats['commission']): string {
-  if (!c) return 'ההסכם טרם הוגדר'
+
+function CommissionLabel({ c }: { c: PartnerStats['commission'] }) {
+  if (!c) return <>ההסכם טרם הוגדר</>
   const scope = c.firstOnly ? 'על קנייה ראשונה' : 'על כל קנייה / חידוש'
-  return c.commissionType === 'percent'
-    ? `${c.commissionValue}% ${scope}`
-    : `${c.commissionValue} ${curSym(c.commissionCurrency)} ${scope}`
+  return c.commissionType === 'percent' ? (
+    <>
+      <bdi>{c.commissionValue}%</bdi> {scope}
+    </>
+  ) : (
+    <>
+      <bdi dir="ltr">
+        {curSym(c.commissionCurrency)}
+        {'\u00a0'}
+        {c.commissionValue}
+      </bdi>{' '}
+      {scope}
+    </>
+  )
 }
 
 async function api<T>(action: string, body: unknown): Promise<T> {
@@ -78,13 +131,46 @@ async function api<T>(action: string, body: unknown): Promise<T> {
   return (await r.json()) as T
 }
 
+function Shell({ children }: { children: ReactNode }) {
+  return (
+    <FlPage name="partner" chrome="min" title="שותפים">
+      {children}
+    </FlPage>
+  )
+}
+
+function ErrorNote({ message }: { message: string }) {
+  return (
+    <div className="note err" role="alert">
+      <AlertCircle className="ic" aria-hidden />
+      <span>{message}</span>
+    </div>
+  )
+}
+
+function Head({ title, intro }: { title: string; intro?: string }) {
+  return (
+    <div className="pp-head">
+      <span className="eyebrow">שותפים</span>
+      <h1 className="pp-h">{title}</h1>
+      {intro && <p className="pp-intro">{intro}</p>}
+    </div>
+  )
+}
+
 export default function PartnerPage() {
   const [stats, setStats] = useState<PartnerStats | null>(null)
   const [booting, setBooting] = useState(true)
+  // The saved session couldn't be checked because the server was
+  // unreachable (not an auth failure — the token is kept for the retry).
+  const [bootFailed, setBootFailed] = useState(false)
+  const [bootTry, setBootTry] = useState(0)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Last login attempt never reached the server → the button offers a retry.
+  const [offline, setOffline] = useState(false)
   const [copied, setCopied] = useState(false)
 
   // Resume an existing session.
@@ -95,27 +181,46 @@ export default function PartnerPage() {
       return
     }
     void (async () => {
-      const r = await api<
-        { ok: true; partner: PartnerStats } | { ok: false; error: string }
-      >('partner-stats', { token })
-      if (r.ok) setStats(r.partner)
-      else sessionStorage.removeItem(TOKEN_KEY)
+      try {
+        const r = await api<
+          { ok: true; partner: PartnerStats } | { ok: false; error: string }
+        >('partner-stats', { token })
+        if (r.ok) setStats(r.partner)
+        else sessionStorage.removeItem(TOKEN_KEY)
+      } catch {
+        setBootFailed(true)
+      }
       setBooting(false)
     })()
-  }, [])
+  }, [bootTry])
+
+  function retryBoot() {
+    setBootFailed(false)
+    setBooting(true)
+    setBootTry((n) => n + 1)
+  }
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     if (busy) return
     setBusy(true)
     setError(null)
-    const r = await api<
+    type LoginResp =
       | { ok: true; token: string; partner: PartnerStats }
       | { ok: false; error: string }
-    >('partner-login', { email, password })
+    let r: LoginResp
+    try {
+      r = await api<LoginResp>('partner-login', { email, password })
+    } catch {
+      setBusy(false)
+      setOffline(true)
+      setError(NETWORK_MSG)
+      return
+    }
     setBusy(false)
+    setOffline(false)
     if (!r.ok) {
-      setError(r.error || 'ההתחברות נכשלה')
+      setError(hebrewOr(r.error, 'ההתחברות נכשלה'))
       return
     }
     sessionStorage.setItem(TOKEN_KEY, r.token)
@@ -142,65 +247,106 @@ export default function PartnerPage() {
 
   if (booting) {
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-bg text-sm text-fg-muted">
-        טוען…
-      </div>
+      <Shell>
+        <div className="pp-center" role="status">
+          <Loader2 className="ic spin" aria-hidden />
+          <span>טוען…</span>
+        </div>
+      </Shell>
+    )
+  }
+
+  if (bootFailed) {
+    return (
+      <Shell>
+        <div className="narrow pp-auth">
+          <div className="card pp-card pp-fail" role="alert">
+            <span className="pp-fail-ic">
+              <AlertCircle className="ic" aria-hidden />
+            </span>
+            <h1 className="pp-h">הדף לא נטען</h1>
+            <p>{NETWORK_MSG}</p>
+            <button type="button" className="btn btn-p btn-lg btn-block" onClick={retryBoot}>
+              <RotateCw className="ic" aria-hidden />
+              ניסיון נוסף
+            </button>
+          </div>
+        </div>
+      </Shell>
     )
   }
 
   // ── Login ──
   if (!stats) {
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-bg px-5" dir="rtl">
-        <div className="w-full max-w-sm">
-          <AuthHeader label="— שותפים" title="כניסת שותפים" />
-          <form onSubmit={handleLogin} className="space-y-5">
-            <AuthInput
-              label="אימייל"
-              type="email"
-              value={email}
-              onChange={setEmail}
-              autoComplete="email"
-              autoFocus
-            />
-            <AuthInput
-              label="סיסמה"
-              type="password"
-              value={password}
-              onChange={setPassword}
-              autoComplete="current-password"
-            />
-            {error && <AuthError message={error} />}
-            <AuthButton busy={busy}>התחברות</AuthButton>
+      <Shell>
+        <div className="narrow pp-auth">
+          <form className="card form pp-card" onSubmit={handleLogin}>
+            <Head title="כניסת שותפים" />
+            <div className="field">
+              <label htmlFor="pl-mail">אימייל</label>
+              <input
+                className="input ltr"
+                id="pl-mail"
+                type="email"
+                dir="ltr"
+                required
+                autoComplete="email"
+                autoFocus
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="pl-pw">סיסמה</label>
+              <input
+                className="input ltr"
+                id="pl-pw"
+                type="password"
+                dir="ltr"
+                required
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+            {error && <ErrorNote message={error} />}
+            <button className="btn btn-p btn-lg btn-block" type="submit" disabled={busy}>
+              {busy ? (
+                <Loader2 className="ic spin" aria-hidden />
+              ) : (
+                offline && <RotateCw className="ic" aria-hidden />
+              )}
+              {offline ? 'ניסיון נוסף' : 'התחברות'}
+            </button>
           </form>
-          <p className="mt-6 text-center text-xs text-fg-muted">
-            הגישה לשותפים בלבד. אם אין לכם פרטי כניסה, פנו אלינו.
-          </p>
+          <p className="pp-under">הגישה לשותפים בלבד. אם אין לכם פרטי כניסה, פנו אלינו.</p>
         </div>
-      </div>
+      </Shell>
     )
   }
 
   // ── First login, step 1: replace the temp password ──
   if (stats.mustChangePassword) {
     return (
-      <SetPasswordScreen
-        onDone={(token, partner) => {
-          sessionStorage.setItem(TOKEN_KEY, token)
-          setStats(partner)
-        }}
-        onAuthLost={logout}
-      />
+      <Shell>
+        <SetPasswordScreen
+          onDone={(token, partner) => {
+            sessionStorage.setItem(TOKEN_KEY, token)
+            setStats(partner)
+          }}
+          onAuthLost={logout}
+        />
+      </Shell>
     )
   }
 
   // ── First login, step 2: accept the partnership terms ──
   if (!stats.termsAccepted) {
     return (
-      <AcceptTermsScreen
-        onDone={(partner) => setStats(partner)}
-        onAuthLost={logout}
-      />
+      <Shell>
+        <AcceptTermsScreen onDone={(partner) => setStats(partner)} onAuthLost={logout} />
+      </Shell>
     )
   }
 
@@ -218,22 +364,46 @@ export default function PartnerPage() {
     : []
   const showMoney = stats.visibility.earnings || stats.visibility.revenue
 
+  // Stats — RTL order (right→left): נרשמו · קנו · סך ההכנסות · סך הרווח
+  // שלך. In RTL the first DOM child renders on the right, so the order
+  // below is the visual order. Each card shows only if the partner is
+  // allowed to see it (a hidden card is absent, never a 0).
+  const cards: ReactNode[] = []
+  if (stats.signups !== null) {
+    cards.push(<Stat key="signups" label="נרשמו" value={String(stats.signups)} />)
+  }
+  if (stats.paidAccounts !== null) {
+    cards.push(<Stat key="paid" label="קנו" value={String(stats.paidAccounts)} />)
+  }
+  if (stats.visibility.revenue && stats.revenueByCurrency) {
+    cards.push(
+      <Stat key="revenue" label="סך ההכנסות" value={<Money m={stats.revenueByCurrency} />} money />,
+    )
+  }
+  if (stats.visibility.earnings && stats.earningsByCurrency) {
+    cards.push(
+      <EarningsStat
+        key="earnings"
+        net={stats.earningsByCurrency}
+        gross={stats.earningsGrossByCurrency}
+        fee={stats.earningsFeeByCurrency}
+        paypalFee={stats.earningsPaypalFeeByCurrency}
+        vat={stats.earningsVatByCurrency}
+        receiptsEnabled={stats.receiptsEnabled !== false}
+      />,
+    )
+  }
+  const statCols = ['', '', 'g2', 'g3', 'g4'][cards.length]
+
   return (
-    <div className="min-h-dvh bg-bg px-5 py-10 md:py-16" dir="rtl">
-      <div className="mx-auto max-w-2xl">
-        <div className="mb-8 flex items-start justify-between gap-4">
+    <Shell>
+      <div className="wrap pp-dash">
+        <div className="pp-top">
           <div>
-            <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-fg-muted">
-              — דשבורד שותף
-            </div>
-            <h1
-              className="font-display text-fg"
-              style={{ fontSize: 'clamp(26px,4vw,36px)', fontWeight: 500 }}
-            >
-              {stats.name}
-            </h1>
+            <span className="eyebrow">דשבורד שותף</span>
+            <h1 className="pp-name">{stats.name}</h1>
             {stats.since && (
-              <div className="mt-1 text-xs text-fg-muted">
+              <p className="pp-since">
                 שותף מאז{' '}
                 <bdi>
                   {new Date(stats.since).toLocaleDateString('he-IL', {
@@ -242,114 +412,108 @@ export default function PartnerPage() {
                     year: 'numeric',
                   })}
                 </bdi>
-              </div>
+              </p>
             )}
           </div>
-          <button
-            type="button"
-            onClick={logout}
-            className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
-          >
-            <LogOut className="h-3.5 w-3.5" />
+          <button type="button" className="btn btn-g btn-sm" onClick={logout}>
+            <LogOut className="ic" aria-hidden />
             התנתקות
           </button>
         </div>
 
-        {/* Share link */}
-        <div className="mb-6 rounded-2xl border border-border/60 bg-white/[0.015] p-4">
-          <div className="mb-2 text-xs text-fg-muted">קישור ההפניה שלך</div>
-          <div className="flex items-center gap-2">
-            <input
-              readOnly
-              value={stats.link}
-              onFocus={(e) => e.currentTarget.select()}
-              dir="ltr"
-              className="flex-1 truncate rounded-lg border border-border bg-transparent px-3 py-2 text-sm text-fg"
-            />
-            <button
-              type="button"
-              onClick={copyLink}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-primary-hover"
-            >
-              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-              {copied ? 'הועתק' : 'העתק'}
-            </button>
+        <div className={`pp-row${stats.visibility.earnings ? '' : ' one'}`}>
+          {/* Share link */}
+          <div className="card pp-link">
+            <label className="lbl" htmlFor="pd-ref">
+              קישור ההפניה שלך
+            </label>
+            <div className="pp-copy">
+              <input
+                className="input"
+                id="pd-ref"
+                readOnly
+                dir="ltr"
+                value={stats.link}
+                onFocus={(e) => e.currentTarget.select()}
+              />
+              <button
+                type="button"
+                className={`btn btn-s pp-cp${copied ? ' copied' : ''}`}
+                onClick={copyLink}
+                aria-live="polite"
+              >
+                <span className="a">
+                  <Copy className="ic" aria-hidden />
+                  העתק
+                </span>
+                <span className="b">
+                  <Check className="ic" aria-hidden />
+                  הועתק
+                </span>
+              </button>
+            </div>
           </div>
+
+          {/* Commission agreement — only when earnings are shown */}
+          {stats.visibility.earnings && (
+            <div className="card pp-deal">
+              <span className="lbl">ההסכם שלך</span>
+              <b>
+                <CommissionLabel c={stats.commission} />
+              </b>
+            </div>
+          )}
         </div>
 
-        {/* Commission agreement — only when earnings are shown */}
-        {stats.visibility.earnings && (
-          <div className="mb-6 rounded-2xl border border-border/60 bg-white/[0.015] px-4 py-3 text-sm">
-            <span className="text-fg-muted">ההסכם שלך: </span>
-            <span className="font-medium text-fg">
-              {commissionLabel(stats.commission)}
-            </span>
-          </div>
-        )}
-
-        {/* Stats — RTL order (right→left): נרשמו · קנו · סך הכנסות ·
-            סך הרווח שלך. In RTL the first DOM child renders on the
-            right, so the DOM order below is the visual order. Each
-            card shows only if the partner is allowed to see it. */}
-        <div className="mb-6 grid auto-cols-fr grid-flow-col gap-3">
-          {stats.signups !== null && (
-            <Stat value={String(stats.signups)} label="נרשמו" />
-          )}
-          {stats.paidAccounts !== null && (
-            <Stat value={String(stats.paidAccounts)} label="קנו" />
-          )}
-          {stats.visibility.revenue && stats.revenueByCurrency && (
-            <Stat
-              value={fmtMoney(stats.revenueByCurrency)}
-              label="סך ההכנסות"
-              wide
-            />
-          )}
-          {stats.visibility.earnings && stats.earningsByCurrency && (
-            <EarningsStat
-              net={stats.earningsByCurrency}
-              gross={stats.earningsGrossByCurrency}
-              fee={stats.earningsFeeByCurrency}
-              paypalFee={stats.earningsPaypalFeeByCurrency}
-              vat={stats.earningsVatByCurrency}
-              receiptsEnabled={stats.receiptsEnabled !== false}
-            />
-          )}
-        </div>
+        {cards.length > 0 && <div className={`grid ${statCols} pp-stats`}>{cards}</div>}
 
         {/* Money by month — only when a money figure is visible */}
         {showMoney && (
-          <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-5">
-            <div className="mb-1 text-sm font-medium text-fg">{monthsTitle}</div>
-            <div className="mb-3 text-[11px] text-fg-muted">
-              היסטוריה מלאה: כל החודשים מאז תחילת השותפות.
-            </div>
+          <div className="card pp-months">
+            <h2 className="h3">{monthsTitle}</h2>
+            <p className="pp-sub">היסטוריה מלאה: כל החודשים מאז תחילת השותפות.</p>
             {months.length === 0 ? (
-              <div className="py-6 text-center text-sm text-fg-muted">
-                עדיין אין נתונים.
-              </div>
+              <p className="pp-empty">עדיין אין נתונים.</p>
             ) : (
-              <div className="space-y-1.5">
-                {months.map(([m, rev]) => (
-                  <div
-                    key={m}
-                    className="flex items-center justify-between rounded-lg bg-white/[0.02] px-3 py-2 text-sm"
-                  >
-                    <span className="text-fg">{fmtMoney(rev)}</span>
-                    <span className="text-fg-muted">
-                      {m.slice(5, 7)}/{m.slice(0, 4)}
-                    </span>
-                  </div>
-                ))}
+              <div className="table-wrap">
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th scope="col">{stats.earningsByMonth ? 'הרווח שלך' : 'הכנסות'}</th>
+                      <th scope="col">חודש</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {months.map(([m, rev]) => (
+                      <tr key={m}>
+                        <td>
+                          <Money m={rev} />
+                        </td>
+                        <td>
+                          <bdi className="num">
+                            {m.slice(5, 7)}/{m.slice(0, 4)}
+                          </bdi>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
         )}
 
-        <p className="mt-6 text-center text-[11px] text-fg-faint">
-          הנתונים מתעדכנים אוטומטית.
-        </p>
+        <p className="pp-foot">הנתונים מתעדכנים בכל טעינה של הדף.</p>
       </div>
+    </Shell>
+  )
+}
+
+function Stat({ label, value, money }: { label: string; value: ReactNode; money?: boolean }) {
+  return (
+    <div className="card pp-stat">
+      <span>{label}</span>
+      <b className={money ? 'num money' : 'num'}>{value}</b>
     </div>
   )
 }
@@ -375,16 +539,12 @@ function EarningsStat({
   const [open, setOpen] = useState(false)
   return (
     <>
-      <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-center">
-        <div className="text-base font-semibold text-fg">{fmtMoney(net)}</div>
-        <div className="mt-1 text-[11px] uppercase tracking-wide text-fg-muted">
-          סך הרווח שלך
-        </div>
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="mt-0.5 text-[10px] text-primary underline underline-offset-2 hover:text-accent"
-        >
+      <div className="card pp-stat hot">
+        <span>סך הרווח שלך</span>
+        <b className="num money">
+          <Money m={net} />
+        </b>
+        <button type="button" className="pp-fee" onClick={() => setOpen(true)}>
           {receiptsEnabled ? '(אחרי עמלה של פייפאל)' : '(אחרי עמלות)'}
         </button>
       </div>
@@ -436,82 +596,65 @@ function FeeExplainModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  return (
-    <div
-      dir="rtl"
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div className="relative w-full max-w-md rounded-2xl border border-border bg-bg-elevated p-6 text-right shadow-2xl">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="סגור"
-          className="absolute left-4 top-4 rounded-md p-1 text-fg-muted transition-colors hover:text-fg"
-        >
-          <X className="h-4 w-4" />
-        </button>
+  // Portaled to <body> with its own .fl root (see fl.css .fl-overlay) so the
+  // backdrop covers the whole window, header included.
+  return createPortal(
+    <div className="fl fl-overlay" dir="rtl">
+      <div className="pg-partner">
+        <div className="pp-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+          <div className="dialog pp-dialog" role="dialog" aria-modal="true" aria-labelledby="pp-fee-title">
+            <button type="button" className="pp-x" aria-label="סגור" onClick={onClose} autoFocus>
+              <X className="ic" aria-hidden />
+            </button>
 
-        <h2 className="mb-3 font-display text-lg font-medium text-fg">
-          {hasVat ? 'למה הסכום שונה? עמלות' : 'למה הסכום שונה? עמלת PayPal'}
-        </h2>
-        <p className="mb-4 text-sm leading-relaxed text-fg-secondary">
-          {hasVat ? (
-            <>
-              על כל תשלום נגבית עמלת סליקה של PayPal, ובנוסף משולם מע"מ
-              למדינה. לכן הסכום שנשאר בפועל נמוך מהמחיר שהלקוח שילם. הרווח
-              שלך מחושב על הסכום שנשאר{' '}
-              <span className="text-fg">אחרי כל העמלות</span>, כלומר הכסף
-              ה"אמיתי" שנכנס.
-            </>
-          ) : (
-            <>
-              על כל תשלום, חברת PayPal גובה עמלת סליקה. לכן הסכום שמגיע
-              בפועל לחשבון נמוך מהמחיר שהלקוח שילם. הרווח שלך מחושב על הסכום
-              שנשאר <span className="text-fg">אחרי</span> עמלת PayPal,
-              כלומר הכסף ה"אמיתי" שנכנס.
-            </>
-          )}
-        </p>
+            <h2 id="pp-fee-title">{hasVat ? 'למה הסכום שונה? עמלות' : 'למה הסכום שונה? עמלת PayPal'}</h2>
+            <p>
+              {hasVat ? (
+                <>
+                  על כל תשלום נגבית עמלת סליקה של PayPal, ובנוסף משולם מע"מ למדינה. לכן הסכום שנשאר בפועל נמוך
+                  מהמחיר שהלקוח שילם. הרווח שלך מחושב על הסכום שנשאר <b>אחרי כל העמלות</b>, כלומר הכסף ה"אמיתי"
+                  שנכנס.
+                </>
+              ) : (
+                <>
+                  על כל תשלום, חברת PayPal גובה עמלת סליקה. לכן הסכום שמגיע בפועל לחשבון נמוך מהמחיר שהלקוח שילם.
+                  הרווח שלך מחושב על הסכום שנשאר <b>אחרי</b> עמלת PayPal, כלומר הכסף ה"אמיתי" שנכנס.
+                </>
+              )}
+            </p>
 
-        <div className="space-y-2 rounded-xl border border-border/60 bg-white/[0.015] p-4 text-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-fg-muted">מחיר מלא (לפני עמלות)</span>
-            <span className="text-fg" dir="ltr">
-              {fmtMoney(gross || {})}
-            </span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-fg-muted">עמלת PayPal</span>
-            <span className="text-destructive" dir="ltr">
-              −{fmtMoney(paypalLine || {})}
-            </span>
-          </div>
-          {hasVat && (
-            <div className="flex items-center justify-between">
-              <span className="text-fg-muted">מע"מ</span>
-              <span className="text-destructive" dir="ltr">
-                −{fmtMoney(vat || {})}
-              </span>
+            <div className="pp-break">
+              <div className="ln">
+                <span>הרווח שלך (לפני עמלות)</span>
+                <Money m={gross} />
+              </div>
+              <div className="ln">
+                <span>עמלת PayPal</span>
+                <Money m={paypalLine} sign="−" cls="neg" />
+              </div>
+              {hasVat && (
+                <div className="ln">
+                  <span>מע"מ</span>
+                  <Money m={vat} sign="−" cls="neg" />
+                </div>
+              )}
+              <hr />
+              <div className="ln tot">
+                <span>{hasVat ? 'הרווח שלך (אחרי עמלות)' : 'הרווח שלך (אחרי עמלה)'}</span>
+                <Money m={net} cls="pos" />
+              </div>
             </div>
-          )}
-          <div className="flex items-center justify-between border-t border-border/60 pt-2 font-medium">
-            <span className="text-fg">
-              {hasVat ? 'הרווח שלך (אחרי עמלות)' : 'הרווח שלך (אחרי עמלה)'}
-            </span>
-            <span className="text-success" dir="ltr">
-              {fmtMoney(net)}
-            </span>
+
+            <p className="fine">
+              {hasVat
+                ? 'עמלת PayPal נקבעת על ידי PayPal ומשתנה מעט בין עסקה לעסקה. המע"מ מחושב לפי השיעור הנהוג. המספרים כאן הם הסכומים האמיתיים שנגבו בפועל.'
+                : 'העמלה נקבעת על ידי PayPal ומשתנה מעט בין עסקה לעסקה (מטבע, המרת מטבע ועוד). המספרים כאן הם העמלות האמיתיות שנגבו בפועל.'}
+            </p>
           </div>
         </div>
-
-        <p className="mt-4 text-[11px] leading-relaxed text-fg-faint">
-          {hasVat
-            ? 'עמלת PayPal נקבעת על ידי PayPal ומשתנה מעט בין עסקה לעסקה. המע"מ מחושב לפי השיעור הנהוג. המספרים כאן הם הסכומים האמיתיים שנגבו בפועל.'
-            : 'העמלה נקבעת על ידי PayPal ומשתנה מעט בין עסקה לעסקה (מטבע, המרת מטבע ועוד). המספרים כאן הם העמלות האמיתיות שנגבו בפועל.'}
-        </p>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -549,40 +692,52 @@ function SetPasswordScreen({
     setBusy(false)
     if (!r.ok) {
       if (r.error === 'unauthorized') return onAuthLost()
-      setError(r.error || 'העדכון נכשל')
+      setError(hebrewOr(r.error, 'העדכון נכשל'))
       return
     }
     onDone(r.token, r.partner)
   }
 
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-bg px-5" dir="rtl">
-      <div className="w-full max-w-sm">
-        <AuthHeader label="— שותפים" title="הגדרת סיסמה קבועה" />
-        <p className="mb-5 text-center text-sm text-fg-muted">
-          זו הכניסה הראשונה שלך. בחר/י סיסמה קבועה שתחליף את הסיסמה הזמנית
-          שקיבלת במייל.
-        </p>
-        <form onSubmit={submit} className="space-y-5">
-          <AuthInput
-            label="סיסמה חדשה"
+    <div className="narrow pp-auth">
+      <form className="card form pp-card" onSubmit={submit}>
+        <Head
+          title="הגדרת סיסמה קבועה"
+          intro="זו הכניסה הראשונה שלך. בחר/י סיסמה קבועה שתחליף את הסיסמה הזמנית שקיבלת במייל."
+        />
+        <div className="field">
+          <label htmlFor="ps-new">סיסמה חדשה</label>
+          <input
+            className="input ltr"
+            id="ps-new"
             type="password"
-            value={pw1}
-            onChange={setPw1}
+            dir="ltr"
+            required
             autoComplete="new-password"
             autoFocus
+            value={pw1}
+            onChange={(e) => setPw1(e.target.value)}
           />
-          <AuthInput
-            label="אימות סיסמה"
+        </div>
+        <div className="field">
+          <label htmlFor="ps-rep">אימות סיסמה</label>
+          <input
+            className="input ltr"
+            id="ps-rep"
             type="password"
-            value={pw2}
-            onChange={setPw2}
+            dir="ltr"
+            required
             autoComplete="new-password"
+            value={pw2}
+            onChange={(e) => setPw2(e.target.value)}
           />
-          {error && <AuthError message={error} />}
-          <AuthButton busy={busy}>שמירה והמשך</AuthButton>
-        </form>
-      </div>
+        </div>
+        {error && <ErrorNote message={error} />}
+        <button className="btn btn-p btn-lg btn-block" type="submit" disabled={busy}>
+          {busy && <Loader2 className="ic spin" aria-hidden />}
+          שמירה והמשך
+        </button>
+      </form>
     </div>
   )
 }
@@ -632,101 +787,65 @@ function AcceptTermsScreen({
     setBusy(false)
     if (!r.ok) {
       if (r.error === 'unauthorized') return onAuthLost()
-      setError(r.error || 'הפעולה נכשלה')
+      setError(hebrewOr(r.error, 'הפעולה נכשלה'))
       return
     }
     onDone(r.partner)
   }
 
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-bg px-5 py-10" dir="rtl">
-      <div className="w-full max-w-lg">
-        <AuthHeader label="— שותפים" title="תקנון תוכנית השותפים" />
-        <div className="mb-4 max-h-[50vh] overflow-y-auto rounded-2xl border border-border/60 bg-white/[0.015] p-5 text-sm leading-relaxed text-fg-secondary">
-          {sections.length > 0 ? (
-            sections.map((sec, si) => (
-              <div key={si} className={si === 0 ? '' : 'mt-5'}>
-                {sec.title && (
-                  <div className="mb-1.5 font-medium text-fg">{sec.title}</div>
-                )}
-                {sec.paragraphs.map((para, pi) => (
-                  <p key={pi} className={pi === 0 ? '' : 'mt-2'}>
-                    {para}
-                  </p>
-                ))}
-              </div>
-            ))
-          ) : (
-            PARTNER_TERMS.map((para, i) => (
-              <p key={i} className={i === 0 ? '' : 'mt-3'}>
-                {para}
-              </p>
-            ))
-          )}
+    <div className="narrow pp-auth pp-wide">
+      <div className="card pp-card">
+        <Head title="תקנון תוכנית השותפים" />
+        <div className="pp-terms" tabIndex={0} role="region" aria-label="תקנון תוכנית השותפים">
+          {sections.length > 0
+            ? sections.map((sec, si) => (
+                <div key={si} className="pp-sec">
+                  {sec.title && <b className="pp-sec-t">{sec.title}</b>}
+                  {sec.paragraphs.map((para, pi) => (
+                    <p key={pi}>{para}</p>
+                  ))}
+                </div>
+              ))
+            : PARTNER_TERMS.map(([title, text], i) => (
+                <p key={i}>
+                  {title && <b>{title}: </b>}
+                  {text}
+                </p>
+              ))}
         </div>
-        <label className="mb-4 flex cursor-pointer items-start gap-2.5 text-sm text-fg">
-          <input
-            type="checkbox"
-            checked={agreed}
-            onChange={(e) => setAgreed(e.target.checked)}
-            className="mt-0.5 h-4 w-4 accent-primary"
-          />
-          <span>קראתי את התקנון ואני מאשר/ת את תנאי תוכנית השותפים.</span>
-        </label>
-        {error && (
-          <div className="mb-3">
-            <AuthError message={error} />
-          </div>
-        )}
-        <AuthButton
-          type="button"
-          busy={busy}
-          disabled={!agreed || busy}
-          onClick={accept}
-        >
-          אני מאשר/ת וממשיך/ה
-        </AuthButton>
+        <div className="pp-accept">
+          <label className="check">
+            <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
+            קראתי את התקנון ואני מאשר/ת את תנאי תוכנית השותפים.
+          </label>
+          {error && <ErrorNote message={error} />}
+          <button
+            type="button"
+            className="btn btn-p btn-lg btn-block"
+            disabled={!agreed || busy}
+            onClick={accept}
+          >
+            {busy && <Loader2 className="ic spin" aria-hidden />}
+            אני מאשר/ת וממשיך/ה
+          </button>
+        </div>
       </div>
     </div>
   )
 }
 
-/* Default partnership terms. Placeholder copy — edit freely; bump
- * PARTNER_TERMS_VERSION in api/paypal.ts to force partners to re-accept
- * after a material change. */
-const PARTNER_TERMS: string[] = [
-  'ברוכים הבאים לתוכנית השותפים של פריימליין. התקנון להלן מסדיר את היחסים בינך לבין החברה כשותף/ה.',
-  '1. שיוך מכירות: מכירה תזוכה לך רק כאשר הלקוח נכנס דרך קישור ההפניה האישי שלך וביצע רכישה בפועל. החברה רשאית לבדוק ולאמת כל שיוך.',
-  '2. עמלות: גובה העמלה ואופן חישובה נקבעים בהסכם האישי שלך כפי שמוצג בדשבורד. העמלה מחושבת על הסכום שנותר בפועל לאחר עמלת הסליקה ולאחר מע"מ, ומשולמת על עסקאות שלא בוטלו או הוחזרו.',
-  '3. תשלומים: תשלום העמלות יבוצע במועדים ובאמצעים שתיאמת עם החברה. עסקה שבוטלה, הוחזרה (chargeback) או לא נגבתה, לא תזכה בעמלה, ותקוזז אם כבר שולמה.',
-  '4. שיווק הוגן: אין לפרסם את המוצר בדרכים מטעות, ספאם, או הבטחות שווא, ואין להשתמש במותג החברה באופן שאינו מאושר. החברה רשאית להפסיק את השותפות בגין הפרה.',
-  '5. סודיות ופרטיות: נתוני הדשבורד מיועדים לך בלבד. אינך רשאי/ת לחשוף נתונים, רשימות לקוחות או מידע עסקי של החברה.',
-  '6. סיום: כל צד רשאי לסיים את השותפות בכל עת. עמלות שנצברו כדין עד מועד הסיום ישולמו בהתאם לתקנון.',
-  '7. שינויים: החברה רשאית לעדכן את התקנון מעת לעת. המשך שימוש בדשבורד לאחר עדכון מהווה הסכמה לתנאים המעודכנים.',
-  'אישור התקנון מהווה הסכמה מלאה לכל האמור לעיל.',
+/* Default partnership terms, as [bold title, text]. Placeholder copy —
+ * edit freely; bump PARTNER_TERMS_VERSION in api/paypal.ts to force
+ * partners to re-accept after a material change. */
+const PARTNER_TERMS: [string, string][] = [
+  ['', 'ברוכים הבאים לתוכנית השותפים של פריימליין. התקנון להלן מסדיר את היחסים בינך לבין החברה כשותף/ה.'],
+  ['1. שיוך מכירות', 'מכירה תזוכה לך רק כאשר הלקוח נכנס דרך קישור ההפניה האישי שלך וביצע רכישה בפועל. החברה רשאית לבדוק ולאמת כל שיוך.'],
+  ['2. עמלות', 'גובה העמלה ואופן חישובה נקבעים בהסכם האישי שלך כפי שמוצג בדשבורד. העמלה מחושבת על הסכום שנותר בפועל לאחר עמלת הסליקה ולאחר מע"מ, ומשולמת על עסקאות שלא בוטלו או הוחזרו.'],
+  ['3. תשלומים', 'תשלום העמלות יבוצע במועדים ובאמצעים שתיאמת עם החברה. עסקה שבוטלה, הוחזרה (chargeback) או לא נגבתה, לא תזכה בעמלה, ותקוזז אם כבר שולמה.'],
+  ['4. שיווק הוגן', 'אין לפרסם את המוצר בדרכים מטעות, ספאם, או הבטחות שווא, ואין להשתמש במותג החברה באופן שאינו מאושר. החברה רשאית להפסיק את השותפות בגין הפרה.'],
+  ['5. סודיות ופרטיות', 'נתוני הדשבורד מיועדים לך בלבד. אינך רשאי/ת לחשוף נתונים, רשימות לקוחות או מידע עסקי של החברה.'],
+  ['6. סיום', 'כל צד רשאי לסיים את השותפות בכל עת. עמלות שנצברו כדין עד מועד הסיום ישולמו בהתאם לתקנון.'],
+  ['7. שינויים', 'החברה רשאית לעדכן את התקנון מעת לעת. המשך שימוש בדשבורד לאחר עדכון מהווה הסכמה לתנאים המעודכנים.'],
+  ['', 'אישור התקנון מהווה הסכמה מלאה לכל האמור לעיל.'],
 ]
-
-function Stat({
-  value,
-  label,
-  wide,
-}: {
-  value: string
-  label: string
-  wide?: boolean
-}) {
-  return (
-    <div className="rounded-2xl border border-border/60 bg-white/[0.015] p-4 text-center">
-      <div
-        className={
-          'font-semibold text-fg ' + (wide ? 'text-base' : 'text-2xl')
-        }
-      >
-        {value}
-      </div>
-      <div className="mt-1 text-[11px] uppercase tracking-wide text-fg-muted">
-        {label}
-      </div>
-    </div>
-  )
-}

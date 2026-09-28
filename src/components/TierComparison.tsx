@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Loader2 } from 'lucide-react'
-import { cn } from '@/lib/cn'
+import { Check, Download } from 'lucide-react'
+import { Seg } from './site/Seg'
+import { useDownload } from './site/DownloadGate'
+import { formatPrice } from '@/lib/pricing'
 import {
   PAID_TIERS,
   TIER_LABEL,
@@ -14,15 +15,18 @@ import {
 } from '@/lib/tiers'
 
 /**
- * The public tier comparison for the /buy page — Free / Basic / Pro / Ultra.
- * Prices + storage + quotas are the ADMIN-CONFIGURED live values (read from
- * the public `get-tiers` endpoint, falling back to code defaults). The feature
- * bullets are built from the matrix so the page always matches what each tier
- * actually unlocks.
+ * The public tier comparison for the /buy page — Free / Basic / Pro / Ultra:
+ * the monthly/yearly toggle, the four tier cards (#plans) and the full table
+ * (#compare). Styles: .pg-buy in src/styles/pages/buy.css.
  *
- * Selecting a paid tier calls `onChoose(tier, cycle)`. NOTE: real per-tier
- * PayPal checkout is wired in a later phase; today the host page's existing
- * checkout is the live purchase path.
+ * Prices + storage + quotas are the ADMIN-CONFIGURED live values (read from
+ * the public `get-tiers` endpoint, falling back to code defaults, which carry
+ * price 0 and so show "בקרוב"). The feature bullets are built from the matrix
+ * so the page always matches what each tier actually unlocks.
+ *
+ * The cycle can be controlled by the host (`cycle` + `onCycleChange`) so the
+ * toggle also drives the host's checkout. Selecting a paid tier calls
+ * `onChoose(tier, cycle)`; the Free card starts the site-wide download flow.
  */
 
 type Cfg = Record<Tier, TierConfig>
@@ -39,6 +43,18 @@ function perMonth(amount: number, cycle: Cycle): string {
   return Number.isInteger(v) ? String(v) : v.toFixed(2)
 }
 
+/** What paying yearly saves against twelve monthly payments, per tier, from
+ *  the live (sale-aware) prices. null when there is no honest saving to show. */
+function yearlySaving(c: TierConfig): { amount: number; pct: number } | null {
+  const m = tierPrice(c, 'monthly').effective
+  const y = tierPrice(c, 'yearly').effective
+  if (!(m > 0 && y > 0) || y >= m * 12) return null
+  return {
+    amount: Math.round((m * 12 - y) * 100) / 100,
+    pct: Math.round((1 - y / (m * 12)) * 100),
+  }
+}
+
 function fmtMinutes(sec: number | null): string {
   if (sec == null) return 'ללא הגבלה'
   const m = Math.round(sec / 60)
@@ -52,12 +68,12 @@ function fmtCount(n: number | null, unit: string): string {
 }
 /** How many computers the plan covers, phrased for a buyer. */
 function fmtSeats(n: number): string {
-  return n === 1 ? 'מחשב אחד' : `${n} מחשבים`;
+  return n === 1 ? 'מחשב אחד' : `${n} מחשבים`
 }
 
-/** GB value → "NGB" / "ללא הגבלה" (null) / "—" (0). */
-function fmtGb(v: number | null): string {
-  return v == null ? 'ללא הגבלה' : v > 0 ? `${v}GB` : '—'
+/** GB value → "NGB" (kept LTR) / "ללא הגבלה" (null) / "—" (0). */
+function gb(v: number | null): ReactNode {
+  return v == null ? 'ללא הגבלה' : v > 0 ? <bdi>{v}GB</bdi> : '—'
 }
 
 /** One-line positioning per tier. */
@@ -77,7 +93,7 @@ const PREV_TIER: Partial<Record<Tier, Tier>> = {
 
 /** Feature bullets per tier (the cumulative "includes X" note is shown
  *  separately, above the bullets). */
-function highlights(tier: Tier, c: TierConfig): string[] {
+function highlights(tier: Tier, c: TierConfig): ReactNode[] {
   switch (tier) {
     case 'free':
       return [
@@ -92,7 +108,7 @@ function highlights(tier: Tier, c: TierConfig): string[] {
       return [
         'הצעות מחיר ללא הגבלה',
         'כיווץ וידאו',
-        `סבבי תיקונים + מסירה ללקוח — ${fmtGb(c.storageGb)}`,
+        <>סבבי תיקונים + מסירה ללקוח — {gb(c.storageGb)}</>,
         `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
         `תמלול חכם — ${fmtMinutes(c.transcriptionMonthlySec)}`,
         'מעקב זמן עבודה',
@@ -102,13 +118,13 @@ function highlights(tier: Tier, c: TierConfig): string[] {
       return [
         'סנכרון אוטומטי',
         'תמלול ללא הגבלה + מתקדם (דוברים, מדויק, מילון)',
-        `${fmtGb(c.storageGb)} אחסון`,
+        <>{gb(c.storageGb)} אחסון</>,
         `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
         fmtSeats(TIER_DEVICE_SEATS.pro),
       ]
     case 'ultra':
       return [
-        `${fmtGb(c.storageGb)} אחסון — הגדול ביותר`,
+        <>{gb(c.storageGb)} אחסון — הגדול ביותר</>,
         `${fmtCount(c.maxRevisionProjects, 'פרויקטים')} במקביל`,
         fmtSeats(TIER_DEVICE_SEATS.ultra),
         'עדיפות בתמיכה',
@@ -117,88 +133,172 @@ function highlights(tier: Tier, c: TierConfig): string[] {
 }
 
 /* ── Full feature-comparison table ─────────────────────────────────────── */
-function yes() {
-  return <Check className="mx-auto h-4 w-4 text-primary" />
-}
-function no() {
-  return <span className="text-fg-faint">—</span>
-}
+/** A cell is a check (true), a dash (false) or a value. */
+type Cell = boolean | ReactNode
 
-const TABLE_ROWS: { label: string; render: (t: Tier, c: TierConfig) => ReactNode }[] = [
-  { label: 'ניהול הורדות', render: () => yes() },
-  { label: 'הורדת קבצים (יוטיוב / דרייב)', render: () => yes() },
-  { label: 'המרת קבצים', render: () => yes() },
+const TABLE_GROUPS: {
+  title: string
+  rows: { label: string; render: (t: Tier, c: TierConfig) => Cell }[]
+}[] = [
   {
-    label: 'פרויקטי הורדה במקביל',
-    render: (_t, c) => (c.maxDownloadProjects == null ? 'ללא הגבלה' : String(c.maxDownloadProjects)),
+    title: 'הורדות וקבצים',
+    rows: [
+      { label: 'ניהול הורדות', render: () => true },
+      { label: 'הורדת קבצים (יוטיוב / דרייב)', render: () => true },
+      { label: 'המרת קבצים', render: () => true },
+      {
+        label: 'פרויקטי הורדה במקביל',
+        render: (_t, c) =>
+          c.maxDownloadProjects == null ? 'ללא הגבלה' : String(c.maxDownloadProjects),
+      },
+      { label: 'חוקי מיון בהורדות', render: (t) => tierAllows(t, 'routingRules') },
+      { label: 'כיווץ וידאו', render: (t) => tierAllows(t, 'compress') },
+    ],
   },
   {
-    label: 'הצעות מחיר',
-    render: (_t, c) => (c.quotesPerMonth == null ? 'ללא הגבלה' : `${c.quotesPerMonth} בחודש`),
-  },
-  { label: 'כיווץ וידאו', render: (t) => (tierAllows(t, 'compress') ? yes() : no()) },
-  { label: 'תמלול חכם', render: (_t, c) => fmtMinutes(c.transcriptionMonthlySec) },
-  {
-    label: 'תמלול מתקדם (דוברים, מדויק, מילון)',
-    render: (t) => (tierAllows(t, 'transcriptionAdvanced') ? yes() : no()),
-  },
-  { label: 'סנכרון אוטומטי', render: (t) => (tierAllows(t, 'sync') ? yes() : no()) },
-  { label: 'סבבי תיקונים', render: (t) => (tierAllows(t, 'revisions') ? yes() : no()) },
-  { label: 'מסירה ללקוח', render: (t) => (tierAllows(t, 'deliveries') ? yes() : no()) },
-  { label: 'מעקב זמן עבודה', render: (t) => (tierAllows(t, 'timeTracking') ? yes() : no()) },
-  { label: 'חוקי מיון בהורדות', render: (t) => (tierAllows(t, 'routingRules') ? yes() : no()) },
-  {
-    label: 'אחסון (תיקונים + מסירה)',
-    render: (_t, c) => (c.storageGb == null ? 'ללא הגבלה' : c.storageGb > 0 ? `${c.storageGb}GB` : no()),
+    title: 'הצעות מחיר וזמן עבודה',
+    rows: [
+      {
+        label: 'הצעות מחיר',
+        render: (_t, c) => (c.quotesPerMonth == null ? 'ללא הגבלה' : `${c.quotesPerMonth} בחודש`),
+      },
+      { label: 'מעקב זמן עבודה', render: (t) => tierAllows(t, 'timeTracking') },
+    ],
   },
   {
-    label: 'פרויקטים במקביל (תיקונים / מסירה)',
-    render: (_t, c) =>
-      c.maxRevisionProjects == null
-        ? 'ללא הגבלה'
-        : c.maxRevisionProjects > 0
-          ? String(c.maxRevisionProjects)
-          : no(),
+    title: 'תמלול וסנכרון',
+    rows: [
+      { label: 'תמלול חכם', render: (_t, c) => fmtMinutes(c.transcriptionMonthlySec) },
+      {
+        label: 'תמלול מתקדם (דוברים, מדויק, מילון)',
+        render: (t) => tierAllows(t, 'transcriptionAdvanced'),
+      },
+      { label: 'סנכרון אוטומטי', render: (t) => tierAllows(t, 'sync') },
+    ],
   },
   {
-    label: 'מחשבים בחשבון',
-    render: (t) => fmtSeats(TIER_DEVICE_SEATS[t]),
+    title: 'סבבי תיקונים ומסירה ללקוח',
+    rows: [
+      { label: 'סבבי תיקונים', render: (t) => tierAllows(t, 'revisions') },
+      { label: 'מסירה ללקוח', render: (t) => tierAllows(t, 'deliveries') },
+      {
+        label: 'אחסון (תיקונים + מסירה)',
+        render: (_t, c) =>
+          c.storageGb == null ? 'ללא הגבלה' : c.storageGb > 0 ? <bdi>{c.storageGb}GB</bdi> : false,
+      },
+      {
+        label: 'פרויקטים במקביל (תיקונים / מסירה)',
+        render: (_t, c) =>
+          c.maxRevisionProjects == null
+            ? 'ללא הגבלה'
+            : c.maxRevisionProjects > 0
+              ? String(c.maxRevisionProjects)
+              : false,
+      },
+    ],
+  },
+  {
+    title: 'החשבון',
+    rows: [{ label: 'מחשבים בחשבון', render: (t) => fmtSeats(TIER_DEVICE_SEATS[t]) }],
   },
 ]
 
-function FeatureTable({ cfg, order }: { cfg: Record<Tier, TierConfig>; order: Tier[] }) {
+function CellView({ v }: { v: Cell }) {
+  if (v === true)
+    return (
+      <span className="yes">
+        <Check className="ic" aria-hidden />
+        <span className="sr">כלול</span>
+      </span>
+    )
+  if (v === false)
+    return (
+      <>
+        <span className="no" aria-hidden>
+          —
+        </span>
+        <span className="sr">לא כלול</span>
+      </>
+    )
+  return <>{v}</>
+}
+
+function FeatureTable({
+  cfg,
+  order,
+  cycle,
+  loading,
+}: {
+  cfg: Cfg
+  order: Tier[]
+  cycle: Cycle
+  loading: boolean
+}) {
   return (
-    <div className="mt-12">
-      <h3 className="mb-4 text-center font-display text-xl font-bold text-fg">
-        השוואה מלאה
-      </h3>
-      <div className="overflow-x-auto rounded-2xl border border-border">
-        <table className="w-full min-w-[640px] border-collapse text-sm" dir="rtl">
+    <section id="compare" className="sec">
+      <div className="sec-head">
+        <h2 className="h2">השוואה מלאה</h2>
+      </div>
+      <div className="table-wrap">
+        <table className="tbl">
+          <caption className="sr">השוואה מלאה בין התוכניות</caption>
           <thead>
-            <tr className="border-b border-border bg-card">
-              <th className="px-4 py-3 text-right font-semibold text-fg-muted">תכונה</th>
-              {order.map((t) => (
-                <th key={t} className="px-3 py-3 text-center font-bold text-fg">
-                  {TIER_LABEL[t]}
-                </th>
-              ))}
+            <tr>
+              <th scope="col">תכונה</th>
+              {order.map((t) => {
+                const price = tierPrice(cfg[t], cycle).effective
+                return (
+                  <th key={t} scope="col" className={t === 'pro' ? 'pro' : undefined}>
+                    {TIER_LABEL[t]}
+                    <small key={cycle} data-fade="">
+                      {t === 'free' ? (
+                        <bdi dir="ltr" className="num">
+                          ₪0
+                        </bdi>
+                      ) : loading ? (
+                        ' '
+                      ) : price > 0 ? (
+                        <>
+                          <bdi dir="ltr" className="num">
+                            ₪{perMonth(price, cycle)}
+                          </bdi>{' '}
+                          לחודש
+                        </>
+                      ) : (
+                        'בקרוב'
+                      )}
+                    </small>
+                  </th>
+                )
+              })}
             </tr>
           </thead>
           <tbody>
-            {TABLE_ROWS.map((row, i) => (
-              <tr key={i} className="border-b border-border/50 last:border-0">
-                <td className="px-4 py-2.5 text-right text-fg-secondary">{row.label}</td>
-                {order.map((t) => (
-                  <td key={t} className="px-3 py-2.5 text-center text-fg">
-                    {row.render(t, cfg[t])}
-                  </td>
-                ))}
-              </tr>
-            ))}
+            {TABLE_GROUPS.map((g) => [
+              <tr className="grp" key={g.title}>
+                <td colSpan={order.length + 1}>
+                  <span className="gl">{g.title}</span>
+                </td>
+              </tr>,
+              ...g.rows.map((row) => (
+                <tr key={row.label}>
+                  <th scope="row">{row.label}</th>
+                  {order.map((t) => (
+                    <td key={t} className={t === 'pro' ? 'pro' : undefined}>
+                      <CellView v={row.render(t, cfg[t])} />
+                    </td>
+                  ))}
+                </tr>
+              )),
+            ])}
           </tbody>
         </table>
       </div>
-    </div>
+      <p className="foot">
+        סבבי התיקונים והמסירה ללקוח משתמשים באותו נפח אחסון.
+        <span className="vat"> המחירים כוללים מע״מ.</span>
+      </p>
+    </section>
   )
 }
 
@@ -206,16 +306,27 @@ export default function TierComparison({
   currentTier,
   onChoose,
   buyable,
+  cycle: cycleProp,
+  onCycleChange,
 }: {
   currentTier?: Tier
   onChoose?: (tier: Exclude<Tier, 'free'>, cycle: Cycle) => void
   /** Tiers whose checkout is live right now; others render "בקרוב".
    *  Defaults to all paid tiers. */
   buyable?: ReadonlySet<Tier>
+  /** Controlled billing cycle (the host's checkout follows it). */
+  cycle?: Cycle
+  onCycleChange?: (c: Cycle) => void
 }) {
   const [cfg, setCfg] = useState<Cfg>(DEFAULT_TIER_CONFIG)
   const [loading, setLoading] = useState(true)
-  const [cycle, setCycle] = useState<Cycle>('yearly')
+  const [ownCycle, setOwnCycle] = useState<Cycle>('yearly')
+  const cycle = cycleProp ?? ownCycle
+  const setCycle = (c: Cycle) => {
+    setOwnCycle(c)
+    onCycleChange?.(c)
+  }
+  const { requestDownload } = useDownload()
 
   useEffect(() => {
     let alive = true
@@ -241,183 +352,171 @@ export default function TierComparison({
 
   const order: Tier[] = ['free', ...PAID_TIERS]
 
-  // Yearly savings vs paying monthly (from the Pro tier). Shown as a badge
-  // only when it's a sane, positive number.
-  const pm = cfg.pro.priceMonthly
-  const py = cfg.pro.priceYearly
-  const savingsPct =
-    pm > 0 && py > 0 && py < pm * 12 ? Math.round((1 - py / (pm * 12)) * 100) : 0
-  const showSavings = savingsPct > 0 && savingsPct <= 70
+  // "Save up to X%" on the yearly option: the best saving among the paid
+  // tiers, from the live prices. Shown only when it's a sane, positive number.
+  const maxPct = loading
+    ? 0
+    : Math.max(0, ...PAID_TIERS.map((t) => yearlySaving(cfg[t])?.pct ?? 0))
+  const showSavings = maxPct > 0 && maxPct <= 70
 
   return (
-    <div className="mb-10">
-      {/* monthly / yearly toggle — segmented control with slightly-squared,
-          concentric corners. Outer radius (rounded-2xl = 16px) minus the 4px
-          (p-1) inset equals the inner radius (rounded-xl = 12px), so the
-          sliding thumb sits flush inside the track. */}
-      <div className="mb-8 flex justify-center">
-        <div className="relative inline-flex rounded-2xl border border-border bg-card p-1">
-          {(['monthly', 'yearly'] as const).map((c) => {
-            const active = cycle === c
-            return (
-              <button
-                key={c}
-                type="button"
-                onClick={() => setCycle(c)}
-                className="relative z-10 inline-flex items-center justify-center gap-2.5 rounded-xl px-8 py-3 text-base font-semibold leading-none"
-              >
-                {active && (
-                  <motion.span
-                    layoutId="cyclePill"
-                    className="absolute inset-0 -z-10 rounded-xl bg-primary"
-                    transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-                  />
-                )}
-                <span
-                  className={cn(
-                    'transition-colors',
-                    active ? 'text-white' : 'text-fg-muted hover:text-fg',
-                  )}
-                >
-                  {c === 'monthly' ? 'חודשי' : 'שנתי'}
-                </span>
-                {c === 'yearly' && showSavings && (
-                  <span
-                    dir="ltr"
-                    className={cn(
-                      'inline-flex items-center rounded-md px-2.5 py-1 text-sm font-bold leading-none transition-colors',
-                      active ? 'bg-white/20 text-white' : 'bg-primary/15 text-primary',
+    <>
+      <section id="plans" className="plans" aria-label="המסלולים">
+        <div className="cyc">
+          <Seg<Cycle>
+            value={cycle}
+            onChange={setCycle}
+            label="מחזור חיוב"
+            options={[
+              { value: 'monthly', label: 'חודשי' },
+              {
+                value: 'yearly',
+                label: (
+                  <>
+                    שנתי
+                    {showSavings && (
+                      <span className="save">
+                        חיסכון של עד <bdi dir="ltr">{maxPct}%</bdi>
+                      </span>
                     )}
-                  >
-                    -{savingsPct}%
-                  </span>
-                )}
-              </button>
+                  </>
+                ),
+              },
+            ]}
+          />
+        </div>
+
+        <div className="grid g4 tiers">
+          {order.map((tier) => {
+            const c = cfg[tier]
+            const paid = tier !== 'free'
+            const pr = tierPrice(c, cycle) // { regular, sale, effective }
+            const price = pr.effective
+            const isCurrent = currentTier === tier
+            const hot = tier === 'pro'
+            const saving = paid && !loading && cycle === 'yearly' ? yearlySaving(c) : null
+            const prev = PREV_TIER[tier]
+            return (
+              <article
+                key={tier}
+                className={`card tier${hot ? ' hot' : ''}`}
+                aria-labelledby={`tier-${tier}`}
+              >
+                <div className="tier-h">
+                  <h3 id={`tier-${tier}`}>{TIER_LABEL[tier]}</h3>
+                  {saving && (
+                    <span className="chip save-c" data-fade="">
+                      חיסכון של{' '}
+                      <bdi dir="ltr" className="num">
+                        ₪{formatPrice(saving.amount)}
+                      </bdi>{' '}
+                      בשנה
+                    </span>
+                  )}
+                </div>
+                <p className="tag">{TAGLINE[tier]}</p>
+
+                <div className="price">
+                  {tier === 'free' ? (
+                    <>
+                      <div className="amt">
+                        <bdi dir="ltr" className="num">
+                          ₪0
+                        </bdi>
+                      </div>
+                      <p className="bill">ללא חיוב</p>
+                    </>
+                  ) : loading ? (
+                    <span className="spin" role="status" aria-label="טוען את המחיר" />
+                  ) : price > 0 ? (
+                    // Both cycles are quoted PER MONTH so the two are directly
+                    // comparable. What is actually charged sits right under
+                    // it — Israeli price rules want the full price (incl. VAT)
+                    // as visible as the per-month one — and the ×12 is laid
+                    // out in the order summary.
+                    <div key={cycle} data-fade="">
+                      <div className="amt">
+                        <bdi dir="ltr" className="num">
+                          ₪{perMonth(price, cycle)}
+                        </bdi>
+                        {pr.sale != null && (
+                          <s className="was">
+                            <bdi dir="ltr" className="num">
+                              ₪{perMonth(pr.regular, cycle)}
+                            </bdi>
+                          </s>
+                        )}
+                        <small>/ לחודש</small>
+                      </div>
+                      <p className="bill">
+                        {cycle === 'yearly' ? (
+                          <>
+                            חיוב שנתי של{' '}
+                            <bdi dir="ltr" className="num">
+                              ₪{formatPrice(price)}
+                            </bdi>
+                          </>
+                        ) : (
+                          'חיוב חודשי'
+                        )}
+                        <span className="vat"> · כולל מע״מ</span>
+                      </p>
+                    </div>
+                  ) : (
+                    <span className="pill">בקרוב</span>
+                  )}
+                </div>
+
+                <p className="cum">
+                  {prev ? `כולל את כל מה שב-${TIER_LABEL[prev]}, ובנוסף:` : ''}
+                </p>
+
+                <ul className="checks">
+                  {highlights(tier, c).map((h, i) => (
+                    <li key={i}>{h}</li>
+                  ))}
+                </ul>
+
+                <div className="go">
+                  {isCurrent ? (
+                    <span className="chip current">המנוי הנוכחי שלך</span>
+                  ) : tier === 'free' ? (
+                    <button
+                      type="button"
+                      className="btn btn-g btn-block"
+                      onClick={() => requestDownload()}
+                    >
+                      <Download className="ic" aria-hidden />
+                      הורדה חינם
+                    </button>
+                  ) : (
+                    (() => {
+                      const canBuy =
+                        paid && price > 0 && !!onChoose && (buyable ? buyable.has(tier) : true)
+                      return (
+                        <button
+                          type="button"
+                          disabled={!canBuy}
+                          onClick={() =>
+                            canBuy && onChoose?.(tier as Exclude<Tier, 'free'>, cycle)
+                          }
+                          className={`btn ${hot ? 'btn-p' : 'btn-s'} btn-block`}
+                        >
+                          {/* While prices load the button waits, disabled —
+                              "בקרוב" is only for a tier with no price. */}
+                          {canBuy || loading ? 'בחירת המסלול' : 'בקרוב'}
+                        </button>
+                      )
+                    })()
+                  )}
+                </div>
+              </article>
             )
           })}
         </div>
-      </div>
+      </section>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {order.map((tier) => {
-          const c = cfg[tier]
-          const paid = tier !== 'free'
-          const pr = tierPrice(c, cycle) // { regular, sale, effective }
-          const price = pr.effective
-          const isCurrent = currentTier === tier
-          return (
-            <div
-              key={tier}
-              className="relative flex flex-col rounded-2xl border border-border bg-card p-5"
-            >
-              <div className="text-lg font-bold font-display text-fg">{TIER_LABEL[tier]}</div>
-              <div className="mt-0.5 text-[11px] leading-snug text-fg-muted">{TAGLINE[tier]}</div>
-
-              <div className="mt-3 min-h-[3rem] border-b border-border/60 pb-3">
-                {tier === 'free' ? (
-                  <span className="text-3xl font-extrabold text-fg">חינם</span>
-                ) : loading ? (
-                  <Loader2 className="h-5 w-5 animate-spin text-fg-muted" />
-                ) : price > 0 ? (
-                  // Price FIRST, then the period. AnimatePresence fades the
-                  // amount when the buyer flips monthly ↔ yearly.
-                  <div>
-                  <AnimatePresence mode="wait" initial={false}>
-                    <motion.div
-                      key={cycle}
-                      initial={{ opacity: 0, y: 6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -6 }}
-                      transition={{ duration: 0.18 }}
-                      className="flex items-baseline gap-1.5"
-                      dir="rtl"
-                    >
-                      {/* Both cycles are quoted PER MONTH so the two are
-                          directly comparable — a yearly total beside a monthly
-                          one reads as far dearer than it is and buries the
-                          discount. What is actually charged, and the ×12 that
-                          gets there, is laid out in the order summary the
-                          "בחירת המסלול" button scrolls down to. */}
-                      <span className="text-3xl font-extrabold text-fg" dir="ltr">
-                        ₪{perMonth(price, cycle)}
-                      </span>
-                      {pr.sale != null && (
-                        <span className="text-sm text-fg-faint line-through" dir="ltr">
-                          ₪{perMonth(pr.regular, cycle)}
-                        </span>
-                      )}
-                      <span className="text-xs text-fg-muted">/ לחודש</span>
-                    </motion.div>
-                  </AnimatePresence>
-                  {/* What is actually charged sits right under the per-month
-                      figure — Israeli price rules want the full price (incl.
-                      VAT) as visible as the per-month one. */}
-                  <div className="mt-1 text-[11px] text-fg-muted" dir="rtl">
-                    {cycle === 'yearly' ? (
-                      <>
-                        חיוב שנתי של <span dir="ltr">₪{price}</span> · כולל מע״מ
-                      </>
-                    ) : (
-                      'חיוב חודשי · כולל מע״מ'
-                    )}
-                  </div>
-                  </div>
-                ) : (
-                  <span className="inline-flex items-center rounded-md bg-bg-elevated px-2 py-0.5 text-xs text-fg-muted">
-                    בקרוב
-                  </span>
-                )}
-              </div>
-
-              {PREV_TIER[tier] && (
-                <div className="mt-3 text-[11px] font-medium text-primary">
-                  כולל את כל מה שב-{TIER_LABEL[PREV_TIER[tier] as Tier]}, ובנוסף:
-                </div>
-              )}
-
-              <ul className={cn('flex-1 space-y-2', PREV_TIER[tier] ? 'mt-2' : 'mt-3')}>
-                {highlights(tier, c).map((h, i) => (
-                  <li key={i} className="flex items-start gap-2 text-xs text-fg-secondary">
-                    <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
-                    <span>{h}</span>
-                  </li>
-                ))}
-              </ul>
-
-              <div className="mt-5">
-                {tier === 'free' ? (
-                  <div className="rounded-xl border border-border px-3 py-2 text-center text-xs text-fg-muted">
-                    ברירת המחדל
-                  </div>
-                ) : isCurrent ? (
-                  <div className="rounded-xl border border-primary/40 bg-primary/10 px-3 py-2 text-center text-xs font-semibold text-primary">
-                    המנוי הנוכחי שלך
-                  </div>
-                ) : (
-                  (() => {
-                    const canBuy =
-                      paid && price > 0 && !!onChoose && (buyable ? buyable.has(tier) : true)
-                    return (
-                      <button
-                        type="button"
-                        disabled={!canBuy}
-                        onClick={() =>
-                          canBuy && onChoose?.(tier as Exclude<Tier, 'free'>, cycle)
-                        }
-                        className="w-full rounded-xl border border-primary/40 px-3 py-2 text-sm font-semibold text-fg transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {canBuy ? 'בחירת המסלול' : 'בקרוב'}
-                      </button>
-                    )
-                  })()
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      <FeatureTable cfg={cfg} order={order} />
-    </div>
+      <FeatureTable cfg={cfg} order={order} cycle={cycle} loading={loading} />
+    </>
   )
 }

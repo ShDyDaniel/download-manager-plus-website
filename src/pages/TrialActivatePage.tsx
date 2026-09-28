@@ -1,5 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { Gift, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import {
+  AlertCircle,
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  Gift,
+  Loader2,
+  Mail,
+  Unlink,
+} from 'lucide-react'
+import { FlPage } from '../components/site/FlPage'
+import '../styles/pages/trial.css'
 
 /**
  * Trial activation landing — opened from the desktop app's user menu
@@ -13,8 +25,17 @@ import { Gift, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react'
 type State =
   | { kind: 'loading' }
   | { kind: 'success'; expiresAt: string | null }
+  | { kind: 'again'; date: string }
+  | { kind: 'used'; msg: string; once: boolean }
   | { kind: 'error'; msg: string }
   | { kind: 'invalid' }
+
+/** Remembers a successful activation for this tab only, so a refresh (the
+ *  fragment is gone by then) says "already active" instead of "invalid link".
+ *  Holds only the expiry date — never the token or the device id. */
+const ACTIVATED_KEY = 'fl.trialActivated.v1'
+const HELP = 'help.frameline@gmail.com'
+const MARK = '/logo-mark.svg?v=1'
 
 function fmtDate(iso: string | null): string {
   if (!iso) return ''
@@ -26,6 +47,50 @@ function fmtDate(iso: string | null): string {
         month: '2-digit',
         year: 'numeric',
       })
+}
+
+function readActivated(): { expiresAt: string | null } | null {
+  try {
+    const raw = sessionStorage.getItem(ACTIVATED_KEY)
+    if (!raw) return null
+    const v = JSON.parse(raw) as { expiresAt?: unknown }
+    return { expiresAt: typeof v.expiresAt === 'string' ? v.expiresAt : null }
+  } catch {
+    return null
+  }
+}
+
+function rememberActivated(expiresAt: string | null) {
+  try {
+    sessionStorage.setItem(ACTIVATED_KEY, JSON.stringify({ expiresAt }))
+  } catch {
+    /* storage blocked — a refresh just shows the invalid-link card */
+  }
+}
+
+/** The server's answer → the approved Hebrew wording and the right card.
+ *  Raw English (a server crash) never reaches the visitor. */
+function fromServer(raw: string | undefined): State {
+  const s = (raw || '').trim()
+  const has = (x: string) => s.includes(x)
+  if (has('מנוי Pro פעיל')) return { kind: 'used', msg: 'כבר יש לכם מנוי Pro פעיל, אז אין צורך בניסיון.', once: false }
+  if (has('ניסיון פעיל עד')) {
+    const m = /(\d{1,2}[./]\d{1,2}[./]\d{4})/.exec(s)
+    return { kind: 'again', date: m ? m[1] : '' }
+  }
+  if (has('המייל הזה כבר ניצל')) return { kind: 'used', msg: 'המייל הזה כבר ניצל ניסיון חינם בעבר.', once: true }
+  if (has('המחשב הזה כבר ניצל')) return { kind: 'used', msg: 'המחשב הזה כבר ניצל ניסיון חינם בעבר.', once: true }
+  if (has('לאמת את כתובת המייל'))
+    return { kind: 'used', msg: 'צריך לאמת את כתובת המייל לפני שמתחילים את תקופת הניסיון.', once: false }
+  if (has('אימות נכשל')) return { kind: 'error', msg: 'האימות נכשל. התחברו מחדש בתוכנה ונסו שוב.' }
+  if (has('אסימון אימות חסר')) return { kind: 'error', msg: 'חסרים פרטי אימות בקישור. פתחו אותו שוב מתוך התוכנה.' }
+  if (has('לא ניתן לאמת את המחשב'))
+    return { kind: 'error', msg: 'לא הצלחנו לזהות את המחשב. הפעילו מחדש את התוכנה ונסו שוב.' }
+  if (has('לא נמצא מייל')) return { kind: 'error', msg: `לא מצאנו מייל בחשבון. כתבו לנו: ${HELP}` }
+  if (has('המשתמש לא נמצא')) return { kind: 'error', msg: 'החשבון לא נמצא. התחברו מחדש בתוכנה ונסו שוב.' }
+  // Unknown Hebrew text is shown as-is; anything else gets the generic line.
+  if (s && /[֐-׿]/.test(s)) return { kind: 'error', msg: s }
+  return { kind: 'error', msg: 'הפעלת הניסיון נכשלה. נסו שוב מאוחר יותר.' }
 }
 
 export default function TrialActivatePage() {
@@ -50,7 +115,10 @@ export default function TrialActivatePage() {
     }
 
     if (!idToken || !deviceId) {
-      setState({ kind: 'invalid' })
+      // A refresh after a successful activation lands here (the fragment is
+      // gone): say it's already active rather than "invalid link".
+      const prev = readActivated()
+      setState(prev ? { kind: 'again', date: fmtDate(prev.expiresAt) } : { kind: 'invalid' })
       return
     }
 
@@ -67,87 +135,148 @@ export default function TrialActivatePage() {
           expiresAt?: string
         }
         if (res.ok && json.ok) {
+          rememberActivated(json.expiresAt ?? null)
           setState({ kind: 'success', expiresAt: json.expiresAt ?? null })
         } else {
-          setState({
-            kind: 'error',
-            msg: json.error || 'הפעלת הניסיון נכשלה. נסו שוב מאוחר יותר.',
-          })
+          setState(fromServer(json.error))
         }
       } catch {
         setState({
           kind: 'error',
-          msg: 'שגיאת רשת. בדקו את החיבור ונסו שוב.',
+          msg: 'שגיאת רשת. בדקו את החיבור לאינטרנט, ואז פתחו שוב את הקישור מתוך התוכנה.',
         })
       }
     })()
   }, [])
 
+  const badge = (cls: string, icon: React.ReactNode) => (
+    <div className="tr-mark">
+      <img src={MARK} alt="" width={68} height={68} />
+      <span className={`tr-badge ${cls}`}>{icon}</span>
+    </div>
+  )
+
   return (
-    <div
-      dir="rtl"
-      className="flex min-h-dvh flex-col items-center justify-center bg-background px-4 py-10 text-foreground"
-    >
-      <div className="w-full max-w-md rounded-3xl border border-border bg-card p-8 text-center shadow-2xl shadow-black/30">
+    <FlPage name="trial" chrome="min" title="שבוע ניסיון">
+      <div className="tr-wrap">
         {state.kind === 'loading' && (
-          <>
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/15 text-primary">
-              <Loader2 className="h-6 w-6 animate-spin" />
-            </div>
-            <h1 className="mt-4 text-2xl font-bold">מפעילים את הניסיון…</h1>
-            <p className="mt-2 text-sm text-muted-foreground">רגע אחד.</p>
-          </>
+          <div className="card tr-card" role="status" aria-live="polite">
+            {badge('spin', <Loader2 className="ic" aria-hidden />)}
+            <h1 className="tr-h">מפעילים את הניסיון…</h1>
+            <p className="tr-p">רגע אחד.</p>
+          </div>
         )}
 
         {state.kind === 'success' && (
-          <>
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-success/15 text-success">
-              <Gift className="h-6 w-6" />
-            </div>
-            <h1 className="mt-4 text-2xl font-bold">הניסיון הופעל! 🎉</h1>
-            <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-              קיבלת 7 ימי Pro
-              {state.expiresAt ? `, בתוקף עד ${fmtDate(state.expiresAt)}` : ''}.
+          <div className="card tr-card">
+            {badge('ok', <Gift className="ic" aria-hidden />)}
+            <h1 className="tr-h">שבוע הניסיון הופעל</h1>
+            <p className="tr-p">
+              {fmtDate(state.expiresAt) ? (
+                <>
+                  קיבלתם 7 ימי Pro, בתוקף עד <bdi className="num tr-date">{fmtDate(state.expiresAt)}</bdi>.
+                </>
+              ) : (
+                'קיבלתם 7 ימי Pro.'
+              )}
             </p>
-            <div className="mt-6 flex items-center justify-center gap-2 rounded-xl border border-success/30 bg-success/[0.06] px-4 py-3 text-sm text-success">
-              <CheckCircle2 className="h-4 w-4 shrink-0" />
-              אפשר לסגור את הדף ולחזור לתוכנה.
+            <div className="note ok tr-note">
+              <CheckCircle2 className="ic" aria-hidden />
+              <span>
+                <b>הכל מוכן.</b> אפשר לסגור את הדף ולחזור לתוכנה.
+              </span>
             </div>
-          </>
+          </div>
         )}
 
-        {state.kind === 'error' && (
-          <>
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-destructive/15 text-destructive">
-              <AlertTriangle className="h-6 w-6" />
-            </div>
-            <h1 className="mt-4 text-2xl font-bold">לא ניתן להפעיל ניסיון</h1>
-            <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-              {state.msg}
+        {state.kind === 'again' && (
+          <div className="card tr-card">
+            {badge('ok', <Check className="ic" aria-hidden />)}
+            <h1 className="tr-h">שבוע הניסיון כבר פעיל</h1>
+            <p className="tr-p">
+              {state.date ? (
+                <>
+                  הניסיון שלכם בתוקף עד <bdi className="num tr-date">{state.date}</bdi>.
+                </>
+              ) : (
+                'הניסיון שלכם כבר פעיל.'
+              )}{' '}
+              אין צורך לעשות שום דבר נוסף.
             </p>
-            <div className="mt-6 rounded-xl border border-border bg-background px-4 py-3 text-sm text-muted-foreground">
-              אפשר לסגור את הדף ולחזור לתוכנה.
+            <div className="note tr-note">
+              <CheckCircle2 className="ic" aria-hidden />
+              <span>אפשר לסגור את הדף ולחזור לתוכנה.</span>
             </div>
-          </>
+          </div>
+        )}
+
+        {state.kind === 'used' && (
+          <div className="card tr-card">
+            {badge('warn', <AlertCircle className="ic" aria-hidden />)}
+            <h1 className="tr-h">לא ניתן להפעיל ניסיון</h1>
+            <p className="tr-p">{state.msg}</p>
+            {state.once && (
+              <>
+                <p className="tr-fine">שבוע הניסיון ניתן פעם אחת לכל חשבון ולכל מחשב.</p>
+                <div className="tr-btns">
+                  <Link className="btn btn-p btn-block" to="/buy">
+                    למסלולים ולמחירים
+                  </Link>
+                </div>
+              </>
+            )}
+            <div className="note tr-note">
+              <CheckCircle2 className="ic" aria-hidden />
+              <span>{state.once ? 'אפשר גם לסגור את הדף ולחזור לתוכנה.' : 'אפשר לסגור את הדף ולחזור לתוכנה.'}</span>
+            </div>
+          </div>
         )}
 
         {state.kind === 'invalid' && (
-          <>
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-destructive/15 text-destructive">
-              <AlertTriangle className="h-6 w-6" />
-            </div>
-            <h1 className="mt-4 text-2xl font-bold">קישור לא תקין</h1>
-            <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-              יש לפתוח את הקבלת הניסיון מתוך התוכנה (תפריט המשתמש ← "קבלת 7 ימי
-              ניסיון חינם").
-            </p>
-          </>
+          <div className="card tr-card">
+            {badge('err', <Unlink className="ic" aria-hidden />)}
+            <h1 className="tr-h">קישור לא תקין</h1>
+            <p className="tr-p">את שבוע הניסיון מפעילים מתוך התוכנה:</p>
+            <ul className="tr-where">
+              <li>
+                <Check className="ic" aria-hidden />
+                <span>
+                  בתפריט המשתמש ← <span className="ui">קבלת 7 ימי ניסיון חינם</span>
+                </span>
+              </li>
+              <li>
+                <Check className="ic" aria-hidden />
+                <span>
+                  או בכפתור <span className="ui">הפעלת 7 ימי ניסיון</span> שמופיע ליד כלי נעול
+                </span>
+              </li>
+            </ul>
+          </div>
         )}
-      </div>
 
-      <p className="mt-5 text-center text-[11px] text-muted-foreground/70">
-        Frameline
-      </p>
-    </div>
+        {state.kind === 'error' && (
+          <div className="card tr-card">
+            {badge('err', <AlertTriangle className="ic" aria-hidden />)}
+            <h1 className="tr-h">לא הצלחנו להפעיל את הניסיון</h1>
+            <p className="tr-p" role="alert">
+              {state.msg}
+            </p>
+            <div className="note tr-note">
+              <Mail className="ic" aria-hidden />
+              <span>
+                אם זה חוזר, כתבו לנו:{' '}
+                <a className="link" href={`mailto:${HELP}`}>
+                  {HELP}
+                </a>
+              </span>
+            </div>
+          </div>
+        )}
+
+        <p className="tr-word">
+          <bdi>Frameline</bdi>
+        </p>
+      </div>
+    </FlPage>
   )
 }
