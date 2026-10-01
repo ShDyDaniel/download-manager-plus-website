@@ -14,6 +14,7 @@ import {
   Trash2,
   X,
   Film,
+  Radio,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { Portal } from '@/components/ui/Portal'
@@ -119,6 +120,14 @@ function isTrialActive(u: UserDoc): boolean {
   return Number.isFinite(e) && e > Date.now()
 }
 
+/** Live presence of the desktop app (Realtime Database, via admin-presence):
+ *  online now, or when it really stopped — server time. */
+interface Presence {
+  online: boolean
+  lastSeen: number | null
+  devices: { id: string; online: boolean; at: number | null; v?: string; p?: string }[]
+}
+
 function relTime(iso?: string): string {
   if (!iso) return 'מעולם לא התחבר'
   const t = new Date(iso).getTime()
@@ -196,6 +205,7 @@ export default function UsersTab({
   const [search, setSearch] = useState('')
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
+  const [presence, setPresence] = useState<Record<string, Presence> | null>(null)
   const [keyModal, setKeyModal] = useState<KeySummary | null>(null)
   // Per-user R2 storage: usage map (one full-bucket scan) + the pro/trial
   // quota so each row can render "used / allocated". Loaded lazily after
@@ -263,6 +273,24 @@ export default function UsersTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Presence is live data: refreshed every 30 s while this tab is open.
+  // Costs one function call + a few KB of Realtime Database download — no
+  // Firestore reads.
+  async function loadPresence() {
+    try {
+      const r = await adminApi<{ byUid: Record<string, Presence> }>('admin-presence', {})
+      setPresence(r.byUid || {})
+    } catch {
+      // Non-fatal: rows fall back to the launch-time stamp (lastSeenAt).
+    }
+  }
+  useEffect(() => {
+    void loadPresence()
+    const t = window.setInterval(() => void loadPresence(), 30_000)
+    return () => window.clearInterval(t)
+  }, [])
+  const onlineNow = presence ? Object.values(presence).filter((p) => p.online).length : 0
+
   const total = users?.length ?? 0
   const admins =
     users?.filter((u) => u.role === 'admin' || isAdminEmail(u.email)).length ?? 0
@@ -296,6 +324,7 @@ export default function UsersTab({
           onClick={() => {
             void load(true)
             void loadStorage()
+            void loadPresence()
           }}
           disabled={refreshing}
           className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-fg transition-colors hover:bg-popover disabled:opacity-60"
@@ -307,8 +336,9 @@ export default function UsersTab({
         </button>
       </header>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="משתמשים" value={total} icon={<UsersIcon className="h-4 w-4" />} />
+        <Stat label="מחוברים עכשיו" value={onlineNow} icon={<Radio className="h-4 w-4" />} />
         <Stat label="אדמינים" value={admins} icon={<ShieldCheck className="h-4 w-4" />} />
         <Stat
           label="מנויים בתשלום"
@@ -352,6 +382,7 @@ export default function UsersTab({
               user={u}
               redeemedKey={keysByUid[u.uid] ?? null}
               usage={usageByUid ? usageByUid[u.uid] ?? { usedBytes: 0, count: 0 } : null}
+              presence={presence ? presence[u.uid] ?? null : null}
               quota={quota}
               onChange={() => load(true)}
               onAuthExpired={onAuthExpired}
@@ -425,6 +456,7 @@ function UserRow({
   user,
   redeemedKey,
   usage,
+  presence,
   quota,
   onChange,
   onAuthExpired,
@@ -435,6 +467,7 @@ function UserRow({
   user: UserDoc
   redeemedKey: KeySummary | null
   usage: UserUsage | null
+  presence: Presence | null
   quota: StorageQuota | null
   onChange: () => void | Promise<void>
   onAuthExpired: () => void
@@ -644,7 +677,21 @@ function UserRow({
             </div>
           )}
           <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-fg-faint">
-            <span>תוכנה: {relTime(user.lastSeenAt)}</span>
+            {presence?.online ? (
+              <span className="inline-flex items-center gap-1 font-medium text-success">
+                <span className="h-1.5 w-1.5 rounded-full bg-success" />
+                מחובר עכשיו
+                {presence.devices.filter((d) => d.online).length > 1 &&
+                  ` · ${presence.devices.filter((d) => d.online).length} מחשבים`}
+              </span>
+            ) : (
+              <span>
+                תוכנה:{' '}
+                {presence?.lastSeen
+                  ? `נראה לאחרונה ${relTime(new Date(presence.lastSeen).toISOString())}`
+                  : relTime(user.lastSeenAt)}
+              </span>
+            )}
             <span>·</span>
             <span>אתר: {relTime(user.lastSeenWebAt)}</span>
             {/* Last SIGN-IN (a seat claim), distinct from the last-seen

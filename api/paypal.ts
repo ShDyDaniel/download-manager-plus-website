@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'node:crypto'
 import { initializeApp, cert, getApps, type App } from 'firebase-admin/app'
+import { getDatabaseWithUrl } from 'firebase-admin/database'
 import {
   getFirestore,
   FieldValue,
@@ -2001,6 +2002,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminStorageCleanup(req, res)
       case 'admin-users-storage':
         return await handleAdminUsersStorage(req, res)
+      case 'admin-presence':
+        return await handleAdminPresence(req, res)
       case 'admin-list-user-storage':
         return await handleAdminListUserStorage(req, res)
       case 'admin-delete-user-object':
@@ -13175,6 +13178,47 @@ function uidFromStorageKey(key: string): string {
 function humanNameFromStorageKey(key: string): string {
   const base = (key || '').split('/').pop() || key || ''
   return base.replace(/^\d{10,}-[0-9a-f]{8,}-?/i, '') || base
+}
+
+/** Real "online / last seen" for the admin users list, from the Realtime
+ *  Database presence tree the desktop app keeps (desktop `src/lib/presence.ts`):
+ *  presence/{uid}/{deviceId} = { state: 'online'|'offline', at: server ms, v, p }.
+ *  `at` = online since / went offline at. RTDB bills bytes, not reads — the
+ *  whole tree is ~100 bytes per computer. Clients can't read it (rules);
+ *  only this admin-gated endpoint can. */
+const RTDB_URL =
+  process.env.FIREBASE_DATABASE_URL ||
+  'https://n-plus-64549-default-rtdb.europe-west1.firebasedatabase.app'
+async function handleAdminPresence(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  type Dev = { state?: string; at?: number; v?: string; p?: string }
+  const snap = await getDatabaseWithUrl(RTDB_URL, getFirebase()).ref('presence').get()
+  const raw = (snap.val() || {}) as Record<string, Record<string, Dev>>
+  const byUid: Record<
+    string,
+    {
+      online: boolean
+      lastSeen: number | null
+      devices: { id: string; online: boolean; at: number | null; v?: string; p?: string }[]
+    }
+  > = {}
+  for (const [uid, devs] of Object.entries(raw)) {
+    const devices = Object.entries(devs || {}).map(([id, d]) => ({
+      id,
+      online: d?.state === 'online',
+      at: typeof d?.at === 'number' ? d.at : null,
+      v: d?.v,
+      p: d?.p,
+    }))
+    const lastSeen = devices.reduce<number | null>(
+      (m, d) => (d.at != null && (m == null || d.at > m) ? d.at : m),
+      null,
+    )
+    byUid[uid] = { online: devices.some((d) => d.online), lastSeen, devices }
+  }
+  return res.status(200).json({ ok: true, byUid, serverNow: Date.now() })
 }
 
 async function handleAdminUsersStorage(
