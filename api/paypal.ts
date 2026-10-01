@@ -1743,6 +1743,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
   }
 
+  // Realtime Database cost guard rides on regular traffic (at most every
+  // 10 min per server instance, ≤ 2.5 s) so the cap trips with nobody watching.
+  await maybeGuardRtdb()
+
   try {
     switch (action) {
       // Trusted server clock — the desktop app calls this to correct a
@@ -2004,6 +2008,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return await handleAdminUsersStorage(req, res)
       case 'admin-presence':
         return await handleAdminPresence(req, res)
+      case 'admin-rtdb-usage':
+        return await handleAdminRtdbUsage(req, res)
       case 'admin-list-user-storage':
         return await handleAdminListUserStorage(req, res)
       case 'admin-delete-user-object':
@@ -11846,6 +11852,9 @@ async function handleAdminSetAppConfig(
     clientLogsDisabled?: boolean
     freeTranscriptionWeeklySec?: number
     ytExtractorArgs?: unknown
+    rtdbMonthlyCapMb?: number
+    rtdbAutoBlock?: boolean
+    rtdbBlocked?: boolean
   }
   const patch: Record<string, unknown> = {}
   // Sensitive fields go to the admin-only adminConfig/global, NOT the
@@ -11961,6 +11970,24 @@ async function handleAdminSetAppConfig(
   }
   if (typeof body.backupNotify === 'boolean') {
     patch.backupNotify = body.backupNotify
+  }
+  // ── Realtime Database (presence) cost guard ────────────────────
+  // Cap in MB downloaded per month; 0 = no cap. rtdbBlocked flips the
+  // database rules RIGHT HERE (deny-all ↔ presence rules) before the flag
+  // is saved, so the flag never claims a state the database isn't in.
+  if (body.rtdbMonthlyCapMb !== undefined) {
+    const mb = Number(body.rtdbMonthlyCapMb)
+    if (!Number.isFinite(mb) || mb < 0 || mb > 10_000_000) {
+      return res.status(400).json({ ok: false, error: 'תקרת הורדה לא תקינה' })
+    }
+    patch.rtdbMonthlyCapMb = Math.round(mb)
+  }
+  if (typeof body.rtdbAutoBlock === 'boolean') patch.rtdbAutoBlock = body.rtdbAutoBlock
+  if (typeof body.rtdbBlocked === 'boolean') {
+    await setRtdbLocked(body.rtdbBlocked)
+    patch.rtdbBlocked = body.rtdbBlocked
+    patch.rtdbBlockedAt = body.rtdbBlocked ? new Date().toISOString() : null
+    patch.rtdbBlockedReason = body.rtdbBlocked ? 'נחסם ידנית מהפאנל' : null
   }
   if (Object.keys(patch).length === 0 && Object.keys(adminPatch).length === 0) {
     return res.status(400).json({ ok: false, error: 'no fields' })
@@ -13219,6 +13246,242 @@ async function handleAdminPresence(req: VercelRequest, res: VercelResponse) {
     byUid[uid] = { online: devices.some((d) => d.online), lastSeen, devices }
   }
   return res.status(200).json({ ok: true, byUid, serverNow: Date.now() })
+}
+
+/* ── Realtime Database cost guard ─────────────────────────────────
+ *  RTDB bills BYTES — 10 GB/month downloaded and 1 GB stored are free, then
+ *  $1 per GB downloaded and $5 per GB-month stored. The admin sets a monthly
+ *  download cap (appConfig/global: rtdbMonthlyCapMb + rtdbAutoBlock). Crossing
+ *  it locks the database AT THE SOURCE: the security rules become deny-all, so
+ *  no client — patched or not — can read or write, and appConfig/global
+ *  .rtdbBlocked tells apps not to connect at all. Checked on every admin look
+ *  AND on regular traffic (maybeGuardRtdb), so it trips with nobody watching.
+ *  Only presence lives in RTDB: a block never breaks the app — the users list
+ *  just falls back to the launch-time stamp. */
+// MUST mirror the desktop repo's database.rules.json.
+const PRESENCE_RULES = {
+  rules: {
+    '.read': false,
+    '.write': false,
+    presence: {
+      $uid: {
+        $device: {
+          '.write': 'auth != null && auth.uid === $uid && $device.matches(/^[a-f0-9]{16,64}$/)',
+          '.validate': "newData.hasChildren(['state', 'at'])",
+          state: { '.validate': "newData.val() === 'online' || newData.val() === 'offline'" },
+          at: { '.validate': 'newData.isNumber() && newData.val() <= now + 60000' },
+          v: { '.validate': 'newData.isString() && newData.val().length <= 32' },
+          p: { '.validate': 'newData.isString() && newData.val().length <= 16' },
+          $other: { '.validate': false },
+        },
+      },
+    },
+  },
+}
+const LOCKED_RULES = { rules: { '.read': false, '.write': false } }
+const RTDB_FREE_DOWNLOAD_BYTES = 10 * 1024 ** 3
+const RTDB_FREE_STORAGE_BYTES = 1024 ** 3
+const RTDB_USD_PER_GB_DOWNLOAD = 1
+const RTDB_USD_PER_GB_STORED = 5
+
+async function setRtdbLocked(locked: boolean): Promise<void> {
+  await getDatabaseWithUrl(RTDB_URL, getFirebase()).setRules(
+    JSON.stringify(locked ? LOCKED_RULES : PRESENCE_RULES),
+  )
+}
+
+type MonitoringSeries = {
+  points?: Array<{ value?: { int64Value?: string; doubleValue?: number } }>
+}
+const pointValue = (p: { value?: { int64Value?: string; doubleValue?: number } }) =>
+  p.value?.int64Value != null ? Number(p.value.int64Value) : p.value?.doubleValue || 0
+
+/** One Cloud Monitoring query. `sum` = total over [start, now]; `latest` =
+ *  the newest point of every series, added up. null when it can't be read. */
+async function rtdbMetric(
+  projectId: string,
+  token: string,
+  metricType: string,
+  startMs: number,
+  mode: 'sum' | 'latest',
+): Promise<number | null> {
+  const end = new Date()
+  const params = new URLSearchParams()
+  params.set('filter', `metric.type="${metricType}"`)
+  params.set('interval.startTime', new Date(startMs).toISOString())
+  params.set('interval.endTime', end.toISOString())
+  if (mode === 'sum') {
+    const sec = Math.max(60, Math.floor((end.getTime() - startMs) / 1000))
+    params.set('aggregation.alignmentPeriod', `${sec}s`)
+    params.set('aggregation.perSeriesAligner', 'ALIGN_SUM')
+    params.set('aggregation.crossSeriesReducer', 'REDUCE_SUM')
+  }
+  try {
+    const r = await fetch(
+      `https://monitoring.googleapis.com/v3/projects/${projectId}/timeSeries?${params.toString()}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    )
+    if (!r.ok) return null
+    const j = (await r.json()) as { timeSeries?: MonitoringSeries[] }
+    let total = 0
+    for (const ts of j.timeSeries || []) {
+      const pts = ts.points || []
+      if (mode === 'latest') total += pts.length ? pointValue(pts[0]) : 0
+      else for (const pt of pts) total += pointValue(pt)
+    }
+    return total
+  } catch {
+    return null
+  }
+}
+
+async function fetchRtdbUsage(): Promise<{
+  configured: boolean
+  error?: string
+  monthBytes: number | null
+  dayBytes: number | null
+  connections: number | null
+  storageBytes: number | null
+  projectedMonthBytes: number | null
+  costDownload: number
+  costStorage: number
+  costTotal: number
+}> {
+  const empty = {
+    monthBytes: null,
+    dayBytes: null,
+    connections: null,
+    storageBytes: null,
+    projectedMonthBytes: null,
+    costDownload: 0,
+    costStorage: 0,
+    costTotal: 0,
+  }
+  try {
+    const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}') as { project_id?: string }
+    const projectId = sa.project_id || 'n-plus-64549'
+    const cred = getFirebase().options.credential
+    if (!cred) throw new Error('no credential')
+    const { access_token: token } = await cred.getAccessToken()
+    const now = Date.now()
+    const d = new Date(now)
+    const monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)
+    const M = 'firebasedatabase.googleapis.com/'
+    const [monthBytes, dayBytes, connections, storageBytes] = await Promise.all([
+      rtdbMetric(projectId, token, M + 'network/sent_bytes_count', monthStart, 'sum'),
+      rtdbMetric(projectId, token, M + 'network/sent_bytes_count', now - 86_400_000, 'sum'),
+      rtdbMetric(projectId, token, M + 'network/active_connections', now - 15 * 60_000, 'latest'),
+      rtdbMetric(projectId, token, M + 'storage/total_bytes', now - 6 * 3_600_000, 'latest'),
+    ])
+    const daysInMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate()
+    const elapsedDays = Math.max(1 / 24, (now - monthStart) / 86_400_000)
+    const projectedMonthBytes =
+      monthBytes == null ? null : (monthBytes / elapsedDays) * daysInMonth
+    const GB = 1024 ** 3
+    const costDownload =
+      projectedMonthBytes == null
+        ? 0
+        : (Math.max(0, projectedMonthBytes - RTDB_FREE_DOWNLOAD_BYTES) / GB) * RTDB_USD_PER_GB_DOWNLOAD
+    const costStorage =
+      storageBytes == null
+        ? 0
+        : (Math.max(0, storageBytes - RTDB_FREE_STORAGE_BYTES) / GB) * RTDB_USD_PER_GB_STORED
+    return {
+      configured: monthBytes != null,
+      error: monthBytes == null ? 'Cloud Monitoring לא החזיר נתוני Realtime Database' : undefined,
+      monthBytes,
+      dayBytes,
+      connections,
+      storageBytes,
+      projectedMonthBytes,
+      costDownload,
+      costStorage,
+      costTotal: costDownload + costStorage,
+    }
+  } catch (err) {
+    return { configured: false, error: String((err as Error)?.message || err), ...empty }
+  }
+}
+
+async function readRtdbProtection(): Promise<{
+  capMb: number
+  autoBlock: boolean
+  blocked: boolean
+  blockedAt: string | null
+  blockedReason: string | null
+}> {
+  const snap = await getDb().collection('appConfig').doc('global').get()
+  const g = (snap.exists ? snap.data() : {}) as {
+    rtdbMonthlyCapMb?: number
+    rtdbAutoBlock?: boolean
+    rtdbBlocked?: boolean
+    rtdbBlockedAt?: string | null
+    rtdbBlockedReason?: string | null
+  }
+  return {
+    capMb:
+      typeof g.rtdbMonthlyCapMb === 'number' && g.rtdbMonthlyCapMb > 0 ? g.rtdbMonthlyCapMb : 0,
+    autoBlock: g.rtdbAutoBlock === true,
+    blocked: g.rtdbBlocked === true,
+    blockedAt: g.rtdbBlockedAt || null,
+    blockedReason: g.rtdbBlockedReason || null,
+  }
+}
+
+/** Lock the database if the guard is armed and this month's download crossed
+ *  the cap. Pass `usage` when it was just fetched. */
+async function runRtdbGuard(
+  usage?: Awaited<ReturnType<typeof fetchRtdbUsage>>,
+): Promise<{ cfg: Awaited<ReturnType<typeof readRtdbProtection>>; tripped: boolean }> {
+  const cfg = await readRtdbProtection()
+  if (!cfg.autoBlock || cfg.capMb <= 0 || cfg.blocked) return { cfg, tripped: false }
+  const u = usage ?? (await fetchRtdbUsage())
+  if (u.monthBytes == null || u.monthBytes < cfg.capMb * 1024 * 1024) {
+    return { cfg, tripped: false }
+  }
+  await setRtdbLocked(true)
+  const usedMb = Math.round(u.monthBytes / (1024 * 1024))
+  const reason = `הורדה החודש ${usedMb.toLocaleString()} MB, התקרה ${cfg.capMb.toLocaleString()} MB`
+  const at = new Date().toISOString()
+  await getDb()
+    .collection('appConfig')
+    .doc('global')
+    .set({ rtdbBlocked: true, rtdbBlockedAt: at, rtdbBlockedReason: reason }, { merge: true })
+  cfg.blocked = true
+  cfg.blockedAt = at
+  cfg.blockedReason = reason
+  await sendTelegramAlert(
+    `🚨 מסד הנוכחות (Realtime Database) ננעל אוטומטית — ${reason}. התוכנה ממשיכה לעבוד, רק "מחובר עכשיו" מושבת. שחרור: דשבורד שרתים.`,
+  ).catch(() => undefined)
+  return { cfg, tripped: true }
+}
+
+let rtdbGuardAt = 0
+/** On regular traffic: at most every 10 min per server instance, bounded to
+ *  2.5 s, never throws — the request it rides on is never affected. */
+async function maybeGuardRtdb(): Promise<void> {
+  if (Date.now() - rtdbGuardAt < 10 * 60_000) return
+  rtdbGuardAt = Date.now()
+  await Promise.race([
+    runRtdbGuard().catch(() => null),
+    new Promise((r) => setTimeout(r, 2500)),
+  ])
+}
+
+/** Admin dashboard: live RTDB usage + the guard's state (and a guard run). */
+async function handleAdminRtdbUsage(req: VercelRequest, res: VercelResponse) {
+  if (!(await verifyAdmin2FA(req))) {
+    return res.status(403).json({ ok: false, error: 'forbidden' })
+  }
+  const usage = await fetchRtdbUsage()
+  const { cfg, tripped } = await runRtdbGuard(usage)
+  res.setHeader('Cache-Control', 'no-store')
+  return res.status(200).json({
+    ok: true,
+    usage,
+    protection: { ...cfg, tripped },
+    free: { downloadBytes: RTDB_FREE_DOWNLOAD_BYTES, storageBytes: RTDB_FREE_STORAGE_BYTES },
+  })
 }
 
 async function handleAdminUsersStorage(

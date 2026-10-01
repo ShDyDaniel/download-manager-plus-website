@@ -10,7 +10,14 @@ import {
   Cloud,
   ShieldAlert,
   Mail,
+  Radio,
+  Lock,
+  Unlock,
+  Save,
 } from 'lucide-react'
+import { Switch } from '@/components/ui/Switch'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 import { getAdminIdToken, adminApi } from '../../lib/adminApi'
 import { cachedCall, peekCall } from '../../lib/adminCache'
 import { ProtectionCard } from './SettingsTab'
@@ -205,6 +212,14 @@ export default function DashboardTab({
                 hint="הפעל את Cloud Monitoring API בפרויקט Firebase והגדר GOOGLE_APPLICATION_CREDENTIALS / מפתח שירות כדי לראות שימוש חי."
               />
             )}
+          </Section>
+
+          <Section
+            icon={<Radio className="h-5 w-5" />}
+            title="Realtime Database · מחוברים בזמן אמת"
+            sub="נוכחות המשתמשים · החודש הנוכחי"
+          >
+            <RtdbPanel onAuthExpired={onAuthExpired} />
           </Section>
 
           <Section
@@ -740,6 +755,268 @@ function DbBar({
           ? `מכסת חינם ${freeLimit.toLocaleString()} · תקרת חסימה ${ceiling.toLocaleString()}`
           : `${freeLimit.toLocaleString()} חינם ליום · מעבר לכך תשלום לפי שימוש`}
       </p>
+    </div>
+  )
+}
+
+/* ── Realtime Database (presence) usage + cost guard ──────────────
+ *  Live from the server (admin-rtdb-usage, refreshed every minute while
+ *  open). RTDB bills BYTES, not reads/writes: 10 GB downloaded + 1 GB stored
+ *  free per month. The cap locks the database at the source (deny-all rules)
+ *  the moment this month's download crosses it — checked on regular traffic
+ *  too, not only while this page is open. */
+interface RtdbUsage {
+  usage: {
+    configured: boolean
+    error?: string
+    monthBytes: number | null
+    dayBytes: number | null
+    connections: number | null
+    storageBytes: number | null
+    projectedMonthBytes: number | null
+    costDownload: number
+    costStorage: number
+    costTotal: number
+  }
+  protection: {
+    capMb: number
+    autoBlock: boolean
+    blocked: boolean
+    blockedAt: string | null
+    blockedReason: string | null
+    tripped: boolean
+  }
+  free: { downloadBytes: number; storageBytes: number }
+}
+
+function fmtMb(bytes: number | null | undefined): string {
+  if (bytes == null) return '—'
+  const mb = bytes / (1024 * 1024)
+  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`
+  if (mb >= 10) return `${mb.toFixed(0)} MB`
+  return `${mb.toFixed(2)} MB`
+}
+
+function RtdbPanel({ onAuthExpired }: { onAuthExpired: () => void }) {
+  const [data, setData] = useState<RtdbUsage | null>(null)
+  const [error, setError] = useState('')
+  const [capMb, setCapMb] = useState('0')
+  const [autoBlock, setAutoBlock] = useState(false)
+  const [busy, setBusy] = useState<null | 'save' | 'lock'>(null)
+  const [msg, setMsg] = useState('')
+
+  async function load(syncForm = false) {
+    try {
+      const r = await adminApi<RtdbUsage>('admin-rtdb-usage', {})
+      setData(r)
+      setError('')
+      if (syncForm) {
+        setCapMb(String(r.protection.capMb || 0))
+        setAutoBlock(r.protection.autoBlock)
+      }
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setError(err.message || 'טעינה נכשלה')
+    }
+  }
+  useEffect(() => {
+    void load(true)
+    const t = window.setInterval(() => void load(), 60_000)
+    return () => window.clearInterval(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function save() {
+    setBusy('save')
+    setMsg('')
+    try {
+      await adminApi('admin-set-app-config', {
+        rtdbMonthlyCapMb: Math.max(0, Math.floor(Number(capMb) || 0)),
+        rtdbAutoBlock: autoBlock,
+      })
+      setMsg('נשמר ✓')
+      setTimeout(() => setMsg(''), 2500)
+      await load()
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setMsg(err.message || 'שמירה נכשלה')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function setLocked(next: boolean) {
+    if (
+      next &&
+      !window.confirm('לנעול את מסד הנוכחות עכשיו? התוכנה תמשיך לעבוד, רק "מחובר עכשיו" יפסיק להתעדכן עד שתשחרר.')
+    )
+      return
+    setBusy('lock')
+    setMsg('')
+    try {
+      await adminApi('admin-set-app-config', { rtdbBlocked: next })
+      await load()
+    } catch (e) {
+      const err = e as Error & { code?: string }
+      if (err.code === 'auth') return onAuthExpired()
+      setMsg(err.message || 'הפעולה נכשלה')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  if (!data) {
+    return error ? (
+      <NotConfigured error={error} />
+    ) : (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-5 w-5 animate-spin text-fg-muted" />
+      </div>
+    )
+  }
+
+  const u = data.usage
+  const p = data.protection
+  const capBytes = p.capMb > 0 ? p.capMb * 1024 * 1024 : 0
+  const barLimit = capBytes > 0 ? capBytes : data.free.downloadBytes
+  const used = u.monthBytes ?? 0
+  const pct = barLimit > 0 ? Math.min(100, (used / barLimit) * 100) : 0
+  const tone = pct >= 90 ? 'bg-destructive' : pct >= 70 ? 'bg-accent' : 'bg-primary'
+  const capNum = Math.max(0, Math.floor(Number(capMb) || 0))
+  const overCapNow = capNum > 0 && used >= capNum * 1024 * 1024
+
+  return (
+    <div className="space-y-4">
+      {p.blocked && (
+        <div className="flex items-start gap-2.5 rounded-xl border border-destructive/40 bg-destructive/10 px-3.5 py-3 text-sm text-destructive">
+          <Lock className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold">מסד הנוכחות נעול</div>
+            <div className="mt-0.5 text-[12px] text-destructive/90">
+              {p.blockedReason || 'נחסם'}
+              {p.blockedAt ? ` · ${new Date(p.blockedAt).toLocaleString('he-IL')}` : ''}. אף
+              משתמש לא יכול לכתוב או לקרוא ממנו. התוכנה ממשיכה לעבוד, רק "מחובר עכשיו" לא
+              מתעדכן.
+            </div>
+          </div>
+          <Button size="sm" onClick={() => void setLocked(false)} disabled={busy !== null}>
+            {busy === 'lock' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unlock className="h-4 w-4" />}
+            שחרור
+          </Button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <RtdbStat label="מחוברים עכשיו" value={u.connections == null ? '—' : u.connections.toLocaleString()} strong />
+        <RtdbStat label="הורדה ב־24 שעות" value={fmtMb(u.dayBytes)} />
+        <RtdbStat label="הורדה החודש" value={fmtMb(u.monthBytes)} />
+        <RtdbStat label="אחסון" value={fmtMb(u.storageBytes)} />
+      </div>
+
+      <div>
+        <div className="mb-1.5 flex items-center justify-between text-xs">
+          <span className="text-fg-muted">הורדה החודש</span>
+          <span className="tabular-nums text-fg" dir="ltr">
+            {fmtMb(used)} / {fmtMb(barLimit)}
+            {capBytes > 0 ? null : <span className="text-fg-faint"> חינם</span>}
+          </span>
+        </div>
+        <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
+          <div className={'h-full rounded-full ' + tone} style={{ width: `${pct}%` }} />
+        </div>
+        <p className="mt-1 text-[10px] text-fg-faint">
+          {capBytes > 0
+            ? `${fmtMb(data.free.downloadBytes)} חינם בחודש · תקרת נעילה ${fmtMb(capBytes)}`
+            : `${fmtMb(data.free.downloadBytes)} חינם בחודש · מעבר לכך $1 לכל GB`}
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-border bg-background p-3 text-xs">
+        <div className="flex items-center justify-between py-1">
+          <span className="text-fg-muted">צפי הורדה לסוף החודש</span>
+          <span className="tabular-nums text-fg" dir="ltr">{fmtMb(u.projectedMonthBytes)}</span>
+        </div>
+        <div className="flex items-center justify-between py-1">
+          <span className="text-fg-muted">הורדה מעבר לחינם</span>
+          <span className="tabular-nums text-fg" dir="ltr">${fmtUsd(u.costDownload)}</span>
+        </div>
+        <div className="flex items-center justify-between py-1">
+          <span className="text-fg-muted">אחסון מעבר לחינם</span>
+          <span className="tabular-nums text-fg" dir="ltr">${fmtUsd(u.costStorage)}</span>
+        </div>
+        <div className="my-2 border-t border-border" />
+        <div className="flex items-center justify-between py-1">
+          <span className="font-semibold text-fg">עלות חודשית צפויה</span>
+          <span className="tabular-nums text-base font-bold text-primary" dir="ltr">${fmtUsd(u.costTotal)}</span>
+        </div>
+      </div>
+
+      <div className="space-y-3 rounded-xl border border-border bg-background p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-semibold text-fg">נעילה אוטומטית בתקרה</div>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">
+              כשההורדה החודשית מגיעה לתקרה, מסד הנוכחות ננעל מיד ברמת המסד עצמו. אי
+              אפשר לעקוף את זה מהתוכנה, ותגיע התראה לטלגרם.
+            </p>
+          </div>
+          <Switch checked={autoBlock} onCheckedChange={setAutoBlock} disabled={busy !== null} />
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="w-40">
+            <label className="mb-1 block text-xs text-fg-muted">תקרת הורדה לחודש (MB)</label>
+            <Input
+              type="number"
+              min={0}
+              inputMode="numeric"
+              value={capMb}
+              onChange={(e) => setCapMb(e.target.value)}
+              dir="ltr"
+              className="tabular-nums"
+            />
+          </div>
+          <Button size="sm" onClick={() => void save()} disabled={busy !== null}>
+            {busy === 'save' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            שמור
+          </Button>
+          {!p.blocked && (
+            <button
+              type="button"
+              onClick={() => void setLocked(true)}
+              disabled={busy !== null}
+              className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+            >
+              <Lock className="h-3.5 w-3.5" /> נעילה עכשיו
+            </button>
+          )}
+          {msg && <span className="text-xs text-fg-muted">{msg}</span>}
+        </div>
+        <p className="text-[10px] leading-relaxed text-fg-faint">
+          0 = ללא תקרה. 10,240 MB הם המכסה החינמית החודשית.
+          {overCapNow && autoBlock
+            ? ' שים לב: ההורדה החודש כבר מעל התקרה הזו, אז שמירה תנעל את המסד מיד.'
+            : ''}
+          {p.blocked ? ' שחרור כשהשימוש עדיין מעל התקרה ייגמר בנעילה חוזרת — הגדל קודם את התקרה.' : ''}
+        </p>
+      </div>
+      {!u.configured && u.error && (
+        <p className="text-[10px] text-fg-faint" dir="ltr">
+          {u.error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function RtdbStat({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <div className="rounded-xl border border-border bg-background px-3 py-2.5">
+      <div className={'tabular-nums text-fg ' + (strong ? 'text-xl font-semibold' : 'text-base font-medium')} dir="ltr">
+        {value}
+      </div>
+      <div className="mt-0.5 text-[11px] text-fg-muted">{label}</div>
     </div>
   )
 }
