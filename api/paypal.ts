@@ -1743,9 +1743,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
   }
 
-  // Realtime Database cost guard rides on regular traffic (at most every
-  // 10 min per server instance, ≤ 2.5 s) so the cap trips with nobody watching.
-  await maybeGuardRtdb()
+  // The cost guards (Firestore daily ceiling + Realtime Database monthly cap)
+  // ride on regular traffic — at most every 10 min per server instance,
+  // ≤ 2.5 s — so a ceiling trips with nobody watching the dashboard.
+  await maybeGuardCosts()
 
   try {
     switch (action) {
@@ -13296,9 +13297,9 @@ type MonitoringSeries = {
 const pointValue = (p: { value?: { int64Value?: string; doubleValue?: number } }) =>
   p.value?.int64Value != null ? Number(p.value.int64Value) : p.value?.doubleValue || 0
 
-/** One Cloud Monitoring query. `sum` = total over [start, now]; `latest` =
+/** One Cloud Monitoring query (any metric — RTDB and Firestore). `sum` = total over [start, now]; `latest` =
  *  the newest point of every series, added up. null when it can't be read. */
-async function rtdbMetric(
+async function monitoringMetric(
   projectId: string,
   token: string,
   metricType: string,
@@ -13335,6 +13336,16 @@ async function rtdbMetric(
   }
 }
 
+/** Project + OAuth token for Cloud Monitoring, from the Admin SDK credential
+ *  (its scopes include cloud-platform, which covers monitoring.read). */
+async function monitoringAuth(): Promise<{ projectId: string; token: string }> {
+  const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}') as { project_id?: string }
+  const cred = getFirebase().options.credential
+  if (!cred) throw new Error('no credential')
+  const { access_token: token } = await cred.getAccessToken()
+  return { projectId: sa.project_id || 'n-plus-64549', token }
+}
+
 async function fetchRtdbUsage(): Promise<{
   configured: boolean
   error?: string
@@ -13358,20 +13369,16 @@ async function fetchRtdbUsage(): Promise<{
     costTotal: 0,
   }
   try {
-    const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}') as { project_id?: string }
-    const projectId = sa.project_id || 'n-plus-64549'
-    const cred = getFirebase().options.credential
-    if (!cred) throw new Error('no credential')
-    const { access_token: token } = await cred.getAccessToken()
+    const { projectId, token } = await monitoringAuth()
     const now = Date.now()
     const d = new Date(now)
     const monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)
     const M = 'firebasedatabase.googleapis.com/'
     const [monthBytes, dayBytes, connections, storageBytes] = await Promise.all([
-      rtdbMetric(projectId, token, M + 'network/sent_bytes_count', monthStart, 'sum'),
-      rtdbMetric(projectId, token, M + 'network/sent_bytes_count', now - 86_400_000, 'sum'),
-      rtdbMetric(projectId, token, M + 'network/active_connections', now - 15 * 60_000, 'latest'),
-      rtdbMetric(projectId, token, M + 'storage/total_bytes', now - 6 * 3_600_000, 'latest'),
+      monitoringMetric(projectId, token, M + 'network/sent_bytes_count', monthStart, 'sum'),
+      monitoringMetric(projectId, token, M + 'network/sent_bytes_count', now - 86_400_000, 'sum'),
+      monitoringMetric(projectId, token, M + 'network/active_connections', now - 15 * 60_000, 'latest'),
+      monitoringMetric(projectId, token, M + 'storage/total_bytes', now - 6 * 3_600_000, 'latest'),
     ])
     const daysInMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate()
     const elapsedDays = Math.max(1 / 24, (now - monthStart) / 86_400_000)
@@ -13456,14 +13463,54 @@ async function runRtdbGuard(
   return { cfg, tripped: true }
 }
 
-let rtdbGuardAt = 0
-/** On regular traffic: at most every 10 min per server instance, bounded to
+/** The Firestore daily read/write ceiling (Settings → מתג חירום והגנת עלות):
+ *  the SAME rule the dashboard applies when it loads (revisions.ts
+ *  handleAdminUsage — 24h Monitoring counts vs the ceilings, trips the global
+ *  kill switch), run here on regular traffic too so it trips with nobody
+ *  watching. */
+async function runFirestoreCeilingGuard(): Promise<boolean> {
+  const snap = await getDb().collection('appConfig').doc('global').get()
+  const g = (snap.exists ? snap.data() : {}) as {
+    killSwitch?: boolean
+    autoKill?: boolean
+    dailyReadCeiling?: number
+    dailyWriteCeiling?: number
+  }
+  const rc = typeof g.dailyReadCeiling === 'number' && g.dailyReadCeiling > 0 ? g.dailyReadCeiling : 0
+  const wc = typeof g.dailyWriteCeiling === 'number' && g.dailyWriteCeiling > 0 ? g.dailyWriteCeiling : 0
+  if (g.autoKill !== true || g.killSwitch === true || (rc === 0 && wc === 0)) return false
+  const { projectId, token } = await monitoringAuth()
+  const since = Date.now() - 86_400_000
+  const [reads, writes] = await Promise.all([
+    monitoringMetric(projectId, token, 'firestore.googleapis.com/document/read_count', since, 'sum'),
+    monitoringMetric(projectId, token, 'firestore.googleapis.com/document/write_count', since, 'sum'),
+  ])
+  const overRead = rc > 0 && reads != null && reads >= rc
+  const overWrite = wc > 0 && writes != null && writes >= wc
+  if (!overRead && !overWrite) return false
+  await getDb().collection('appConfig').doc('global').set({ killSwitch: true }, { merge: true })
+  primeKillCache(true)
+  const which = overRead
+    ? `קריאות ${Math.round(reads!).toLocaleString()}/${rc.toLocaleString()}`
+    : `כתיבות ${Math.round(writes!).toLocaleString()}/${wc.toLocaleString()}`
+  await sendTelegramAlert(
+    `🚨 מצב תחזוקה נדלק אוטומטית. נחצתה התקרה היומית (${which}). האתר והתוכנה חסומים עד שתכבה ידנית ב"הגדרות".`,
+  ).catch(() => undefined)
+  return true
+}
+
+let costGuardAt = 0
+/** Both cost guards (Firestore daily ceiling, Realtime Database monthly cap)
+ *  on regular traffic: at most every 10 min per server instance, bounded to
  *  2.5 s, never throws — the request it rides on is never affected. */
-async function maybeGuardRtdb(): Promise<void> {
-  if (Date.now() - rtdbGuardAt < 10 * 60_000) return
-  rtdbGuardAt = Date.now()
+async function maybeGuardCosts(): Promise<void> {
+  if (Date.now() - costGuardAt < 10 * 60_000) return
+  costGuardAt = Date.now()
   await Promise.race([
-    runRtdbGuard().catch(() => null),
+    Promise.all([
+      runFirestoreCeilingGuard().catch(() => false),
+      runRtdbGuard().catch(() => null),
+    ]),
     new Promise((r) => setTimeout(r, 2500)),
   ])
 }

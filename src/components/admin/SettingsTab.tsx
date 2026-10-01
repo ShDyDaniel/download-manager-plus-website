@@ -825,7 +825,8 @@ export function ProtectionCard({ onErr }: { onErr: (e: unknown) => void }) {
             </div>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
               כשמופעל, אם השימוש היומי חוצה תקרה, מצב התחזוקה נדלק אוטומטית.
-              הבדיקה מול נתוני הניטור (חינם), בלי קריאות נוספות למסד.
+              הבדיקה רצה לבד בערך כל עשר דקות, גם כשהפאנל סגור, מול נתוני
+              הניטור (חינם) — קריאה אחת להגדרות בכל בדיקה.
             </p>
           </div>
         </div>
