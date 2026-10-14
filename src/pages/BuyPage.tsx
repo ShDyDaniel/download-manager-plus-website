@@ -345,10 +345,12 @@ export function BuyPage() {
   // ── Tier-change summary (upgrade/downgrade) ──
   // Populated only when the buyer arrived via ?renew=<token>&tier=<t> and the
   // target tier differs from the key's current tier. Mirrors the server's
-  // pricing (checkoutQuote in api/paypal.ts): an UPGRADE within the same
-  // interval charges the full price difference NOW (and the same key is
-  // kept); across intervals it's the full new price; a DOWNGRADE charges
-  // nothing now and takes effect at period end.
+  // checkoutQuote (api/paypal.ts) while the paid period still runs:
+  //  - upgrade, same interval: the difference for the time left, now; the
+  //    higher tier now; the full new price from the current expiry;
+  //  - upgrade across intervals, or a downgrade: nothing now; the current
+  //    tier until the expiry, then the new plan with its first charge.
+  // An expired key just starts a new period at the full price.
   const tierChange = (() => {
     if (!renewInfo) return null
     const currentTier = normalizeTier(renewInfo.tier)
@@ -356,32 +358,25 @@ export function BuyPage() {
     if (currentTier === targetTier) return null
     const currentEff = tierPrice(tierCfg[currentTier], plan).effective
     const newEff = tierPrice(tierCfg[targetTier], plan).effective
-    const isUpgrade = tierRank(targetTier) > tierRank(currentTier)
-    if (isUpgrade) {
-      // Pay the FULL price difference (new − old), not prorated — "as if you'd
-      // bought the bigger plan from the start". Only within the same interval:
-      // a month paid isn't a year paid, so across intervals it's the full new
-      // price. To the agora, exactly what the server charges.
-      const currentPlan =
-        renewInfo.planDays === 365 ? 'yearly' : renewInfo.planDays === 30 ? 'monthly' : null
-      const diff = Math.round((newEff - currentEff) * 100) / 100
-      const payNow = currentPlan === plan && diff > 0 ? diff : newEff
-      return {
-        kind: 'upgrade' as const,
-        currentTier,
-        targetTier,
-        payNow,
-        recurring: newEff,
-      }
+    const kind = tierRank(targetTier) > tierRank(currentTier) ? ('upgrade' as const) : ('downgrade' as const)
+    const expMs = Date.parse(renewInfo.expiresAt || '')
+    const base = { kind, currentTier, targetTier, recurring: newEff, effectiveDate: renewInfo.expiresAt }
+    if (!(expMs > Date.now())) return { ...base, payNow: newEff, later: false, prorated: false }
+    const currentPlan =
+      renewInfo.planDays === 365 ? 'yearly' : renewInfo.planDays === 30 ? 'monthly' : null
+    if (kind === 'downgrade' || currentPlan !== plan) {
+      return { ...base, payNow: 0, later: true, prorated: false }
     }
-    return {
-      kind: 'downgrade' as const,
-      currentTier,
-      targetTier,
-      payNow: 0,
-      recurring: newEff,
-      effectiveDate: renewInfo.expiresAt,
-    }
+    const diff = Math.round((newEff - currentEff) * 100) / 100
+    if (!(diff > 0)) return { ...base, payNow: newEff, later: false, prorated: false }
+    // The share of the paid period that's left, by time (the server's
+    // upgradeProration).
+    const start = new Date(expMs)
+    start.setMonth(start.getMonth() - (plan === 'yearly' ? 12 : 1))
+    const periodMs = expMs - start.getTime()
+    const leftMs = Math.min(periodMs, expMs - Date.now())
+    const payNow = periodMs > 0 ? Math.round(((diff * leftMs) / periodMs) * 100) / 100 : 0
+    return { ...base, payNow, later: false, prorated: true }
   })()
   // Plan-switch mode — populated when the URL carries
   // ?switchTo=monthly|yearly alongside ?renew=<token>. The /account
@@ -930,8 +925,7 @@ export function BuyPage() {
           rememberReturnFlow({
             flow: 'renew',
             plan: `${TIER_LABEL[tierRef.current]} · ${planRef.current === 'yearly' ? 'שנתי' : 'חודשי'}`,
-            startsAt:
-              tc?.kind === 'downgrade' ? formatExpiry(tc.effectiveDate) : undefined,
+            startsAt: tc?.later ? formatExpiry(tc.effectiveDate) : undefined,
           })
           window.location.href = '/buy?subscribed=1'
         },
@@ -1290,8 +1284,7 @@ export function BuyPage() {
       </div>
     ) : null
 
-  // Tier change (upgrade/downgrade) on the same key. Upgrade = the price
-  // difference now; downgrade = nothing now, the new price from period end.
+  // Tier change (upgrade/downgrade) on the same key — see tierChange.
   const tierChangeBanner = tierChange ? (
     <div className="ban">
       <div className="ban-h">
@@ -1308,16 +1301,24 @@ export function BuyPage() {
       </p>
       {!switchTo && keyLine}
       <p>
-        {tierChange.kind === 'upgrade' ? (
+        {tierChange.prorated ? (
           <>
-            השדרוג נכנס לתוקף מיד. משלמים עכשיו את ההפרש בין המסלולים (
-            <Amt n={tierChange.payNow} sym={curSym} />) — כאילו קניתם את המסלול הגבוה
-            מלכתחילה. המפתח נשאר אותו מפתח, והתוספת (נפח אחסון, דקות תמלול ועוד) נזקפת
-            מיד. מהחיוב הבא ואילך תחויבו <Amt n={tierChange.recurring} sym={curSym} /> כל{' '}
-            {cycleWord}.
+            השדרוג נכנס לתוקף מיד. משלמים עכשיו רק את ההפרש בין המסלולים על הזמן שנשאר
+            עד <DateText>{formatExpiry(tierChange.effectiveDate)}</DateText> (
+            <Amt n={tierChange.payNow} sym={curSym} />). המפתח נשאר אותו מפתח, והתוספת
+            (נפח אחסון, דקות תמלול ועוד) נזקפת מיד. מ-
+            <DateText>{formatExpiry(tierChange.effectiveDate)}</DateText> תחויבו{' '}
+            <Amt n={tierChange.recurring} sym={curSym} /> כל {cycleWord}.
+          </>
+        ) : !tierChange.later ? (
+          <>
+            המסלול החדש מתחיל מיד, לתקופה חדשה במחיר מלא (
+            <Amt n={tierChange.payNow} sym={curSym} />). המפתח נשאר אותו מפתח. מהחיוב הבא
+            ואילך תחויבו <Amt n={tierChange.recurring} sym={curSym} /> כל {cycleWord}.
           </>
         ) : (
           <>
+            {tierChange.kind === 'upgrade' && 'מעבר בין חיוב חודשי לשנתי מתחיל בסוף התקופה ששולמה. '}
             אין תשלום עכשיו. עד <DateText>{formatExpiry(tierChange.effectiveDate)}</DateText>{' '}
             תישארו במסלול {TIER_LABEL[tierChange.currentTier]} ששילמתם עליו במלואו. מ-
             <DateText>{formatExpiry(tierChange.effectiveDate)}</DateText> תעברו אוטומטית
@@ -1333,8 +1334,12 @@ export function BuyPage() {
   // selected tier's price for the selected cycle (== tierChange.recurring).
   const recurring = selectedTierPrice
   const payNow = tierChange ? tierChange.payNow : selectedTierPrice
+  // When the new price starts recurring, if not now: the current expiry, for
+  // a change that waits for it and for a prorated upgrade alike.
   const downgradeFrom =
-    tierChange?.kind === 'downgrade' ? formatExpiry(tierChange.effectiveDate) : null
+    tierChange && (tierChange.later || tierChange.prorated)
+      ? formatExpiry(tierChange.effectiveDate)
+      : null
 
   const existingCheckout = (
     <div className="card co-st">
@@ -1380,10 +1385,12 @@ export function BuyPage() {
               <button type="submit" className="btn btn-p btn-lg btn-block">
                 <Crown className="ic" aria-hidden />
                 {tierChange ? (
-                  tierChange.kind === 'upgrade' ? (
+                  !tierChange.later ? (
                     <>
                       המשך לשדרוג: <Amt n={tierChange.payNow} sym={curSym} />
                     </>
+                  ) : tierChange.kind === 'upgrade' ? (
+                    'אישור המעבר'
                   ) : (
                     'אישור הורדת המסלול'
                   )
@@ -1426,10 +1433,11 @@ export function BuyPage() {
                 amount={<Amt n={recurring} sym={curSym} />}
                 cycleWord={cycleWord}
                 extra={
-                  tierChange?.kind === 'upgrade' ? (
+                  tierChange?.prorated && downgradeFrom ? (
                     <>
                       {' '}
-                      (<Amt n={tierChange.payNow} sym={curSym} /> עכשיו, ההפרש בין המסלולים)
+                      החל מ-<DateText>{downgradeFrom}</DateText> (
+                      <Amt n={tierChange.payNow} sym={curSym} /> עכשיו, ההפרש על הזמן שנשאר)
                     </>
                   ) : downgradeFrom ? (
                     <>
@@ -1456,10 +1464,11 @@ export function BuyPage() {
                 onClose={() => setRenewTermsOpen(false)}
                 planLine={`מנוי ${TIER_LABEL[tier]} ${cycleAdj}.`}
                 amountLine={
-                  tierChange?.kind === 'upgrade' ? (
+                  tierChange?.prorated && downgradeFrom ? (
                     <>
-                      <Amt n={recurring} sym={curSym} /> לכל {cycleWord}, ועכשיו{' '}
-                      <Amt n={tierChange.payNow} sym={curSym} /> עבור ההפרש בין המסלולים
+                      <Amt n={recurring} sym={curSym} /> לכל {cycleWord} החל מ-
+                      <DateText>{downgradeFrom}</DateText>, ועכשיו{' '}
+                      <Amt n={tierChange.payNow} sym={curSym} /> עבור ההפרש על הזמן שנשאר
                     </>
                   ) : downgradeFrom ? (
                     <>

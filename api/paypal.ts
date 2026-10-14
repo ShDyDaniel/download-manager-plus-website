@@ -2255,11 +2255,35 @@ async function handleSaleCompleted(
   }
   const subscriptionId = resource.billing_agreement_id
   const db = getDb()
-  const keys = await db
+  let keys = await db
     .collection('productKeys')
     .where('subscriptionId', '==', subscriptionId)
     .limit(1)
     .get()
+  // A plan change scheduled for the period end: the key still points at the
+  // old subscription and carries the new one in scheduledChange. This first
+  // charge of the new subscription is the moment it takes over.
+  type ScheduledChange = {
+    subscriptionId: string
+    tier: TierS
+    planDays: number
+    planId: string
+    price: number
+    currency: string
+  }
+  let scheduled: ScheduledChange | null = null
+  if (keys.empty) {
+    const sched = await db
+      .collection('productKeys')
+      .where('scheduledChange.subscriptionId', '==', subscriptionId)
+      .limit(1)
+      .get()
+    if (!sched.empty) {
+      keys = sched
+      scheduled = (sched.docs[0].data() as { scheduledChange: ScheduledChange })
+        .scheduledChange
+    }
+  }
   if (keys.empty) {
     // The key isn't created yet (this SALE.COMPLETED arrived before
     // BILLING.SUBSCRIPTION.ACTIVATED). The charge STILL happened, so we
@@ -2293,8 +2317,70 @@ async function handleSaleCompleted(
     }
   }
   const keyDoc = keys.docs[0]
-  const key = keyDoc.data() as KeyDoc
+  let key = keyDoc.data() as KeyDoc
   const paidAmount = parseFloat(resource.amount.total)
+  const saleFee = parseFloat(resource.transaction_fee?.value || '0') || 0
+
+  // The charge the activation already counted (new key, renewal, prorated
+  // upgrade) — PayPal may send its PAYMENT.SALE.COMPLETED after the
+  // ACTIVATED event. Counting it again extended a brand-new subscription by
+  // a second period (and an intro-priced first charge failed the amount
+  // guard below with a false alarm). Matched by subscription, amount and
+  // time — a real renewal is a whole cycle later — so a renewal is never
+  // swallowed, even if PayPal never sends this event.
+  const ac = (key as { activationCharge?: { subscriptionId?: string; amount?: number; at?: string; saleId?: string } | null })
+    .activationCharge
+  if (
+    !scheduled &&
+    ac &&
+    ac.subscriptionId === subscriptionId &&
+    !ac.saleId &&
+    typeof ac.amount === 'number' &&
+    Math.abs(paidAmount - ac.amount) <= 0.01 &&
+    Date.now() - Date.parse(String(ac.at || '')) < 3 * DAY_MS
+  ) {
+    await keyDoc.ref.update({ 'activationCharge.saleId': resource.id, 'activationCharge.fee': saleFee })
+    if (sumitConfigured() && (await receiptsEnabled())) {
+      try {
+        const recipient = key.buyerEmail || key.redeemedByEmail || ''
+        if (recipient) {
+          await issueAndDeliverReceipt({
+            recipient,
+            amount: paidAmount,
+            currency: resource.amount.currency,
+            description: 'פריימליין · מנוי',
+            subscriptionId,
+          })
+        }
+      } catch (err) {
+        console.warn('[sumit] activation receipt step threw (ignored):', err)
+      }
+    }
+    return {
+      ok: true,
+      summary: `activation charge ${paidAmount} on ${keyDoc.id} already counted — not extended again`,
+    }
+  }
+
+  if (scheduled) {
+    // Switch the key to the new plan, then extend it below like any renewal.
+    const nowIso = new Date().toISOString()
+    const switchFields = {
+      tier: scheduled.tier,
+      planDays: scheduled.planDays,
+      subscriptionPlanDays: scheduled.planDays,
+      subscriptionId,
+      planId: scheduled.planId,
+      subscriptionPrice: scheduled.price,
+      subscriptionCurrency: scheduled.currency,
+      subscriptionStartedAt: nowIso,
+      subscriptionCancelledAt: null,
+      scheduledChange: null,
+      planChangeAppliedAt: nowIso,
+    }
+    await keyDoc.ref.update(switchFields)
+    key = { ...key, ...switchFields } as unknown as KeyDoc
+  }
   if (
     typeof key.subscriptionPrice === 'number' &&
     Math.abs(paidAmount - key.subscriptionPrice) > 0.01
@@ -2333,7 +2419,7 @@ async function handleSaleCompleted(
       amount: paidAmount,
       currency: resource.amount.currency,
       // Exact PayPal fee for this charge (0 if PayPal omitted it).
-      fee: parseFloat(resource.transaction_fee?.value || '0') || 0,
+      fee: saleFee,
       at: new Date().toISOString(),
     }),
   })
@@ -2413,6 +2499,34 @@ async function handleSaleCompleted(
   }
 }
 
+/** Stops a subscription another one replaced (plan change / renewal), so the
+ *  buyer is never billed twice. Already-ended or unknown subscriptions are
+ *  exactly the state we want; anything else is logged for the operator. */
+async function cancelReplacedSub(subId: string, reason: string, keyId: string): Promise<void> {
+  try {
+    await paypalCall('POST', `/v1/billing/subscriptions/${subId}/cancel`, { reason })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (!msg.includes('SUBSCRIPTION_STATUS_INVALID') && !msg.includes('RESOURCE_NOT_FOUND')) {
+      console.error(`[plan-change] failed to cancel replaced sub ${subId} (key ${keyId}):`, err)
+    }
+  }
+}
+
+/** Cancelling a key that waits for a scheduled plan change must stop the
+ *  NEW subscription too — the old one is already cancelled, and the new one
+ *  would otherwise make its first charge at the period end. */
+async function cancelScheduledChange(
+  key: { scheduledChange?: { subscriptionId?: string } | null },
+  ref: FirebaseFirestore.DocumentReference,
+  reason: string,
+): Promise<void> {
+  const subId = key.scheduledChange?.subscriptionId
+  if (!subId) return
+  await cancelReplacedSub(subId, reason, ref.id)
+  await ref.update({ scheduledChange: null }).catch(() => {})
+}
+
 async function ensureKeyForSubscription(
   subscriptionId: string,
 ): Promise<{ ok: boolean; summary: string; error?: string }> {
@@ -2430,6 +2544,8 @@ async function ensureKeyForSubscription(
     id: string
     plan_id: string
     status: string
+    start_time?: string
+    billing_info?: { last_payment?: { amount?: { value?: string } } }
     subscriber: {
       email_address: string
       name?: { given_name?: string; surname?: string }
@@ -2505,6 +2621,10 @@ async function ensureKeyForSubscription(
   // entitlement resolves to the right level. Defaults to 'pro' (the only tier
   // that existed before the migration + the legacy checkout path).
   let pendingTier: TierS = 'pro'
+  // How checkout said to apply this to the key (CheckoutQuote.change) and
+  // the prorated difference it charged as a setup fee.
+  let pendingChange: string | null = null
+  let pendingSetupFee = 0
   try {
     const pendingDoc = await db
       .collection('pendingSubscriptions')
@@ -2517,6 +2637,8 @@ async function ensureKeyForSubscription(
         couponCode?: string | null
         couponPct?: number | null
         tier?: string | null
+        change?: string | null
+        setupFee?: number | null
       }
       if (typeof data.linkToUid === 'string' && data.linkToUid) {
         linkToUid = data.linkToUid
@@ -2532,6 +2654,8 @@ async function ensureKeyForSubscription(
       }
       const t = normTier(data.tier)
       if (t !== 'free') pendingTier = t // a subscription is never "free"
+      if (typeof data.change === 'string') pendingChange = data.change
+      if (typeof data.setupFee === 'number' && data.setupFee > 0) pendingSetupFee = data.setupFee
     }
   } catch (err) {
     console.warn(
@@ -2613,25 +2737,69 @@ async function ensureKeyForSubscription(
       const currentExpMs = existing.expiresAt
         ? Date.parse(existing.expiresAt)
         : 0
-      // An upgrade paid as a price DIFFERENCE (intro cycle cheaper than the
-      // recurring price, tier going up) buys the higher tier from TODAY: the
-      // difference tops up the period already paid, it doesn't buy a new one
-      // on top of it. Anchoring at the old expiry handed out a free period
-      // (a yearly upgrade on day 1 ran 24 months for one year's price) and
-      // put the key out of step with PayPal, whose next charge is a cycle
-      // from today.
-      const isDiffUpgrade =
-        TIER_KEYS_S.indexOf(pendingTier) > TIER_KEYS_S.indexOf(normTier(existing.tier)) &&
-        initialChargePrice > 0 &&
-        initialChargePrice < planPrice - 0.005
-      const anchorMs = isDiffUpgrade ? Date.now() : Math.max(currentExpMs, Date.now())
-      // Calendar-aware extension. The anchor is still MAX(current,
-      // now) so an early renewal preserves remaining days, but the
-      // delta is now a calendar month/year not a 30/365-day literal.
-      const newExpiresAt = addCalendarSubscriptionPeriod(
-        new Date(anchorMs),
-        planDays,
-      )
+
+      // SCHEDULED change (an interval change on an upgrade, or a downgrade):
+      // the paid period is used up first, on the current tier. Approval
+      // charges nothing — the new subscription's first charge is at its
+      // start_time — so the key only records what's coming; the first
+      // PAYMENT.SALE.COMPLETED of the new subscription applies it. The old
+      // subscription is cancelled now, after the buyer approved the new one,
+      // so it doesn't bill again at the period end.
+      if (
+        pendingChange === 'scheduled' &&
+        sub.start_time &&
+        Date.parse(sub.start_time) > Date.now() + 60_000
+      ) {
+        const replaced = previousSubId && previousSubId !== subscriptionId ? previousSubId : null
+        await existingRef.update({
+          scheduledChange: {
+            subscriptionId,
+            tier: pendingTier,
+            planDays,
+            planId: sub.plan_id,
+            price: planPrice,
+            currency: planCurrency,
+            startAt: sub.start_time,
+            at: new Date().toISOString(),
+          },
+          ...(replaced ? { planChangeCancelledSubId: replaced } : {}),
+        })
+        if (replaced) {
+          await cancelReplacedSub(
+            replaced,
+            `Plan change to ${pendingTier} ${planDays === 30 ? 'monthly' : 'yearly'} at period end`,
+            renewKeyId,
+          )
+        }
+        return {
+          ok: true,
+          summary: `scheduled key ${renewKeyId} → ${pendingTier} ${planDays === 30 ? 'monthly' : 'yearly'} from ${sub.start_time} (subscription ${subscriptionId})`,
+        }
+      }
+
+      // PRORATED upgrade: the setup fee paid the difference for the time
+      // left, so the higher tier starts now and the expiry stays — the new
+      // subscription's first full charge is at that expiry (its start_time).
+      // Never hand out the higher tier unless the fee was actually paid.
+      const prorated = pendingChange === 'prorated'
+      if (prorated && pendingSetupFee > 0) {
+        const paid = parseFloat(sub.billing_info?.last_payment?.amount?.value || '0')
+        if (!(paid >= pendingSetupFee - 0.01)) {
+          return {
+            ok: false,
+            summary: `prorated upgrade of ${renewKeyId}: setup fee not paid`,
+            error: `setup fee ${pendingSetupFee} not seen on ${subscriptionId} (last payment ${paid}) — key not upgraded`,
+          }
+        }
+      }
+      // Otherwise calendar-aware extension anchored at MAX(current, now), so
+      // an early renewal keeps the remaining days.
+      const newExpiresAt =
+        prorated && currentExpMs > Date.now()
+          ? new Date(currentExpMs)
+          : addCalendarSubscriptionPeriod(new Date(Math.max(currentExpMs, Date.now())), planDays)
+      // What PayPal charged on approval.
+      const chargeNow = prorated ? pendingSetupFee : initialChargePrice
       const billingHistory = Array.isArray(existing.billingHistory)
         ? existing.billingHistory.slice()
         : []
@@ -2641,14 +2809,16 @@ async function ensureKeyForSubscription(
       // ledger below.
       const renewChargeAt = new Date().toISOString()
       const renewChargeId = `renew-${subscriptionId}`
-      // What PayPal charged NOW — for an upgrade that's the difference, not
-      // the recurring price (which only starts next cycle).
-      billingHistory.push({
-        at: renewChargeAt,
-        amount: initialChargePrice,
-        currency: planCurrency,
-        eventId: renewChargeId,
-      })
+      // What PayPal charged NOW — for a prorated upgrade that's the
+      // difference, not the recurring price (which starts at the expiry).
+      if (chargeNow > 0) {
+        billingHistory.push({
+          at: renewChargeAt,
+          amount: chargeNow,
+          currency: planCurrency,
+          eventId: renewChargeId,
+        })
+      }
 
       // ── ORDER MATTERS: update key BEFORE cancelling old sub ──
       //
@@ -2686,6 +2856,11 @@ async function ensureKeyForSubscription(
         paymentFailedAt: null,
         paymentFailureCount: 0,
         billingHistory,
+        // The charge counted here — so its PAYMENT.SALE.COMPLETED, if PayPal
+        // sends one, isn't counted (and the key extended) a second time.
+        activationCharge:
+          chargeNow > 0 ? { subscriptionId, amount: chargeNow, at: renewChargeAt } : null,
+        scheduledChange: null,
         buyerName: buyerName || existing.buyerName || '',
         // Clear reminder stamps so the next cycle's cron emails
         // fire fresh.
@@ -2749,12 +2924,12 @@ async function ensureKeyForSubscription(
 
       // Durable tax ledger — this renewal charge (mirrors the
       // billingHistory push above, same `renew-<subId>` id).
-      await recordCasualCharge({
+      if (chargeNow > 0) await recordCasualCharge({
         id: renewChargeId,
         at: renewChargeAt,
         email: buyerEmail || existing.buyerEmail || existing.redeemedByEmail || '',
         name: buyerName || existing.buyerName || '',
-        amount: initialChargePrice,
+        amount: chargeNow,
         currency: planCurrency,
         subscriptionId,
         kind: 'renewal',
@@ -2916,6 +3091,9 @@ async function ensureKeyForSubscription(
       currency: planCurrency,
       at: new Date().toISOString(),
     }],
+    // The charge counted here — so its PAYMENT.SALE.COMPLETED, if PayPal
+    // sends one after this activation, doesn't extend the key again.
+    activationCharge: { subscriptionId, amount: initialChargePrice, at: new Date().toISOString() },
   }
 
   if (linkToUid) {
@@ -2970,7 +3148,7 @@ async function ensureKeyForSubscription(
     at: baseKeyDoc.billingHistory[0].at,
     email: buyerEmail,
     name: buyerName,
-    amount: planPrice,
+    amount: initialChargePrice, // what was charged now (intro price for a "first" coupon)
     currency: planCurrency,
     subscriptionId,
     kind: 'initial',
@@ -3040,10 +3218,33 @@ async function handleSubscriptionEnded(
     .limit(1)
     .get()
   if (keys.empty) {
+    // A subscription scheduled to take over at the period end, cancelled
+    // before it started: the change is off, and nothing renews the key.
+    const sched = await db
+      .collection('productKeys')
+      .where('scheduledChange.subscriptionId', '==', resource.id)
+      .limit(1)
+      .get()
+    if (!sched.empty) {
+      await sched.docs[0].ref.update({
+        scheduledChange: null,
+        subscriptionStatus: 'cancelled',
+        subscriptionCancelledAt: new Date().toISOString(),
+      })
+      return { ok: true, summary: `scheduled plan change on ${sched.docs[0].id} dropped (${resource.id} ended)` }
+    }
     return { ok: true, summary: `no key for ${resource.id} — ignored` }
   }
   const keyDocSnap = keys.docs[0]
   const keyData = keyDocSnap.data() as KeyDoc
+  // A plan change cancels the old subscription itself — the key stays
+  // active until the new plan takes over.
+  if (
+    (keyData as { planChangeCancelledSubId?: string }).planChangeCancelledSubId === resource.id &&
+    (keyData as { scheduledChange?: unknown }).scheduledChange
+  ) {
+    return { ok: true, summary: `old subscription ${resource.id} of ${keyDocSnap.id} ended for a scheduled plan change` }
+  }
   await keyDocSnap.ref.update({
     subscriptionStatus:
       event.event_type === 'BILLING.SUBSCRIPTION.EXPIRED'
@@ -3292,22 +3493,65 @@ function tierPrice(c: TierConfigS, plan: 'monthly' | 'yearly'): { regular: numbe
   return { regular, effective: sale > 0 && sale < regular ? sale : regular }
 }
 
+/** The part of a price difference that covers what's left of the paid
+ *  period, by time (to the agora). The period is the calendar month/year
+ *  ending at `expiresAtMs`. */
+function upgradeProration(a: {
+  diff: number
+  plan: 'monthly' | 'yearly'
+  expiresAtMs: number
+  nowMs: number
+}): number {
+  const start = new Date(a.expiresAtMs)
+  start.setMonth(start.getMonth() - (a.plan === 'yearly' ? 12 : 1))
+  const periodMs = a.expiresAtMs - start.getTime()
+  const leftMs = Math.min(periodMs, Math.max(0, a.expiresAtMs - a.nowMs))
+  return periodMs > 0 ? round2((a.diff * leftMs) / periodMs) : 0
+}
+
 interface CheckoutQuote {
-  /** what PayPal charges first */
+  /** what PayPal charges now (0 for a change scheduled to the period end) */
   firstCharge: number
-  /** what recurs after the first cycle */
+  /** what recurs, every cycle from the first regular one */
   recurring: number
-  /** plan shape: one price, or an intro cycle then `recurring` */
-  shape: 'single' | 'intro'
-  why: 'regular' | 'upgrade-diff' | 'upgrade-full' | 'coupon-first' | 'coupon-forever'
+  /** single = one price; intro = one cheaper first cycle, then `recurring`;
+   *  setup = `firstCharge` as a one-time setup fee now, `recurring` from the
+   *  start time on */
+  shape: 'single' | 'intro' | 'setup'
+  /** when the new plan's first regular cycle starts: now, or at the end of
+   *  the period already paid (the key's current expiry) */
+  start: 'now' | 'period-end'
+  /** how the webhook applies it to the key:
+   *  new       — a new key;
+   *  renew     — extend the same key from max(expiry, now);
+   *  prorated  — higher tier NOW, expiry unchanged, full price from expiry;
+   *  scheduled — nothing changes until the period end, then tier/interval
+   *              switch with the first charge. */
+  change: 'new' | 'renew' | 'prorated' | 'scheduled'
+  why:
+    | 'regular'
+    | 'coupon-first'
+    | 'coupon-forever'
+    | 'upgrade-prorated'
+    | 'upgrade-scheduled'
+    | 'upgrade-full'
+    | 'downgrade-scheduled'
   /** the coupon was actually used (cheaper than what the buyer had anyway) */
   couponUsed: boolean
 }
 
-/** What a checkout charges. `currentTier` = the tier of the key being renewed
- *  (renewals / plan changes), null for a new purchase. Coupons never apply to
- *  renewals or plan changes and never stack with a sale. Returns null when
- *  the tier has no price (the purchase is refused). */
+/** What a checkout charges, and how it changes the key. `currentTier` /
+ *  `currentPlan` / `currentExpiresAtMs` describe the key being renewed (plan
+ *  changes); null for a new purchase. Coupons never apply to renewals or plan
+ *  changes and never stack with a sale. Returns null when the tier has no
+ *  price (the purchase is refused). Daniel's rules for a plan change while
+ *  the paid period is still running:
+ *   - upgrade, same interval: pay now only the difference for the time left
+ *     (by days), get the higher tier now; the full new price starts when the
+ *     paid period ends.
+ *   - upgrade across intervals, or a downgrade: the paid period is used up
+ *     first, on the current tier; the new plan starts at its end, with its
+ *     first charge. */
 function checkoutQuote(a: {
   tiers: Record<TierS, TierConfigS>
   plan: 'monthly' | 'yearly'
@@ -3315,43 +3559,63 @@ function checkoutQuote(a: {
   currentTier: TierS | null
   /** the interval the current key was paid for (null = unknown) */
   currentPlan: 'monthly' | 'yearly' | null
+  currentExpiresAtMs: number | null
   renewal: boolean
   coupon: { pct: number; duration: 'forever' | 'first' } | null
+  nowMs: number
 }): CheckoutQuote | null {
   const { regular, effective } = tierPrice(a.tiers[a.tier], a.plan)
   if (!(regular > 0)) return null
-  const upgrade =
-    a.renewal && a.currentTier != null && TIER_KEYS_S.indexOf(a.tier) > TIER_KEYS_S.indexOf(a.currentTier)
-  // The difference is only meaningful within the same interval: a monthly
-  // key moving to a yearly plan paid one month, not the old yearly price, so
-  // "yearly new − yearly old" would sell a year for the price of a month.
-  // Across intervals (or unknown) an upgrade is charged in full.
-  if (upgrade && a.currentPlan !== a.plan) {
-    return { firstCharge: effective, recurring: effective, shape: 'single', why: 'upgrade-full', couponUsed: false }
+  const plain: CheckoutQuote = {
+    firstCharge: effective,
+    recurring: effective,
+    shape: 'single',
+    start: 'now',
+    change: a.renewal ? 'renew' : 'new',
+    why: 'regular',
+    couponUsed: false,
   }
-  if (upgrade) {
-    // First charge = the FULL price difference (new − old effective), NOT
-    // prorated (Daniel's rule; a prorated diff near expiry rounded to ₪0 and
-    // handed out a free period). Then the new tier's full price recurs, and
-    // the key's new period counts from today (see the renewal webhook).
-    const old = tierPrice(a.tiers[a.currentTier as TierS], a.plan).effective
+  if (a.renewal) {
+    if (a.currentTier == null || a.currentTier === a.tier) return plain
+    const running = a.currentExpiresAtMs != null && a.currentExpiresAtMs > a.nowMs
+    const up = TIER_KEYS_S.indexOf(a.tier) > TIER_KEYS_S.indexOf(a.currentTier)
+    // Nothing left to protect: the change is simply a new period, now.
+    if (!running) return { ...plain, why: up ? 'upgrade-full' : 'regular' }
+    const scheduled: CheckoutQuote = {
+      firstCharge: 0,
+      recurring: effective,
+      shape: 'single',
+      start: 'period-end',
+      change: 'scheduled',
+      why: up ? 'upgrade-scheduled' : 'downgrade-scheduled',
+      couponUsed: false,
+    }
+    if (!up || a.currentPlan !== a.plan) return scheduled
+    const old = tierPrice(a.tiers[a.currentTier], a.plan).effective
     const diff = round2(effective - old)
-    return diff > 0
-      ? { firstCharge: diff, recurring: effective, shape: 'intro', why: 'upgrade-diff', couponUsed: false }
-      : { firstCharge: effective, recurring: effective, shape: 'single', why: 'upgrade-full', couponUsed: false }
+    // "Higher" tier that isn't dearer (odd sale setup): a plain new period.
+    if (!(diff > 0)) return { ...plain, why: 'upgrade-full' }
+    return {
+      firstCharge: upgradeProration({ diff, plan: a.plan, expiresAtMs: a.currentExpiresAtMs as number, nowMs: a.nowMs }),
+      recurring: effective,
+      shape: 'setup',
+      start: 'period-end',
+      change: 'prorated',
+      why: 'upgrade-prorated',
+      couponUsed: false,
+    }
   }
-  const plain: CheckoutQuote = { firstCharge: effective, recurring: effective, shape: 'single', why: 'regular', couponUsed: false }
-  if (!a.coupon || a.renewal) return plain
+  if (!a.coupon) return plain
   if (a.coupon.duration === 'first') {
     const intro = couponPriceFrom(effective, a.coupon.pct)
     return intro < effective
-      ? { firstCharge: intro, recurring: effective, shape: 'intro', why: 'coupon-first', couponUsed: true }
+      ? { ...plain, firstCharge: intro, shape: 'intro', why: 'coupon-first', couponUsed: true }
       : plain
   }
   // 'forever': off the list price, no stacking with a sale — cheaper wins
   const forever = couponPriceFrom(regular, a.coupon.pct)
   return forever < effective
-    ? { firstCharge: forever, recurring: forever, shape: 'single', why: 'coupon-forever', couponUsed: true }
+    ? { ...plain, firstCharge: forever, recurring: forever, why: 'coupon-forever', couponUsed: true }
     : plain
 }
 
@@ -3717,19 +3981,6 @@ async function handleCreateSubscription(
   // Which tier is being purchased. Absent → 'pro'.
   const tier = normTier(body.tier)
   const tcfg = await loadTierConfig()
-  // DOWNGRADE: existing key → LOWER tier. No charge now; the new lower sub is
-  // scheduled to start at the end of the paid period, and the current (higher)
-  // sub is cancelled so it won't recharge. The key keeps the higher tier until
-  // then (it stays active until expiresAt).
-  const isTierDowngrade =
-    !!renewKeyId &&
-    currentKeyTier != null &&
-    TIER_KEYS_S.indexOf(tier) < TIER_KEYS_S.indexOf(currentKeyTier)
-  // ISO start_time for a scheduled (downgrade) subscription; null = start now.
-  const scheduledStartAt =
-    isTierDowngrade && currentKeyExpiresAt && Date.parse(currentKeyExpiresAt) > Date.now()
-      ? currentKeyExpiresAt
-      : null
 
   // ── Coupon (server-side ONLY: the client sent just a code) ──
   // Not on renewals: the renewal amount-guard compares against the key's
@@ -3744,31 +3995,40 @@ async function handleCreateSubscription(
   }
 
   // The price ALWAYS comes from the tier table, through checkoutQuote() — the
-  // one function tests/billing.test.ts proves (sale, coupons, full-difference
-  // upgrade). There used to be a fallback to the old single-product pricing
+  // one function tests/billing.test.ts proves (sale, coupons, plan changes).
+  // There used to be a fallback to the old single-product pricing
   // (appConfig/pricing, ₪45 / ₪290) whenever a tier price was 0; an unpriced
   // tier is now refused outright — there is no second price list to fall into.
+  const currentExpMs = currentKeyExpiresAt ? Date.parse(currentKeyExpiresAt) : NaN
   const quote = checkoutQuote({
     tiers: tcfg,
     plan,
     tier,
     currentTier: renewKeyId ? currentKeyTier : null,
     currentPlan: currentKeyPlanDays === 365 ? 'yearly' : currentKeyPlanDays === 30 ? 'monthly' : null,
+    currentExpiresAtMs: Number.isFinite(currentExpMs) ? currentExpMs : null,
     renewal: !!renewKeyId,
     coupon,
+    nowMs: Date.now(),
   })
   if (!quote) {
     return res
       .status(400)
       .json({ ok: false, error: 'המחיר למנוי זה עדיין לא הוגדר. נסו שוב מאוחר יותר.' })
   }
-  // First charge (what the key records as its locked price); `recurring`
-  // follows from the second cycle on an intro plan.
+  // The new plan's first regular cycle starts at the end of the period
+  // already paid (a prorated upgrade, an interval change, a downgrade) —
+  // PayPal's start_time; null = now.
+  const scheduledStartAt = quote.start === 'period-end' ? currentKeyExpiresAt : null
+  // A prorated upgrade's difference is a one-time setup fee charged on
+  // approval; below an agora there's nothing to charge.
+  const setupFee = quote.shape === 'setup' && quote.firstCharge >= 0.01 ? quote.firstCharge : 0
+  // What PayPal charges now.
   const lockedPrice = quote.firstCharge
   const planId: string | null =
     quote.shape === 'intro'
       ? await ensureIntroPlan(tier, plan, quote.firstCharge, quote.recurring, currency)
-      : await ensurePlanForAmount(tier, plan, quote.firstCharge, currency)
+      : await ensurePlanForAmount(tier, plan, quote.recurring, currency)
   const couponApplied = quote.couponUsed && coupon ? { code: coupon.code, pct: coupon.pct } : null
   if (!planId) {
     return res
@@ -3782,10 +4042,22 @@ async function handleCreateSubscription(
   }>('POST', '/v1/billing/subscriptions', {
     plan_id: planId,
     subscriber: { email_address: email },
-    // Downgrade: the lower-tier sub is scheduled to START at the end of the
-    // current paid period, so the buyer keeps the higher tier until then and
-    // the first lower charge lands exactly at renewal.
+    // A plan change while the paid period runs: the new plan's first regular
+    // charge lands exactly when that period ends.
     ...(scheduledStartAt ? { start_time: scheduledStartAt } : {}),
+    // Prorated upgrade: the difference for the time left, charged once on
+    // approval. A failed setup fee cancels the subscription — the higher
+    // tier is never handed out unpaid.
+    ...(setupFee > 0
+      ? {
+          plan: {
+            payment_preferences: {
+              setup_fee: { value: setupFee.toFixed(2), currency_code: currency },
+              setup_fee_failure_action: 'CANCEL',
+            },
+          },
+        }
+      : {}),
     application_context: {
       brand_name: PAYPAL_BRAND,
       locale: 'he-IL',
@@ -3838,31 +4110,16 @@ async function handleCreateSubscription(
     // webhook only after PayPal confirms the activation.
     couponCode: couponApplied ? couponApplied.code : null,
     couponPct: couponApplied ? couponApplied.pct : null,
-    // Downgrade bookkeeping: the scheduled start of the lower tier.
+    // How the webhook applies this to the key (see CheckoutQuote.change),
+    // the start of the new plan's first regular cycle (null = now), the
+    // prorated difference charged now, and the subscription it replaces —
+    // cancelled by the webhook once this one is approved, never before.
+    change: quote.change,
     scheduledStartAt: scheduledStartAt || null,
+    setupFee,
+    recurringPrice: quote.recurring,
+    replacesSubId: renewKeyId && currentKeySubId ? currentKeySubId : null,
   })
-  // Downgrade: cancel the CURRENT (higher) subscription now so it won't
-  // recharge at the higher price. The key keeps the higher tier until its
-  // expiresAt (unchanged); the scheduled lower sub then takes over at renewal.
-  if (scheduledStartAt && currentKeySubId && currentKeySubId !== subscription.id) {
-    // Mark this cancellation as a planned plan change BEFORE it happens, so
-    // the CANCELLED webhook doesn't read it as the customer quitting inside
-    // PayPal (no "you're owed a refund" alert, no cancellation email).
-    if (renewKeyId) {
-      await getDb()
-        .collection('productKeys')
-        .doc(renewKeyId)
-        .update({ planChangeCancelledSubId: currentKeySubId })
-        .catch((e) => console.warn('[paypal/create-subscription] downgrade mark failed:', e))
-    }
-    try {
-      await paypalCall('POST', `/v1/billing/subscriptions/${currentKeySubId}/cancel`, {
-        reason: `Scheduled downgrade to ${tier} at period end`,
-      })
-    } catch (err) {
-      console.warn('[paypal/create-subscription] downgrade: cancel old sub failed:', err)
-    }
-  }
   return res.status(200).json({
     ok: true,
     approvalUrl: approval.href,
@@ -4797,6 +5054,7 @@ async function handleCancel(req: VercelRequest, res: VercelResponse) {
     })
   }
 
+  await cancelScheduledChange(key as Parameters<typeof cancelScheduledChange>[0], keyDoc.ref, reason)
   let alreadyCancelledAtPaypal = false
   try {
     await paypalCall(
@@ -9687,7 +9945,9 @@ async function handleAdminDeleteUser(req: VercelRequest, res: VercelResponse) {
       const k = doc.data() as {
         subscriptionId?: string
         subscriptionStatus?: string
+        scheduledChange?: { subscriptionId?: string } | null
       }
+      await cancelScheduledChange(k, doc.ref, 'account deleted by admin')
       if (k.subscriptionId && k.subscriptionStatus === 'active') {
         try {
           await paypalCall(
@@ -11322,6 +11582,7 @@ async function handleAdminCancelSubscription(
     return res.status(200).json({ ok: true, alreadyCancelled: true })
   }
 
+  await cancelScheduledChange(key as Parameters<typeof cancelScheduledChange>[0], keyDoc.ref, reason)
   try {
     await paypalCall(
       'POST',
@@ -11495,6 +11756,11 @@ async function handleAdminRefundSubscription(
         key.subscriptionStatus !== 'cancelled' &&
         key.subscriptionStatus !== 'expired'
       ) {
+        await cancelScheduledChange(
+          key as Parameters<typeof cancelScheduledChange>[0],
+          keyDoc.ref,
+          'Refund issued by support',
+        )
         await paypalCall(
           'POST',
           `/v1/billing/subscriptions/${subscriptionId}/cancel`,

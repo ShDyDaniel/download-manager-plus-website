@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { billing } from './load-billing.ts'
 
-const { addCalendarSubscriptionPeriod, cancelMath, checkoutQuote, couponPriceFrom, withVatS, DAY_MS } = billing
+const { addCalendarSubscriptionPeriod, cancelMath, checkoutQuote, couponPriceFrom, upgradeProration, withVatS, DAY_MS } = billing
 type TierS = 'free' | 'basic' | 'pro' | 'ultra'
 type TierConfigS = Record<'priceMonthly' | 'priceMonthlySale' | 'priceYearly' | 'priceYearlySale', number> &
   Record<string, number | null>
@@ -13,8 +13,10 @@ type QuoteArgs = {
   tier: TierS
   currentTier: TierS | null
   currentPlan: 'monthly' | 'yearly' | null
+  currentExpiresAtMs: number | null
   renewal: boolean
   coupon: { pct: number; duration: 'forever' | 'first' } | null
+  nowMs: number
 }
 type CancelArgs = {
   plan: 'monthly' | 'yearly'
@@ -52,6 +54,8 @@ const TIERS: Record<TierS, TierConfigS> = {
   pro: tier(49.9, 499),
   ultra: tier(89.9, 899),
 }
+
+const T0 = Date.parse('2026-10-14T12:00:00Z')
 
 /* ── calendar periods ── */
 test('monthly = next calendar month, same day', () => {
@@ -107,7 +111,7 @@ test('coupon price: whole shekels, never below ₪1', () => {
 
 /* ── checkout ── */
 const q = (o: Partial<QuoteArgs>) =>
-  checkoutQuote({ tiers: TIERS, plan: 'monthly', tier: 'pro', currentTier: null, currentPlan: null, renewal: false, coupon: null, ...o })
+  checkoutQuote({ tiers: TIERS, plan: 'monthly', tier: 'pro', currentTier: null, currentPlan: null, currentExpiresAtMs: null, nowMs: T0, renewal: false, coupon: null, ...o })
 
 test('new purchase, every tier and plan = the list price', () => {
   for (const t of ['basic', 'pro', 'ultra'] as const)
@@ -122,7 +126,7 @@ test('a tier without a price cannot be bought', () => {
 })
 test('sale wins only when positive and below regular', () => {
   const tiers = { ...TIERS, pro: tier(49.9, 499, 39.9, 0) }
-  assert.equal(checkoutQuote({ tiers, plan: 'monthly', tier: 'pro', currentTier: null, currentPlan: null, renewal: false, coupon: null })!.firstCharge, 39.9)
+  assert.equal(checkoutQuote({ tiers, plan: 'monthly', tier: 'pro', currentTier: null, currentPlan: null, currentExpiresAtMs: null, nowMs: T0, renewal: false, coupon: null })!.firstCharge, 39.9)
   const bad = { ...TIERS, pro: tier(49.9, 499, 59.9, 0) }
   assert.equal(checkoutQuote({ tiers: bad, plan: 'monthly', tier: 'pro', currentTier: null, renewal: false, coupon: null })!.firstCharge, 49.9)
 })
@@ -136,7 +140,7 @@ test('coupon "forever": discounted every cycle', () => {
 })
 test('coupon "forever" never stacks with a sale — the cheaper wins', () => {
   const tiers = { ...TIERS, pro: tier(49.9, 499, 34.9, 0) }
-  const base = { tiers, plan: 'monthly' as const, tier: 'pro' as const, currentTier: null, currentPlan: null, renewal: false }
+  const base = { tiers, plan: 'monthly' as const, tier: 'pro' as const, currentTier: null, currentPlan: null, currentExpiresAtMs: null, nowMs: T0, renewal: false }
   const small = checkoutQuote({ ...base, coupon: { pct: 10, duration: 'forever' } })! // 45 > 34.9
   assert.deepEqual([small.firstCharge, small.couponUsed], [34.9, false])
   const big = checkoutQuote({ ...base, coupon: { pct: 50, duration: 'forever' } })! // 25 < 34.9
@@ -144,41 +148,86 @@ test('coupon "forever" never stacks with a sale — the cheaper wins', () => {
 })
 test('coupon "first" stacks on top of a sale (applied to the effective price)', () => {
   const tiers = { ...TIERS, pro: tier(49.9, 499, 39.9, 0) }
-  const r = checkoutQuote({ tiers, plan: 'monthly', tier: 'pro', currentTier: null, currentPlan: null, renewal: false, coupon: { pct: 50, duration: 'first' } })!
+  const r = checkoutQuote({ tiers, plan: 'monthly', tier: 'pro', currentTier: null, currentPlan: null, currentExpiresAtMs: null, nowMs: T0, renewal: false, coupon: { pct: 50, duration: 'first' } })!
   assert.deepEqual([r.firstCharge, r.recurring], [20, 39.9])
 })
 test('coupons are ignored on renewals and plan changes', () => {
-  const r = q({ renewal: true, currentTier: 'pro', coupon: { pct: 50, duration: 'forever' } })!
-  assert.deepEqual([r.firstCharge, r.couponUsed], [49.9, false])
+  const r = q({ renewal: true, currentTier: 'pro', currentPlan: 'monthly', currentExpiresAtMs: T0 + 10 * DAY_MS, coupon: { pct: 50, duration: 'forever' } })!
+  assert.deepEqual([r.firstCharge, r.couponUsed, r.change], [49.9, false, 'renew'])
 })
-test('upgrade: first charge = full difference, then the new price', () => {
-  const r = q({ tier: 'ultra', renewal: true, currentTier: 'basic', currentPlan: 'monthly' })!
-  assert.deepEqual([r.firstCharge, r.recurring, r.why], [60, 89.9, 'upgrade-diff'])
-  const y = q({ tier: 'pro', plan: 'yearly', renewal: true, currentTier: 'basic', currentPlan: 'yearly' })!
-  assert.deepEqual([y.firstCharge, y.recurring], [200, 499])
+
+/* plan changes while the paid period runs (Daniel's rules) */
+// a yearly period that started on T0 − elapsed days and ends a year later
+const yearEnd = (elapsedDays: number) => {
+  const start = new Date(T0 - elapsedDays * DAY_MS)
+  return addCalendarSubscriptionPeriod(start, 365).getTime()
+}
+test('proration = the difference × the share of the period left, by time', () => {
+  const exp = yearEnd(0)
+  assert.equal(upgradeProration({ diff: 200, plan: 'yearly', expiresAtMs: exp, nowMs: T0 }), 200)
+  assert.equal(upgradeProration({ diff: 200, plan: 'yearly', expiresAtMs: exp, nowMs: exp }), 0)
+  assert.equal(upgradeProration({ diff: 200, plan: 'yearly', expiresAtMs: exp, nowMs: exp + DAY_MS }), 0)
 })
-test('upgrade difference uses both effective (sale) prices', () => {
+test('yearly Basic, upgraded to Pro a day later: pays the difference for 364 of 365 days, now', () => {
+  const exp = yearEnd(1)
+  const r = q({ tier: 'pro', plan: 'yearly', renewal: true, currentTier: 'basic', currentPlan: 'yearly', currentExpiresAtMs: exp })!
+  const days = (exp - (exp - 365 * DAY_MS)) / DAY_MS // T0 is in a non-leap year
+  assert.equal(days, 365)
+  assert.deepEqual(
+    [r.firstCharge, r.recurring, r.shape, r.start, r.change],
+    [round((200 * 364) / 365), 499, 'setup', 'period-end', 'prorated'],
+  )
+  assert.equal(r.firstCharge, 199.45)
+})
+test('monthly upgrade with 10 of 30 days left pays a third of the difference', () => {
+  const start = new Date(2026, 8, 14, 12) // Sep 14 → Oct 14: 30 days
+  const exp = addCalendarSubscriptionPeriod(start, 30).getTime()
+  const r = q({ tier: 'ultra', plan: 'monthly', renewal: true, currentTier: 'basic', currentPlan: 'monthly', currentExpiresAtMs: exp, nowMs: exp - 10 * DAY_MS })!
+  assert.deepEqual([r.firstCharge, r.recurring, r.change], [20, 89.9, 'prorated']) // 60 × 10/30
+})
+test('upgrading in the last minutes costs (almost) nothing — and buys no extra time', () => {
+  const exp = yearEnd(364.99)
+  const r = q({ tier: 'pro', plan: 'yearly', renewal: true, currentTier: 'basic', currentPlan: 'yearly', currentExpiresAtMs: exp })!
+  assert.ok(r.firstCharge < 0.6)
+  assert.equal(r.start, 'period-end', 'the full price starts at the same expiry')
+})
+test('proration uses both effective (sale) prices', () => {
   const tiers = { ...TIERS, basic: tier(29.9, 299, 19.9, 0) }
-  const r = checkoutQuote({ tiers, plan: 'monthly', tier: 'pro', currentTier: 'basic', currentPlan: 'monthly', renewal: true, coupon: null })!
-  assert.equal(r.firstCharge, 30)
+  const exp = T0 + 15 * DAY_MS
+  const r = checkoutQuote({ tiers, plan: 'monthly', tier: 'pro', currentTier: 'basic', currentPlan: 'monthly', currentExpiresAtMs: exp, renewal: true, coupon: null, nowMs: T0 })!
+  assert.equal(r.change, 'prorated')
+  assert.ok(Math.abs(r.firstCharge - 15) < 0.6) // 30 × ~half a month
 })
-test('upgrade with no positive difference charges the full new price', () => {
+test('a "higher" tier that isn\'t dearer (sale) is a plain new period', () => {
   const tiers = { ...TIERS, ultra: tier(89.9, 899, 45, 0) }
-  const r = checkoutQuote({ tiers, plan: 'monthly', tier: 'ultra', currentTier: 'pro', currentPlan: 'monthly', renewal: true, coupon: null })!
-  assert.deepEqual([r.firstCharge, r.why], [45, 'upgrade-full'])
+  const r = checkoutQuote({ tiers, plan: 'monthly', tier: 'ultra', currentTier: 'pro', currentPlan: 'monthly', currentExpiresAtMs: T0 + 9 * DAY_MS, renewal: true, coupon: null, nowMs: T0 })!
+  assert.deepEqual([r.firstCharge, r.change, r.why], [45, 'renew', 'upgrade-full'])
 })
-test('upgrade across intervals is charged in full (a month paid ≠ a year paid)', () => {
-  // monthly Pro → yearly Ultra: "899 − 499" would sell a year of Ultra for ₪400
-  const m2y = q({ tier: 'ultra', plan: 'yearly', renewal: true, currentTier: 'pro', currentPlan: 'monthly' })!
-  assert.deepEqual([m2y.firstCharge, m2y.recurring, m2y.why], [899, 899, 'upgrade-full'])
-  const y2m = q({ tier: 'ultra', plan: 'monthly', renewal: true, currentTier: 'pro', currentPlan: 'yearly' })!
-  assert.deepEqual([y2m.firstCharge, y2m.why], [89.9, 'upgrade-full'])
-  const unknown = q({ tier: 'ultra', renewal: true, currentTier: 'pro', currentPlan: null })!
-  assert.equal(unknown.firstCharge, 89.9)
+test('upgrade monthly → yearly waits for the paid month to end, then the full yearly price', () => {
+  const r = q({ tier: 'ultra', plan: 'yearly', renewal: true, currentTier: 'pro', currentPlan: 'monthly', currentExpiresAtMs: T0 + 12 * DAY_MS })!
+  assert.deepEqual([r.firstCharge, r.recurring, r.start, r.change, r.why], [0, 899, 'period-end', 'scheduled', 'upgrade-scheduled'])
 })
-test('downgrade and same-tier renewal = the plain new price', () => {
-  assert.equal(q({ tier: 'basic', renewal: true, currentTier: 'ultra' })!.firstCharge, 29.9)
-  assert.equal(q({ tier: 'pro', renewal: true, currentTier: 'pro' })!.firstCharge, 49.9)
+test('upgrade yearly → monthly waits for the paid year to end', () => {
+  const r = q({ tier: 'ultra', plan: 'monthly', renewal: true, currentTier: 'pro', currentPlan: 'yearly', currentExpiresAtMs: T0 + 200 * DAY_MS })!
+  assert.deepEqual([r.firstCharge, r.recurring, r.change], [0, 89.9, 'scheduled'])
+})
+test('unknown current interval (old key) → scheduled, never a guessed difference', () => {
+  const r = q({ tier: 'ultra', renewal: true, currentTier: 'pro', currentPlan: null, currentExpiresAtMs: T0 + 5 * DAY_MS })!
+  assert.equal(r.change, 'scheduled')
+})
+test('downgrade waits for the paid period to end', () => {
+  const r = q({ tier: 'basic', renewal: true, currentTier: 'ultra', currentPlan: 'monthly', currentExpiresAtMs: T0 + 5 * DAY_MS })!
+  assert.deepEqual([r.firstCharge, r.recurring, r.change, r.why], [0, 29.9, 'scheduled', 'downgrade-scheduled'])
+})
+test('expired key: any tier change is just a new period at the full price, now', () => {
+  const up = q({ tier: 'ultra', renewal: true, currentTier: 'basic', currentPlan: 'monthly', currentExpiresAtMs: T0 - DAY_MS })!
+  assert.deepEqual([up.firstCharge, up.start, up.change], [89.9, 'now', 'renew'])
+  const down = q({ tier: 'basic', plan: 'yearly', renewal: true, currentTier: 'ultra', currentPlan: 'yearly', currentExpiresAtMs: null })!
+  assert.deepEqual([down.firstCharge, down.start, down.change], [299, 'now', 'renew'])
+})
+test('same-tier renewal = the plain price now, remaining days kept', () => {
+  const r = q({ tier: 'pro', renewal: true, currentTier: 'pro', currentPlan: 'monthly', currentExpiresAtMs: T0 + 3 * DAY_MS })!
+  assert.deepEqual([r.firstCharge, r.start, r.change], [49.9, 'now', 'renew'])
 })
 
 /* ── cancellation ── */
