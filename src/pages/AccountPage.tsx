@@ -1590,7 +1590,7 @@ function SubscriptionCard({
                   disabled={switchingThisSub}
                   title={
                     isUpgrade
-                      ? `שדרוג ל-${TIER_LABEL[t]} — מיידי, בתשלום הפרש יחסי`
+                      ? `שדרוג ל-${TIER_LABEL[t]} — מיידי, בתשלום ההפרש בין המסלולים`
                       : `מעבר ל-${TIER_LABEL[t]} — יחל בסוף תקופת החיוב הנוכחית`
                   }
                   className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${

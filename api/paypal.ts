@@ -2613,7 +2613,18 @@ async function ensureKeyForSubscription(
       const currentExpMs = existing.expiresAt
         ? Date.parse(existing.expiresAt)
         : 0
-      const anchorMs = Math.max(currentExpMs, Date.now())
+      // An upgrade paid as a price DIFFERENCE (intro cycle cheaper than the
+      // recurring price, tier going up) buys the higher tier from TODAY: the
+      // difference tops up the period already paid, it doesn't buy a new one
+      // on top of it. Anchoring at the old expiry handed out a free period
+      // (a yearly upgrade on day 1 ran 24 months for one year's price) and
+      // put the key out of step with PayPal, whose next charge is a cycle
+      // from today.
+      const isDiffUpgrade =
+        TIER_KEYS_S.indexOf(pendingTier) > TIER_KEYS_S.indexOf(normTier(existing.tier)) &&
+        initialChargePrice > 0 &&
+        initialChargePrice < planPrice - 0.005
+      const anchorMs = isDiffUpgrade ? Date.now() : Math.max(currentExpMs, Date.now())
       // Calendar-aware extension. The anchor is still MAX(current,
       // now) so an early renewal preserves remaining days, but the
       // delta is now a calendar month/year not a 30/365-day literal.
@@ -2630,9 +2641,11 @@ async function ensureKeyForSubscription(
       // ledger below.
       const renewChargeAt = new Date().toISOString()
       const renewChargeId = `renew-${subscriptionId}`
+      // What PayPal charged NOW — for an upgrade that's the difference, not
+      // the recurring price (which only starts next cycle).
       billingHistory.push({
         at: renewChargeAt,
-        amount: planPrice,
+        amount: initialChargePrice,
         currency: planCurrency,
         eventId: renewChargeId,
       })
@@ -2741,7 +2754,7 @@ async function ensureKeyForSubscription(
         at: renewChargeAt,
         email: buyerEmail || existing.buyerEmail || existing.redeemedByEmail || '',
         name: buyerName || existing.buyerName || '',
-        amount: planPrice,
+        amount: initialChargePrice,
         currency: planCurrency,
         subscriptionId,
         kind: 'renewal',
@@ -3271,6 +3284,77 @@ function couponPriceFrom(base: number, pct: number): number {
   return Math.max(1, Math.round((base * (100 - pct)) / 100))
 }
 
+/** A tier's price for a plan: regular, and effective (a sale wins only when
+ *  positive AND strictly below regular). */
+function tierPrice(c: TierConfigS, plan: 'monthly' | 'yearly'): { regular: number; effective: number } {
+  const regular = plan === 'monthly' ? c.priceMonthly : c.priceYearly
+  const sale = plan === 'monthly' ? c.priceMonthlySale : c.priceYearlySale
+  return { regular, effective: sale > 0 && sale < regular ? sale : regular }
+}
+
+interface CheckoutQuote {
+  /** what PayPal charges first */
+  firstCharge: number
+  /** what recurs after the first cycle */
+  recurring: number
+  /** plan shape: one price, or an intro cycle then `recurring` */
+  shape: 'single' | 'intro'
+  why: 'regular' | 'upgrade-diff' | 'upgrade-full' | 'coupon-first' | 'coupon-forever'
+  /** the coupon was actually used (cheaper than what the buyer had anyway) */
+  couponUsed: boolean
+}
+
+/** What a checkout charges. `currentTier` = the tier of the key being renewed
+ *  (renewals / plan changes), null for a new purchase. Coupons never apply to
+ *  renewals or plan changes and never stack with a sale. Returns null when
+ *  the tier has no price (the purchase is refused). */
+function checkoutQuote(a: {
+  tiers: Record<TierS, TierConfigS>
+  plan: 'monthly' | 'yearly'
+  tier: TierS
+  currentTier: TierS | null
+  /** the interval the current key was paid for (null = unknown) */
+  currentPlan: 'monthly' | 'yearly' | null
+  renewal: boolean
+  coupon: { pct: number; duration: 'forever' | 'first' } | null
+}): CheckoutQuote | null {
+  const { regular, effective } = tierPrice(a.tiers[a.tier], a.plan)
+  if (!(regular > 0)) return null
+  const upgrade =
+    a.renewal && a.currentTier != null && TIER_KEYS_S.indexOf(a.tier) > TIER_KEYS_S.indexOf(a.currentTier)
+  // The difference is only meaningful within the same interval: a monthly
+  // key moving to a yearly plan paid one month, not the old yearly price, so
+  // "yearly new − yearly old" would sell a year for the price of a month.
+  // Across intervals (or unknown) an upgrade is charged in full.
+  if (upgrade && a.currentPlan !== a.plan) {
+    return { firstCharge: effective, recurring: effective, shape: 'single', why: 'upgrade-full', couponUsed: false }
+  }
+  if (upgrade) {
+    // First charge = the FULL price difference (new − old effective), NOT
+    // prorated (Daniel's rule; a prorated diff near expiry rounded to ₪0 and
+    // handed out a free period). Then the new tier's full price recurs, and
+    // the key's new period counts from today (see the renewal webhook).
+    const old = tierPrice(a.tiers[a.currentTier as TierS], a.plan).effective
+    const diff = round2(effective - old)
+    return diff > 0
+      ? { firstCharge: diff, recurring: effective, shape: 'intro', why: 'upgrade-diff', couponUsed: false }
+      : { firstCharge: effective, recurring: effective, shape: 'single', why: 'upgrade-full', couponUsed: false }
+  }
+  const plain: CheckoutQuote = { firstCharge: effective, recurring: effective, shape: 'single', why: 'regular', couponUsed: false }
+  if (!a.coupon || a.renewal) return plain
+  if (a.coupon.duration === 'first') {
+    const intro = couponPriceFrom(effective, a.coupon.pct)
+    return intro < effective
+      ? { firstCharge: intro, recurring: effective, shape: 'intro', why: 'coupon-first', couponUsed: true }
+      : plain
+  }
+  // 'forever': off the list price, no stacking with a sale — cheaper wins
+  const forever = couponPriceFrom(regular, a.coupon.pct)
+  return forever < effective
+    ? { firstCharge: forever, recurring: forever, shape: 'single', why: 'coupon-forever', couponUsed: true }
+    : plain
+}
+
 /* Per-instance guessing throttle for the public check endpoint. Serverless
  * instances are short-lived so this is best-effort — combined with the
  * generic error message and the 3-32-char charset it makes scanning codes
@@ -3526,7 +3610,7 @@ async function handleCreateSubscription(
   let linkToUid: string | null = null
   let renewKeyId: string | null = null
   // For a TIER CHANGE on an existing key (renewToken flow): the key's current
-  // tier + expiry, so we can price the upgrade as a prorated DIFFERENCE.
+  // tier, expiry and interval — checkoutQuote prices an upgrade from them.
   let currentKeyTier: TierS | null = null
   let currentKeyExpiresAt: string | null = null
   let currentKeyPlanDays = 0
@@ -3633,27 +3717,6 @@ async function handleCreateSubscription(
   // Which tier is being purchased. Absent → 'pro'.
   const tier = normTier(body.tier)
   const tcfg = await loadTierConfig()
-  const tierRegular = plan === 'monthly' ? tcfg[tier].priceMonthly : tcfg[tier].priceYearly
-  const tierSaleRaw = plan === 'monthly' ? tcfg[tier].priceMonthlySale : tcfg[tier].priceYearlySale
-  // Sale wins only when positive AND strictly below regular.
-  const tierEffective = tierSaleRaw > 0 && tierSaleRaw < tierRegular ? tierSaleRaw : tierRegular
-  // The price ALWAYS comes from the tier table. There used to be a fallback
-  // to the old single-product Pro pricing (appConfig/pricing) whenever Pro's
-  // tier price was 0 — and that table still holds the pre-tier numbers
-  // (₪45 / ₪290). A zeroed or unset tier price would silently have sold Pro
-  // at those, and the renewal page even advertised them. An unpriced tier is
-  // now refused outright below; there is no second price list to fall into.
-
-  let lockedPrice: number
-  let planId: string | null
-  let regularBase: number // pre-sale/pre-coupon list price, for coupon math
-  // UPGRADE detection: an existing key (renewToken) moving to a HIGHER tier.
-  // The buyer keeps the SAME key; the FIRST charge is the prorated DIFFERENCE
-  // (by remaining days), then the new tier's full price recurs.
-  const isTierUpgrade =
-    !!renewKeyId &&
-    currentKeyTier != null &&
-    TIER_KEYS_S.indexOf(tier) > TIER_KEYS_S.indexOf(currentKeyTier)
   // DOWNGRADE: existing key → LOWER tier. No charge now; the new lower sub is
   // scheduled to start at the end of the paid period, and the current (higher)
   // sub is cancelled so it won't recharge. The key keeps the higher tier until
@@ -3667,85 +3730,50 @@ async function handleCreateSubscription(
     isTierDowngrade && currentKeyExpiresAt && Date.parse(currentKeyExpiresAt) > Date.now()
       ? currentKeyExpiresAt
       : null
-  {
-    if (!(tierRegular > 0)) {
-      return res
-        .status(400)
-        .json({ ok: false, error: 'המחיר למנוי זה עדיין לא הוגדר. נסו שוב מאוחר יותר.' })
-    }
-    regularBase = tierRegular
-    if (isTierUpgrade) {
-      // First charge = the FULL price difference (new − old effective), NOT
-      // prorated. Intent (Daniel): "pay the difference as if you'd bought the
-      // bigger plan from the start", regardless of how much of the current
-      // period elapsed. Then the new tier's full price recurs.
-      //
-      // SECURITY: the previous version prorated the diff by remaining days,
-      // so near expiry the diff rounded to ₪0 and the buyer still received a
-      // full period of the higher tier — a repeatable near-free upgrade. The
-      // full-difference charge closes that: total paid = old price + (new−old)
-      // = full new-tier price for the new period.
-      const oldCfg = tcfg[currentKeyTier as TierS]
-      const oldRegular = plan === 'monthly' ? oldCfg.priceMonthly : oldCfg.priceYearly
-      const oldSaleRaw = plan === 'monthly' ? oldCfg.priceMonthlySale : oldCfg.priceYearlySale
-      const oldEffective = oldSaleRaw > 0 && oldSaleRaw < oldRegular ? oldSaleRaw : oldRegular
-      const diff = Math.round((tierEffective - oldEffective) * 100) / 100
-      if (diff > 0) {
-        // First charge = the full difference; then the new tier's full price.
-        planId = await ensureIntroPlan(tier, plan, diff, tierEffective, currency)
-        lockedPrice = diff
-      } else {
-        // New tier isn't actually more expensive (unusual sale config) — never
-        // hand out a higher tier for free; charge its full price outright.
-        lockedPrice = tierEffective
-        planId = await ensurePlanForAmount(tier, plan, tierEffective, currency)
-      }
-    } else {
-      // Charge the effective (sale-aware) price; coupon math still discounts
-      // off the regular list price (regularBase).
-      lockedPrice = tierEffective
-      planId = await ensurePlanForAmount(tier, plan, tierEffective, currency)
-    }
-  }
-  if (!planId) {
-    return res
-      .status(500)
-      .json({ ok: false, error: 'תצורת תוכנית לא תקינה. נסה שוב' })
-  }
 
   // ── Coupon (server-side ONLY: the client sent just a code) ──
   // Not on renewals: the renewal amount-guard compares against the key's
   // locked price, and a discounted renewal would (correctly) be refused.
-  // No stacking with a sale: the buyer gets the cheaper of the two.
-  let couponApplied: { code: string; pct: number } | null = null
+  let coupon: { code: string; pct: number; duration: 'forever' | 'first' } | null = null
   if (body.coupon && !renewKeyId) {
     const r = await resolveCoupon(String(body.coupon), plan, email)
     if (!r.ok) {
       return res.status(400).json({ ok: false, error: r.error })
     }
-    if (r.duration === 'first') {
-      // First period discounted off the current effective price; the
-      // effective price recurs. Two-cycle PayPal plan. `lockedPrice` is the
-      // current effective tier price.
-      const effective = lockedPrice
-      const introPrice = couponPriceFrom(effective, r.pct)
-      if (introPrice < effective) {
-        planId = await ensureIntroPlan(tier, plan, introPrice, effective, currency)
-        lockedPrice = introPrice // first charge; recurring stays `effective`
-        couponApplied = { code: r.code, pct: r.pct }
-      }
-    } else {
-      // 'forever': discount off the list price (tier price, or Pro regular),
-      // no stacking with sale — buyer gets the cheaper of the two.
-      const couponPrice = couponPriceFrom(regularBase, r.pct)
-      if (couponPrice < lockedPrice) {
-        lockedPrice = couponPrice
-        planId = await ensurePlanForAmount(tier, plan, couponPrice, currency)
-        couponApplied = { code: r.code, pct: r.pct }
-      }
-      // else: the active sale is already cheaper — proceed without the
-      // coupon (nothing consumed).
-    }
+    coupon = { code: r.code, pct: r.pct, duration: r.duration }
+  }
+
+  // The price ALWAYS comes from the tier table, through checkoutQuote() — the
+  // one function tests/billing.test.ts proves (sale, coupons, full-difference
+  // upgrade). There used to be a fallback to the old single-product pricing
+  // (appConfig/pricing, ₪45 / ₪290) whenever a tier price was 0; an unpriced
+  // tier is now refused outright — there is no second price list to fall into.
+  const quote = checkoutQuote({
+    tiers: tcfg,
+    plan,
+    tier,
+    currentTier: renewKeyId ? currentKeyTier : null,
+    currentPlan: currentKeyPlanDays === 365 ? 'yearly' : currentKeyPlanDays === 30 ? 'monthly' : null,
+    renewal: !!renewKeyId,
+    coupon,
+  })
+  if (!quote) {
+    return res
+      .status(400)
+      .json({ ok: false, error: 'המחיר למנוי זה עדיין לא הוגדר. נסו שוב מאוחר יותר.' })
+  }
+  // First charge (what the key records as its locked price); `recurring`
+  // follows from the second cycle on an intro plan.
+  const lockedPrice = quote.firstCharge
+  const planId: string | null =
+    quote.shape === 'intro'
+      ? await ensureIntroPlan(tier, plan, quote.firstCharge, quote.recurring, currency)
+      : await ensurePlanForAmount(tier, plan, quote.firstCharge, currency)
+  const couponApplied = quote.couponUsed && coupon ? { code: coupon.code, pct: coupon.pct } : null
+  if (!planId) {
+    return res
+      .status(500)
+      .json({ ok: false, error: 'תצורת תוכנית לא תקינה. נסה שוב' })
   }
   const subscription = await paypalCall<{
     id: string

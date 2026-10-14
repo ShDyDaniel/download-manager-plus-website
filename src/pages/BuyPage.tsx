@@ -345,8 +345,10 @@ export function BuyPage() {
   // ── Tier-change summary (upgrade/downgrade) ──
   // Populated only when the buyer arrived via ?renew=<token>&tier=<t> and the
   // target tier differs from the key's current tier. Mirrors the server's
-  // pricing: an UPGRADE charges the prorated difference NOW (and the same key
-  // is kept); a DOWNGRADE charges nothing now and takes effect at period end.
+  // pricing (checkoutQuote in api/paypal.ts): an UPGRADE within the same
+  // interval charges the full price difference NOW (and the same key is
+  // kept); across intervals it's the full new price; a DOWNGRADE charges
+  // nothing now and takes effect at period end.
   const tierChange = (() => {
     if (!renewInfo) return null
     const currentTier = normalizeTier(renewInfo.tier)
@@ -357,8 +359,13 @@ export function BuyPage() {
     const isUpgrade = tierRank(targetTier) > tierRank(currentTier)
     if (isUpgrade) {
       // Pay the FULL price difference (new − old), not prorated — "as if you'd
-      // bought the bigger plan from the start". Matches the server charge.
-      const payNow = Math.max(0, Math.round(newEff - currentEff))
+      // bought the bigger plan from the start". Only within the same interval:
+      // a month paid isn't a year paid, so across intervals it's the full new
+      // price. To the agora, exactly what the server charges.
+      const currentPlan =
+        renewInfo.planDays === 365 ? 'yearly' : renewInfo.planDays === 30 ? 'monthly' : null
+      const diff = Math.round((newEff - currentEff) * 100) / 100
+      const payNow = currentPlan === plan && diff > 0 ? diff : newEff
       return {
         kind: 'upgrade' as const,
         currentTier,
