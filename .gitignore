@@ -5,3 +5,6 @@ dist
 .env.local
 .DS_Store
 tsconfig.tsbuildinfo
+
+# local PayPal-sandbox test environment (keys never committed)
+tests/sandbox/.env.sandbox

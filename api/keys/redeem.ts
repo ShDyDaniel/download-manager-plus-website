@@ -294,7 +294,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const result = await db.runTransaction<
       | {
           ok: true
-          tier: 'pro'
+          tier: 'basic' | 'pro' | 'ultra'
           expiresAt: string | null
           keyId: string
           replacedKeys: string[]
@@ -314,6 +314,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         tier?: string
         blocked?: boolean
       }
+      // The key's own tier — reported to the app and named in the email. A
+      // paid key with no tier predates the tiers and is Pro.
+      const keyTier: 'basic' | 'pro' | 'ultra' =
+        data.tier === 'basic' || data.tier === 'ultra' ? data.tier : 'pro'
 
       if (data.blocked) {
         return {
@@ -345,7 +349,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (data.redeemedBy === uid) {
         return {
           ok: true,
-          tier: 'pro',
+          tier: keyTier,
           expiresAt: data.expiresAt ?? null,
           keyId: rawKey,
           replacedKeys: [],
@@ -397,7 +401,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       return {
         ok: true,
-        tier: 'pro',
+        tier: keyTier,
         expiresAt: data.expiresAt ?? null,
         keyId: rawKey,
         replacedKeys: priorKeyIds,

@@ -2285,6 +2285,13 @@ async function handleSaleCompleted(
     }
   }
   if (keys.empty) {
+    // PayPal's exact fee arrives only on this event — keep it for the
+    // activation, which records this charge in the ledger.
+    await db
+      .collection('pendingSubscriptions')
+      .doc(subscriptionId)
+      .set({ firstSaleFee: parseFloat(resource.transaction_fee?.value || '0') || 0 }, { merge: true })
+      .catch(() => {})
     // The key isn't created yet (this SALE.COMPLETED arrived before
     // BILLING.SUBSCRIPTION.ACTIVATED). The charge STILL happened, so we
     // must issue a receipt here — otherwise the FIRST payment would
@@ -2340,6 +2347,11 @@ async function handleSaleCompleted(
     Date.now() - Date.parse(String(ac.at || '')) < 3 * DAY_MS
   ) {
     await keyDoc.ref.update({ 'activationCharge.saleId': resource.id, 'activationCharge.fee': saleFee })
+    // ...and onto the ledger entry the activation wrote (same charge).
+    for (const id of [`initial-${subscriptionId}`, `renew-${subscriptionId}`]) {
+      const ref = db.collection('casualLedger').doc(id)
+      if ((await ref.get()).exists) await ref.set({ fee: saleFee }, { merge: true })
+    }
     if (sumitConfigured() && (await receiptsEnabled())) {
       try {
         const recipient = key.buyerEmail || key.redeemedByEmail || ''
@@ -2625,6 +2637,8 @@ async function ensureKeyForSubscription(
   // the prorated difference it charged as a setup fee.
   let pendingChange: string | null = null
   let pendingSetupFee = 0
+  // PayPal's fee for the first charge, when its sale event came first.
+  let pendingFirstSaleFee = 0
   try {
     const pendingDoc = await db
       .collection('pendingSubscriptions')
@@ -2639,6 +2653,7 @@ async function ensureKeyForSubscription(
         tier?: string | null
         change?: string | null
         setupFee?: number | null
+        firstSaleFee?: number | null
       }
       if (typeof data.linkToUid === 'string' && data.linkToUid) {
         linkToUid = data.linkToUid
@@ -2656,6 +2671,7 @@ async function ensureKeyForSubscription(
       if (t !== 'free') pendingTier = t // a subscription is never "free"
       if (typeof data.change === 'string') pendingChange = data.change
       if (typeof data.setupFee === 'number' && data.setupFee > 0) pendingSetupFee = data.setupFee
+      if (typeof data.firstSaleFee === 'number' && data.firstSaleFee > 0) pendingFirstSaleFee = data.firstSaleFee
     }
   } catch (err) {
     console.warn(
@@ -2931,6 +2947,7 @@ async function ensureKeyForSubscription(
         name: buyerName || existing.buyerName || '',
         amount: chargeNow,
         currency: planCurrency,
+        fee: pendingFirstSaleFee,
         subscriptionId,
         kind: 'renewal',
         referredBy: (existing as { referredBy?: string }).referredBy || null,
@@ -3150,6 +3167,7 @@ async function ensureKeyForSubscription(
     name: buyerName,
     amount: initialChargePrice, // what was charged now (intro price for a "first" coupon)
     currency: planCurrency,
+    fee: pendingFirstSaleFee,
     subscriptionId,
     kind: 'initial',
     referredBy: keyReferredBy || null,
