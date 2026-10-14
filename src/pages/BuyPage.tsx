@@ -100,6 +100,9 @@ interface RenewInfo {
    *  was added — those will skip the auto-lock logic and let the
    *  buyer pick any plan. */
   planDays: number | null
+  /** A "forever" coupon on the key (%), carried over to renewals and plan
+   *  changes on the same key; null = none. */
+  couponPct?: number | null
   /** PayPal lifecycle state ('active' | 'cancelled' | 'past_due' |
    *  'suspended' | 'expired' | null). Used together with
    *  isExpired to decide if the current plan should be auto-
@@ -351,13 +354,23 @@ export function BuyPage() {
   //  - upgrade across intervals, or a downgrade: nothing now; the current
   //    tier until the expiry, then the new plan with its first charge.
   // An expired key just starts a new period at the full price.
+  // What this key's owner pays for a tier/plan: the effective price, or the
+  // key's forever coupon off the list price when cheaper (the server's
+  // checkoutQuote ownPrice).
+  const ownPrice = (t: Tier, p: Plan) => {
+    const tp = tierPrice(tierCfg[t], p)
+    const pct = renewInfo?.couponPct || 0
+    return pct > 0 && tp.regular > 0
+      ? Math.min(tp.effective, Math.max(1, Math.round((tp.regular * (100 - pct)) / 100)))
+      : tp.effective
+  }
   const tierChange = (() => {
     if (!renewInfo) return null
     const currentTier = normalizeTier(renewInfo.tier)
     const targetTier = tier
     if (currentTier === targetTier) return null
-    const currentEff = tierPrice(tierCfg[currentTier], plan).effective
-    const newEff = tierPrice(tierCfg[targetTier], plan).effective
+    const currentEff = ownPrice(currentTier, plan)
+    const newEff = ownPrice(targetTier, plan)
     const kind = tierRank(targetTier) > tierRank(currentTier) ? ('upgrade' as const) : ('downgrade' as const)
     const expMs = Date.parse(renewInfo.expiresAt || '')
     const base = { kind, currentTier, targetTier, recurring: newEff, effectiveDate: renewInfo.expiresAt }
@@ -1332,8 +1345,8 @@ export function BuyPage() {
 
   // Existing subscriber (renewal / switch / tier change): what recurs is the
   // selected tier's price for the selected cycle (== tierChange.recurring).
-  const recurring = selectedTierPrice
-  const payNow = tierChange ? tierChange.payNow : selectedTierPrice
+  const recurring = renewInfo ? ownPrice(tier, plan) : selectedTierPrice
+  const payNow = tierChange ? tierChange.payNow : recurring
   // When the new price starts recurring, if not now: the current expiry, for
   // a change that waits for it and for a prorated upgrade alike.
   const downgradeFrom =
@@ -1396,7 +1409,7 @@ export function BuyPage() {
                   )
                 ) : (
                   <>
-                    המשך לחידוש: <Amt n={selectedTierPrice} sym={curSym} />
+                    המשך לחידוש: <Amt n={recurring} sym={curSym} />
                   </>
                 )}
               </button>

@@ -113,6 +113,10 @@ async function handleInfo(req: VercelRequest, res: VercelResponse) {
     planDays?: number
     subscriptionPlanDays?: number
     subscriptionStatus?: string
+    couponPct?: number | null
+    couponDuration?: string | null
+    subscriptionPrice?: number | null
+    billingHistory?: Array<{ amount?: number }> | null
   }
   const expiresAt = data.expiresAt ? new Date(data.expiresAt) : null
   if (!expiresAt || !Number.isFinite(expiresAt.getTime())) {
@@ -136,7 +140,28 @@ async function handleInfo(req: VercelRequest, res: VercelResponse) {
     // renamed. Either way the client gets a number or null.
     planDays: data.planDays || data.subscriptionPlanDays || null,
     subscriptionStatus: data.subscriptionStatus || null,
+    // A "forever" coupon on this key — it carries over to plan changes, so
+    // the buy page quotes the same prices the checkout charges.
+    couponPct: carriedCouponPctR(data),
   })
+}
+
+/** Copy of carriedCouponPct in api/paypal.ts (no shared modules in api/). */
+function carriedCouponPctR(k: {
+  couponPct?: number | null
+  couponDuration?: string | null
+  subscriptionPrice?: number | null
+  billingHistory?: Array<{ amount?: number }> | null
+}): number | null {
+  const pct = typeof k.couponPct === 'number' && k.couponPct > 0 ? k.couponPct : 0
+  if (!pct) return null
+  if (k.couponDuration) return k.couponDuration === 'forever' ? pct : null
+  const first = Array.isArray(k.billingHistory) ? k.billingHistory[0]?.amount : undefined
+  return typeof first === 'number' &&
+    typeof k.subscriptionPrice === 'number' &&
+    Math.abs(first - k.subscriptionPrice) <= 0.01
+    ? pct
+    : null
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -201,6 +226,10 @@ async function handleSignin(req: VercelRequest, res: VercelResponse) {
         planDays?: number
         subscriptionPlanDays?: number
         subscriptionStatus?: string
+        couponPct?: number | null
+        couponDuration?: string | null
+        subscriptionPrice?: number | null
+        billingHistory?: Array<{ amount?: number }> | null
       }
       if (data.blocked) return null
       if (!data.expiresAt) return null
@@ -217,6 +246,7 @@ async function handleSignin(req: VercelRequest, res: VercelResponse) {
         renewToken: signRenewToken(uid, key),
         planDays: data.planDays || data.subscriptionPlanDays || null,
         subscriptionStatus: data.subscriptionStatus || null,
+        couponPct: carriedCouponPctR(data),
       }
     })
     .filter((k): k is NonNullable<typeof k> => k !== null)

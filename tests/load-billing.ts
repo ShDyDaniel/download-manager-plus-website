@@ -11,12 +11,12 @@ import { join } from 'node:path'
 const NAMES = [
   'TierS', 'TIER_KEYS_S', 'TierConfigS', 'TierPriceSettingsS', 'PRICE_FIELDS_S',
   'round2', 'addCalendarSubscriptionPeriod', 'withVatS', 'couponPriceFrom',
-  'tierPrice', 'upgradeProration', 'CheckoutQuote', 'checkoutQuote',
+  'tierPrice', 'upgradeProration', 'CheckoutQuote', 'carriedCouponPct', 'checkoutQuote',
   'COOLING_OFF_DAYS', 'DAY_MS', 'AVG_MONTH_DAYS', 'CancelTerms', 'cancelMath',
 ]
 const RUNTIME = [
   'TIER_KEYS_S', 'PRICE_FIELDS_S', 'round2', 'addCalendarSubscriptionPeriod', 'withVatS',
-  'couponPriceFrom', 'tierPrice', 'upgradeProration', 'checkoutQuote', 'COOLING_OFF_DAYS', 'DAY_MS',
+  'couponPriceFrom', 'tierPrice', 'upgradeProration', 'carriedCouponPct', 'checkoutQuote', 'COOLING_OFF_DAYS', 'DAY_MS',
   'AVG_MONTH_DAYS', 'cancelMath',
 ]
 

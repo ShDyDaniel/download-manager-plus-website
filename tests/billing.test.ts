@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { billing } from './load-billing.ts'
 
-const { addCalendarSubscriptionPeriod, cancelMath, checkoutQuote, couponPriceFrom, upgradeProration, withVatS, DAY_MS } = billing
+const { addCalendarSubscriptionPeriod, cancelMath, carriedCouponPct, checkoutQuote, couponPriceFrom, upgradeProration, withVatS, DAY_MS } = billing
 type TierS = 'free' | 'basic' | 'pro' | 'ultra'
 type TierConfigS = Record<'priceMonthly' | 'priceMonthlySale' | 'priceYearly' | 'priceYearlySale', number> &
   Record<string, number | null>
@@ -16,6 +16,7 @@ type QuoteArgs = {
   currentExpiresAtMs: number | null
   renewal: boolean
   coupon: { pct: number; duration: 'forever' | 'first' } | null
+  carriedCouponPct?: number | null
   nowMs: number
 }
 type CancelArgs = {
@@ -228,6 +229,36 @@ test('expired key: any tier change is just a new period at the full price, now',
 test('same-tier renewal = the plain price now, remaining days kept', () => {
   const r = q({ tier: 'pro', renewal: true, currentTier: 'pro', currentPlan: 'monthly', currentExpiresAtMs: T0 + 3 * DAY_MS })!
   assert.deepEqual([r.firstCharge, r.start, r.change], [49.9, 'now', 'renew'])
+})
+
+/* a forever coupon carries over to every change on the same key (Daniel) */
+test('which keys carry a coupon', () => {
+  assert.equal(carriedCouponPct({ couponPct: 30, couponDuration: 'forever' }), 30)
+  assert.equal(carriedCouponPct({ couponPct: 20, couponDuration: 'first' }), null)
+  assert.equal(carriedCouponPct({}), null)
+  // older keys without couponDuration: a forever coupon's first charge = the recurring price
+  assert.equal(carriedCouponPct({ couponPct: 30, subscriptionPrice: 209, billingHistory: [{ amount: 209 }] }), 30)
+  assert.equal(carriedCouponPct({ couponPct: 20, subscriptionPrice: 49.9, billingHistory: [{ amount: 40 }] }), null)
+})
+test('yearly Basic at −30% upgraded to Pro a day later: the −30% difference, prorated; −30% recurs', () => {
+  const exp = yearEnd(1)
+  const r = q({ tier: 'pro', plan: 'yearly', renewal: true, currentTier: 'basic', currentPlan: 'yearly', currentExpiresAtMs: exp, carriedCouponPct: 30 })!
+  // Basic 299 → 209, Pro 499 → 349: difference 140 for 364 of 365 days
+  assert.deepEqual([r.firstCharge, r.recurring, r.change], [round((140 * 364) / 365), 349, 'prorated'])
+})
+test('carried coupon on a downgrade, an interval change and a renewal', () => {
+  const base = { renewal: true, currentTier: 'ultra' as const, currentPlan: 'monthly' as const, currentExpiresAtMs: T0 + 9 * DAY_MS, carriedCouponPct: 30 }
+  assert.equal(q({ ...base, tier: 'basic' })!.recurring, 21) // 29.9 × 0.7 = 20.93 → 21
+  assert.equal(q({ ...base, tier: 'ultra', plan: 'yearly' })!.firstCharge, 629) // same tier, new interval: 899 × 0.7
+  assert.equal(q({ ...base, tier: 'ultra' })!.firstCharge, 63) // renewal: 89.9 × 0.7 = 62.93 → 63
+})
+test('carried coupon never stacks with a sale — the cheaper wins', () => {
+  const tiers = { ...TIERS, pro: tier(49.9, 499, 29.9, 0) }
+  const r = checkoutQuote({ tiers, plan: 'monthly', tier: 'pro', currentTier: 'pro', currentPlan: 'monthly', currentExpiresAtMs: T0 + DAY_MS, renewal: true, coupon: null, carriedCouponPct: 10, nowMs: T0 })!
+  assert.equal(r.firstCharge, 29.9) // sale 29.9 < 45
+})
+test('a new purchase ignores carriedCouponPct', () => {
+  assert.equal(q({ carriedCouponPct: 50 })!.firstCharge, 49.9)
 })
 
 /* ── cancellation ── */

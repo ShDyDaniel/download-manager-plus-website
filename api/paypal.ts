@@ -3090,7 +3090,13 @@ async function ensureKeyForSubscription(
     subscriptionStatus: 'active',
     subscriptionStartedAt: new Date().toISOString(),
     ...(pendingCoupon
-      ? { couponCode: pendingCoupon.code, couponPct: pendingCoupon.pct }
+      ? {
+          couponCode: pendingCoupon.code,
+          couponPct: pendingCoupon.pct,
+          // An intro (two-cycle) plan = a "first period" coupon; otherwise
+          // forever — and a forever coupon carries over to plan changes.
+          couponDuration: initialChargePrice < planPrice ? 'first' : 'forever',
+        }
       : {}),
     // Seed billingHistory with the initial activation payment.
     // PayPal V1 Subscriptions does NOT fire PAYMENT.SALE.COMPLETED
@@ -3558,6 +3564,27 @@ interface CheckoutQuote {
   couponUsed: boolean
 }
 
+/** The "forever" coupon a key carries (its pct), or null. Keys minted since
+ *  the coupon-carry rule store couponDuration; for older ones a forever
+ *  coupon shows as a first charge equal to the recurring price (a "first"
+ *  coupon's first charge was cheaper). */
+function carriedCouponPct(k: {
+  couponPct?: number | null
+  couponDuration?: string | null
+  subscriptionPrice?: number | null
+  billingHistory?: Array<{ amount?: number }> | null
+}): number | null {
+  const pct = typeof k.couponPct === 'number' && k.couponPct > 0 ? k.couponPct : 0
+  if (!pct) return null
+  if (k.couponDuration) return k.couponDuration === 'forever' ? pct : null
+  const first = Array.isArray(k.billingHistory) ? k.billingHistory[0]?.amount : undefined
+  return typeof first === 'number' &&
+    typeof k.subscriptionPrice === 'number' &&
+    Math.abs(first - k.subscriptionPrice) <= 0.01
+    ? pct
+    : null
+}
+
 /** What a checkout charges, and how it changes the key. `currentTier` /
  *  `currentPlan` / `currentExpiresAtMs` describe the key being renewed (plan
  *  changes); null for a new purchase. Coupons never apply to renewals or plan
@@ -3580,13 +3607,24 @@ function checkoutQuote(a: {
   currentExpiresAtMs: number | null
   renewal: boolean
   coupon: { pct: number; duration: 'forever' | 'first' } | null
+  /** A "forever" coupon the key already has: it carries over to every
+   *  change on the same key (Daniel) — renewal, upgrade, downgrade, interval. */
+  carriedCouponPct?: number | null
   nowMs: number
 }): CheckoutQuote | null {
   const { regular, effective } = tierPrice(a.tiers[a.tier], a.plan)
   if (!(regular > 0)) return null
+  // What the key's owner pays for a tier/plan: its effective price, or the
+  // carried coupon off the list price when that's cheaper (no stacking).
+  const pct = a.renewal && a.carriedCouponPct && a.carriedCouponPct > 0 ? a.carriedCouponPct : 0
+  const ownPrice = (t: TierS, plan: 'monthly' | 'yearly') => {
+    const p = tierPrice(a.tiers[t], plan)
+    return pct && p.regular > 0 ? Math.min(p.effective, couponPriceFrom(p.regular, pct)) : p.effective
+  }
+  const price = a.renewal ? ownPrice(a.tier, a.plan) : effective
   const plain: CheckoutQuote = {
-    firstCharge: effective,
-    recurring: effective,
+    firstCharge: price,
+    recurring: price,
     shape: 'single',
     start: 'now',
     change: a.renewal ? 'renew' : 'new',
@@ -3601,7 +3639,7 @@ function checkoutQuote(a: {
     if (!running) return { ...plain, why: up ? 'upgrade-full' : 'regular' }
     const scheduled: CheckoutQuote = {
       firstCharge: 0,
-      recurring: effective,
+      recurring: price,
       shape: 'single',
       start: 'period-end',
       change: 'scheduled',
@@ -3609,13 +3647,13 @@ function checkoutQuote(a: {
       couponUsed: false,
     }
     if (!up || a.currentPlan !== a.plan) return scheduled
-    const old = tierPrice(a.tiers[a.currentTier], a.plan).effective
-    const diff = round2(effective - old)
+    const old = ownPrice(a.currentTier, a.plan)
+    const diff = round2(price - old)
     // "Higher" tier that isn't dearer (odd sale setup): a plain new period.
     if (!(diff > 0)) return { ...plain, why: 'upgrade-full' }
     return {
       firstCharge: upgradeProration({ diff, plan: a.plan, expiresAtMs: a.currentExpiresAtMs as number, nowMs: a.nowMs }),
-      recurring: effective,
+      recurring: price,
       shape: 'setup',
       start: 'period-end',
       change: 'prorated',
@@ -3897,6 +3935,7 @@ async function handleCreateSubscription(
   let currentKeyExpiresAt: string | null = null
   let currentKeyPlanDays = 0
   let currentKeySubId: string | null = null
+  let currentKeyCouponPct: number | null = null
   if (body.sessionToken) {
     const claims = verifySessionToken(body.sessionToken.trim())
     if (claims) {
@@ -3939,9 +3978,14 @@ async function handleCreateSubscription(
               planDays?: number
               subscriptionPlanDays?: number
               subscriptionId?: string | null
+              couponPct?: number | null
+              couponDuration?: string | null
+              subscriptionPrice?: number | null
+              billingHistory?: Array<{ amount?: number }> | null
             }
           | undefined
         if (keyData) {
+          currentKeyCouponPct = carriedCouponPct(keyData)
           currentKeyTier = normTier(keyData.tier)
           currentKeyExpiresAt = keyData.expiresAt ?? null
           currentKeyPlanDays = keyData.planDays || keyData.subscriptionPlanDays || 0
@@ -4027,6 +4071,7 @@ async function handleCreateSubscription(
     currentExpiresAtMs: Number.isFinite(currentExpMs) ? currentExpMs : null,
     renewal: !!renewKeyId,
     coupon,
+    carriedCouponPct: renewKeyId ? currentKeyCouponPct : null,
     nowMs: Date.now(),
   })
   if (!quote) {
