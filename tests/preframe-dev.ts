@@ -11,6 +11,9 @@ import { memStore, pf } from './load-preframe.ts'
 
 const store = memStore()
 const PORT = Number(process.env.PORT) || 8792
+/** Milliseconds every room check waits, to try the app as it feels against the real site
+ *  (a server instance that has to wake up). PREFRAME_DEV_DELAY=1500 npm run preframe:dev */
+const DELAY = Number(process.env.PREFRAME_DEV_DELAY) || 0
 
 createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -35,6 +38,7 @@ createServer(async (req, res) => {
     const out = taken ? { status: 409, body: { ok: false, error: 'כתובת המייל כבר רשומה. התחבר עם הסיסמה שלך.' } } : { status: 200, body: { ok: true } }
     return void res.writeHead(out.status, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify(out.body))
   }
+  if (DELAY && body.op === 'room') await new Promise((r) => setTimeout(r, DELAY))
   const out = await pf.pfHandle(body, token, {
     store,
     verify: async (t: string) => {
