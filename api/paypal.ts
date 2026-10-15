@@ -2459,6 +2459,8 @@ async function pfHandle(body: Record<string, unknown>, token: string, ctx: PfCon
  *  the default one: getFirebase picks it by name). A key of any other project is refused, so a
  *  key pasted into the wrong variable can never point Preframe at Frameline's data. */
 let pfStoreCached: PfStore | null | undefined
+/** Why there is no database, when there is none: 'no-key' or 'wrong-key'. */
+let pfStoreProblem = ''
 function preframeStore(): PfStore | null {
   if (pfStoreCached !== undefined) return pfStoreCached
   const raw = process.env.PREFRAME_FIREBASE_SERVICE_ACCOUNT
@@ -2470,12 +2472,32 @@ function preframeStore(): PfStore | null {
   }
   if (!account || account.project_id !== PF_PROJECT_ID) {
     if (raw) console.error(`[preframe] PREFRAME_FIREBASE_SERVICE_ACCOUNT is not a key of ${PF_PROJECT_ID}`)
+    pfStoreProblem = raw ? 'wrong-key' : 'no-key'
     pfStoreCached = null
     return null
   }
   const app = getApps().find((a) => a.name === 'preframe') ?? initializeApp({ credential: cert(account as Parameters<typeof cert>[0]) }, 'preframe')
   pfStoreCached = pfAdminStore(getFirestore(app))
   return pfStoreCached
+}
+
+/** Whether the database can be reached with the key in Vercel: 'ok', 'no-key', 'wrong-key', or
+ *  'error:<code>'. No account needed; one read at most every five minutes per server instance. */
+let pfHealth: { at: number; state: string } | null = null
+async function preframeHealth(): Promise<string> {
+  if (pfHealth && Date.now() - pfHealth.at < 5 * 60_000) return pfHealth.state
+  const store = preframeStore()
+  let state = store ? 'ok' : pfStoreProblem || 'no-key'
+  if (store) {
+    try {
+      await store.get('health/check')
+    } catch (err) {
+      console.error('[preframe] health', err)
+      state = `error:${String((err as { code?: unknown }).code ?? 'unknown')}`
+    }
+  }
+  pfHealth = { at: Date.now(), state }
+  return state
 }
 
 /** action=preframe — reached from Preframe's desktop app, its browser version and its two
@@ -2490,6 +2512,7 @@ async function handlePreframe(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' })
   const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1] ?? ''
   const body = req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>) : {}
+  if (body.op === 'health') return res.status(200).json({ ok: true, database: await preframeHealth() })
   const out = await pfHandle(body, token, {
     store: preframeStore(),
     verify: async (t) => {
