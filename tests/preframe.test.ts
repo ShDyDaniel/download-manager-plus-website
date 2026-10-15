@@ -227,6 +227,23 @@ test('asks for a reset email without an account, and only for a real address', a
   assert.deepEqual(resets, ['maya@example.com'])
 })
 
+test('tells the sync server at once when a role changes or someone is taken off, and says roles to members only', async () => {
+  const { call, ctx } = caller()
+  const told: string[] = []
+  ;(ctx as { notify?: (p: string, u: string) => Promise<void> }).notify = async (p, u) => void told.push(`${p}:${u}`)
+  await call({ op: 'me' }, 'token-roni')
+  await call({ op: 'project-create', id: P, name: 'הבית', type: 'feature' }, 'token-maya')
+  await call({ op: 'member-add', projectId: P, email: 'roni@example.com', role: 'editor' }, 'token-maya')
+  assert.deepEqual((await call({ op: 'role-of', projectId: P, uid: 'roni1' }, 'token-roni')).body, { ok: true, role: 'editor' })
+  await call({ op: 'member-role', projectId: P, uid: 'roni1', role: 'viewer' }, 'token-maya')
+  assert.deepEqual((await call({ op: 'role-of', projectId: P, uid: 'roni1' }, 'token-maya')).body, { ok: true, role: 'viewer' })
+  await call({ op: 'member-remove', projectId: P, uid: 'roni1' }, 'token-maya')
+  assert.deepEqual(told, [`${P}:roni1`, `${P}:roni1`])
+  assert.deepEqual((await call({ op: 'role-of', projectId: P, uid: 'roni1' }, 'token-maya')).body, { ok: true, role: null })
+  // Someone outside the project learns nothing.
+  assert.equal((await call({ op: 'role-of', projectId: P, uid: 'maya1' }, 'token-roni')).status, 403)
+})
+
 test('a whole round: a project, a person, an invitation, a room, the allowance', async () => {
   const { call } = caller()
   const me = await call({ op: 'me' }, 'token-maya')

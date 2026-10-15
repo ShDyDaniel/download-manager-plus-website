@@ -2353,6 +2353,9 @@ interface PfContext {
   verify: (token: string) => Promise<PfIdentity | null>
   /** Frameline's own password-reset email (answers alike for every address). */
   resetPassword: (email: string) => Promise<void>
+  /** Tells the sync server that this person's access to this project changed, so the documents
+   *  they have open follow at once (read-only, writable, or closed). Never fails the request. */
+  notify?: (projectId: string, uid: string) => Promise<void>
   now: number
 }
 
@@ -2401,10 +2404,18 @@ async function pfHandle(body: Record<string, unknown>, token: string, ctx: PfCon
       case 'member-role':
         if (!pfIsRole(role)) return no(400, 'תפקיד לא מוכר.')
         await pfSetRole(store, who.uid, str('projectId'), str('uid'), role)
+        await ctx.notify?.(str('projectId'), str('uid')).catch(() => undefined)
         return ok()
       case 'member-remove':
         await pfRemoveMember(store, who.uid, str('projectId'), str('uid'))
+        await ctx.notify?.(str('projectId'), str('uid')).catch(() => undefined)
         return ok()
+      // The sync server, asked by someone in the project to apply a change at once: what this
+      // person's role is now (the project's people are no secret to its members).
+      case 'role-of': {
+        if (!(await pfRoleIn(store, str('projectId'), who.uid))) return no(403, 'אין לך גישה לפרויקט הזה.')
+        return ok({ role: await pfRoleIn(store, str('projectId'), str('uid')) })
+      }
       case 'document-register': {
         const kind = body.kind
         if (!pfIsDocKind(kind) || kind === 'project') return no(400, 'סוג מסמך לא מוכר.')
@@ -2535,6 +2546,16 @@ async function handlePreframe(req: VercelRequest, res: VercelResponse) {
     resetPassword: async (email) => {
       const r = await fetch(`https://${req.headers.host}/api/reset-password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }) })
       if (r.status >= 500) throw new Error(`reset-password answered ${r.status}`)
+    },
+    // With the token of whoever made the change: the sync server checks it, and asks back here
+    // what the role is now (op role-of), so nothing it is told has to be trusted.
+    notify: async (projectId, uid) => {
+      await fetch('https://sync.framelineapp.com/notify', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, uid }),
+        signal: AbortSignal.timeout(4000),
+      })
     },
     now: Date.now(),
   })

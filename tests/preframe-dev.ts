@@ -46,6 +46,10 @@ createServer(async (req, res) => {
       return dev ? { uid: dev[1], email: dev[2].toLowerCase(), emailVerified: true, name: dev[1] } : null
     },
     resetPassword: async (email: string) => console.log(`(a reset email would go to ${email})`),
+    // The local sync server (Preframe's sync/ npm run dev), as the real site tells the real one.
+    notify: async (projectId: string, uid: string) => {
+      await fetch('http://127.0.0.1:8790/notify', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ projectId, uid }) }).catch(() => undefined)
+    },
     now: Date.now(),
   })
   res.writeHead(out.status, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify(out.body))
