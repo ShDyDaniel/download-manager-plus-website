@@ -8,3 +8,6 @@ tsconfig.tsbuildinfo
 
 # local PayPal-sandbox test environment (keys never committed)
 tests/sandbox/.env.sandbox
+
+# Preframe tests: the section cut out of api/paypal.ts (tests/load-preframe.ts)
+tests/.gen/

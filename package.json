@@ -8,6 +8,8 @@
     "build": "tsc -b && tsc -p api --noEmit && vite build",
     "preview": "vite preview --port 4173",
     "test:billing": "node --experimental-strip-types --test tests/billing.test.ts",
+    "test:preframe": "node --experimental-strip-types --test tests/preframe.test.ts",
+    "preframe:dev": "node --experimental-strip-types tests/preframe-dev.ts",
     "deploy": "npm run build && gh-pages -d dist"
   },
   "dependencies": {

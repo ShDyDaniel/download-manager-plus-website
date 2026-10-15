@@ -50,7 +50,8 @@ const PAYPAL_BASE =
 let firebaseApp: App | null = null
 function getFirebase(): App {
   if (firebaseApp) return firebaseApp
-  const existing = getApps()[0]
+  // By name: Preframe's database is a second, named app (handlePreframe), never this one.
+  const existing = getApps().find((a) => a.name === '[DEFAULT]')
   if (existing) {
     firebaseApp = existing
     return firebaseApp
@@ -1704,6 +1705,814 @@ function recordVercelInvocation(): void {
     .catch(() => {})
 }
 
+// >>> PREFRAME
+/* ─────────────────────────────────────────────────────────────
+ *  Preframe — the pre-production app of the Frameline family
+ *  (repo ~/Documents/preproduction-suite; docs/accounts.md there).
+ *
+ *  Its accounts, plans, monthly AI-picture allowance, companies,
+ *  projects, people and invitations live in ITS OWN Firebase project
+ *  (`preframe-1c256`, key in env PREFRAME_FIREBASE_SERVICE_ACCOUNT).
+ *  People sign in with their Frameline account; the ID token is
+ *  checked here as everywhere else in this file. Only this server
+ *  reaches that database (its rules deny every client). Preframe's
+ *  two Cloudflare Workers (real-time sync, AI pictures) hold no key:
+ *  they ask here with the person's own ID token.
+ *
+ *  One action, `preframe`, with `op` in the body (pfHandle). Everything
+ *  between the PREFRAME markers is cut out by tests/load-preframe.ts
+ *  and run against a database in memory, so it stays self-contained:
+ *  it uses `crypto` and the firebase-admin names imported at the top
+ *  of this file, and nothing else from it.
+ * ───────────────────────────────────────────────────────────── */
+
+const PF_PROJECT_ID = 'preframe-1c256'
+
+// ---- the database: the small part of Firestore this code uses ----
+// A document is a path and plain fields; every read carries its
+// version (update time), and a write may hold only if the document is
+// still that version — how a decision made on a read stays true when
+// two requests come at once (pfAtomically reads, decides, tries again).
+
+type PfValue = string | number | boolean | null | PfValue[] | { [key: string]: PfValue }
+type PfFields = { [key: string]: PfValue }
+interface PfSnapshot {
+  path: string
+  id: string
+  data: PfFields
+  version: string
+}
+type PfFilter = [field: string, op: '==' | 'array-contains' | 'in', value: PfValue]
+type PfWrite =
+  | { op: 'create'; path: string; data: PfFields }
+  | { op: 'set'; path: string; data: PfFields }
+  | { op: 'update'; path: string; data: PfFields; ifVersion?: string }
+  | { op: 'delete'; path: string; ifVersion?: string }
+interface PfStore {
+  get(path: string): Promise<PfSnapshot | null>
+  getAll(paths: string[]): Promise<(PfSnapshot | null)[]>
+  /** Documents of a collection passing every filter (unordered). */
+  query(collection: string, filters: PfFilter[], limit?: number): Promise<PfSnapshot[]>
+  /** All the writes or none; PfConflict when a condition no longer holds. */
+  commit(writes: PfWrite[]): Promise<void>
+}
+
+/** Someone else wrote first: read again and decide again. */
+class PfConflict extends Error {}
+
+/** A refusal with words for the person (Hebrew) and an HTTP status. */
+class PfRefused extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+async function pfAtomically<T>(fn: () => Promise<T>, tries = 10): Promise<T> {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn()
+    } catch (err) {
+      if (!(err instanceof PfConflict) || i >= tries) throw err
+      await new Promise((r) => setTimeout(r, Math.random() * 25 * i))
+    }
+  }
+}
+
+async function pfCreateIfMissing(store: PfStore, path: string, data: PfFields): Promise<boolean> {
+  try {
+    await store.commit([{ op: 'create', path, data }])
+    return true
+  } catch (err) {
+    if (err instanceof PfConflict) return false
+    throw err
+  }
+}
+
+/** A path from plain ids only (nothing a request could use to reach another collection). */
+function pfPath(...parts: string[]): string {
+  for (const p of parts) if (!/^[A-Za-z0-9_-]{1,128}$/.test(p)) throw new PfRefused(400, 'מזהה לא תקין.')
+  return parts.join('/')
+}
+
+type PfDocSnap = Awaited<ReturnType<ReturnType<Firestore['doc']>['get']>>
+type PfQuery = ReturnType<ReturnType<Firestore['collection']>['where']>
+
+/** Firestore through firebase-admin. The version is the update time, as seconds:nanoseconds. */
+function pfAdminStore(db: Firestore): PfStore {
+  const snap = (d: PfDocSnap): PfSnapshot | null =>
+    d.exists && d.updateTime ? { path: d.ref.path, id: d.id, data: (d.data() ?? {}) as PfFields, version: `${d.updateTime.seconds}:${d.updateTime.nanoseconds}` } : null
+  const timeOf = (version: string) => {
+    const [s, n] = version.split(':').map(Number)
+    return new Timestamp(s, n)
+  }
+  // ALREADY_EXISTS, FAILED_PRECONDITION, NOT_FOUND, ABORTED: the write lost a race.
+  const LOST = new Set([6, 9, 5, 10])
+  return {
+    async get(path) {
+      return snap(await db.doc(path).get())
+    },
+    async getAll(paths) {
+      if (!paths.length) return []
+      return (await db.getAll(...paths.map((p) => db.doc(p)))).map(snap)
+    },
+    async query(collection, filters, limit) {
+      let q: PfQuery = db.collection(collection)
+      for (const [field, op, value] of filters) q = q.where(field, op, value)
+      if (limit) q = q.limit(limit)
+      return (await q.get()).docs.map((d) => snap(d)!).filter(Boolean)
+    },
+    async commit(writes) {
+      if (!writes.length) return
+      const batch = db.batch()
+      for (const w of writes) {
+        const ref = db.doc(w.path)
+        if (w.op === 'create') batch.create(ref, w.data)
+        else if (w.op === 'set') batch.set(ref, w.data)
+        else if (w.op === 'update') {
+          if (w.ifVersion) batch.update(ref, w.data, { lastUpdateTime: timeOf(w.ifVersion) })
+          else batch.update(ref, w.data)
+        } else if (w.ifVersion) batch.delete(ref, { lastUpdateTime: timeOf(w.ifVersion) })
+        else batch.delete(ref)
+      }
+      try {
+        await batch.commit()
+      } catch (err) {
+        if (LOST.has(Number((err as { code?: unknown }).code))) throw new PfConflict(String(err))
+        throw err
+      }
+    },
+  }
+}
+
+// ---- accounts, plans, the monthly allowance ----
+//   accounts/{uid}          email (lower-case), emailVerified, name, createdAt, seenAt
+//   subscriptions/{uid}     plan, status ('active'|'canceled'|'expired'), source, startedAt,
+//                           periodEnd (null = open-ended), providerRef, updatedAt
+//   usage/{uid}_{YYYY-MM}   uid, month, pictures (taken), neurons (what they cost us),
+//                           pending {reservation id: when} (taken, not yet settled)
+//   events/{random}         at, uid, kind, data (grants, for support)
+
+interface PfIdentity {
+  uid: string
+  email: string
+  emailVerified: boolean
+  name: string
+}
+
+type PfPlan = 'free' | 'sub'
+/** AI pictures a month paid by us; 0 = only the free daily allowance everyone shares.
+ *  1,500: Daniel's number (2026-10-12). */
+const PF_PICTURES_A_MONTH: Record<PfPlan, number> = { free: 0, sub: 1500 }
+/** The most one picture may be booked at (a net under a wrong report; a frame is ~170-500). */
+const PF_MAX_NEURONS_A_PICTURE = 20_000
+
+const pfIso = (now: number) => new Date(now).toISOString()
+const pfMonthOf = (now: number) => new Date(now).toISOString().slice(0, 7)
+
+function pfRandomId(length = 20): string {
+  return Array.from(crypto.randomBytes(length), (b) => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36]).join('')
+}
+
+/** How often "last seen" is written: a visit every few seconds need not be a write. */
+const PF_SEEN_EVERY = 60 * 60_000
+const pfVisits = new WeakMap<PfStore, Map<string, number>>()
+
+/** Records that this account was here (creating it on the first visit). */
+async function pfTouchUser(store: PfStore, who: PfIdentity, now: number): Promise<void> {
+  let recently = pfVisits.get(store)
+  if (!recently) pfVisits.set(store, (recently = new Map()))
+  const key = `${who.uid}\n${who.email}\n${who.name}\n${who.emailVerified}`
+  const last = recently.get(key)
+  if (last !== undefined && now >= last && now - last < PF_SEEN_EVERY) return
+  const path = pfPath('accounts', who.uid)
+  const email = who.email.trim().toLowerCase()
+  const have = await store.get(path)
+  if (!have) {
+    if (!(await pfCreateIfMissing(store, path, { email, emailVerified: who.emailVerified, name: who.name, createdAt: pfIso(now), seenAt: pfIso(now) }))) return pfTouchUser(store, who, now)
+  } else {
+    const d = have.data
+    const name = who.name || String(d.name ?? '') // a token without a name keeps the one known
+    const stale = !(Date.parse(String(d.seenAt ?? '')) > now - PF_SEEN_EVERY)
+    if (stale || d.email !== email || d.emailVerified !== who.emailVerified || d.name !== name)
+      await store.commit([{ op: 'update', path, data: { email, emailVerified: who.emailVerified, name, seenAt: pfIso(now) } }])
+  }
+  recently.set(key, now)
+  if (recently.size > 5000) recently.clear()
+}
+
+interface PfAccount {
+  uid: string
+  email: string
+  name: string
+}
+const pfAccountOf = (s: PfSnapshot): PfAccount => ({ uid: s.id, email: String(s.data.email ?? ''), name: String(s.data.name ?? '') })
+
+async function pfAccountByEmail(store: PfStore, email: string): Promise<PfAccount | null> {
+  const found = await store.query('accounts', [['email', '==', email.trim().toLowerCase()]])
+  found.sort((a, b) => String(b.data.seenAt ?? '').localeCompare(String(a.data.seenAt ?? '')))
+  return found[0] ? pfAccountOf(found[0]) : null
+}
+
+/** The plan right now: a subscription that is active and not past its end. */
+async function pfPlanOf(store: PfStore, uid: string, now: number): Promise<PfPlan> {
+  const sub = (await store.get(pfPath('subscriptions', uid)))?.data
+  if (!sub || sub.status !== 'active' || (sub.plan !== 'free' && sub.plan !== 'sub')) return 'free'
+  if (typeof sub.periodEnd === 'string' && Date.parse(sub.periodEnd) <= now) return 'free'
+  return sub.plan
+}
+
+const pfUsagePath = (uid: string, month: string) => pfPath('usage', `${uid}_${month}`)
+
+async function pfUsageOf(store: PfStore, uid: string, month: string): Promise<{ count: number; neurons: number }> {
+  const d = (await store.get(pfUsagePath(uid, month)))?.data
+  return { count: Number(d?.pictures ?? 0), neurons: Number(d?.neurons ?? 0) }
+}
+
+function pfPending(data: PfFields | undefined, now: number): Record<string, string> {
+  const out: Record<string, string> = {}
+  const raw = data?.pending
+  if (raw && typeof raw === 'object' && !Array.isArray(raw))
+    for (const [id, at] of Object.entries(raw)) if (typeof at === 'string' && Date.parse(at) > now - 86_400_000) out[id] = at // a day old: never coming
+  return out
+}
+
+/** Takes one picture out of the month for the AI Worker, which settles it once the picture
+ *  is made or not. The reservation id stays between this server and the Worker, so the person
+ *  cannot give back a picture they got; taking one themselves only costs themselves. */
+async function pfTakePicture(store: PfStore, uid: string, perMonth: number, now: number): Promise<{ ok: boolean; id?: string; month: string; left: number }> {
+  const month = pfMonthOf(now)
+  if (perMonth <= 0) return { ok: false, month, left: 0 }
+  const path = pfUsagePath(uid, month)
+  return pfAtomically(async () => {
+    const have = await store.get(path)
+    const count = Number(have?.data.pictures ?? 0)
+    if (count >= perMonth) return { ok: false, month, left: 0 }
+    const id = pfRandomId(24)
+    const pending = { ...pfPending(have?.data, now), [id]: pfIso(now) }
+    await store.commit([
+      have ? { op: 'update', path, data: { pictures: count + 1, pending }, ifVersion: have.version } : { op: 'create', path, data: { uid, month, pictures: 1, neurons: 0, pending } },
+    ])
+    return { ok: true, id, month, left: perMonth - count - 1 }
+  })
+}
+
+/** Settles a reservation: a picture never made goes back; what it cost goes in the books. */
+async function pfSettlePicture(store: PfStore, uid: string, month: string, id: string, made: boolean, neurons: number, now: number): Promise<void> {
+  if (!/^\d{4}-\d{2}$/.test(month)) throw new PfRefused(400, 'חודש לא תקין.')
+  const path = pfUsagePath(uid, month)
+  await pfAtomically(async () => {
+    const have = await store.get(path)
+    const pending = pfPending(have?.data, now)
+    if (!have || !(id in pending)) return // settled already, or never taken
+    delete pending[id]
+    const count = Number(have.data.pictures ?? 0)
+    const cost = Math.min(PF_MAX_NEURONS_A_PICTURE, Math.max(0, Number(neurons) || 0))
+    await store.commit([
+      { op: 'update', path, data: { pictures: made ? count : Math.max(0, count - 1), neurons: Number(have.data.neurons ?? 0) + cost, pending }, ifVersion: have.version },
+    ])
+  })
+}
+
+/** Puts an account on a plan by hand (support, a gift). False when no such account signed in yet. */
+async function pfGrant(store: PfStore, email: string, plan: PfPlan, periodEnd: string | null, by: string, now: number): Promise<boolean> {
+  const user = await pfAccountByEmail(store, email)
+  if (!user) return false
+  const at = pfIso(now)
+  const path = pfPath('subscriptions', user.uid)
+  const have = await store.get(path)
+  const event: PfWrite = { op: 'create', path: pfPath('events', pfRandomId()), data: { at, uid: user.uid, kind: 'grant', data: { plan, periodEnd, by } } }
+  if (plan === 'free') await store.commit([...(have ? [{ op: 'update' as const, path, data: { status: 'canceled', updatedAt: at } }] : []), event])
+  else {
+    const startedAt = have?.data.status === 'active' ? String(have.data.startedAt ?? at) : at
+    await store.commit([{ op: 'set', path, data: { uid: user.uid, plan, status: 'active', source: 'admin', startedAt, periodEnd, providerRef: null, updatedAt: at } }, event])
+  }
+  return true
+}
+
+// ---- companies, projects, people, invitations, documents ----
+//   companies/{id}   name, createdBy, createdAt, members {uid: 'owner'|'admin'|'member'}, memberUids
+//   projects/{id}    companyId, name, type, createdBy, createdAt, updatedAt, archived,
+//                    members {uid: {role, addedBy, addedAt, overrides}}, memberUids
+//                    (its id is the id of the project's own shared document)
+//   invites/{token}  projectId, email, role, createdBy, createdAt, expiresAt, usedBy, usedAt
+//   documents/{id}   projectId, kind, createdBy, createdAt — every shared document is one
+//                    project's: the project's own, its scripts, their histories, its sheets
+// A project's people are kept on the project: one read says who is in it, and a change to
+// them is one write that holds only if nobody changed them in between.
+
+type PfRole = 'manager' | 'editor' | 'viewer'
+type PfCompanyRole = 'owner' | 'admin' | 'member'
+type PfProjectType = 'feature' | 'series' | 'short' | 'commercial' | 'documentary'
+type PfDocKind = 'project' | 'script' | 'history' | 'doc'
+
+const PF_RANK: Record<PfRole, number> = { viewer: 1, editor: 2, manager: 3 }
+const pfAtLeast = (role: PfRole | null | undefined, need: PfRole) => !!role && PF_RANK[role] >= PF_RANK[need]
+/** A document or project id as the app makes them. */
+const pfIsId = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9]{8,40}$/.test(v)
+const pfIsRole = (v: unknown): v is PfRole => v === 'manager' || v === 'editor' || v === 'viewer'
+const pfIsProjectType = (v: unknown): v is PfProjectType => v === 'feature' || v === 'series' || v === 'short' || v === 'commercial' || v === 'documentary'
+const pfIsDocKind = (v: unknown): v is PfDocKind => v === 'project' || v === 'script' || v === 'history' || v === 'doc'
+const pfIsCompanyRole = (v: unknown): v is PfCompanyRole => v === 'owner' || v === 'admin' || v === 'member'
+const pfIsToken = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9]{32}$/.test(v)
+
+const PF_INVITE_DAYS = 14
+/** How stale "last worked on" may get before a visit writes it again. */
+const PF_TOUCH_EVERY = 5 * 60_000
+
+interface PfMember {
+  role: PfRole
+  addedBy: string | null
+  addedAt: string
+}
+
+function pfMembersIn(project: PfSnapshot): Record<string, PfMember> {
+  const out: Record<string, PfMember> = {}
+  const raw = project.data.members
+  if (raw && typeof raw === 'object' && !Array.isArray(raw))
+    for (const [uid, m] of Object.entries(raw)) {
+      if (!m || typeof m !== 'object' || Array.isArray(m) || !pfIsRole(m.role)) continue
+      out[uid] = { role: m.role, addedBy: typeof m.addedBy === 'string' ? m.addedBy : null, addedAt: String(m.addedAt ?? '') }
+    }
+  return out
+}
+
+/** The project's people as stored: the map and the list it is searched by, always together. */
+function pfMembersData(members: Record<string, PfMember>): PfFields {
+  const map: PfFields = {}
+  for (const [uid, m] of Object.entries(members)) map[uid] = { role: m.role, addedBy: m.addedBy, addedAt: m.addedAt, overrides: {} }
+  return { members: map, memberUids: Object.keys(members).sort() }
+}
+
+function pfCompanyRoleIn(company: PfSnapshot | null, uid: string): PfCompanyRole | null {
+  const raw = company?.data.members
+  const role = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw[uid] : null
+  return pfIsCompanyRole(role) ? role : null
+}
+
+/** The project and the person's role in it: their own, or manager for its company's owner and admins. */
+async function pfProjectWithRole(store: PfStore, projectId: string, uid: string): Promise<{ project: PfSnapshot; role: PfRole | null } | null> {
+  if (!pfIsId(projectId)) return null
+  const project = await store.get(pfPath('projects', projectId))
+  if (!project) return null
+  const companyId = String(project.data.companyId ?? '')
+  const company = companyId ? await store.get(pfPath('companies', companyId)) : null
+  const c = pfCompanyRoleIn(company, uid)
+  return { project, role: c === 'owner' || c === 'admin' ? 'manager' : (pfMembersIn(project)[uid]?.role ?? null) }
+}
+
+const pfRoleIn = async (store: PfStore, projectId: string, uid: string) => (await pfProjectWithRole(store, projectId, uid))?.role ?? null
+
+interface PfCompany {
+  id: string
+  name: string
+  role: PfCompanyRole
+}
+
+async function pfCompaniesOf(store: PfStore, uid: string): Promise<PfCompany[]> {
+  const found = await store.query('companies', [['memberUids', 'array-contains', uid]])
+  found.sort((a, b) => String(a.data.createdAt ?? '').localeCompare(String(b.data.createdAt ?? '')))
+  return found.flatMap((c) => {
+    const role = pfCompanyRoleIn(c, uid)
+    return role ? [{ id: c.id, name: String(c.data.name ?? ''), role }] : []
+  })
+}
+
+/** Records the person and makes sure they have a company of their own; returns their companies. */
+async function pfArrive(store: PfStore, who: PfIdentity, now: number): Promise<PfCompany[]> {
+  await pfTouchUser(store, who, now)
+  const companies = await pfCompaniesOf(store, who.uid)
+  if (companies.some((c) => c.role === 'owner')) return companies
+  // Its id comes from the account, so two first visits at once make one company, not two.
+  await pfCreateIfMissing(store, pfPath('companies', `own_${who.uid}`), {
+    name: who.name ? `ההפקות של ${who.name}` : 'ההפקות שלי',
+    createdBy: who.uid,
+    createdAt: pfIso(now),
+    members: { [who.uid]: 'owner' },
+    memberUids: [who.uid],
+  })
+  return pfCompaniesOf(store, who.uid)
+}
+
+interface PfProjectRow {
+  id: string
+  companyId: string
+  name: string
+  type: PfProjectType
+  role: PfRole
+  createdAt: string
+  updatedAt: string
+  archived: boolean
+}
+
+const pfRowOf = (p: PfSnapshot, role: PfRole): PfProjectRow => ({
+  id: p.id,
+  companyId: String(p.data.companyId ?? ''),
+  name: String(p.data.name ?? ''),
+  type: pfIsProjectType(p.data.type) ? p.data.type : 'feature',
+  role,
+  createdAt: String(p.data.createdAt ?? ''),
+  updatedAt: String(p.data.updatedAt ?? ''),
+  archived: p.data.archived === true,
+})
+
+async function pfProjectsOf(store: PfStore, uid: string): Promise<PfProjectRow[]> {
+  const companies = await pfCompaniesOf(store, uid)
+  const running = companies.filter((c) => c.role === 'owner' || c.role === 'admin').map((c) => c.id)
+  const lists = await Promise.all([
+    store.query('projects', [['memberUids', 'array-contains', uid]]),
+    // `in` takes up to 30 values at a time.
+    ...Array.from({ length: Math.ceil(running.length / 30) }, (_, i) => store.query('projects', [['companyId', 'in', running.slice(i * 30, i * 30 + 30)]])),
+  ])
+  const rows = new Map<string, PfProjectRow>()
+  for (const p of lists.flat()) {
+    if (rows.has(p.id)) continue
+    const role = running.includes(String(p.data.companyId)) ? 'manager' : pfMembersIn(p)[uid]?.role
+    if (role) rows.set(p.id, pfRowOf(p, role))
+  }
+  return [...rows.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+}
+
+/** A new project in one of the person's companies, with them as its manager. The app may propose
+ *  the id (a project made on a computer before it went to the cloud); it must be nobody's yet. */
+async function pfCreateProject(store: PfStore, who: PfIdentity, input: { id?: unknown; name?: unknown; type?: unknown; companyId?: unknown }, now: number): Promise<PfProjectRow> {
+  const name = String(input.name ?? '').trim().slice(0, 200)
+  if (!name) throw new PfRefused(400, 'לפרויקט צריך שם.')
+  if (!pfIsProjectType(input.type)) throw new PfRefused(400, 'סוג פרויקט לא מוכר.')
+  const type = input.type
+  const companies = await pfArrive(store, who, now)
+  const company = typeof input.companyId === 'string' ? companies.find((c) => c.id === input.companyId) : companies.find((c) => c.role === 'owner')
+  if (!company) throw new PfRefused(403, 'אין לך גישה לחברה הזאת.')
+  if (company.role === 'member') throw new PfRefused(403, 'רק מנהלי החברה פותחים בה פרויקטים.')
+  const id = input.id === undefined || input.id === null ? pfRandomId() : input.id
+  if (!pfIsId(id)) throw new PfRefused(400, 'מזהה לא תקין.')
+  const at = pfIso(now)
+  try {
+    // The project and its own document in one write that holds only if neither was there.
+    await store.commit([
+      { op: 'create', path: pfPath('projects', id), data: { companyId: company.id, name, type, createdBy: who.uid, createdAt: at, updatedAt: at, archived: false, ...pfMembersData({ [who.uid]: { role: 'manager', addedBy: who.uid, addedAt: at } }) } },
+      { op: 'create', path: pfPath('documents', id), data: { projectId: id, kind: 'project', createdBy: who.uid, createdAt: at } },
+    ])
+  } catch (err) {
+    if (err instanceof PfConflict) throw new PfRefused(409, 'המזהה הזה כבר תפוס.')
+    throw err
+  }
+  return { id, companyId: company.id, name, type, role: 'manager', createdAt: at, updatedAt: at, archived: false }
+}
+
+async function pfUpdateProject(store: PfStore, uid: string, id: string, patch: { name?: unknown; type?: unknown; archived?: unknown }, now: number): Promise<void> {
+  if (!pfAtLeast(await pfRoleIn(store, id, uid), 'manager')) throw new PfRefused(403, 'רק מנהל הפרויקט יכול לשנות אותו.')
+  const data: PfFields = { updatedAt: pfIso(now) }
+  if (typeof patch.name === 'string') {
+    const name = patch.name.trim().slice(0, 200)
+    if (!name) throw new PfRefused(400, 'לפרויקט צריך שם.')
+    data.name = name
+  }
+  if (patch.type !== undefined) {
+    if (!pfIsProjectType(patch.type)) throw new PfRefused(400, 'סוג פרויקט לא מוכר.')
+    data.type = patch.type
+  }
+  if (typeof patch.archived === 'boolean') data.archived = patch.archived
+  await store.commit([{ op: 'update', path: pfPath('projects', id), data }])
+}
+
+/** Marks a project as worked on (the home screen sorts by it); a visit minutes after the last writes nothing. */
+async function pfTouchProject(store: PfStore, id: string, since: string, now: number): Promise<void> {
+  if (since && now - Date.parse(since) < PF_TOUCH_EVERY) return
+  try {
+    await store.commit([{ op: 'update', path: pfPath('projects', id), data: { updatedAt: pfIso(now) } }])
+  } catch (err) {
+    if (!(err instanceof PfConflict)) throw err
+  }
+}
+
+interface PfPendingInvite {
+  token: string
+  email: string
+  role: PfRole
+  expiresAt: string
+}
+
+async function pfPendingInvites(store: PfStore, projectId: string, now: number): Promise<PfPendingInvite[]> {
+  const found = await store.query('invites', [['projectId', '==', projectId]])
+  return found
+    .filter((i) => !i.data.usedAt && Date.parse(String(i.data.expiresAt)) > now && pfIsRole(i.data.role))
+    .sort((a, b) => String(a.data.createdAt).localeCompare(String(b.data.createdAt)))
+    .map((i) => ({ token: i.id, email: String(i.data.email ?? ''), role: i.data.role as PfRole, expiresAt: String(i.data.expiresAt) }))
+}
+
+async function pfMembersOf(store: PfStore, uid: string, projectId: string, now: number) {
+  const found = await pfProjectWithRole(store, projectId, uid)
+  if (!found?.role) throw new PfRefused(404, 'הפרויקט לא נמצא.')
+  const list = Object.entries(pfMembersIn(found.project)).sort(([, a], [, b]) => a.addedAt.localeCompare(b.addedAt))
+  const got = await store.getAll(list.map(([u]) => pfPath('accounts', u)))
+  const accounts = new Map(got.filter((s): s is PfSnapshot => !!s).map((s) => [s.id, pfAccountOf(s)]))
+  const members = list.map(([u, m]) => ({ uid: u, email: accounts.get(u)?.email ?? '', name: accounts.get(u)?.name ?? '', role: m.role, addedAt: m.addedAt }))
+  // Who has an invitation waiting is the manager's business only.
+  return { members, invites: pfAtLeast(found.role, 'manager') ? await pfPendingInvites(store, projectId, now) : [] }
+}
+
+/** Changes a project's people: `change` gets them as they are now and returns them changed (or
+ *  throws). Only a manager may, unless `notManager` is null (someone leaving by themselves). */
+async function pfChangeMembers(store: PfStore, projectId: string, actor: string, notManager: string | null, change: (members: Record<string, PfMember>) => Record<string, PfMember>): Promise<void> {
+  await pfAtomically(async () => {
+    const found = await pfProjectWithRole(store, projectId, actor)
+    if (!found) throw new PfRefused(404, 'הפרויקט לא נמצא.')
+    if (notManager && !pfAtLeast(found.role, 'manager')) throw new PfRefused(403, notManager)
+    const next = change({ ...pfMembersIn(found.project) })
+    await store.commit([{ op: 'update', path: found.project.path, data: pfMembersData(next), ifVersion: found.project.version }])
+  })
+}
+
+const pfManagers = (members: Record<string, PfMember>) => Object.values(members).filter((m) => m.role === 'manager').length
+
+async function pfCreateInvite(store: PfStore, actor: string, projectId: string, email: string, role: PfRole, now: number): Promise<PfPendingInvite> {
+  if (!pfAtLeast(await pfRoleIn(store, projectId, actor), 'manager')) throw new PfRefused(403, 'רק מנהל הפרויקט מזמין אנשים.')
+  const token = pfRandomId(32)
+  const expiresAt = pfIso(now + PF_INVITE_DAYS * 86_400_000)
+  const to = email.trim().toLowerCase()
+  await store.commit([{ op: 'create', path: pfPath('invites', token), data: { projectId, email: to, role, createdBy: actor, createdAt: pfIso(now), expiresAt, usedBy: null, usedAt: null } }])
+  return { token, email: to, role, expiresAt }
+}
+
+/** Adds a person by the email of their account; someone who never used the app gets an invitation link instead. */
+async function pfAddMember(store: PfStore, actor: string, projectId: string, emailIn: string, role: PfRole, now: number) {
+  if (!pfAtLeast(await pfRoleIn(store, projectId, actor), 'manager')) throw new PfRefused(403, 'רק מנהל הפרויקט מוסיף אנשים.')
+  const email = emailIn.trim().toLowerCase()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new PfRefused(400, 'כתובת האימייל לא תקינה.')
+  const user = await pfAccountByEmail(store, email)
+  if (!user) return { invite: await pfCreateInvite(store, actor, projectId, email, role, now) }
+  let addedAt = pfIso(now)
+  await pfChangeMembers(store, projectId, actor, 'רק מנהל הפרויקט מוסיף אנשים.', (members) => {
+    const had = members[user.uid]
+    if (had) addedAt = had.addedAt
+    members[user.uid] = had ? { ...had, role } : { role, addedBy: actor, addedAt }
+    if (had?.role === 'manager' && pfManagers(members) < 1) throw new PfRefused(409, 'לפרויקט צריך להישאר מנהל אחד לפחות.')
+    return members
+  })
+  return { member: { uid: user.uid, email: user.email, name: user.name, role, addedAt } }
+}
+
+async function pfSetRole(store: PfStore, actor: string, projectId: string, uid: string, role: PfRole): Promise<void> {
+  await pfChangeMembers(store, projectId, actor, 'רק מנהל הפרויקט משנה תפקידים.', (members) => {
+    const current = members[uid]
+    if (!current) throw new PfRefused(404, 'האדם הזה לא בפרויקט.')
+    members[uid] = { ...current, role }
+    if (current.role === 'manager' && pfManagers(members) < 1) throw new PfRefused(409, 'לפרויקט צריך להישאר מנהל אחד לפחות.')
+    return members
+  })
+}
+
+async function pfRemoveMember(store: PfStore, actor: string, projectId: string, uid: string): Promise<void> {
+  await pfChangeMembers(store, projectId, actor, actor === uid ? null : 'רק מנהל הפרויקט מוציא אנשים.', (members) => {
+    const current = members[uid]
+    if (!current) throw new PfRefused(404, 'האדם הזה לא בפרויקט.')
+    delete members[uid]
+    if (current.role === 'manager' && pfManagers(members) < 1) throw new PfRefused(409, 'לפרויקט צריך להישאר מנהל אחד לפחות.')
+    return members
+  })
+}
+
+async function pfCancelInvite(store: PfStore, actor: string, token: string): Promise<void> {
+  const invite = pfIsToken(token) ? await store.get(pfPath('invites', token)) : null
+  if (!invite) throw new PfRefused(404, 'ההזמנה לא נמצאה.')
+  if (!pfAtLeast(await pfRoleIn(store, String(invite.data.projectId), actor), 'manager')) throw new PfRefused(403, 'רק מנהל הפרויקט מבטל הזמנות.')
+  if (invite.data.usedAt) return
+  try {
+    // Only as it was read: an invitation accepted a moment ago stays (it is the record of it).
+    await store.commit([{ op: 'delete', path: invite.path, ifVersion: invite.version }])
+  } catch (err) {
+    if (!(err instanceof PfConflict)) throw err
+  }
+}
+
+async function pfLiveInvite(store: PfStore, token: string, now: number): Promise<PfSnapshot> {
+  const invite = pfIsToken(token) ? await store.get(pfPath('invites', token)) : null
+  if (!invite || !pfIsRole(invite.data.role)) throw new PfRefused(404, 'ההזמנה לא נמצאה.')
+  if (invite.data.usedAt) throw new PfRefused(410, 'ההזמנה הזאת כבר נוצלה.')
+  if (!(Date.parse(String(invite.data.expiresAt)) > now)) throw new PfRefused(410, 'ההזמנה הזאת פגה. אפשר לבקש ממנהל הפרויקט הזמנה חדשה.')
+  return invite
+}
+
+async function pfInviteInfo(store: PfStore, token: string, now: number) {
+  const invite = await pfLiveInvite(store, token, now)
+  const [project, sender] = await store.getAll([pfPath('projects', String(invite.data.projectId)), pfPath('accounts', String(invite.data.createdBy))])
+  if (!project) throw new PfRefused(404, 'ההזמנה לא נמצאה.')
+  return { projectId: project.id, projectName: String(project.data.name ?? ''), role: invite.data.role as PfRole, email: String(invite.data.email ?? ''), from: String(sender?.data.name || sender?.data.email || '') }
+}
+
+/** Joins an invitation's project; someone already in it keeps the higher role. The invitation is
+ *  marked used in the same write that adds the person, so it is taken once. */
+async function pfAcceptInvite(store: PfStore, who: PfIdentity, token: string, now: number): Promise<{ projectId: string; role: PfRole }> {
+  await pfArrive(store, who, now)
+  return pfAtomically(async () => {
+    const invite = await pfLiveInvite(store, token, now)
+    const projectId = String(invite.data.projectId)
+    const role = invite.data.role as PfRole
+    const found = await pfProjectWithRole(store, projectId, who.uid)
+    if (!found) throw new PfRefused(404, 'ההזמנה לא נמצאה.')
+    const used: PfWrite = { op: 'update', path: invite.path, data: { usedBy: who.uid, usedAt: pfIso(now) }, ifVersion: invite.version }
+    if (pfAtLeast(found.role, role)) {
+      await store.commit([used])
+      return { projectId, role: found.role! }
+    }
+    const members = pfMembersIn(found.project)
+    members[who.uid] = { role, addedBy: members[who.uid]?.addedBy ?? null, addedAt: members[who.uid]?.addedAt ?? pfIso(now) }
+    await store.commit([{ op: 'update', path: found.project.path, data: pfMembersData(members), ifVersion: found.project.version }, used])
+    return { projectId, role }
+  })
+}
+
+/** What the person may do with a shared document: its project and their role there. A document
+ *  nobody registered yet is registered to `claim` when they may write in that project — the app
+ *  opens a new script or sheet and the server learns of it on its first connection. */
+async function pfDocumentAccess(store: PfStore, uid: string, docId: string, claim: { projectId: string; kind: PfDocKind } | null, now: number): Promise<{ projectId: string; kind: PfDocKind; role: PfRole; projectUpdatedAt: string } | null> {
+  if (!pfIsId(docId)) return null
+  const doc = await store.get(pfPath('documents', docId))
+  if (doc) {
+    const kind = doc.data.kind
+    const found = await pfProjectWithRole(store, String(doc.data.projectId), uid)
+    if (!found?.role || !pfIsDocKind(kind)) return null
+    return { projectId: found.project.id, kind, role: found.role, projectUpdatedAt: String(found.project.data.updatedAt ?? '') }
+  }
+  if (!claim || !pfIsId(claim.projectId) || claim.kind === 'project') return null
+  const found = await pfProjectWithRole(store, claim.projectId, uid)
+  if (!found || !pfAtLeast(found.role, 'editor')) return null
+  // Two first connections at once: the second finds what the first wrote.
+  await pfCreateIfMissing(store, pfPath('documents', docId), { projectId: claim.projectId, kind: claim.kind, createdBy: uid, createdAt: pfIso(now) })
+  return pfDocumentAccess(store, uid, docId, null, now)
+}
+
+// ---- the requests ----
+
+interface PfContext {
+  store: PfStore | null
+  /** The account a Frameline ID token stands for; null when it does not check out. Throws when
+   *  it cannot be checked right now. */
+  verify: (token: string) => Promise<PfIdentity | null>
+  /** Frameline's own password-reset email (answers alike for every address). */
+  resetPassword: (email: string) => Promise<void>
+  now: number
+}
+
+/** Answers one Preframe request: `op` and its fields in `body`, the ID token from the header. */
+async function pfHandle(body: Record<string, unknown>, token: string, ctx: PfContext): Promise<{ status: number; body: unknown }> {
+  const ok = (b: Record<string, unknown> = {}) => ({ status: 200, body: { ok: true, ...b } })
+  const no = (status: number, error: string) => ({ status, body: { ok: false, error } })
+  const op = String(body.op ?? '')
+  const str = (k: string) => (typeof body[k] === 'string' ? (body[k] as string) : '')
+  const { now } = ctx
+  try {
+    // The one request without an account: someone who cannot sign in asks for a new password.
+    if (op === 'password-reset') {
+      const email = str('email').trim()
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return no(400, 'כתובת האימייל לא תקינה.')
+      await ctx.resetPassword(email)
+      return ok()
+    }
+    let who: PfIdentity | null
+    try {
+      who = token ? await ctx.verify(token) : null
+    } catch {
+      return no(503, 'לא הצלחנו לבדוק את החשבון כרגע. נסו שוב בעוד רגע.')
+    }
+    if (!who) return no(401, 'צריך להתחבר מחדש.')
+    const store = ctx.store
+    if (!store) return no(503, 'השרת עוד לא מוכן לחשבונות. נסו שוב מאוחר יותר.')
+    const role = body.role
+    switch (op) {
+      case 'me': {
+        const companies = await pfArrive(store, who, now)
+        return ok({ user: { uid: who.uid, email: who.email, name: who.name, emailVerified: who.emailVerified }, companies, projects: await pfProjectsOf(store, who.uid) })
+      }
+      case 'project-create':
+        return ok({ project: await pfCreateProject(store, who, { id: body.id, name: body.name, type: body.type, companyId: body.companyId }, now) })
+      case 'project-update':
+        await pfTouchUser(store, who, now)
+        await pfUpdateProject(store, who.uid, str('projectId'), { name: body.name, type: body.type, archived: body.archived }, now)
+        return ok()
+      case 'members':
+        return ok(await pfMembersOf(store, who.uid, str('projectId'), now))
+      case 'member-add':
+        if (!pfIsRole(role)) return no(400, 'תפקיד לא מוכר.')
+        await pfTouchUser(store, who, now)
+        return ok(await pfAddMember(store, who.uid, str('projectId'), str('email'), role, now))
+      case 'member-role':
+        if (!pfIsRole(role)) return no(400, 'תפקיד לא מוכר.')
+        await pfSetRole(store, who.uid, str('projectId'), str('uid'), role)
+        return ok()
+      case 'member-remove':
+        await pfRemoveMember(store, who.uid, str('projectId'), str('uid'))
+        return ok()
+      case 'document-register': {
+        const kind = body.kind
+        if (!pfIsDocKind(kind) || kind === 'project') return no(400, 'סוג מסמך לא מוכר.')
+        const access = await pfDocumentAccess(store, who.uid, str('id'), { projectId: str('projectId'), kind }, now)
+        if (!access || access.projectId !== str('projectId')) return no(403, 'אין לך הרשאה ליצור כאן מסמך.')
+        return ok()
+      }
+      case 'invite-info':
+        return ok({ invite: await pfInviteInfo(store, str('token'), now) })
+      case 'invite-cancel':
+        await pfCancelInvite(store, who.uid, str('token'))
+        return ok()
+      case 'invite-accept':
+        return ok(await pfAcceptInvite(store, who, str('token'), now))
+      // The real-time sync Worker, with the person's token, as they open a shared document.
+      case 'room': {
+        await pfTouchUser(store, who, now)
+        const kind = body.kind
+        const claim = str('projectId') && pfIsDocKind(kind) ? { projectId: str('projectId'), kind } : null
+        const access = await pfDocumentAccess(store, who.uid, str('doc'), claim, now)
+        if (!access) return no(403, 'אין לך גישה למסמך הזה.')
+        if (access.role !== 'viewer') await pfTouchProject(store, access.projectId, access.projectUpdatedAt, now)
+        return ok({ uid: who.uid, projectId: access.projectId, kind: access.kind, role: access.role })
+      }
+      // The AI-pictures Worker, with the person's token.
+      case 'quota': {
+        await pfTouchUser(store, who, now)
+        const plan = await pfPlanOf(store, who.uid, now)
+        const month = pfMonthOf(now)
+        const used = await pfUsageOf(store, who.uid, month)
+        return ok({ uid: who.uid, plan, month, used: used.count, perMonth: PF_PICTURES_A_MONTH[plan] })
+      }
+      case 'picture-take': {
+        const plan = await pfPlanOf(store, who.uid, now)
+        return ok(await pfTakePicture(store, who.uid, PF_PICTURES_A_MONTH[plan], now))
+      }
+      case 'picture-settle':
+        await pfSettlePicture(store, who.uid, str('month'), str('id'), body.made === true, Number(body.neurons) || 0, now)
+        return ok()
+      default:
+        return no(404, 'לא נמצא.')
+    }
+  } catch (err) {
+    if (err instanceof PfRefused) return no(err.status, err.message)
+    console.error('[preframe]', err)
+    return no(500, 'משהו השתבש בשרת. נסו שוב.')
+  }
+}
+// <<< PREFRAME
+
+/** Preframe's database, through a second Firebase app named 'preframe' (Frameline's own app stays
+ *  the default one: getFirebase picks it by name). A key of any other project is refused, so a
+ *  key pasted into the wrong variable can never point Preframe at Frameline's data. */
+let pfStoreCached: PfStore | null | undefined
+function preframeStore(): PfStore | null {
+  if (pfStoreCached !== undefined) return pfStoreCached
+  const raw = process.env.PREFRAME_FIREBASE_SERVICE_ACCOUNT
+  let account: { project_id?: string } | null = null
+  try {
+    account = raw ? (JSON.parse(raw) as { project_id?: string }) : null
+  } catch {
+    account = null
+  }
+  if (!account || account.project_id !== PF_PROJECT_ID) {
+    if (raw) console.error(`[preframe] PREFRAME_FIREBASE_SERVICE_ACCOUNT is not a key of ${PF_PROJECT_ID}`)
+    pfStoreCached = null
+    return null
+  }
+  const app = getApps().find((a) => a.name === 'preframe') ?? initializeApp({ credential: cert(account as Parameters<typeof cert>[0]) }, 'preframe')
+  pfStoreCached = pfAdminStore(getFirestore(app))
+  return pfStoreCached
+}
+
+/** action=preframe — reached from Preframe's desktop app, its browser version and its two
+ *  Workers, with the ID token in a header (never cookies), so any origin may ask. */
+async function handlePreframe(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type')
+  res.setHeader('Access-Control-Max-Age', '86400')
+  res.setHeader('Cache-Control', 'no-store')
+  if (req.method === 'OPTIONS') return res.status(204).end()
+  if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' })
+  const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1] ?? ''
+  const body = req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>) : {}
+  const out = await pfHandle(body, token, {
+    store: preframeStore(),
+    verify: async (t) => {
+      const { getAuth } = await import('firebase-admin/auth')
+      try {
+        const d = await getAuth(getFirebase()).verifyIdToken(t)
+        return { uid: d.uid, email: String(d.email ?? '').toLowerCase(), emailVerified: d.email_verified === true, name: typeof d.name === 'string' ? d.name : '' }
+      } catch (err) {
+        const code = String((err as { code?: unknown }).code ?? '')
+        // A bad or expired token is "not signed in"; Google's keys out of reach is "try again".
+        if (code.startsWith('auth/') && code !== 'auth/internal-error') return null
+        throw err
+      }
+    },
+    resetPassword: async (email) => {
+      const r = await fetch(`https://${req.headers.host}/api/reset-password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }) })
+      if (r.status >= 500) throw new Error(`reset-password answered ${r.status}`)
+    },
+    now: Date.now(),
+  })
+  return res.status(out.status).json(out.body)
+}
+
 /* ─────────────────────────────────────────────────────────────
  *  Dispatcher
  * ───────────────────────────────────────────────────────────── */
@@ -1718,6 +2527,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     (typeof (req.body as { action?: string })?.action === 'string'
       ? (req.body as { action: string }).action
       : '')
+  // Preframe answers its own preflight (OPTIONS) and keeps to itself.
+  if (action === 'preframe') return handlePreframe(req, res)
   // Most actions are POST. `unsubscribe` is the lone exception —
   // it's hit by a GET link inside a marketing email so the
   // recipient can click straight from their inbox. We still reject
