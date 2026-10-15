@@ -28,6 +28,13 @@ createServer(async (req, res) => {
     /* empty */
   }
   const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1] ?? ''
+  // Frameline's sign-up, as far as the sign-in page needs it: an address with "taken" in it
+  // already has an account; any six digits are the right code.
+  if (body.op === 'signup-request-code' || body.op === 'signup-verify-code') {
+    const taken = String(body.email ?? '').includes('taken')
+    const out = taken ? { status: 409, body: { ok: false, error: 'כתובת המייל כבר רשומה. התחבר עם הסיסמה שלך.' } } : { status: 200, body: { ok: true } }
+    return void res.writeHead(out.status, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify(out.body))
+  }
   const out = await pf.pfHandle(body, token, {
     store,
     verify: async (t: string) => {

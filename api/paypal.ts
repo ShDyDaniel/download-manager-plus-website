@@ -2513,6 +2513,11 @@ async function handlePreframe(req: VercelRequest, res: VercelResponse) {
   const token = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ''))?.[1] ?? ''
   const body = req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>) : {}
   if (body.op === 'health') return res.status(200).json({ ok: true, database: await preframeHealth() })
+  // Sign-up is Frameline's own — a six-digit code by email (refused with 409 when the address
+  // already has an account), then the account, made here with its email verified. The same
+  // handlers, reached from Preframe with the headers above.
+  if (body.op === 'signup-request-code') return handleSignupRequestCode(req, res)
+  if (body.op === 'signup-verify-code') return handleSignupVerifyCode(req, res)
   const out = await pfHandle(body, token, {
     store: preframeStore(),
     verify: async (t) => {
