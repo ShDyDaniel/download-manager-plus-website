@@ -1996,16 +1996,45 @@ async function pfGrant(store: PfStore, email: string, plan: PfPlan, periodEnd: s
 //   projects/{id}    companyId, name, type, createdBy, createdAt, updatedAt, archived,
 //                    members {uid: {role, addedBy, addedAt, overrides}}, memberUids
 //                    (its id is the id of the project's own shared document)
-//   invites/{token}  projectId, email, role, createdBy, createdAt, expiresAt, usedBy, usedAt
+//   invites/{token}  projectId, email, role, overrides, createdBy, createdAt, expiresAt, usedBy, usedAt
 //   documents/{id}   projectId, kind, createdBy, createdAt — every shared document is one
 //                    project's: the project's own, its scripts, their histories, its sheets
 // A project's people are kept on the project: one read says who is in it, and a change to
 // them is one write that holds only if nobody changed them in between.
+//
+// What a person may do is decided per TAB of the app (Daniel, 2026-10-16): edit, view or none.
+// A plain role gives every tab alike (a viewer views all); "advanced" keeps, per person, the
+// tabs set otherwise (`overrides`). Each tab's data is its own shared document (a "tab room",
+// named after its project or script plus a suffix, PF_ROOMS), so the sync server enforces it:
+// a tab with none is refused, a viewed one is read-only. Tab rooms are never registered: what
+// they are follows from their name.
 
 type PfRole = 'manager' | 'editor' | 'viewer'
 type PfCompanyRole = 'owner' | 'admin' | 'member'
 type PfProjectType = 'feature' | 'series' | 'short' | 'commercial' | 'documentary'
-type PfDocKind = 'project' | 'script' | 'history' | 'doc'
+type PfTab = 'script' | 'cards' | 'dev' | 'board' | 'storyboard' | 'light' | 'days' | 'reports'
+type PfLevel = 'edit' | 'view' | 'none'
+type PfTabs = Record<PfTab, PfLevel>
+type PfOverrides = Partial<Record<PfTab, PfLevel>>
+const PF_TABS: readonly PfTab[] = ['script', 'cards', 'dev', 'board', 'storyboard', 'light', 'days', 'reports']
+/** Tabs drawn from the script's scenes: without reading the script there is nothing in them. */
+const PF_FROM_SCRIPT: readonly PfTab[] = ['cards', 'storyboard', 'light', 'days', 'reports']
+/** Registered documents (`documents/{id}`) and tab rooms (named, PF_ROOMS). */
+type PfDocKind = 'project' | 'script' | 'history' | 'doc' | 'chat' | Exclude<PfTab, 'script'>
+/** Tab rooms: the suffix after the project's id, or the script's, and what each holds. The
+ *  project's chat and people are a room of their own too, open to everyone in the project. */
+const PF_ROOMS: { suffix: string; kind: PfDocKind; of: 'project' | 'script' }[] = [
+  { suffix: 'chat', kind: 'chat', of: 'project' },
+  { suffix: 'cd', kind: 'cards', of: 'project' }, // the colours' names
+  { suffix: 'cd', kind: 'cards', of: 'script' }, // its scenes' cards
+  { suffix: 'dev', kind: 'dev', of: 'project' },
+  { suffix: 'brd', kind: 'board', of: 'project' },
+  { suffix: 'sb', kind: 'storyboard', of: 'project' }, // its settings
+  { suffix: 'sb', kind: 'storyboard', of: 'script' }, // its frames
+  { suffix: 'lt', kind: 'light', of: 'script' },
+  { suffix: 'days', kind: 'days', of: 'project' },
+  { suffix: 'rep', kind: 'reports', of: 'project' },
+]
 
 const PF_RANK: Record<PfRole, number> = { viewer: 1, editor: 2, manager: 3 }
 const pfAtLeast = (role: PfRole | null | undefined, need: PfRole) => !!role && PF_RANK[role] >= PF_RANK[need]
@@ -2013,7 +2042,42 @@ const pfAtLeast = (role: PfRole | null | undefined, need: PfRole) => !!role && P
 const pfIsId = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9]{8,40}$/.test(v)
 const pfIsRole = (v: unknown): v is PfRole => v === 'manager' || v === 'editor' || v === 'viewer'
 const pfIsProjectType = (v: unknown): v is PfProjectType => v === 'feature' || v === 'series' || v === 'short' || v === 'commercial' || v === 'documentary'
-const pfIsDocKind = (v: unknown): v is PfDocKind => v === 'project' || v === 'script' || v === 'history' || v === 'doc'
+/** What may be registered on a first connection (tab rooms never are). */
+const pfIsDocKind = (v: unknown): v is 'project' | 'script' | 'history' | 'doc' => v === 'project' || v === 'script' || v === 'history' || v === 'doc'
+const pfIsLevel = (v: unknown): v is PfLevel => v === 'edit' || v === 'view' || v === 'none'
+
+/** The tabs set apart from the role, from a request or the database: known tabs and levels only. */
+function pfOverridesOf(raw: unknown): PfOverrides {
+  const out: PfOverrides = {}
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) for (const t of PF_TABS) if (pfIsLevel((raw as Record<string, unknown>)[t])) out[t] = (raw as Record<string, PfLevel>)[t]
+  return out
+}
+
+/** What each tab is for someone with this role and these overrides. A manager has every tab. */
+function pfTabsFor(role: PfRole, overrides: PfOverrides = {}): PfTabs {
+  const base: PfLevel = role === 'viewer' ? 'view' : 'edit'
+  const out = {} as PfTabs
+  for (const t of PF_TABS) out[t] = role === 'manager' ? 'edit' : (overrides[t] ?? base)
+  if (out.script === 'none') for (const t of PF_FROM_SCRIPT) out[t] = 'none'
+  return out
+}
+
+/** The tab a kind of document belongs to; the project's own document and its chat belong to none. */
+const pfTabOfKind = (kind: PfDocKind): PfTab | null => (kind === 'script' || kind === 'history' ? 'script' : kind === 'doc' ? 'reports' : kind === 'project' || kind === 'chat' ? null : kind)
+
+/** The role the sync server gives a connection to a document of this kind: writable (editor,
+ *  or manager), read-only (viewer), or none. Everyone in the project reads its own document and
+ *  writes in its chat; the project's document (its scripts, the script settings) is written by
+ *  whoever writes the script. */
+function pfRoleForKind(role: PfRole, tabs: PfTabs, kind: PfDocKind): PfRole | null {
+  if (role === 'manager') return 'manager'
+  if (kind === 'chat') return 'editor'
+  if (kind === 'project') return tabs.script === 'edit' ? 'editor' : 'viewer'
+  const level = tabs[pfTabOfKind(kind)!]
+  return level === 'edit' ? 'editor' : level === 'view' ? 'viewer' : null
+}
+
+const PF_ALL_KINDS: readonly PfDocKind[] = ['project', 'chat', 'script', 'history', 'doc', 'cards', 'dev', 'board', 'storyboard', 'light', 'days', 'reports']
 const pfIsCompanyRole = (v: unknown): v is PfCompanyRole => v === 'owner' || v === 'admin' || v === 'member'
 const pfIsToken = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9]{32}$/.test(v)
 
@@ -2025,6 +2089,8 @@ interface PfMember {
   role: PfRole
   addedBy: string | null
   addedAt: string
+  /** Tabs set apart from the role ("advanced"); none for a manager. */
+  overrides?: PfOverrides
 }
 
 function pfMembersIn(project: PfSnapshot): Record<string, PfMember> {
@@ -2033,7 +2099,8 @@ function pfMembersIn(project: PfSnapshot): Record<string, PfMember> {
   if (raw && typeof raw === 'object' && !Array.isArray(raw))
     for (const [uid, m] of Object.entries(raw)) {
       if (!m || typeof m !== 'object' || Array.isArray(m) || !pfIsRole(m.role)) continue
-      out[uid] = { role: m.role, addedBy: typeof m.addedBy === 'string' ? m.addedBy : null, addedAt: String(m.addedAt ?? '') }
+      const overrides = m.role === 'manager' ? {} : pfOverridesOf(m.overrides)
+      out[uid] = { role: m.role, addedBy: typeof m.addedBy === 'string' ? m.addedBy : null, addedAt: String(m.addedAt ?? ''), ...(Object.keys(overrides).length ? { overrides } : {}) }
     }
   return out
 }
@@ -2041,7 +2108,7 @@ function pfMembersIn(project: PfSnapshot): Record<string, PfMember> {
 /** The project's people as stored: the map and the list it is searched by, always together. */
 function pfMembersData(members: Record<string, PfMember>): PfFields {
   const map: PfFields = {}
-  for (const [uid, m] of Object.entries(members)) map[uid] = { role: m.role, addedBy: m.addedBy, addedAt: m.addedAt, overrides: {} }
+  for (const [uid, m] of Object.entries(members)) map[uid] = { role: m.role, addedBy: m.addedBy, addedAt: m.addedAt, overrides: m.role === 'manager' ? {} : { ...(m.overrides ?? {}) } }
   return { members: map, memberUids: Object.keys(members).sort() }
 }
 
@@ -2051,15 +2118,18 @@ function pfCompanyRoleIn(company: PfSnapshot | null, uid: string): PfCompanyRole
   return pfIsCompanyRole(role) ? role : null
 }
 
-/** The project and the person's role in it: their own, or manager for its company's owner and admins. */
-async function pfProjectWithRole(store: PfStore, projectId: string, uid: string): Promise<{ project: PfSnapshot; role: PfRole | null } | null> {
+/** The project and the person's role in it: their own, or manager for its company's owner and
+ *  admins; and what each tab is for them (null when they are not in it). */
+async function pfProjectWithRole(store: PfStore, projectId: string, uid: string): Promise<{ project: PfSnapshot; role: PfRole | null; tabs: PfTabs | null } | null> {
   if (!pfIsId(projectId)) return null
   const project = await store.get(pfPath('projects', projectId))
   if (!project) return null
   const companyId = String(project.data.companyId ?? '')
   const company = companyId ? await store.get(pfPath('companies', companyId)) : null
   const c = pfCompanyRoleIn(company, uid)
-  return { project, role: c === 'owner' || c === 'admin' ? 'manager' : (pfMembersIn(project)[uid]?.role ?? null) }
+  const member = pfMembersIn(project)[uid]
+  const role: PfRole | null = c === 'owner' || c === 'admin' ? 'manager' : (member?.role ?? null)
+  return { project, role, tabs: role ? pfTabsFor(role, role === 'manager' ? {} : member?.overrides) : null }
 }
 
 const pfRoleIn = async (store: PfStore, projectId: string, uid: string) => (await pfProjectWithRole(store, projectId, uid))?.role ?? null
@@ -2191,6 +2261,7 @@ interface PfPendingInvite {
   token: string
   email: string
   role: PfRole
+  overrides: PfOverrides
   expiresAt: string
 }
 
@@ -2199,7 +2270,7 @@ async function pfPendingInvites(store: PfStore, projectId: string, now: number):
   return found
     .filter((i) => !i.data.usedAt && Date.parse(String(i.data.expiresAt)) > now && pfIsRole(i.data.role))
     .sort((a, b) => String(a.data.createdAt).localeCompare(String(b.data.createdAt)))
-    .map((i) => ({ token: i.id, email: String(i.data.email ?? ''), role: i.data.role as PfRole, expiresAt: String(i.data.expiresAt) }))
+    .map((i) => ({ token: i.id, email: String(i.data.email ?? ''), role: i.data.role as PfRole, overrides: pfOverridesOf(i.data.overrides), expiresAt: String(i.data.expiresAt) }))
 }
 
 async function pfMembersOf(store: PfStore, uid: string, projectId: string, now: number) {
@@ -2208,7 +2279,7 @@ async function pfMembersOf(store: PfStore, uid: string, projectId: string, now: 
   const list = Object.entries(pfMembersIn(found.project)).sort(([, a], [, b]) => a.addedAt.localeCompare(b.addedAt))
   const got = await store.getAll(list.map(([u]) => pfPath('accounts', u)))
   const accounts = new Map(got.filter((s): s is PfSnapshot => !!s).map((s) => [s.id, pfAccountOf(s)]))
-  const members = list.map(([u, m]) => ({ uid: u, email: accounts.get(u)?.email ?? '', name: accounts.get(u)?.name ?? '', role: m.role, addedAt: m.addedAt }))
+  const members = list.map(([u, m]) => ({ uid: u, email: accounts.get(u)?.email ?? '', name: accounts.get(u)?.name ?? '', role: m.role, overrides: m.overrides ?? {}, tabs: pfTabsFor(m.role, m.overrides), addedAt: m.addedAt }))
   // Who has an invitation waiting is the manager's business only.
   return { members, invites: pfAtLeast(found.role, 'manager') ? await pfPendingInvites(store, projectId, now) : [] }
 }
@@ -2227,38 +2298,42 @@ async function pfChangeMembers(store: PfStore, projectId: string, actor: string,
 
 const pfManagers = (members: Record<string, PfMember>) => Object.values(members).filter((m) => m.role === 'manager').length
 
-async function pfCreateInvite(store: PfStore, actor: string, projectId: string, email: string, role: PfRole, now: number): Promise<PfPendingInvite> {
+async function pfCreateInvite(store: PfStore, actor: string, projectId: string, email: string, role: PfRole, overrides: PfOverrides, now: number): Promise<PfPendingInvite> {
   if (!pfAtLeast(await pfRoleIn(store, projectId, actor), 'manager')) throw new PfRefused(403, 'רק מנהל הפרויקט מזמין אנשים.')
   const token = pfRandomId(32)
   const expiresAt = pfIso(now + PF_INVITE_DAYS * 86_400_000)
   const to = email.trim().toLowerCase()
-  await store.commit([{ op: 'create', path: pfPath('invites', token), data: { projectId, email: to, role, createdBy: actor, createdAt: pfIso(now), expiresAt, usedBy: null, usedAt: null } }])
-  return { token, email: to, role, expiresAt }
+  const kept = role === 'manager' ? {} : overrides
+  await store.commit([{ op: 'create', path: pfPath('invites', token), data: { projectId, email: to, role, overrides: { ...kept }, createdBy: actor, createdAt: pfIso(now), expiresAt, usedBy: null, usedAt: null } }])
+  return { token, email: to, role, overrides: kept, expiresAt }
 }
 
-/** Adds a person by the email of their account; someone who never used the app gets an invitation link instead. */
-async function pfAddMember(store: PfStore, actor: string, projectId: string, emailIn: string, role: PfRole, now: number) {
+/** Adds a person by the email of their account; someone who never used the app gets an
+ *  invitation link instead. `overrides`: the tabs set apart from the role (advanced). */
+async function pfAddMember(store: PfStore, actor: string, projectId: string, emailIn: string, role: PfRole, overridesIn: PfOverrides, now: number) {
   if (!pfAtLeast(await pfRoleIn(store, projectId, actor), 'manager')) throw new PfRefused(403, 'רק מנהל הפרויקט מוסיף אנשים.')
   const email = emailIn.trim().toLowerCase()
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new PfRefused(400, 'כתובת האימייל לא תקינה.')
+  const overrides = role === 'manager' ? {} : overridesIn
   const user = await pfAccountByEmail(store, email)
-  if (!user) return { invite: await pfCreateInvite(store, actor, projectId, email, role, now) }
+  if (!user) return { invite: await pfCreateInvite(store, actor, projectId, email, role, overrides, now) }
   let addedAt = pfIso(now)
   await pfChangeMembers(store, projectId, actor, 'רק מנהל הפרויקט מוסיף אנשים.', (members) => {
     const had = members[user.uid]
     if (had) addedAt = had.addedAt
-    members[user.uid] = had ? { ...had, role } : { role, addedBy: actor, addedAt }
+    members[user.uid] = { role, addedBy: had?.addedBy ?? actor, addedAt, overrides }
     if (had?.role === 'manager' && pfManagers(members) < 1) throw new PfRefused(409, 'לפרויקט צריך להישאר מנהל אחד לפחות.')
     return members
   })
-  return { member: { uid: user.uid, email: user.email, name: user.name, role, addedAt } }
+  return { member: { uid: user.uid, email: user.email, name: user.name, role, overrides, tabs: pfTabsFor(role, overrides), addedAt } }
 }
 
-async function pfSetRole(store: PfStore, actor: string, projectId: string, uid: string, role: PfRole): Promise<void> {
+/** A new role, and the tabs set apart from it (none: every tab as the role says). */
+async function pfSetRole(store: PfStore, actor: string, projectId: string, uid: string, role: PfRole, overrides: PfOverrides = {}): Promise<void> {
   await pfChangeMembers(store, projectId, actor, 'רק מנהל הפרויקט משנה תפקידים.', (members) => {
     const current = members[uid]
     if (!current) throw new PfRefused(404, 'האדם הזה לא בפרויקט.')
-    members[uid] = { ...current, role }
+    members[uid] = { ...current, role, overrides: role === 'manager' ? {} : overrides }
     if (current.role === 'manager' && pfManagers(members) < 1) throw new PfRefused(409, 'לפרויקט צריך להישאר מנהל אחד לפחות.')
     return members
   })
@@ -2299,7 +2374,9 @@ async function pfInviteInfo(store: PfStore, token: string, now: number) {
   const invite = await pfLiveInvite(store, token, now)
   const [project, sender] = await store.getAll([pfPath('projects', String(invite.data.projectId)), pfPath('accounts', String(invite.data.createdBy))])
   if (!project) throw new PfRefused(404, 'ההזמנה לא נמצאה.')
-  return { projectId: project.id, projectName: String(project.data.name ?? ''), role: invite.data.role as PfRole, email: String(invite.data.email ?? ''), from: String(sender?.data.name || sender?.data.email || '') }
+  const role = invite.data.role as PfRole
+  const overrides = pfOverridesOf(invite.data.overrides)
+  return { projectId: project.id, projectName: String(project.data.name ?? ''), role, overrides, tabs: pfTabsFor(role, overrides), email: String(invite.data.email ?? ''), from: String(sender?.data.name || sender?.data.email || '') }
 }
 
 /** Joins an invitation's project; someone already in it keeps the higher role. The invitation is
@@ -2310,6 +2387,7 @@ async function pfAcceptInvite(store: PfStore, who: PfIdentity, token: string, no
     const invite = await pfLiveInvite(store, token, now)
     const projectId = String(invite.data.projectId)
     const role = invite.data.role as PfRole
+    const overrides = role === 'manager' ? {} : pfOverridesOf(invite.data.overrides)
     const found = await pfProjectWithRole(store, projectId, who.uid)
     if (!found) throw new PfRefused(404, 'ההזמנה לא נמצאה.')
     const used: PfWrite = { op: 'update', path: invite.path, data: { usedBy: who.uid, usedAt: pfIso(now) }, ifVersion: invite.version }
@@ -2318,30 +2396,72 @@ async function pfAcceptInvite(store: PfStore, who: PfIdentity, token: string, no
       return { projectId, role: found.role! }
     }
     const members = pfMembersIn(found.project)
-    members[who.uid] = { role, addedBy: members[who.uid]?.addedBy ?? null, addedAt: members[who.uid]?.addedAt ?? pfIso(now) }
+    members[who.uid] = { role, addedBy: members[who.uid]?.addedBy ?? null, addedAt: members[who.uid]?.addedAt ?? pfIso(now), overrides }
     await store.commit([{ op: 'update', path: found.project.path, data: pfMembersData(members), ifVersion: found.project.version }, used])
     return { projectId, role }
   })
 }
 
-/** What the person may do with a shared document: its project and their role there. A document
- *  nobody registered yet is registered to `claim` when they may write in that project — the app
- *  opens a new script or sheet and the server learns of it on its first connection. */
-async function pfDocumentAccess(store: PfStore, uid: string, docId: string, claim: { projectId: string; kind: PfDocKind } | null, now: number): Promise<{ projectId: string; kind: PfDocKind; role: PfRole; projectUpdatedAt: string } | null> {
+/** A tab room's id (PF_ROOMS) read back: what it holds, and the project or script it is named
+ *  after. Several readings may fit an id (a script whose id happens to end like a suffix); the
+ *  caller takes the first that exists. */
+function pfRoomReadings(docId: string): { base: string; kind: PfDocKind; of: 'project' | 'script' }[] {
+  return PF_ROOMS.filter((r) => docId.endsWith(r.suffix) && pfIsId(docId.slice(0, -r.suffix.length))).map((r) => ({ base: docId.slice(0, -r.suffix.length), kind: r.kind, of: r.of }))
+}
+
+interface PfAccess {
+  projectId: string
+  kind: PfDocKind
+  /** The role on this document (what the sync server enforces). */
+  role: PfRole
+  /** What each tab of the project is for this person (the app locks its screens by it). */
+  tabs: PfTabs
+  projectUpdatedAt: string
+}
+
+/** What the person may do with a shared document: its project, its kind and their role on it
+ *  (null: nothing, they are not let in). A tab room is known by its name; a document nobody
+ *  registered yet is registered to `claim` when they may write that kind there — the app opens a
+ *  new script or sheet and the server learns of it on its first connection. */
+async function pfDocumentAccess(store: PfStore, uid: string, docId: string, claim: { projectId: string; kind: PfDocKind } | null, now: number): Promise<PfAccess | null> {
   if (!pfIsId(docId)) return null
+  const grant = (found: { project: PfSnapshot; role: PfRole | null; tabs: PfTabs | null } | null, kind: PfDocKind): PfAccess | null => {
+    if (!found?.role || !found.tabs) return null
+    const role = pfRoleForKind(found.role, found.tabs, kind)
+    return role ? { projectId: found.project.id, kind, role, tabs: found.tabs, projectUpdatedAt: String(found.project.data.updatedAt ?? '') } : null
+  }
   const doc = await store.get(pfPath('documents', docId))
   if (doc) {
     const kind = doc.data.kind
-    const found = await pfProjectWithRole(store, String(doc.data.projectId), uid)
-    if (!found?.role || !pfIsDocKind(kind)) return null
-    return { projectId: found.project.id, kind, role: found.role, projectUpdatedAt: String(found.project.data.updatedAt ?? '') }
+    if (!pfIsDocKind(kind)) return null
+    return grant(await pfProjectWithRole(store, String(doc.data.projectId), uid), kind)
   }
-  if (!claim || !pfIsId(claim.projectId) || claim.kind === 'project') return null
+  for (const r of pfRoomReadings(docId)) {
+    if (r.of === 'project') {
+      const found = await pfProjectWithRole(store, r.base, uid)
+      if (found) return grant(found, r.kind)
+    } else {
+      const script = await store.get(pfPath('documents', r.base))
+      if (script?.data.kind === 'script') return grant(await pfProjectWithRole(store, String(script.data.projectId), uid), r.kind)
+    }
+  }
+  if (!claim || !pfIsId(claim.projectId) || !pfIsDocKind(claim.kind) || claim.kind === 'project') return null
   const found = await pfProjectWithRole(store, claim.projectId, uid)
-  if (!found || !pfAtLeast(found.role, 'editor')) return null
+  // Only someone who may write that kind there brings a new one in.
+  const role = found?.role && found.tabs ? pfRoleForKind(found.role, found.tabs, claim.kind) : null
+  if (role !== 'editor' && role !== 'manager') return null
   // Two first connections at once: the second finds what the first wrote.
   await pfCreateIfMissing(store, pfPath('documents', docId), { projectId: claim.projectId, kind: claim.kind, createdBy: uid, createdAt: pfIso(now) })
   return pfDocumentAccess(store, uid, docId, null, now)
+}
+
+/** Everything the sync server needs to apply an access change at once: the role on every kind
+ *  of document of the project (null: closed), and the tabs, for the app. */
+async function pfAccessOf(store: PfStore, projectId: string, uid: string): Promise<{ role: PfRole | null; tabs: PfTabs | null; access: Record<string, PfRole | null> }> {
+  const found = await pfProjectWithRole(store, projectId, uid)
+  const access: Record<string, PfRole | null> = {}
+  for (const k of PF_ALL_KINDS) access[k] = found?.role && found.tabs ? pfRoleForKind(found.role, found.tabs, k) : null
+  return { role: found?.role ?? null, tabs: found?.tabs ?? null, access }
 }
 
 // ---- the requests ----
@@ -2400,10 +2520,10 @@ async function pfHandle(body: Record<string, unknown>, token: string, ctx: PfCon
       case 'member-add':
         if (!pfIsRole(role)) return no(400, 'תפקיד לא מוכר.')
         await pfTouchUser(store, who, now)
-        return ok(await pfAddMember(store, who.uid, str('projectId'), str('email'), role, now))
+        return ok(await pfAddMember(store, who.uid, str('projectId'), str('email'), role, pfOverridesOf(body.overrides), now))
       case 'member-role':
         if (!pfIsRole(role)) return no(400, 'תפקיד לא מוכר.')
-        await pfSetRole(store, who.uid, str('projectId'), str('uid'), role)
+        await pfSetRole(store, who.uid, str('projectId'), str('uid'), role, pfOverridesOf(body.overrides))
         await ctx.notify?.(str('projectId'), str('uid')).catch(() => undefined)
         return ok()
       case 'member-remove':
@@ -2411,10 +2531,10 @@ async function pfHandle(body: Record<string, unknown>, token: string, ctx: PfCon
         await ctx.notify?.(str('projectId'), str('uid')).catch(() => undefined)
         return ok()
       // The sync server, asked by someone in the project to apply a change at once: what this
-      // person's role is now (the project's people are no secret to its members).
+      // person may do now, per kind of document (the project's people are no secret to its members).
       case 'role-of': {
         if (!(await pfRoleIn(store, str('projectId'), who.uid))) return no(403, 'אין לך גישה לפרויקט הזה.')
-        return ok({ role: await pfRoleIn(store, str('projectId'), str('uid')) })
+        return ok(await pfAccessOf(store, str('projectId'), str('uid')))
       }
       case 'document-register': {
         const kind = body.kind
@@ -2438,7 +2558,7 @@ async function pfHandle(body: Record<string, unknown>, token: string, ctx: PfCon
         const access = await pfDocumentAccess(store, who.uid, str('doc'), claim, now)
         if (!access) return no(403, 'אין לך גישה למסמך הזה.')
         if (access.role !== 'viewer') await pfTouchProject(store, access.projectId, access.projectUpdatedAt, now)
-        return ok({ uid: who.uid, projectId: access.projectId, kind: access.kind, role: access.role })
+        return ok({ uid: who.uid, projectId: access.projectId, kind: access.kind, role: access.role, tabs: access.tabs })
       }
       // The AI-pictures Worker, with the person's token.
       case 'quota': {

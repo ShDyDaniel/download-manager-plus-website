@@ -131,10 +131,10 @@ test('lists only what the person may open; only a manager renames or archives', 
 
 test('adds someone who uses the app by their email; an editor cannot add; an outsider sees nothing', async () => {
   const db = await withProject()
-  const done = await pf.pfAddMember(db, 'maya1', P, ' Roni@Example.com ', 'editor', NOW)
+  const done = await pf.pfAddMember(db, 'maya1', P, ' Roni@Example.com ', 'editor', {}, NOW)
   assert.equal(done.member.uid, 'roni1')
   assert.equal(await pf.pfRoleIn(db, P, 'roni1'), 'editor')
-  assert.equal(await status(pf.pfAddMember(db, 'roni1', P, 'dana@example.com', 'viewer', NOW)), 403)
+  assert.equal(await status(pf.pfAddMember(db, 'roni1', P, 'dana@example.com', 'viewer', {}, NOW)), 403)
   const { members, invites } = await pf.pfMembersOf(db, 'maya1', P, NOW)
   assert.deepEqual(
     members.map((m: { email: string; role: string }) => [m.email, m.role]),
@@ -149,7 +149,7 @@ test('adds someone who uses the app by their email; an editor cannot add; an out
 
 test('invites someone new by a link used once, before it runs out', async () => {
   const db = await withProject()
-  const made = await pf.pfAddMember(db, 'maya1', P, 'dana@example.com', 'viewer', NOW)
+  const made = await pf.pfAddMember(db, 'maya1', P, 'dana@example.com', 'viewer', {}, NOW)
   const { token } = made.invite
   assert.match(token, /^[a-z0-9]{32}$/)
   assert.equal((await pf.pfMembersOf(db, 'maya1', P, NOW)).invites.length, 1)
@@ -158,7 +158,7 @@ test('invites someone new by a link used once, before it runs out', async () => 
   assert.deepEqual(await pf.pfAcceptInvite(db, dana, token, NOW + 1000), { projectId: P, role: 'viewer' })
   assert.equal(await pf.pfRoleIn(db, P, 'dana1'), 'viewer')
   assert.equal(await status(pf.pfAcceptInvite(db, roni, token, NOW + 2000)), 410)
-  const late = await pf.pfAddMember(db, 'maya1', P, 'late@example.com', 'editor', NOW)
+  const late = await pf.pfAddMember(db, 'maya1', P, 'late@example.com', 'editor', {}, NOW)
   assert.equal(await status(pf.pfInviteInfo(db, late.invite.token, NOW + 15 * 86_400_000)), 410)
   assert.equal(await status(pf.pfCancelInvite(db, 'roni1', late.invite.token)), 403)
   await pf.pfCancelInvite(db, 'maya1', late.invite.token)
@@ -167,8 +167,8 @@ test('invites someone new by a link used once, before it runs out', async () => 
 
 test('never lowers a role through an invitation, and never leaves a project without a manager', async () => {
   const db = await withProject()
-  await pf.pfAddMember(db, 'maya1', P, 'roni@example.com', 'editor', NOW)
-  const link = await pf.pfAddMember(db, 'maya1', P, 'someone@example.com', 'viewer', NOW)
+  await pf.pfAddMember(db, 'maya1', P, 'roni@example.com', 'editor', {}, NOW)
+  const link = await pf.pfAddMember(db, 'maya1', P, 'someone@example.com', 'viewer', {}, NOW)
   assert.deepEqual(await pf.pfAcceptInvite(db, roni, link.invite.token, NOW), { projectId: P, role: 'editor' })
   assert.equal(await status(pf.pfSetRole(db, 'maya1', P, 'maya1', 'editor')), 409)
   assert.equal(await status(pf.pfRemoveMember(db, 'maya1', P, 'maya1')), 409)
@@ -184,7 +184,7 @@ test('never lowers a role through an invitation, and never leaves a project with
 
 test('lets an editor register a new document of the project on its first connection, and nobody else', async () => {
   const db = await withProject()
-  await pf.pfAddMember(db, 'maya1', P, 'roni@example.com', 'viewer', NOW)
+  await pf.pfAddMember(db, 'maya1', P, 'roni@example.com', 'viewer', {}, NOW)
   const claim = { projectId: P, kind: 'script' }
   assert.equal(await pf.pfDocumentAccess(db, 'roni1', 'script000b1', claim, NOW), null)
   await pf.pfTouchUser(db, dana, NOW)
@@ -195,6 +195,83 @@ test('lets an editor register a new document of the project on its first connect
   assert.equal(await pf.pfDocumentAccess(db, 'dana1', 'script000b1', { projectId: other.id, kind: 'script' }, NOW), null)
   assert.equal(await pf.pfDocumentAccess(db, 'maya1', 'proj0000z9', { projectId: P, kind: 'project' }, NOW), null)
   assert.equal(await pf.pfDocumentAccess(db, 'maya1', '../etc', claim, NOW), null)
+})
+
+// ---- permissions per tab ----
+
+const S = 'script00000000000001'
+
+async function withTeam() {
+  const db = await withProject()
+  await pf.pfDocumentAccess(db, 'maya1', S, { projectId: P, kind: 'script' }, NOW)
+  return db
+}
+
+test('gives every tab as the role says, sets some apart for one person, and needs the script for what is drawn from it', async () => {
+  const db = await withTeam()
+  await pf.pfAddMember(db, 'maya1', P, 'roni@example.com', 'editor', { storyboard: 'view', board: 'none', days: 'nonsense', made: 'edit' }, NOW)
+  const tabsOf = async (uid: string) => (await pf.pfDocumentAccess(db, uid, P, null, NOW))?.tabs
+  assert.deepEqual(await tabsOf('roni1'), { script: 'edit', cards: 'edit', dev: 'edit', board: 'none', storyboard: 'view', light: 'edit', days: 'edit', reports: 'edit' })
+  // A manager has every tab, whatever was set for them before.
+  await pf.pfSetRole(db, 'maya1', P, 'roni1', 'manager', { script: 'none' })
+  assert.equal((await tabsOf('roni1')).script, 'edit')
+  assert.deepEqual(db.dump()[`projects/${P}`].members.roni1.overrides, {})
+  // No script: nothing that is drawn from its scenes either; the board and the development stay.
+  await pf.pfSetRole(db, 'maya1', P, 'roni1', 'viewer', { script: 'none', board: 'edit' })
+  assert.deepEqual(await tabsOf('roni1'), { script: 'none', cards: 'none', dev: 'view', board: 'edit', storyboard: 'none', light: 'none', days: 'none', reports: 'none' })
+  // Back to the plain role: every tab alike again.
+  await pf.pfSetRole(db, 'maya1', P, 'roni1', 'viewer')
+  assert.ok(Object.values(await tabsOf('roni1')).every((l) => l === 'view'))
+})
+
+test('lets into each tab room as that tab allows, knowing the room by its name alone', async () => {
+  const db = await withTeam()
+  await pf.pfAddMember(db, 'maya1', P, 'roni@example.com', 'editor', { storyboard: 'view', board: 'none', script: 'view' }, NOW)
+  const role = async (doc: string, uid = 'roni1') => (await pf.pfDocumentAccess(db, uid, doc, null, NOW))?.role ?? null
+  assert.equal(await role(P), 'viewer') // the project's document: written by whoever writes the script
+  assert.equal(await role(`${P}chat`), 'editor') // everyone talks
+  assert.equal(await role(S), 'viewer')
+  assert.equal(await role(`${S}sb`), 'viewer') // the script's frames
+  assert.equal(await role(`${P}sb`), 'viewer') // the storyboard's settings
+  assert.equal(await role(`${P}brd`), null)
+  assert.equal(await role(`${S}cd`), 'editor')
+  assert.equal(await role(`${S}lt`), 'editor')
+  assert.equal(await role(`${P}days`), 'editor')
+  assert.equal(await role(`${P}lt`), null) // no such room: lighting is per script
+  assert.equal(await role(`nosuchproject0${'brd'}`), null)
+  assert.equal(await role(`${P}brd`, 'maya1'), 'manager')
+  // Someone outside the project gets no room at all; nothing is registered for any of this.
+  await pf.pfTouchUser(db, dana, NOW)
+  assert.equal(await role(`${P}chat`, 'dana1'), null)
+  assert.equal(Object.keys(db.dump()).filter((p) => p.startsWith('documents/')).length, 2)
+})
+
+test('keeps a script whose id ends like a tab room what it is, and registers new documents only for who may write that tab', async () => {
+  const db = await withTeam()
+  const lookalike = 'script0000000000brd'
+  await pf.pfDocumentAccess(db, 'maya1', lookalike, { projectId: P, kind: 'script' }, NOW)
+  assert.equal((await pf.pfDocumentAccess(db, 'maya1', lookalike, null, NOW)).kind, 'script')
+  await pf.pfAddMember(db, 'maya1', P, 'roni@example.com', 'editor', { reports: 'view' }, NOW)
+  assert.equal(await pf.pfDocumentAccess(db, 'roni1', 'sheet00000000000001', { projectId: P, kind: 'doc' }, NOW), null)
+  assert.equal((await pf.pfDocumentAccess(db, 'roni1', 'script00000000000002', { projectId: P, kind: 'script' }, NOW)).role, 'editor')
+  assert.equal(await pf.pfDocumentAccess(db, 'roni1', 'proj0000z9chat', { projectId: P, kind: 'chat' }, NOW), null)
+})
+
+test('invites with tabs set apart, and tells the sync server the role on every kind of document', async () => {
+  const db = await withTeam()
+  const link = await pf.pfAddMember(db, 'maya1', P, 'dana@example.com', 'editor', { days: 'none' }, NOW)
+  assert.deepEqual(link.invite.overrides, { days: 'none' })
+  assert.equal((await pf.pfInviteInfo(db, link.invite.token, NOW)).tabs.days, 'none')
+  await pf.pfAcceptInvite(db, dana, link.invite.token, NOW)
+  const { members } = await pf.pfMembersOf(db, 'maya1', P, NOW)
+  assert.deepEqual(members.find((m: { uid: string }) => m.uid === 'dana1').overrides, { days: 'none' })
+  const ctx = { store: db, verify: async (t: string) => ({ 'token-maya': maya, 'token-dana': dana })[t] ?? null, resetPassword: async () => undefined, now: NOW }
+  const of = (await pf.pfHandle({ op: 'role-of', projectId: P, uid: 'dana1' }, 'token-maya', ctx)).body
+  assert.deepEqual({ role: of.role, days: of.access.days, chat: of.access.chat, script: of.access.script, project: of.access.project, tabsDays: of.tabs.days }, { role: 'editor', days: null, chat: 'editor', script: 'editor', project: 'editor', tabsDays: 'none' })
+  const changed = await pf.pfHandle({ op: 'member-role', projectId: P, uid: 'dana1', role: 'viewer', overrides: { board: 'edit' } }, 'token-maya', ctx)
+  assert.equal(changed.status, 200)
+  const again = (await pf.pfHandle({ op: 'role-of', projectId: P, uid: 'dana1' }, 'token-maya', ctx)).body
+  assert.deepEqual({ board: again.access.board, days: again.access.days, project: again.access.project }, { board: 'editor', days: 'viewer', project: 'viewer' })
 })
 
 // ---- the requests ----
@@ -234,12 +311,12 @@ test('tells the sync server at once when a role changes or someone is taken off,
   await call({ op: 'me' }, 'token-roni')
   await call({ op: 'project-create', id: P, name: 'הבית', type: 'feature' }, 'token-maya')
   await call({ op: 'member-add', projectId: P, email: 'roni@example.com', role: 'editor' }, 'token-maya')
-  assert.deepEqual((await call({ op: 'role-of', projectId: P, uid: 'roni1' }, 'token-roni')).body, { ok: true, role: 'editor' })
+  assert.equal((await call({ op: 'role-of', projectId: P, uid: 'roni1' }, 'token-roni')).body.role, 'editor')
   await call({ op: 'member-role', projectId: P, uid: 'roni1', role: 'viewer' }, 'token-maya')
-  assert.deepEqual((await call({ op: 'role-of', projectId: P, uid: 'roni1' }, 'token-maya')).body, { ok: true, role: 'viewer' })
+  assert.equal((await call({ op: 'role-of', projectId: P, uid: 'roni1' }, 'token-maya')).body.role, 'viewer')
   await call({ op: 'member-remove', projectId: P, uid: 'roni1' }, 'token-maya')
   assert.deepEqual(told, [`${P}:roni1`, `${P}:roni1`])
-  assert.deepEqual((await call({ op: 'role-of', projectId: P, uid: 'roni1' }, 'token-maya')).body, { ok: true, role: null })
+  assert.deepEqual((await call({ op: 'role-of', projectId: P, uid: 'roni1' }, 'token-maya')).body.role, null)
   // Someone outside the project learns nothing.
   assert.equal((await call({ op: 'role-of', projectId: P, uid: 'maya1' }, 'token-roni')).status, 403)
 })
@@ -256,7 +333,9 @@ test('a whole round: a project, a person, an invitation, a room, the allowance',
   const link = await call({ op: 'member-add', projectId: P, email: 'new@example.com', role: 'editor' }, 'token-maya')
   assert.equal((await call({ op: 'invite-info', token: link.body.invite.token }, 'token-roni')).body.invite.role, 'editor')
   // The sync Worker asks for a room: a viewer may read, may not register a new document.
-  assert.deepEqual((await call({ op: 'room', doc: P }, 'token-roni')).body, { ok: true, uid: 'roni1', projectId: P, kind: 'project', role: 'viewer' })
+  const room = (await call({ op: 'room', doc: P }, 'token-roni')).body
+  assert.deepEqual({ ...room, tabs: undefined }, { ok: true, uid: 'roni1', projectId: P, kind: 'project', role: 'viewer', tabs: undefined })
+  assert.equal(room.tabs.script, 'view')
   assert.equal((await call({ op: 'room', doc: 'script000b1', projectId: P, kind: 'script' }, 'token-roni')).status, 403)
   assert.equal((await call({ op: 'room', doc: 'script000b1', projectId: P, kind: 'script' }, 'token-maya')).body.role, 'manager')
   // The AI Worker: free has no month of its own.
